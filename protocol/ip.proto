@@ -1,0 +1,10 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+
+// fixme parse the packet
+message IpPacket {
+	
+}

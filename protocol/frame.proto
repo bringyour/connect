@@ -1,0 +1,18 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+
+// frames are used at all levels
+// flatten all message types into this enum
+enum MessageType {
+    PACK = 0;
+    ACK = 1;
+    IP_PACKET = 2;
+}
+
+message Frame {
+    MessageType message_type = 1;
+    bytes message_bytes = 2;
+}

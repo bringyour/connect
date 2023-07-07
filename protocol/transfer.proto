@@ -1,0 +1,33 @@
+syntax = "proto3";
+package bringyour;
+
+import "frame.proto";
+
+option go_package = "bringyour.com/protocol";
+
+
+message TransferFrame {
+    // ulid
+    bytes destination_id = 1;
+    Frame frame = 2;
+}
+
+
+
+message Pack {
+    // ulid
+    bytes message_id = 1;
+    // ulid
+    bytes source_id = 2;
+    uint64 sequence_id = 3;
+
+    repeated Frame frames = 4;
+}
+
+// ack of a later message means all prior messages have been ackd
+message Ack {
+    // ulid
+    bytes messsage_id = 1;
+}
+
+
