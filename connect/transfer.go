@@ -14,6 +14,7 @@ sends frames to destinations with properties:
 1. as long the sending client is active, frames are eventually delivered up to timeout
 2. frames are received in order of send
 3. sender is notified when frames are received
+4. high throughput and low resource usage
 
 
 */
@@ -63,14 +64,16 @@ type SendPack struct {
 CONTROL_ID = ULID("")
 
 
+
 type Client struct {
 	clientId ULID
 	
 	
 	// frame bytes
-	SendPacks chan SendPack
+	Send chan SendPack
 
-	ForwardTransferFrames chan []byte
+	// transfer frame bytes
+	Forward chan []byte
 
 	// timeout params
 
@@ -78,43 +81,52 @@ type Client struct {
 
 	// the structured reader/writer read byte chunks
 	// do it this way to be compatible with framed io like websockets
-	readers chan STRUCTUREDREADER
-	writers chan STRUCTUREDWRITER
+	readers chan chan []byte
+	writers chan chan []byte
 
 	// receive callback
-	local func(*Pack)
+	receiveCallback func(*Pack)
 
-	forward func([]byte)
+	// transfer frame bytes
+	forwardCallback func([]byte)
+
+
+	// allow send/receive without an active contract
+	receiveNoContract map[*ULID]bool{CONTROL_ID: true}
+	sendNoContract map[*ULID]bool{CONTROL_ID: true}
 }
 
 
+// if return false, that means buffer is full. try again later
 
-// Forward(TransferFrame)
+// Forward(TransferFrame)(bool)
 
-// Send(TransferFrame, destination)
+// Send(TransferFrame, destination)(bool)
 
-// SendControl(TransferFrame)
+// SendControl(TransferFrame)(bool)
 
 
 func (self *Client) Run(ctx context.Context) error {
 
 	// FIXME create a cancel context and use the cancel context below
 
-	
-	sendBuffer := NewSendBuffer(SendFrames)
-	receiveBuffer := NewReceiveBuffer(SendFrames)
 
-	cancel = self.ctx.Cancel()
-	go sendBuffer.timeout(cancel)
-	go receiveBuffer.timeout(cancel)
+	cancelCtx, cancel := context.WithCancelCause(ctx)
+
+	
+	sendBuffer := NewSendBuffer(Forward)
+	receiveBuffer := NewReceiveBuffer(Forward)
+
+	go sendBuffer.timeout(cancelCtx, cancel)
+	go receiveBuffer.timeout(cancelCtx, cancel)
 
 
 	// receive
 	go func() {
-		reader := EMPTY_STRUCTURED_READER
+		reader := make(chan []byte, 0)
 		for {
 			select {
-			case self.ctx.Done():
+			case cancelCtx.Done():
 				return
 			case nextReader, ok <- readers:
 				if !ok {
@@ -122,8 +134,11 @@ func (self *Client) Run(ctx context.Context) error {
 				}
 				reader = nextReader
 			case frameBytes <- reader:
-				frame := PARSE_TRANSFER_FRAME(frameBytes)
-				if frame.DestinationId == self.clientID {
+				// use a filtered decode approach as described here
+				// https://stackoverflow.com/questions/46136140/protobuf-lazy-decoding-of-sub-message
+				filteredFrame := PARSE_FILTERED_TRANSFER_FRAME(frameBytes)
+				if filteredFrame.DestinationId == self.clientID {
+					frame := PARSE_FRAME()
 					switch frame.MessageType {
 					case ACK:
 						ack := PARSE(frame.messageBytes)
@@ -131,13 +146,12 @@ func (self *Client) Run(ctx context.Context) error {
 						// FIXME advance the send buffer
 						self.sendBuffer.ack(ack)
 					case PACK:
-						pack := PARSE(frame)
 						// receive buffer sends the acks
-						self.receiveBuffer.pack(pack, local)
+						self.receiveBuffer.pack(pack, receiveCallback)
 						
 					}
 				} else {
-					forward(frameBytes)
+					forwardCallback(frameBytes)
 				}
 			}
 		}
@@ -145,22 +159,22 @@ func (self *Client) Run(ctx context.Context) error {
 
 	// send
 	go func() {
-		writer = EMPTY_STRUCTURED_WRITER
+		writer = make(chan []byte, 0)
 
 		write := func(frameBytes []byte) {
 			defer func() {
 				if recover() {
-					// drop this frame
 					// the transport closed
 					// blocking wait for a new writer
 					select {
-					case self.ctx.Done():
+					case cancelCtx.Done():
 						return
 					case nextWriter, ok <- writers:
 						if !ok {
 							return
 						}
 						writer = nextWriter
+						write(frameBytes)
 					}
 				}
 			}()
@@ -169,14 +183,14 @@ func (self *Client) Run(ctx context.Context) error {
 
 		for {
 			select {
-			case self.ctx.Done():
+			case cancelCtx.Done():
 				return
 			case nextWriter, ok <- writers:
 				if !ok {
 					return
 				}
 				writer = nextWriter
-			case frameBytes, ok <- self.ForwardFrames:
+			case frameBytes, ok <- self.ForwardTransferFrames:
 				if !ok {
 					return
 				}
@@ -188,7 +202,7 @@ func (self *Client) Run(ctx context.Context) error {
 				// this writes the pack
 				// this assigns the sequence id
 				// if there is no prior unack'd pack, the sequence id can reset to 0
-				self.sendBuffer.pack(sendPack)
+				self.sendBuffer.pack(sendPack.transferFrame, sendPack.ackCallback)
 
 				//self.writer <- packBytes
 			}
@@ -197,6 +211,279 @@ func (self *Client) Run(ctx context.Context) error {
 
 
 }
+
+
+
+
+
+
+
+// ContractManager
+// secret key for client id
+// Client
+// AddContract determines whether source or dest based on client id
+
+
+
+
+
+
+
+
+
+type SendBuffer struct {
+	// timeout
+	// max size bytes
+
+}
+
+func NewSendBuffer(forward chan []byte) *SendBuffer {
+
+}
+
+func (self *SendBuffer) pack(transferFrame *TransferFrame, ackCallback func(*Ack)) {
+
+	// if full, wait for up to timeout for a free spot
+
+	// if active contract, send now
+
+}
+
+func (self *SendBuffer) ack(ack *Ack) {
+
+}
+
+
+
+type SendSequence struct {
+	contract *Contract
+}
+
+func (self *SendSequence) pack(transferFrame *TransferFrame, ackCallback func(*Ack)) {
+	if self.updateContract(len(frameBytes)) {
+		SEND(packBytes)
+	}
+}
+
+func updateContract(bytesCount int) bool {
+	if sendNoContract(destinationId) {
+		return true
+	}
+	if contract != nil {
+		if contract.update(bytesCount) {
+			return true
+		}
+		contractManager.Close(contract)
+	}
+
+	MAX_PACK_BYTE_COUNT := 256
+	endTime = time + timeout
+	for {
+		contractManager.NewContract(destinationId, bytesCount + MAX_PACK_BYTE_COUNT)
+		select {
+		case nextContract <- contractManager.Contract(destinationId):
+			// the contract pack bytes are counted also
+			contractPack := PACK(contract)
+			if nextContract.update(bytesCount + len(contractPackFrameBytes)) {
+				contract = nextContract
+				// append the contract to the sequence
+				SEND(contractPack)
+				return true
+			} else {
+				// this contract doesn't fit the message
+				contractManager.Close(nextContract)
+			}
+		case After(endTime - time):
+		}
+		if endTime <= time {
+			// no contract in time
+			CLOSE_SEQUENCE()
+			return false
+		}
+	}
+}
+
+
+// store a list of values in ack time ascending
+// when ack, remove from front and append to end
+// min next ack time is front of list
+func (self *SendSequence) timeout(ctx context.Context) {
+	for {
+		firstPack := FIRST()
+		if firstPack {
+			if FIRST.enterTime + sendTimeout <= time {
+				CLOSE_SEQUENCE()
+				return
+			}
+			// resend all whose NOW - last send time >= send timeout
+			RESEND_PACKS()
+			timeout = MIN(min next send time, FIRST.enterTime + sendTimeout)
+			select {
+			case cancelCtx.Done:
+				return
+			case added:
+			case time.After(timeout):
+			}
+		} else {
+			select {
+			case cancelCtx.Done:
+				return
+			case added:
+			}
+		}
+	}
+}
+
+func CLOSE_SEQUENCE() {
+	// count unacked bytes to the contract
+	// call the ackCallback(nil)
+}
+
+
+
+
+
+
+
+
+// FIXME attach a contract tracker to the send/receive buffer
+
+type ReceiveBuffer struct {
+	// timeout
+	// max size bytes
+
+	// receiveAllowNoContract func(*ULID)(bool)
+}
+
+func NewReceiveBuffer(forward chan []byte) *ReceiveBuffer {
+
+}
+
+
+// FIXME whitelist certain source_ids to not require contracts
+func (self *ReceiveBuffer) pack(pack *Pack, receiveCallback func(*Pack)) {
+	
+	seq := activeSequence(pack)
+}
+
+
+
+type ReceiveSequence struct {
+
+}
+
+
+func (self *ReceiveSequence) pack(pack *Pack, receiveCallback func(*Pack)) {
+
+	resetSequence := false
+	for _, frame := range pack.Frames {
+		if frame.MessageType == MessageType.PACK_RESET_SEQUENCE {
+			resetSequence = true
+			break
+		}
+	}
+
+
+	// if full, drop the pack. the sender will retransmit later
+	// reject if the source_id of the contract does not match the source_id of the pack
+
+
+
+	// look for PACK_RESET_SEQUENCE
+
+	if lastReceivedSeq + 1 == first {
+			lastReceivedSeq = first.seq
+
+			// if CreateContractResult, add contract to contract manager
+
+			// register contracts
+			for _, frames := range pack.Frames {
+				if CONTRACT {
+					// this will check the hmac with the local provider secret key
+					contractManager.AddContract(contract)
+				}
+			}
+			if updateContract(len(frameBytes)) {
+				if CREATE_CONTRACT_RESULT {
+					contractManager.Add(Contract)
+				}
+				RECEIVE()
+				ACK()
+			}
+		} else if pack.seq < lastReceivedSeq {
+			// already received
+			SEND_ACK()
+		}
+}
+
+
+func updateContract(bytesCount int) bool {
+	if receiveNoContract(destinationId) {
+		return true
+	}
+	if contract != nil {
+		if contract.update(bytesCount) {
+			return true
+		}
+		contractManager.Close(contract)
+	}
+
+	endTime = time + timeout
+	for {
+		select {
+		case nextContract <- contractManager.Contract(sourceId):
+			if nextContract.update(bytesCount) {
+				contract = nextContract
+				return true
+			} else {
+				// this contract doesn't fit the message
+				contractManager.Close(nextContract)
+			}
+		case After(endTime - time):
+		}
+		if endTime <= time {
+			// no contract in time
+			CLOSE_SEQUENCE()
+			return false
+		}
+	}
+}
+
+
+func (self *ReceiveSequence) timeout(ctx context.Context) {
+	// receive timeout is where we have a pack that cannot be released due to missing earlier sequence
+
+	for {
+		firstPack := FIRST()
+		if firstPack {
+			// sequence gap
+			if first.enterTime + receiveTimeout <= time {
+				CLOSE_SEQUENCE()
+				return
+			}
+			RESEND_ACKS()
+
+			timeout = MIN(min next ack time, FIRST.enterTime + receiveTimeout)
+			select {
+			case cancelCtx.Done:
+				return
+			case added:
+			case time.After(timeout):
+			}
+		} else {
+			select {
+			case cancelCtx.Done:
+				return
+			case added:
+			}
+		}
+	}
+}
+
+func CLOSE_SEQUENCE() {
+	// count unacked bytes to the contract
+}
+
 
 
 // FIXME
@@ -209,6 +496,7 @@ func (self *Client) Run(ctx context.Context) error {
 // store a list of values in ack time ascending
 // when ack, remove from front and append to end
 // min next ack time is front of list
+/*
 func timeout() {
 	for {
 		timeout = MIN(min next ack time, FIRST.enterTime + timeout)
@@ -223,6 +511,6 @@ func timeout() {
 		}
 	}
 }
-
+*/
 
 

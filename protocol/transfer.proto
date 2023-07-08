@@ -12,6 +12,12 @@ message TransferFrame {
     Frame frame = 2;
 }
 
+// this is the minimal subset of `TransferFrame` used when making a routing decision
+message FilteredTransferFrame {
+    // ulid
+    bytes destination_id = 1;
+}
+
 
 
 message Pack {
@@ -19,10 +25,11 @@ message Pack {
     bytes message_id = 1;
     // ulid
     bytes source_id = 2;
-    uint64 sequence_id = 3;
+    uint64 sequence_number = 3;
 
     repeated Frame frames = 4;
 }
+
 
 // ack of a later message means all prior messages have been ackd
 message Ack {
@@ -30,4 +37,59 @@ message Ack {
     bytes messsage_id = 1;
 }
 
+
+
+
+
+
+message Provide {
+    ProvideMode mode = 1;
+    // the platform uses this key to sign the contract_jwts
+    bytes provider_secret_key = 2;
+}
+
+
+// control message to create a contract
+// acks with a CreateContractResult
+// source_id cannot equal destination_id
+message CreateContract {
+    // ulid
+    bytes destination_id = 2;
+    uint64 transfer_bytes = 3;
+    // if set, if there is a contract newer than the last known, return the newest
+    // ulid
+    bytes previous_contract_id = 4;
+}
+// TODO acls are applied on create contract
+// TODO forward from source_id to destination_id is allowed if there is at least one active contract between the two
+
+message CreateContractResult {    
+    ContractError error = 1;
+    Contract contract = 2;
+}
+
+// append this message inline a pack to enable the connection
+message Contract {
+    // ulid
+    bytes stored_contract_bytes = 1;
+    // `stored_contract_bytes` signed with the `provider_secret_key`
+    bytes stored_contract_hmac = 2;
+}
+
+message StoredContract {
+    bytes contract_id = 1;
+    bytes source_id = 2;
+    bytes destination_id = 3;
+    uint64 transfer_bytes = 4;
+}
+
+
+// control message
+message CloseContract {
+
+    bytes contract_id = 1;
+    uint64 acked_bytes = 2;
+    uint64 unacked_bytes = 3;
+
+}
 

@@ -1,0 +1,5 @@
+
+
+// individual store values are stored using a Value message that has a oneof for different types
+// https://protobuf.dev/programming-guides/proto2/
+

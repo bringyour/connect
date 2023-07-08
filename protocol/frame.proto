@@ -8,8 +8,9 @@ option go_package = "bringyour.com/protocol";
 // flatten all message types into this enum
 enum MessageType {
     PACK = 0;
-    ACK = 1;
-    IP_PACKET = 2;
+    PACK_RESET_SEQUENCE = 1;
+    ACK = 2;
+    IP_PACKET = 3;
 }
 
 message Frame {
