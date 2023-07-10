@@ -9,7 +9,11 @@ option go_package = "bringyour.com/protocol";
 message TransferFrame {
     // ulid
     bytes destination_id = 1;
-    Frame frame = 2;
+    // ulid
+    bytes source_id = 2;
+    // this signs frame.message_bytes with the secret key for the source_id
+    bytes message_hmac = 3;
+    Frame frame = 4;
 }
 
 // this is the minimal subset of `TransferFrame` used when making a routing decision
@@ -23,11 +27,9 @@ message FilteredTransferFrame {
 message Pack {
     // ulid
     bytes message_id = 1;
-    // ulid
-    bytes source_id = 2;
-    uint64 sequence_number = 3;
+    uint64 sequence_number = 2;
 
-    repeated Frame frames = 4;
+    repeated Frame frames = 3;
 }
 
 
@@ -38,7 +40,14 @@ message Ack {
 }
 
 
-
+// this is a connection local message that is sent at the start of each connection to the control platform
+// there is no response. the other side should close the connection if no auth
+message ControlAuth {
+    bytes by_jwt = 1;
+    // all control messages are signed with this
+    control_secret_key = 2;
+    client_secret_key = 3;
+}
 
 
 
@@ -55,7 +64,7 @@ message Provide {
 message CreateContract {
     // ulid
     bytes destination_id = 2;
-    uint64 transfer_bytes = 3;
+    uint64 transfer_byte_count = 3;
     // if set, if there is a contract newer than the last known, return the newest
     // ulid
     bytes previous_contract_id = 4;
@@ -80,7 +89,7 @@ message StoredContract {
     bytes contract_id = 1;
     bytes source_id = 2;
     bytes destination_id = 3;
-    uint64 transfer_bytes = 4;
+    uint64 transfer_byte_count = 4;
 }
 
 
@@ -88,8 +97,8 @@ message StoredContract {
 message CloseContract {
 
     bytes contract_id = 1;
-    uint64 acked_bytes = 2;
-    uint64 unacked_bytes = 3;
+    uint64 acked_byte_count = 2;
+    uint64 unacked_byte_count = 3;
 
 }
 
