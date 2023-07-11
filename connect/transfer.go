@@ -98,7 +98,7 @@ type Client struct {
 	Send chan SendPack
 
 	// transfer frame bytes
-	Forward chan []byte
+	// Forward chan []byte
 
 	// timeout params
 
@@ -138,137 +138,56 @@ func (self *Client) Run(ctx context.Context) error {
 
 	
 	
-	
-
-	// go sendBuffer.timeout(cancelCtx, cancel)
-	// go receiveBuffer.timeout(cancelCtx, cancel)
-
-	write := func(messageBytes []byte) {
-		// ignore rejects
-		Forward <- messageBytes
-	}
-
 
 	
-
+	sendBuffer := NewSendBuffer(self)
+	receiveBuffer := NewReceiveBuffer(self)
 
 
 	// receive
 	go func() {
-		receiveBuffer := NewReceiveBuffer(self)
+		
 
 		// FIXME see select from multi using 
 		// FIXME https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
 		// FIXME record stats for each route
-		multiRouteReaders := make(chan []byte, 0)
+		routeNotifier := routeManager.CreateRouteNotifier(clientId)
+		multiRouteReader := CreateMultiRouteReader(routeNotifier)
+
 		for {
-			select {
-			case cancelCtx.Done():
-				return
-			case nextReader, ok <- readers:
-				if !ok {
-					return
-				}
-				reader = nextReader
-			case frameBytes <- reader:
-				// use a filtered decode approach as described here
-				// https://stackoverflow.com/questions/46136140/protobuf-lazy-decoding-of-sub-message
-				filteredFrame := PARSE_FILTERED_TRANSFER_FRAME(frameBytes)
-				if filteredFrame.DestinationId == self.clientID {
-					if signer.Verify(frame.sourceId, frame.messageBytes) {
-						transferFrame := PARSE_FRAME()
-						switch frame.MessageType {
-						case ACK:
-							ack := PARSE(frame.messageBytes)
-							
-							// FIXME advance the send buffer
-							self.sendBuffer.ack(transferFrame)
-						case PACK:
-							// receive buffer sends the acks
-							self.receiveBuffer.pack(ReceivePack(transferFrame, receiveCallback))
-						}
+			frameBytes := multiRouteReader.read(-1)
+			// use a filtered decode approach as described here
+			// https://stackoverflow.com/questions/46136140/protobuf-lazy-decoding-of-sub-message
+			filteredFrame := PARSE_FILTERED_TRANSFER_FRAME(frameBytes)
+			if filteredFrame.DestinationId == self.clientID {
+				if signer.Verify(frame.sourceId, frame.messageBytes) {
+					transferFrame := PARSE_FRAME()
+					switch frame.MessageType {
+					case ACK:
+						ack := PARSE(frame.messageBytes)
+						
+						// FIXME advance the send buffer
+						self.sendBuffer.ack(transferFrame)
+					case PACK:
+						// receive buffer sends the acks
+						self.receiveBuffer.pack(ReceivePack(transferFrame, receiveCallback))
 					}
-				} else {
-					forwardCallback(frameBytes)
 				}
+			} else {
+				forwardCallback(frameBytes)
 			}
 		}
 	}()
 
 	// send
 	go func() {
-		multiRouteWriters = make(chan []byte, 0)
 
-		write := func(frameBytes []byte) {
-			defer func() {
-				if recover() {
-					// the transport closed
-					// blocking wait for a new writer
-					select {
-					case cancelCtx.Done():
-						return
-					case nextWriter, ok <- writers:
-						if !ok {
-							return
-						}
-						writer = nextWriter
-						write(frameBytes)
-					case After(timeout):
-						return
-					}
-				}
-			}()
-			// if the channel is closed, the defer recovery will retry with the next channel
-			// FIXME write to each of the routes
-
-			// non-blocking write to the channels
-			// https://stackoverflow.com/questions/48953236/how-to-implement-non-blocking-write-to-an-unbuffered-channel
-
-			// FIXME submit to all routes
-
-
-			// FIXME
-			// blocking submit to first available
-			// we do this to limit the sender to the actual sending rate of the fastest channel
-			// https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
-			firstRoute := nil
-			// order the routes by the best stats in the last N time
-			// so that the best stats one will be chosen first if available
-			// TODO no need to order, the best will be chosen in the non-blocking below if it is available 
-
-
-			// then non-blocking submit to the rest of the routes
-			for _, route := range routes {
-				if firstRoute == route {
-					continue
-				}
-				select {
-					case route.writer <- frameBytes:
-						route.stats(1, 0, 0)
-					default:
-						// the channel is full
-						route.stats(0, 1, 0)
-				}
-			}
-
-		}
-
-		sendBuffer := NewSendBuffer(self)
+		
 
 		for {
 			select {
 			case cancelCtx.Done():
 				return
-			case nextWriter, ok <- writers:
-				if !ok {
-					return
-				}
-				writer = nextWriter
-			case frameBytes, ok <- self.ForwardTransferFrames:
-				if !ok {
-					return
-				}
-				write(frameBytes)
 			case sendPack, ok <- self.SendPacks:
 
 				// FIXME append to the send buffer
@@ -283,6 +202,113 @@ func (self *Client) Run(ctx context.Context) error {
 		}
 	}()
 
+
+}
+
+
+
+type RouteManager struct {
+
+}
+
+func CreateRouteNotifier(destinationId *ULID) *RouteNotifier {
+
+}
+
+func (self *RouteNotifier) Routes() chan []Route {
+
+}
+
+
+
+type MultiRouteWriter struct {
+	ctx context.Context
+	routeNotifier
+	routes []Route
+}
+
+
+func (self *MultiRouteWriter) write(frameBytes []byte, timeout time.Duration) {
+	multiRouteWriters = make(chan []byte, 0)
+
+	defer func() {
+		if recover() {
+			// the transport closed
+			// blocking wait for a new writer
+			select {
+			case cancelCtx.Done():
+				return
+			case nextWriter, ok <- writers:
+				if !ok {
+					return
+				}
+				writer = nextWriter
+				write(frameBytes)
+			case After(timeout):
+				return
+			}
+		}
+	}()
+
+
+	// if the channel is closed, the defer recovery will retry with the next channel
+	// FIXME write to each of the routes
+
+	// non-blocking write to the channels
+	// https://stackoverflow.com/questions/48953236/how-to-implement-non-blocking-write-to-an-unbuffered-channel
+
+	// FIXME submit to all routes
+
+
+	// FIXME
+	// blocking submit to first available
+	// we do this to limit the sender to the actual sending rate of the fastest channel
+	// https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
+	firstRoute := nil
+	// order the routes by the best stats in the last N time
+	// so that the best stats one will be chosen first if available
+	// TODO no need to order, the best will be chosen in the non-blocking below if it is available 
+
+
+	// then non-blocking submit to the rest of the routes
+	for _, route := range routes {
+		if firstRoute == route {
+			continue
+		}
+		select {
+			case route.writer <- frameBytes:
+				route.stats(1, 0, 0)
+			default:
+				// the channel is full
+				route.stats(0, 1, 0)
+		}
+	}
+}
+
+
+type MultiRouteReader struct {
+	ctx context.Context
+	routeNotifier
+	routes []Route
+}
+
+// blocking read
+func (self *MultiRouteReader) read(timeout time.Duration) []byte {
+}
+
+
+
+
+
+
+
+
+type Route struct {
+	// write/read transfer frame bytes
+	Frames chan []byte
+}
+
+func (self *Route) stats(send int, drop int, receive int) {
 
 }
 
@@ -330,6 +356,25 @@ type ContractManager struct {
 
 }
 
+
+func (self *ContractManager) CreateContractNotifier(sourceId *ULID, destinationId *ULID) *ContractNotifier {
+
+}
+
+func (self *ContractNotifier) Contract() chan *Contract {
+	if clientId == destinationId {
+		// return source
+	} else {
+		// return destination
+	}
+}
+
+func (self *ContractNotifier) Close() {
+	
+}
+
+
+
 func AddContract(contract *Contract) {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -347,13 +392,7 @@ func AddContract(contract *Contract) {
 	}
 }
 
-func Contract(sourceId *ULID, destinationId *ULID) chan *Contract {
-	if clientId == destinationId {
-		// return source
-	} else {
-		// return destination
-	}
-}
+
 
 
 func CreateContract(destionationId *ULID) {
@@ -432,14 +471,22 @@ func (self *SendBuffer) ack(ack *Ack) {
 
 
 
+
+
+
+
 type SendSequence struct {
 	contract *Contract
+	// routes []Route
 
 	channel
 	// init channel with one SendPack, PACK_RESET_SEQUENCE
 }
 
-func (self *SendSequence) run() {
+func (self *SendSequence) run(contractNofifier, multiRouteWriter) {
+	// self.contractNotifier = self.contractManager.CreateNotifier(clientId, destinationId)
+	// defer self.contractNotifier.Close()
+
 	for {
 		select {
 		case message <- channel:
@@ -576,7 +623,6 @@ func updateContract(bytesCount int) bool {
 		}
 	}
 }
-
 
 
 
@@ -733,10 +779,6 @@ func (self *ReceiveSequence) timeout(ctx context.Context) {
 			}
 		}
 	}
-}
-
-func CLOSE_SEQUENCE() {
-	// count unacked bytes to the contract
 }
 
 
