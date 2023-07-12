@@ -1,4 +1,7 @@
+syntax = "proto3";
+package bringyour;
 
+option go_package = "bringyour.com/protocol";
 
 // individual store values are stored using a Value message that has a oneof for different types
 // https://protobuf.dev/programming-guides/proto2/

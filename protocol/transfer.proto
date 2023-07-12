@@ -20,6 +20,8 @@ message TransferFrame {
 message FilteredTransferFrame {
     // ulid
     bytes destination_id = 1;
+    // ulid
+    bytes source_id = 2;
 }
 
 
@@ -45,11 +47,18 @@ message Ack {
 message ControlAuth {
     bytes by_jwt = 1;
     // all control messages are signed with this
-    control_secret_key = 2;
-    client_secret_key = 3;
+    bytes control_secret_key = 2;
+    bytes client_secret_key = 3;
 }
 
 
+
+enum ProvideMode {
+    OFF = 0;
+    NETWORK = 1;
+    NETWORK_AND_SHARED = 2;
+    ALL = 3;
+}
 
 message Provide {
     ProvideMode mode = 1;
@@ -72,9 +81,15 @@ message CreateContract {
 // TODO acls are applied on create contract
 // TODO forward from source_id to destination_id is allowed if there is at least one active contract between the two
 
+
+enum ContractError {
+    NO_PERMISSION = 0;
+    INSUFFICIENT_BALANCE = 1;
+}
+
 message CreateContractResult {    
-    ContractError error = 1;
-    Contract contract = 2;
+    optional ContractError error = 1;
+    optional Contract contract = 2;
 }
 
 // append this message inline a pack to enable the connection

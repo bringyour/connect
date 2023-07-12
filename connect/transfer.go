@@ -3,6 +3,7 @@ package connect
 import (
 
 	"google.golang.org/protobuf/proto"
+	"github.com/oklog/ulid/v2"
 
 	"bringyour.com/protocol"
 )
@@ -22,59 +23,18 @@ sends frames to destinations with properties:
 */
 
 
-
-// protobuf protocol
-
-// send package to any destination
-// package type - ip, something else
-// egress worker to edgress a standard ip packet 
-
-
-
-// ideal flow:
-// auth connect connection
-// send to destination (server appends a from user)
-// request contract to destination
-// 
-
-
-// on receive, transfer worker to convert ip messages to new user space sockets
-
-
-
-// FIRST PROTO
-// client has client id
-// send message to another client id
-
-
-// Client(transit)
-// receive callback
-// send has a transmit buffer, applies ack logic, and resends messages that have not been ackd after some resend time
-
-
-
-// ACL:
+// Forwarding ACL:
 // - reject if source id does not match network id
 // - reject if not an active contract between sender and receiver
 
 
 
 
-type SendPack struct {
-	// this is repacked by the send buffer into a Pack,
-	// with destination and frame from the tframe, and other pack properties filled in by the buffer
-	TransferFrame
-	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
-	ackCallback func(err error)
-}
+type AckFunction func(err error)
+type ReceiveFunction func(sourceId *ulid.ULID, frames []*protocol.Frame, err error)
+type ForwardFunction(sourceId *ulid.ULID, destinationId *ulid.ULID, transferFrameBytes []byte)
 
-type ReceivePack struct {
-	// this is repacked by the send buffer into a Pack,
-	// with destination and frame from the tframe, and other pack properties filled in by the buffer
-	TransferFrame
 
-	receiveCallback func(sourceId *ULID, frames []Frame, err error)
-}
 
 
 
@@ -88,14 +48,16 @@ ControlId = ULID([]byte{
 
 
 type Client struct {
-	clientId ULID
+	ctx context.Context
+
+	// clientId ULID
 
 	// FIXME signing key
 	// FIXME control signing key
 	
 	
 	// frame bytes
-	Send chan SendPack
+	sendPacks chan *SendPack
 
 	// transfer frame bytes
 	// Forward chan []byte
@@ -106,8 +68,8 @@ type Client struct {
 
 	// the structured reader/writer read byte chunks
 	// do it this way to be compatible with framed io like websockets
-	readers chan [](chan []byte)
-	writers chan [](chan []byte)
+	// readers chan [](chan []byte)
+	// writers chan [](chan []byte)
 
 	// receive callback
 	receiveCallback func(*Pack)
@@ -116,357 +78,251 @@ type Client struct {
 	forwardCallback func([]byte)
 
 
-	contractManager := NewContractManager(self)
+	// contractManager *ContractManager
+	// routeManager *RouteManager
 }
 
+func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId *ulid.ULID, ackCallback AckFunction, timeout time.Duration) bool {
+	sendPack := &SendPack{
+		frame: frame,
+		destinationId: destinationId,
+		ackCallback: ackCallback,
+	}
+	if timeout < 0 {
+		sendPacks <- sendPack
+		return true
+	} else if 0 == timeout {
+		select {
+		case sendPacks <- sendPack:
+			return true
+		default:
+			// full
+			if ackCallback != nil {
+				ackCallback(errors.New("Send buffer full."))
+			}
+			return false
+		}
+	} else {
+		select {
+		case sendPacks <- sendPack:
+			return true
+		case time.After(timeout):
+			// full
+			if ackCallback != nil {
+				ackCallback(errors.New("Send buffer full."))
+			}
+			return false
+		}
+	}
+}
 
-// if return false, that means buffer is full. try again later
+func (self *Client) SendControlWithTimeout(frame *protocol.Frame, ackCallback AckFunction) bool {
+	return self.SendNonBlocking(frame, ControlId, ackCallback)
+}
 
-// Forward(TransferFrame)(bool)
+func (self *Client) Send(frame *protocol.Frame, destinationId *ulid.ULID, ackCallback AckFunction) bool {
+	return SendWithTimeout(frame, destinationId, ackCallback, -1)
+}
 
-// Send(Frame, destination)(bool)
+func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) bool {
+	return self.Send(frame, ControlId, ackCallback)
+}
 
-// SendControl(Frame)(bool)
+func (self *Client) Run(routeManager *RouteManager, contractManager *ContractManager) {
+	defer func() {
+		close(self.sendPacks)
+		for {
+			select {
+			case sendPack, ok <- self.sendPacks:
+				if !ok {
+					return
+				}
+				if sendPack.ackCallback != nil {
+					sendPack.ackCallback(errors.New("Client closed."))
+				}
+			}
+		}
+	}()
 
-
-func (self *Client) Run(ctx context.Context) error {
-
-	// FIXME create a cancel context and use the cancel context below
-
-
-	// cancelCtx, cancel := context.WithCancelCause(ctx)
-
-	
-	
-
-	
 	sendBuffer := NewSendBuffer(self)
 	receiveBuffer := NewReceiveBuffer(self)
 
-
 	// receive
 	go func() {
-		
-
-		// FIXME see select from multi using 
-		// FIXME https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
-		// FIXME record stats for each route
-		routeNotifier := routeManager.CreateRouteNotifier(clientId)
+		routeNotifier := self.routeManager.OpenRouteNotifier(clientId)
+		defer routeNotifier.Close()
 		multiRouteReader := CreateMultiRouteReader(routeNotifier)
 
 		for {
-			frameBytes := multiRouteReader.read(-1)
+			transferFrameBytes := multiRouteReader.read(self.ctx, -1)
 			// use a filtered decode approach as described here
 			// https://stackoverflow.com/questions/46136140/protobuf-lazy-decoding-of-sub-message
-			filteredFrame := PARSE_FILTERED_TRANSFER_FRAME(frameBytes)
-			if filteredFrame.DestinationId == self.clientID {
-				if signer.Verify(frame.sourceId, frame.messageBytes) {
-					transferFrame := PARSE_FRAME()
-					switch frame.MessageType {
-					case ACK:
-						ack := PARSE(frame.messageBytes)
-						
-						// FIXME advance the send buffer
-						self.sendBuffer.ack(transferFrame)
-					case PACK:
-						// receive buffer sends the acks
-						self.receiveBuffer.pack(ReceivePack(transferFrame, receiveCallback))
+			filteredTransferFrame := &protocol.FilteredTransferFrame{}
+			if err := protobuf.Decode(transferFrameBytes, &filteredTransferFrame); err != nil {
+				// bad protobuf
+				continue
+			}
+			sourceId := UlidFromProto(filteredTransferFrame.GetSourceId())
+			if sourceId == nil {
+				// bad protobuf
+				continue
+			}
+			destinationId := UlidFromProto(filteredTransferFrame.GetDestinationId())
+			if destinationId == nil {
+				// bad protobuf
+				continue
+			}
+			if destinationId.Equals(self.clientId) {
+				transferFrame := &TransferFrame{}
+				if err := protobuf.Decode(transferFrameBytes, &transferFrame); err != nil {
+					// bad protobuf
+					continue
+				}
+				frame = transferFrame.getFrame()
+				if !self.routeManager.Verify(sourceId, frame.GetMessageBytes(), transferFrame.GetMessageHmac()) {
+					// bad signature
+					continue
+				}
+				switch frame.GetMessageType() {
+				case ACK:
+					ack := &Ack{}
+					if err := protobuf.Decode(frame.GetMessageBytes(), &ack); err != nil {
+						// bad protobuf
+						continue
 					}
+					messageId := UlidFromProto(ack.GetMessageId())
+					if messageId == nil {
+						// bad protobuf
+						continue
+					}
+					sendBuffer.ack(messageId)
+				case PACK:
+					pack := &Pack{}
+					if err := protobuf.Decode(frame.GetMessageBytes(), &pack); err != nil {
+						// bad protobuf
+						continue
+					}
+					receiveBuffer.pack(ReceivePack(sourceId, destinationId, pack, self.receiveCallback))
 				}
 			} else {
-				forwardCallback(frameBytes)
+				if self.forwardCallback != nil {
+					self.forwardCallback(sourceId, destinationId, transferFrameBytes)
+				}
 			}
 		}
 	}()
 
 	// send
-	go func() {
-
-		
-
-		for {
-			select {
-			case cancelCtx.Done():
-				return
-			case sendPack, ok <- self.SendPacks:
-
-				// FIXME append to the send buffer
-				// TODO IMPORTANT sequence id per destination
-				// this writes the pack
-				// this assigns the sequence id
-				// if there is no prior unack'd pack, the sequence id can reset to 0
-				self.sendBuffer.pack(sendPack)
-
-				//self.writer <- packBytes
-			}
-		}
-	}()
-
-
-}
-
-
-
-type RouteManager struct {
-
-}
-
-func CreateRouteNotifier(destinationId *ULID) *RouteNotifier {
-
-}
-
-func (self *RouteNotifier) Routes() chan []Route {
-
-}
-
-
-
-type MultiRouteWriter struct {
-	ctx context.Context
-	routeNotifier
-	routes []Route
-}
-
-
-func (self *MultiRouteWriter) write(frameBytes []byte, timeout time.Duration) {
-	multiRouteWriters = make(chan []byte, 0)
-
-	defer func() {
-		if recover() {
-			// the transport closed
-			// blocking wait for a new writer
-			select {
-			case cancelCtx.Done():
-				return
-			case nextWriter, ok <- writers:
-				if !ok {
-					return
-				}
-				writer = nextWriter
-				write(frameBytes)
-			case After(timeout):
-				return
-			}
-		}
-	}()
-
-
-	// if the channel is closed, the defer recovery will retry with the next channel
-	// FIXME write to each of the routes
-
-	// non-blocking write to the channels
-	// https://stackoverflow.com/questions/48953236/how-to-implement-non-blocking-write-to-an-unbuffered-channel
-
-	// FIXME submit to all routes
-
-
-	// FIXME
-	// blocking submit to first available
-	// we do this to limit the sender to the actual sending rate of the fastest channel
-	// https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
-	firstRoute := nil
-	// order the routes by the best stats in the last N time
-	// so that the best stats one will be chosen first if available
-	// TODO no need to order, the best will be chosen in the non-blocking below if it is available 
-
-
-	// then non-blocking submit to the rest of the routes
-	for _, route := range routes {
-		if firstRoute == route {
-			continue
-		}
+	for {
 		select {
-			case route.writer <- frameBytes:
-				route.stats(1, 0, 0)
-			default:
-				// the channel is full
-				route.stats(0, 1, 0)
+		case self.ctx.Done():
+			return
+		case sendPack <- self.SendPacks:
+			self.sendBuffer.pack(sendPack)
 		}
 	}
 }
 
 
-type MultiRouteReader struct {
-	ctx context.Context
-	routeNotifier
-	routes []Route
+
+
+type SendPack struct {
+	// frame and destination is repacked by the send buffer into a Pack,
+	// with destination and frame from the tframe, and other pack properties filled in by the buffer
+	frame *protocol.Frame
+	destinationId *ulid.ULID
+	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
+	ackCallback AckFunction
 }
-
-// blocking read
-func (self *MultiRouteReader) read(timeout time.Duration) []byte {
-}
-
-
-
-
-
-
-
-
-type Route struct {
-	// write/read transfer frame bytes
-	Frames chan []byte
-}
-
-func (self *Route) stats(send int, drop int, receive int) {
-
-}
-
-
-
-
-// FrameSigner
-// verify(source_id, frame)
-// sign(frameBytes)
-
-
-// ContractManager
-// secret key for client id
-// Client
-// AddContract determines whether source or dest based on client id
-
-
-
-
-
-// FIXME create contract error callback
-// FIXME allow ui to pop something that says upgrade plan
-type ContractManager struct {
-	mutex sync.Mutex
-
-	clientId *ULID
-	standardTransferBytes int
-
-	// FIXME write
-
-	providerSecretKey []byte
-
-	// source id -> contract id -> contract
-	sourceContracts map[*ULID][]Contract
-	// source id -> contract id -> contract
-	destinationContracts map[*ULID][]Contract
-
-	sourceChannels map[*ULID]chan *Contract
-	destinationChannels map[*ULID]chan *Contract
-
-
-	// allow send/receive without an active contract
-	receiveNoContractClientIds map[*ULID]bool{CONTROL_ID: true}
-	sendNoContractClientIds map[*ULID]bool{CONTROL_ID: true}
-
-}
-
-
-func (self *ContractManager) CreateContractNotifier(sourceId *ULID, destinationId *ULID) *ContractNotifier {
-
-}
-
-func (self *ContractNotifier) Contract() chan *Contract {
-	if clientId == destinationId {
-		// return source
-	} else {
-		// return destination
-	}
-}
-
-func (self *ContractNotifier) Close() {
-	
-}
-
-
-
-func AddContract(contract *Contract) {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	if clientId == contract.destinationId {
-		// verify the signature
-			
-		// add to source
-		// add to source channel
-
-
-	} else {
-		// add to dest
-		// add to dest channel
-	}
-}
-
-
-
-
-func CreateContract(destionationId *ULID) {
-	// look at destinationContracts and last contract to get previous contract id
-	createContract := CreateContract{
-			destionationId: destinationId,
-			transferByteCount: standardTransferByteCount,
-			previosContractId: previosContractId,
-		}
-		SEND(createContract)
-}
-
-
-func Close(contract *Contract) {
-	// mark the contract as closed. it will wait for all acked
-}
-
-func Complete(contract *Complete) {
-	// send the CloseContract
-}
-
-
-type Contract struct {
-	
-	contractId *ULID
-	transferByteCount uint64
-
-	unackedBytes uint64
-	ackedBytes uint64
-
-}
-func (self *Contract) updateContract(byteCount int) {
-	// add to the acked bytes
-
-}
-func (self *Contract) updateContractUnacked(byteCount int) {
-	// remove from acked bytes, add to unacked bytes
-}
-
-
-
-
-
-
-
-
-
 
 
 type SendBuffer struct {
-	// timeout
-	// max size bytes
+	ctx *context.Context
+	contractManager *ContractManager
+	routeManager *routeManager
 
+	contractTimeout time.Duration
+	resendInterval time.Duration
+	ackTimeout time.Duration
+
+	mutex sync.Mutex
+	// destination id -> send sequence
+	sendSequences map[*ulid.ULID]*SendSequence
 }
 
-func NewSendBuffer(forward chan []byte) *SendBuffer {
-
+// resend timeout is the initial time between successive send attempts. Does linear backoff
+// on ack timeout, no longer attempt to retransmit and notify of ack failure
+func NewSendBuffer(context, routeManager, contractManager, resendTimeout time.Duraton, ackTimeout time.Duration) *SendBuffer {
+	return &SendBuffer{
+		client: client,
+		resendTimeout: resendTimeout,
+		ackTimeout: ackTimeout,
+	}
 }
 
 func (self *SendBuffer) pack(sendPack *SendPack) {
-
-	// if full, wait for up to timeout for a free spot
-
-	// if active contract, send now
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
 
 
-	// if no active sequence, create
-	// go seq.pack()
-	// seq <- sendPack
+	initSendSequence := func()(*SendSequence) {
+		sendSequence, ok := sendSequences[sendPack.destinationId]
+		if ok {
+			return sendSequence
+		}
+		sendSequence = NewSendSequence(ctx, routeManager, contractManager, destinationId)
+		sendSequences[sendPack.destinationId] = sendSequence
+		go func() {
+			sendSequence.run(multiRouteWriter, contractNotifier)
 
+			self.mutex.Lock()
+			defer self.mutex.Unlock()
+			if sendSequence == sendSequences[sendPack.destinationId] {
+				delete(sendSequences, sendPack.destinationId)
+			}
+		}
+		return sendSequence
+	}
+
+	func() {
+		defer func() {
+			if recover() {
+				// send sequence was closed
+				initSendSequence().messages <- sendPack
+			}
+		}()
+		initSendSequence().messages <- sendPack
+	}
 }
 
 func (self *SendBuffer) ack(ack *Ack) {
-	// FIXME updateContract on ack
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	sendSequence, ok := sendSequences[sendPack.destinationId]
+	if !ok {
+		return
+	}
+
+	func() {
+		defer func() {
+			if recover() {
+				// send sequence was closed
+				return
+			}
+		}()
+		sendSequence.messages <- ack
+	}
+}
+
+func (self *SendBuffer) Close() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// close all open sequences
+	for _, sendSequence := range self.sendSequences {
+		sendSequence.Close()
+	}
 }
 
 
@@ -476,56 +332,193 @@ func (self *SendBuffer) ack(ack *Ack) {
 
 
 type SendSequence struct {
+	ctx
+	routeManager
+	contractManager
+	destinationId
+
+	contractTimeout time.Duration
+	resendInterval time.Duration
+	ackTimeout time.Duration
+	idleTimeout time.Duration
+
+
 	contract *Contract
 	// routes []Route
 
-	channel
-	// init channel with one SendPack, PACK_RESET_SEQUENCE
+	messages chan any
+
+
+		// heap ordered by `resendTime` ascending
+	pq []*SendItem
+
+	sendItems map[*ulid.ULID]*SendItem
+	// in order of `sequenceId`
+	sendItemsSequence []*SendItem
+
+	nextSequenceId uint64
+
+	// contract id -> message id -> present
+	messagesByContract map[*ulid.ULID]map[*ulid.ULID]bool
 }
 
-func (self *SendSequence) run(contractNofifier, multiRouteWriter) {
+func NewSendSequence(ctx, routeManager, contractManager, destinationId) {
+
+
+
+	heap.Init(&pq)
+}
+
+add := func(sendItem *SendItem) {
+		sendItems[sendItem.messageId] = sendItem
+		heap.Push(pq, sendItem)
+}
+remove := func(messageId *ulid.ULID) *SendItem {
+	// remove from map
+	sendItem, ok := sendItems[messageId]
+	if !ok {
+		return nil
+	}
+	delete(sendItems, messageId)
+	if i, found := sort.Find(pq, sendItem.resendTime); found {
+		for ; i < len(pg) && pg[i].resendTime == sendItem.resendTime; i += i {
+			if pg[i].messageId.Equals(messageId) {
+				heap.Remove(pg, i)
+				return sendItem
+			}
+		} 
+	}
+	panic("Message was not found in the heap.")
+}
+send := func(sendPack sendPack) {
+	// convert to SendItem
+	// add to buffer data structs
+	// write to multi route
+}
+
+func (self *SendSequence) run() {
 	// self.contractNotifier = self.contractManager.CreateNotifier(clientId, destinationId)
 	// defer self.contractNotifier.Close()
 
+	
+
+
+	
+
+
+	
+
+
+
+
+
+
+
+	// buffer messageId -> sendPack
+	// buffer - heap by next resend time
+
+	defer func() {
+		close(messages)
+
+		// close contract
+		for _, contractItem := range self.contractItems {
+			contractManager.Complete(contractItem.contract)
+		}
+
+		// drain the buffer
+		for _, sendItem := range pq {
+			if sendItem.ackCallback != nil {
+				send.ackCallback(nil)
+			}
+		}
+
+		// drain the channel
+		for {
+			select {
+			case message, ok <- message:
+				if !ok {
+					return
+				}
+				switch v := message.(type) {
+				case SendPack:
+					v.ackCallback(nil)
+				}
+			default:
+				return
+			}
+		}
+	}()
+
+
+	routeNotifier := self.routeManager.OpenRouteNotifier(sendPack.destinationId)
+	defer routeNotifier.Close()
+	multiRouteWriter := CreateMultiRouterWriter(routeNotifier)
+	contractNotifier := self.contractManager.OpenContractNotifier(self.routeManager.ClientId, sendPack.destinationId)
+	defer contractNotifier.Close()
+
+
+
+
+	
+
+
+
+
+
+	// init channel with one SendPack, PACK_RESET_SEQUENCE
+	send(PACK_RESET_SEQUENCE)
+
+
+	
+
 	for {
+
+		// resend all applicable
+
+		// compute timeout
+
+		// if idle timeout, return
+
+
 		select {
-		case message <- channel:
+		case message, ok <- self.messages:
+			if !ok {
+				return
+			}
 			switch v := message.(type) {
 			case SendPack:
 				if self.updateContract(len(frameBytes)) {
-					SEND(packBytes, contract)
+					// this applies the write back pressure
+					send(sendPack)
 				} else {
 					// no contract
 					ackCallback(nil)
-					close(channel)
-					for {
-						select {
-						case sendPack <- channel:
-							sendPack.ackCallback(nil)
-						default:
-							return
-						}
-					}
+					return
 				}
 			case Ack:
-				// find the index of the message in sequence
-				// ack callback (implicitly) all messages before it and the message
+				if sendItem := remove(messageId); sendItem != nil {
 
-				delete(contractMessages, messageId)
-				if 0 == len(contractMessages) {
-					contractManager.Complete(contract)
+					// implicitly ack all earlier items in the sequence
+					j := len(sendItemsSequence)
+					for i, implicitSendItem := range self.sendItemsSequence {
+						if sendItem.sequenceId < implicitSendItem.sequenceId {
+							j = i
+							break
+						}
+						remove(implicitSendItem.messageId)
+						implicitSendItem.ackCallback(true)
+						if contractItem, ok := contractItems[implicitSendItem.contractId]; ok {
+							delete(contractItem.messages, messageId)
+							if 0 == len(contractItem.messages) {
+								contractManager.Complete(contractItem.contract)
+							}
+						}
+					}
+					self.sendItemsSequence = self.sendItemsSequence[j:]
 				}
 			}
 
 		}
-
-		// FIXME on read timeout, Complete all pending contracts, call ack callbacks with nil
-		contract.updateContractUnacked(messageByteCount)
-		delete(contractMessages, messageId)
-		if 0 == len(contractMessages) {
-			contractManager.Complete(contract)
-		}
-		
 	}
 	/*
 	firstPack := FIRST()
@@ -625,8 +618,26 @@ func updateContract(bytesCount int) bool {
 }
 
 
+struct SendItem {
+	messageId *ulid.ULID
+	contractId *ulid.ULID
+	sequenceId uint64
+	enterTime uint64
+	resendTime uint64
+	transferFrameBytes []byte
+	ackCallback AckFunction
+}
 
 
+
+
+
+type ReceivePack struct {
+	sourceId *ulid.ULID
+	destinationId *ulid.ULID
+	pack *protocol.Pack
+	receiveCallback ReceiveFunction
+}
 
 // FIXME attach a contract tracker to the send/receive buffer
 
@@ -783,31 +794,236 @@ func (self *ReceiveSequence) timeout(ctx context.Context) {
 
 
 
-// FIXME
-// timeout is strictly increasing with pack
-// sendbuffer timeout
-// send acks again up to a certain timeout
-// if pending timeout elapses, close the ctx
+
+type RouteManager struct {
+	clientId *ULID
+
+}
+
+func CreateRouteNotifier(destinationId *ULID) *RouteNotifier {
+
+}
+
+func (self *RouteNotifier) Routes() chan []Route {
+
+}
+
+// fixme sign bytes
+
+// fixme verify bytes
 
 
-// store a list of values in ack time ascending
-// when ack, remove from front and append to end
-// min next ack time is front of list
-/*
-func timeout() {
-	for {
-		timeout = MIN(min next ack time, FIRST.enterTime + timeout)
-		select {
-		case time.After(timeout):
-			firstPack := FIRST()
-			if EXPIRED() {
-				cancel(ERROR)
+
+type MultiRouteWriter struct {
+	ctx context.Context
+	routeNotifier
+	routes []Route
+}
+
+
+func (self *MultiRouteWriter) write(frameBytes []byte, timeout time.Duration) {
+	multiRouteWriters = make(chan []byte, 0)
+
+	defer func() {
+		if recover() {
+			// the transport closed
+			// blocking wait for a new writer
+			select {
+			case cancelCtx.Done():
+				return
+			case nextWriter, ok <- writers:
+				if !ok {
+					return
+				}
+				writer = nextWriter
+				write(frameBytes)
+			case After(timeout):
+				return
 			}
-			// send acks for all whose NOW - last ack time >= ack timeout
-			RESEND_ALL()
+		}
+	}()
+
+
+	// if the channel is closed, the defer recovery will retry with the next channel
+	// FIXME write to each of the routes
+
+	// non-blocking write to the channels
+	// https://stackoverflow.com/questions/48953236/how-to-implement-non-blocking-write-to-an-unbuffered-channel
+
+	// FIXME submit to all routes
+
+
+	// FIXME
+	// blocking submit to first available
+	// we do this to limit the sender to the actual sending rate of the fastest channel
+	// https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
+	firstRoute := nil
+	// order the routes by the best stats in the last N time
+	// so that the best stats one will be chosen first if available
+	// TODO no need to order, the best will be chosen in the non-blocking below if it is available 
+
+
+	// then non-blocking submit to the rest of the routes
+	for _, route := range routes {
+		if firstRoute == route {
+			continue
+		}
+		select {
+			case route.writer <- frameBytes:
+				route.stats(1, 0, 0)
+			default:
+				// the channel is full
+				route.stats(0, 1, 0)
 		}
 	}
 }
-*/
+
+
+type MultiRouteReader struct {
+	ctx context.Context
+	routeNotifier
+	routes []Route
+}
+
+// blocking read
+func (self *MultiRouteReader) read(timeout time.Duration) []byte {
+
+		// FIXME see select from multi using 
+		// FIXME https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
+		// FIXME record stats for each route
+}
+
+
+
+
+
+
+
+
+type Route struct {
+	// write/read transfer frame bytes
+	Frames chan []byte
+}
+
+func (self *Route) stats(send int, drop int, receive int) {
+
+}
+
+
+
+
+
+// FIXME create contract error callback
+// FIXME allow ui to pop something that says upgrade plan
+type ContractManager struct {
+	mutex sync.Mutex
+
+	clientId *ULID
+	standardTransferBytes int
+
+	// FIXME write
+
+	providerSecretKey []byte
+
+	// source id -> contract id -> contract
+	sourceContracts map[*ULID][]Contract
+	// source id -> contract id -> contract
+	destinationContracts map[*ULID][]Contract
+
+	sourceChannels map[*ULID]chan *Contract
+	destinationChannels map[*ULID]chan *Contract
+
+
+	// allow send/receive without an active contract
+	receiveNoContractClientIds map[*ULID]bool{CONTROL_ID: true}
+	sendNoContractClientIds map[*ULID]bool{CONTROL_ID: true}
+
+
+	// control signer key
+	// client signer key
+
+}
+
+
+func (self *ContractManager) CreateContractNotifier(sourceId *ULID, destinationId *ULID) *ContractNotifier {
+
+}
+
+func (self *ContractNotifier) Contract() chan *Contract {
+	if clientId == destinationId {
+		// return source
+	} else {
+		// return destination
+	}
+}
+
+func (self *ContractNotifier) Close() {
+	
+}
+
+func (self *ContractNotifier) NewContract() {
+} 
+
+
+
+func AddContract(contract *Contract) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if clientId == contract.destinationId {
+		// verify the signature
+			
+		// add to source
+		// add to source channel
+
+
+	} else {
+		// add to dest
+		// add to dest channel
+	}
+}
+
+
+
+
+func CreateContract(destionationId *ULID) {
+	// look at destinationContracts and last contract to get previous contract id
+	createContract := CreateContract{
+			destionationId: destinationId,
+			transferByteCount: standardTransferByteCount,
+			previosContractId: previosContractId,
+		}
+		SEND(createContract)
+}
+
+
+func Close(contract *Contract) {
+	// mark the contract as closed. it will wait for all acked
+}
+
+func Complete(contract *Complete) {
+	// send the CloseContract
+}
+
+
+type Contract struct {
+	
+	contractId *ULID
+	transferByteCount uint64
+
+	unackedBytes uint64
+	ackedBytes uint64
+
+}
+func (self *Contract) updateContract(byteCount int) {
+	// add to the acked bytes
+
+}
+func (self *Contract) updateContractUnacked(byteCount int) {
+	// remove from acked bytes, add to unacked bytes
+}
+
+
+
 
 
