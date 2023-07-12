@@ -16,6 +16,7 @@ message TransferFrame {
     Frame frame = 4;
 }
 
+
 // this is the minimal subset of `TransferFrame` used when making a routing decision
 message FilteredTransferFrame {
     // ulid
@@ -29,7 +30,7 @@ message FilteredTransferFrame {
 message Pack {
     // ulid
     bytes message_id = 1;
-    uint64 sequence_number = 2;
+    uint64 sequence_id = 2;
 
     repeated Frame frames = 3;
 }
@@ -80,6 +81,7 @@ message CreateContract {
 }
 // TODO acls are applied on create contract
 // TODO forward from source_id to destination_id is allowed if there is at least one active contract between the two
+// TODO when the network supports ip/subnet routing, add destination_ip for a contract
 
 
 enum ContractError {
@@ -113,7 +115,19 @@ message CloseContract {
 
     bytes contract_id = 1;
     uint64 acked_byte_count = 2;
+    // audit data
     uint64 unacked_byte_count = 3;
+    // audit data
+    uint64 resend_byte_count = 3;
 
+
+}
+
+// peer auditing
+// the acl will block contracts between between two parties with bad audits of each other
+message PeerAudit {
+    source_id
+    discarded_byte_count
+    bad_contract_count
 }
 

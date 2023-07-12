@@ -9,11 +9,12 @@ option go_package = "bringyour.com/protocol";
 enum MessageType {
     PACK = 0;
     PACK_RESET_SEQUENCE = 1;
-    ACK = 2;
-    IP_PACKET = 3;
+    PACK_CONTRACT = 2;
+    ACK = 3;
+    IP_PACKET = 4;
 }
 
 message Frame {
     MessageType message_type = 1;
-    bytes message_bytes = 2;
+    optional bytes message_bytes = 2;
 }
