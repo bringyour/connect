@@ -182,10 +182,10 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 					continue
 				}
 				frame = transferFrame.getFrame()
-				if !self.routeManager.Verify(sourceId, frame.GetMessageBytes(), transferFrame.GetMessageHmac()) {
-					// bad signature
-					continue
-				}
+				// if !self.routeManager.Verify(sourceId, frame.GetMessageBytes(), transferFrame.GetMessageHmac()) {
+				// 	// bad signature
+				// 	continue
+				// }
 				switch frame.GetMessageType() {
 				case ACK:
 					ack := &Ack{}
@@ -439,7 +439,7 @@ send := func(multiRouteWriter, sendPack sendPack) {
 	}
 
 	packBytes := ENCODE(pack)
-	packHmac := routeManager.sign(packBytes)
+	// packHmac := routeManager.sign(packBytes)
 
 	transferFrame := protocol.TransferFrame{
 		destinationId: destinationId,
@@ -487,20 +487,22 @@ func (self *SendSequence) run() {
 		}
 
 		// drain the channel
-		for {
-			select {
-			case message, ok <- message:
-				if !ok {
+		func() {
+			for {
+				select {
+				case message, ok <- message:
+					if !ok {
+						return
+					}
+					switch v := message.(type) {
+					case SendPack:
+						v.ackCallback(nil)
+					}
+				default:
 					return
 				}
-				switch v := message.(type) {
-				case SendPack:
-					v.ackCallback(nil)
-				}
-			default:
-				return
 			}
-		}
+		}()
 	}()
 
 
@@ -715,8 +717,6 @@ type ReceivePack struct {
 	receiveCallback ReceiveFunction
 }
 
-// FIXME attach a contract tracker to the send/receive buffer
-
 type ReceiveBuffer struct {
 	ctx *context.Context
 	contractManager *ContractManager
@@ -751,41 +751,37 @@ func (self *ReceiveBuffer) pack(receivePack *ReceivePack) {
 		}
 	}
 
-	// FIXME send->receive
-
-	initSendSequence := func()(*SendSequence) {
-		sendSequence, ok := sendSequences[sendPack.destinationId]
+	initReceiveSequence := func()(*ReceiveSequence) {
+		receiveSequence, ok := receiveSequences[receivePack.sourceId]
 		if ok {
-			return sendSequence
+			return receiveSequence
 		}
-		sendSequence = NewSendSequence(ctx, routeManager, contractManager, destinationId)
-		sendSequences[sendPack.destinationId] = sendSequence
+		receiveSequence = NewReceiveSequence(ctx, routeManager, contractManager, sourceId)
+		receiveSequences[receivePack.sourceId] = receiveSequence
 		go func() {
-			sendSequence.run(multiRouteWriter, contractNotifier)
+			receiveSequence.run(multiRouteWriter, contractNotifier)
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
 			// clean up
-			if sendSequence == sendSequences[sendPack.destinationId] {
-				delete(sendSequences, sendPack.destinationId)
+			if receiveSequence == receiveSequences[receivePack.sourceId] {
+				delete(receiveSequences, receivePack.sourceId)
 			}
 		}
-		return sendSequence
+		return receiveSequence
 	}
 
 	func() {
 		defer func() {
 			if err := recover(); err != nil {
-				// send sequence was closed
-				delete(sendSequences, sendPack.destinationId)
-				initSendSequence().messages <- sendPack
+				// receive sequence was closed
+				delete(receiveSequences, receivePack.sourceId)
+				initReceiveSequence().messages <- receivePack
 			}
 		}()
-		initSendSequence().messages <- sendPack
+		initReceiveSequence().messages <- receivePack
 	}
-
 }
-
 
 func (self *ReceiveBuffer) Close() {
 	self.mutex.Lock()
@@ -799,9 +795,16 @@ func (self *ReceiveBuffer) Close() {
 
 
 
+
 type ReceiveSequence struct {
 
 	receiveQueue *ReceiveQueue
+
+}
+
+func (self *ReceiveSequence) ack(messageId *ulid.ULID) {
+
+	
 
 }
 
@@ -812,8 +815,37 @@ func (self *ReceiveSequence) run() {
 	defer func() {
 		self.Close()
 
-		// FIXME for any send item in the receive queue
-		// peerAudit.updateDiscardedBytes(len(frameBytes))
+		// close contract
+		if receiveContract != nil {
+			contractManager.Complete(receiveContract.contractId, receiveContract.ackedByteCount, receiveContract.unackedByteCount)
+		}
+
+		// drain the buffer
+		for _, receiveItem := range pq {
+			if sendItem.ackCallback != nil {
+				send.ackCallback(nil)
+			}
+			peerAudit.updateDiscardedBytes(len(frameBytes))
+		}
+
+		// drain the channel
+		func() {
+			for {
+				select {
+				case message, ok <- message:
+					if !ok {
+						return
+					}
+					switch v := message.(type) {
+					case SendPack:
+						v.ackCallback(nil)
+						peerAudit.updateDiscardedBytes(len(frameBytes))
+					}
+				default:
+					return
+				}
+			}
+		}()
 
 		// FIXME submit peer audit
 		routeManager.CompletePeerAudit(peerAudit)
@@ -822,34 +854,6 @@ func (self *ReceiveSequence) run() {
 			// this will remove any direct connections between the two peers
 			// forces the platform to reauth any fast track connections
 			routeManager.DowngradeConnection(sourceId)
-		}
-
-		// close contract
-		for _, sendContract := range self.openContracts {
-			contractManager.Complete(sendContract.contractId, sendContract.ackedByteCount, sendContract.unackedByteCount)
-		}
-
-		// drain the buffer
-		for _, sendItem := range pq {
-			if sendItem.ackCallback != nil {
-				send.ackCallback(nil)
-			}
-		}
-
-		// drain the channel
-		for {
-			select {
-			case message, ok <- message:
-				if !ok {
-					return
-				}
-				switch v := message.(type) {
-				case SendPack:
-					v.ackCallback(nil)
-				}
-			default:
-				return
-			}
 		}
 	}()
 
@@ -887,10 +891,6 @@ func (self *ReceiveSequence) run() {
 
 			nextSequenceId += 1
 
-			// if CreateContractResult, add contract to contract manager
-
-
-
 			// register contracts
 			for _, frames := range pack.Frames {
 				if CONTRACT {
@@ -918,56 +918,43 @@ func (self *ReceiveSequence) run() {
 				// no contract
 				// close the sequence
 				receiveCallback(false)
+				peerAudit.updateDiscardedBytes(len(receiveItem.frameBytes))
 				return
 			}
 		}
 
 
 		select {
-		case receiveFrame <- channel:
-			// resetSequence := false
-			// for _, frame := range pack.Frames {
-			// 	if frame.MessageType == MessageType.PACK_RESET_SEQUENCE {
-			// 		// resetSequence = true
+		case message <- messages:
+			switch v := message.(type) {
+			case ReceivePack:
+				if nextSequenceId <= pack.seq {
+					// replace with the latest value
+					if receiveItem := receiveQueue.Remove(sequenceId); receiveItem != nil {
+						peerAudit.updateDiscardedBytes(len(receiveItem.frameBytes))
+					}
 
-			// 		nextSequenceId = MESSAGE_SEQ_ID
-			// 		break
-			// 	}
-			// }
-
-
-			// if full, drop the pack. the sender will retransmit later
-			// reject if the source_id of the contract does not match the source_id of the pack
-
-
-
-			// look for PACK_RESET_SEQUENCE
-
-
-			if pack.seq < nextSequenceId {
-				// already received
-				receiveContract.updateResend(len(frameBytes))
-				// check the abuse limits
-				if receiveContract.threshold * resendAbuseMultiple <= receiveContract.resendByteCount {
-					// close the sequence
-					// the network acl will check abuse statistics and prevent future contracts from opening
-					return
+					// store only up to a max size in the receive queue
+					if receiveQueue.ByteSize() + len(frameBytes) < receiveQueueMaxByteCount {
+						// add to the receiveQueue
+						receiveQueue.Push(receivePack)
+					} else {
+						// drop the message
+						peerAudit.updateDiscardedBytes(len(frameBytes))
+					}
 				} else {
-					ack(multiRouteWriter, messageId)
-				}
-			} else {
-				// replace with the latest value
-				if receiveItem := receiveQueue.Remove(sequenceId); receiveItem != nil {
-					peerAudit.updateDiscardedBytes(len(receiveItem.frameBytes))
-				}
-
-				// store only up to a max size in the receive queue
-				if receiveQueue.ByteSize() + len(frameBytes) < receiveQueueMaxByteCount {
-					// add to the receiveQueue
-					receiveQueue.Push(receivePack)
-				} else {
-					// drop the message
-					peerAudit.updateDiscardedBytes(len(frameBytes))
+					// already received
+					peerAudit.updateResendBytes(len(frameBytes))
+					// check the abuse limits
+					resendByteCountAbuse := peerAudit.sendByteCount * resendAbuseMultiple <= peerAudit.resendByteCount
+					resedCountAbuse := peerAudit.sendCount * resendAbuseMultiple <= peerAudit.resendCount
+					if resendByteCountAbuse || resendCountAbuse {
+						// close the sequence
+						// the network acl will check abuse statistics and prevent future contracts from opening
+						return
+					} else {
+						ack(multiRouteWriter, messageId)
+					}
 				}
 			}
 		case time.After(timeout):
