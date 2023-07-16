@@ -16,5 +16,5 @@ enum MessageType {
 
 message Frame {
     MessageType message_type = 1;
-    optional bytes message_bytes = 2;
+    bytes message_bytes = 2;
 }

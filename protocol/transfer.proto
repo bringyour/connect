@@ -34,8 +34,12 @@ message Pack {
     // ulid
     bytes message_id = 1;
     uint64 sequence_id = 2;
+    // this marks the first message in the sender's sequence
+    // it means that any message with an earlier sequence_id won't arrive
+    // and is used when a receiver is recreated with zero state
+    bool first = 3;
 
-    repeated Frame frames = 3;
+    repeated Frame frames = 4;
 }
 
 
