@@ -2,7 +2,7 @@ package connect
 
 import (
 	
-	"bringyour.com/protocol"
+	// "bringyour.com/protocol"
 )
 
 // a responsive document that the connect lib and client is built on

@@ -6,6 +6,12 @@ import (
 	"sync"
 	"errors"
 	"container/heap"
+	"sort"
+	"math"
+	"math/rand"
+	"reflect"
+	"crypto/hmac"
+	"crypto/sha256"
 
 	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
@@ -78,8 +84,8 @@ type Client struct {
 
 	sendPacks chan *SendPack
 
-	receiveCallbacks CallbackList[ReceiveFunction]
-	forwardCallbacks CallbackList[ForwardFunction]
+	receiveCallbacks *CallbackList[ReceiveFunction]
+	forwardCallbacks *CallbackList[ForwardFunction]
 }
 
 func NewClient(clientId ulid.ULID, ctx context.Context, sendBufferSize int) *Client {
@@ -89,6 +95,8 @@ func NewClient(clientId ulid.ULID, ctx context.Context, sendBufferSize int) *Cli
 		sendBufferSettings: DefaultSendBufferSettings(),
 		receiveBufferSettings: DefaultReceiveBufferSettings(),
 		sendPacks: make(chan *SendPack, sendBufferSize),
+		receiveCallbacks: NewCallbackList[ReceiveFunction](),
+		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
 }
 
@@ -434,17 +442,17 @@ type SendSequence struct {
 
 	sendBufferSettings *SendBufferSettings
 
-	sendContract *SequenceContract
-	sendContracts map[ulid.ULID]*SequenceContract
+	sendContract *sequenceContract
+	sendContracts map[ulid.ULID]*sequenceContract
 
 	packs chan *SendPack
 	acks chan *protocol.Ack
 
-	resendQueue *ResendQueue
-	sendItemsSequence []*SendItem
+	resendQueue *resendQueue
+	sendItems []*sendItem
 	nextSequenceId uint64
 
-	idleCondition *SequenceIdleCondition
+	idleCondition *sequenceIdleCondition
 
 	multiRouteWriter MultiRouteWriter
 }
@@ -467,22 +475,22 @@ func NewSendSequence(
 		destinationId: destinationId,
 		sendBufferSettings: sendBufferSettings,
 		sendContract: nil,
-		sendContracts: map[ulid.ULID]*SequenceContract{},
+		sendContracts: map[ulid.ULID]*sequenceContract{},
 		packs: make(chan *SendPack, sendBufferSettings.SequenceBufferSize),
 		acks: make(chan *protocol.Ack, sendBufferSettings.SequenceBufferSize),
-		resendQueue: NewResendQueue(),
-		sendItemsSequence: []*SendItem{},
+		resendQueue: newResendQueue(),
+		sendItems: []*sendItem{},
 		nextSequenceId: 0,
-		idleCondition: NewSequenceIdleCondition(),
+		idleCondition: newSequenceIdleCondition(),
 	}
 }
 
 func (self *SendSequence) Pack(sendPack *SendPack) (success bool) {
-	if !self.idleCondition.UpdateOpen() {
+	if !self.idleCondition.updateOpen() {
 		success = false
 		return
 	}
-	defer self.idleCondition.UpdateClose()
+	defer self.idleCondition.updateClose()
 	defer func() {
 		// this means there was some error in sequence processing
 		if err := recover(); err != nil {
@@ -495,11 +503,11 @@ func (self *SendSequence) Pack(sendPack *SendPack) (success bool) {
 }
 
 func (self *SendSequence) Ack(ack *protocol.Ack) (success bool) {
-	if !self.idleCondition.UpdateOpen() {
+	if !self.idleCondition.updateOpen() {
 		success = false
 		return
 	}
-	defer self.idleCondition.UpdateClose()
+	defer self.idleCondition.updateClose()
 	defer func() {
 		// this means there was some error in sequence processing
 		if err := recover(); err != nil {
@@ -521,15 +529,15 @@ func (self *SendSequence) Run() {
 		// close contract
 		for _, sendContract := range self.sendContracts {
 			self.contractManager.Complete(
-				sendContract.ContractId,
-				sendContract.AckedByteCount,
-				sendContract.UnackedByteCount,
+				sendContract.contractId,
+				sendContract.ackedByteCount,
+				sendContract.unackedByteCount,
 			)
 		}
 
 		// drain the buffer
-		for _, sendItem := range self.resendQueue.orderedSendItems {
-			sendItem.ackCallback(errors.New("Closed"))
+		for _, item := range self.resendQueue.orderedItems {
+			item.ackCallback(errors.New("Closed"))
 		}
 
 		// drain the packs
@@ -559,9 +567,9 @@ func (self *SendSequence) Run() {
 			timeout = self.sendBufferSettings.AckTimeout
 
 			for 0 < self.resendQueue.Len() {
-				sendItem := self.resendQueue.RemoveFirst()
+				item := self.resendQueue.removeFirst()
 
-				itemAckTimeout := sendItem.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
+				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
 
 				if itemAckTimeout <= 0 {
 					// message took too long to ack
@@ -569,10 +577,10 @@ func (self *SendSequence) Run() {
 					return
 				}
 
-				if sendTime.Before(sendItem.resendTime) {
+				if sendTime.Before(item.resendTime) {
 					// put back on the queue to send later
-					self.resendQueue.Add(sendItem)
-					itemResendTimeout := sendItem.resendTime.Sub(sendTime)
+					self.resendQueue.add(item)
+					itemResendTimeout := item.resendTime.Sub(sendTime)
 					if itemResendTimeout < timeout {
 						timeout = itemResendTimeout
 					}
@@ -584,31 +592,31 @@ func (self *SendSequence) Run() {
 
 				// resend
 				var transferFrameBytes []byte
-				if self.sendItemsSequence[0].sequenceId == sendItem.sequenceId && !sendItem.head {
+				if self.sendItems[0].sequenceId == item.sequenceId && !item.head {
 					// set `first=true`
-					transferFrameBytes = self.setHead(sendItem.transferFrameBytes)
+					transferFrameBytes = self.setHead(item.transferFrameBytes)
 					
 				} else {
-					transferFrameBytes = sendItem.transferFrameBytes
+					transferFrameBytes = item.transferFrameBytes
 				}
 				err := self.multiRouteWriter.Write(self.ctx, transferFrameBytes, -1)
 				if err != nil {
 					// close sequence
 					return
 				}
-				sendItem.sendCount += 1
+				item.sendCount += 1
 				// linear backoff
-				itemResendTimeout := self.sendBufferSettings.ResendInterval * time.Duration(sendItem.sendCount)
+				itemResendTimeout := self.sendBufferSettings.ResendInterval * time.Duration(item.sendCount)
 				if itemResendTimeout < itemAckTimeout {
-					sendItem.resendTime = sendTime.Add(itemResendTimeout)
+					item.resendTime = sendTime.Add(itemResendTimeout)
 				} else {
-					sendItem.resendTime = sendTime.Add(itemAckTimeout)
+					item.resendTime = sendTime.Add(itemAckTimeout)
 				}
-				self.resendQueue.Add(sendItem)
+				self.resendQueue.add(item)
 			}
 		}
 
-		if self.sendBufferSettings.ResendQueueMaxByteCount <= self.resendQueue.ByteCount() {
+		if self.sendBufferSettings.ResendQueueMaxByteCount <= self.resendQueue.byteCount {
 			// wait for acks
 			select {
 			case <- self.ctx.Done():
@@ -625,7 +633,7 @@ func (self *SendSequence) Run() {
 				// resend
 			}
 		} else {
-			checkpointId := self.idleCondition.Checkpoint()
+			checkpointId := self.idleCondition.checkpoint()
 			select {
 			case <- self.ctx.Done():
 				return
@@ -658,7 +666,7 @@ func (self *SendSequence) Run() {
 			case <- time.After(timeout):
 				if 0 == self.resendQueue.Len() {
 					// idle timeout
-					if self.idleCondition.Close(checkpointId) {
+					if self.idleCondition.close(checkpointId) {
 						// close the sequence
 						return
 					}
@@ -676,13 +684,13 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 		return true
 	}
 	if self.sendContract != nil {
-		if self.sendContract.Update(messageByteCount) {
+		if self.sendContract.update(messageByteCount) {
 			return true
 		} else {
 			self.contractManager.Complete(
-				self.sendContract.ContractId,
-				self.sendContract.AckedByteCount,
-				self.sendContract.UnackedByteCount,
+				self.sendContract.contractId,
+				self.sendContract.ackedByteCount,
+				self.sendContract.unackedByteCount,
 			)
 			self.sendContract = nil
 		}
@@ -700,7 +708,7 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 	}
 
 	next := func(contract *protocol.Contract)(bool) {
-		sendContract, err := NewSequenceContract(contract)
+		sendContract, err := newSequenceContract(contract)
 		if err != nil {
 			// malformed, drop
 			return false
@@ -716,9 +724,9 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 			panic("Bad estimate for contract max size could result in infinite contract retries.")
 		}
 
-		if sendContract.Update(messageByteCount + len(contractMessageBytes)) {
+		if sendContract.update(messageByteCount + len(contractMessageBytes)) {
 			self.sendContract = sendContract
-			self.sendContracts[sendContract.ContractId] = sendContract
+			self.sendContracts[sendContract.contractId] = sendContract
 
 			// append the contract to the sequence
 			err := self.send(&protocol.Frame{
@@ -729,14 +737,14 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 		} else {
 			// this contract doesn't fit the message
 			// just close it since it was never send to the other side
-			self.contractManager.Complete(sendContract.ContractId, 0, 0)
+			self.contractManager.Complete(sendContract.contractId, 0, 0)
 			return false
 		}
 	}
 
 	endTime := time.Now().Add(self.sendBufferSettings.ContractTimeout)
 	for {
-		if nextContract, err := self.contractManager.TakeContract(self.ctx, self.destinationId, 0); err != nil {
+		if nextContract := self.contractManager.TakeContract(self.ctx, self.destinationId, 0); nextContract != nil {
 			// async queue up the next contract
 			self.contractManager.CreateContract(self.destinationId)
 			if next(nextContract) {
@@ -755,7 +763,7 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 			timeout = self.sendBufferSettings.ContractRetryInterval
 		}
 
-		if nextContract, err := self.contractManager.TakeContract(self.ctx, self.destinationId, timeout); err != nil {
+		if nextContract := self.contractManager.TakeContract(self.ctx, self.destinationId, timeout); nextContract != nil {
 			// async queue up the next contract
 			self.contractManager.CreateContract(self.destinationId)
 			if next(nextContract) {
@@ -769,8 +777,8 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) e
 	sendTime := time.Now()
 	messageId := ulid.Make()
 	sequenceId := self.nextSequenceId
-	contractId := self.sendContract.ContractId
-	head := 0 == len(self.sendItemsSequence)
+	contractId := self.sendContract.contractId
+	head := 0 == len(self.sendItems)
 
 	self.nextSequenceId += 1
 
@@ -794,7 +802,7 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) e
 
 	transferFrameBytes, _ := proto.Marshal(transferFrame)
 
-	sendItem := &SendItem {
+	item := &sendItem{
 		messageId: messageId,
 		contractId: contractId,
 		sequenceId: sequenceId,
@@ -806,8 +814,8 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) e
 		ackCallback: ackCallback,
 	}
 
-	self.sendItemsSequence = append(self.sendItemsSequence, sendItem)
-	self.resendQueue.Add(sendItem)
+	self.sendItems = append(self.sendItems, item)
+	self.resendQueue.add(item)
 
 	return self.multiRouteWriter.Write(self.ctx, transferFrameBytes, -1)
 }
@@ -833,33 +841,33 @@ func (self *SendSequence) setHead(transferFrameBytes []byte) []byte {
 }
 
 func (self *SendSequence) receiveAck(messageId ulid.ULID) {
-	sendItem, ok := self.resendQueue.sendItems[messageId]
+	item, ok := self.resendQueue.messageItems[messageId]
 	if !ok {
 		// message not pending ack
 		return
 	}
 	// implicitly ack all earlier items in the sequence
 	i := 0
-	for ; i < len(self.sendItemsSequence); i += 1 {
-		implicitSendItem := self.sendItemsSequence[i]
-		if sendItem.sequenceId < implicitSendItem.sequenceId {
+	for ; i < len(self.sendItems); i += 1 {
+		implicitItem := self.sendItems[i]
+		if item.sequenceId < implicitItem.sequenceId {
 			break
 		}
-		self.resendQueue.Remove(implicitSendItem.messageId)
-		implicitSendItem.ackCallback(nil)
+		self.resendQueue.remove(implicitItem.messageId)
+		implicitItem.ackCallback(nil)
 
-		sendContract := self.sendContracts[implicitSendItem.contractId]
-		sendContract.Ack(len(implicitSendItem.transferFrameBytes))
-		if sendContract.UnackedByteCount == 0 {
+		sendContract := self.sendContracts[implicitItem.contractId]
+		sendContract.ack(len(implicitItem.transferFrameBytes))
+		if sendContract.unackedByteCount == 0 {
 			self.contractManager.Complete(
-				sendContract.ContractId,
-				sendContract.AckedByteCount,
-				sendContract.UnackedByteCount,
+				sendContract.contractId,
+				sendContract.ackedByteCount,
+				sendContract.unackedByteCount,
 			)
 		}
-		self.sendItemsSequence[i] = nil
+		self.sendItems[i] = nil
 	}
-	self.sendItemsSequence = self.sendItemsSequence[i:]
+	self.sendItems = self.sendItems[i:]
 }
 
 func (self *SendSequence) Close() {
@@ -867,7 +875,7 @@ func (self *SendSequence) Close() {
 }
 
 
-type SendItem struct {
+type sendItem struct {
 	messageId ulid.ULID
 	contractId ulid.ULID
 	sequenceId uint64
@@ -883,88 +891,85 @@ type SendItem struct {
 }
 
 
-type ResendQueue struct {
-	orderedSendItems []*SendItem
-	sendItems map[ulid.ULID]*SendItem
+type resendQueue struct {
+	orderedItems []*sendItem
+	// message_id -> item
+	messageItems map[ulid.ULID]*sendItem
 	byteCount int
 }
 
-func NewResendQueue() *ResendQueue {
-	resendQueue := &ResendQueue{
-		orderedSendItems: []*SendItem{},
-		sendItems: map[ulid.ULID]*SendItem{},
+func newResendQueue() *resendQueue {
+	resendQueue := &resendQueue{
+		orderedItems: []*sendItem{},
+		messageItems: map[ulid.ULID]*sendItem{},
 		byteCount: 0,
 	}
 	heap.Init(resendQueue)
 	return resendQueue
 }
 
-func (self *ResendQueue) Add(sendItem *SendItem) {
-	self.sendItems[sendItem.messageId] = sendItem
-	heap.Push(self, sendItem)
-	self.byteCount += len(sendItem.transferFrameBytes)
+func (self *resendQueue) add(item *sendItem) {
+	self.messageItems[item.messageId] = item
+	heap.Push(self, item)
+	self.byteCount += len(item.transferFrameBytes)
 }
 
-func (self *ResendQueue) Remove(messageId ulid.ULID) *SendItem {
-	sendItem, ok := self.sendItems[messageId]
+func (self *resendQueue) remove(messageId ulid.ULID) *sendItem {
+	item, ok := self.messageItems[messageId]
 	if !ok {
 		return nil
 	}
-	delete(self.sendItems, messageId)
-	heap.Remove(self, sendItem.heapIndex)
-	self.byteCount -= len(sendItem.transferFrameBytes)
-	return sendItem
+	delete(self.messageItems, messageId)
+	heap.Remove(self, item.heapIndex)
+	self.byteCount -= len(item.transferFrameBytes)
+	return item
 }
 
-func (self *ResendQueue) RemoveFirst() *SendItem {
+func (self *resendQueue) removeFirst() *sendItem {
 	first := heap.Pop(self)
 	if first == nil {
 		return nil
 	}
-	sendItem := first.(*SendItem)
-	delete(self.sendItems, sendItem.messageId)
-	self.byteCount -= len(sendItem.transferFrameBytes)
-	return sendItem
-}
-
-func (self *ResendQueue) ByteCount() int {
-	return self.byteCount
+	item := first.(*sendItem)
+	delete(self.messageItems, item.messageId)
+	self.byteCount -= len(item.transferFrameBytes)
+	return item
 }
 
 // heap.Interface
 
-func (self *ResendQueue) Push(x any) {
-	sendItem := x.(*SendItem)
-	sendItem.heapIndex = len(self.orderedSendItems)
-	self.orderedSendItems = append(self.orderedSendItems, sendItem)
+func (self *resendQueue) Push(x any) {
+	item := x.(*sendItem)
+	item.heapIndex = len(self.orderedItems)
+	self.orderedItems = append(self.orderedItems, item)
 }
 
-func (self *ResendQueue) Pop() any {
-	n := len(self.orderedSendItems)
+func (self *resendQueue) Pop() any {
+	n := len(self.orderedItems)
 	i := n - 1
-	sendItem := self.orderedSendItems[i]
-	self.orderedSendItems[i] = nil
-	self.orderedSendItems = self.orderedSendItems[:n-1]
-	return sendItem
+	item := self.orderedItems[i]
+	self.orderedItems[i] = nil
+	self.orderedItems = self.orderedItems[:n-1]
+	return item
 }
 
 // sort.Interface
 
-func (self *ResendQueue) Len() int {
-	return len(self.orderedSendItems)
+func (self *resendQueue) Len() int {
+	return len(self.orderedItems)
 }
 
-func (self *ResendQueue) Less(i int, j int) bool {
-	return self.orderedSendItems[i].resendTime.Before(self.orderedSendItems[j].resendTime)
+func (self *resendQueue) Less(i int, j int) bool {
+	return self.orderedItems[i].resendTime.Before(self.orderedItems[j].resendTime)
 }
 
-func (self *ResendQueue) Swap(i int, j int) {
-	a := self.orderedSendItems[i]
-	b := self.orderedSendItems[j]
+func (self *resendQueue) Swap(i int, j int) {
+	a := self.orderedItems[i]
+	b := self.orderedItems[j]
 	b.heapIndex = i
-	self.orderedSendItems[i] = b
+	self.orderedItems[i] = b
 	a.heapIndex = j
-	self.orderedSendItems[j] = a
+	self.orderedItems[j] = a
 }
 
 
@@ -1093,14 +1098,14 @@ type ReceiveSequence struct {
 
 	receiveBufferSettings *ReceiveBufferSettings
 
-	receiveContract *SequenceContract
+	receiveContract *sequenceContract
 
 	packs chan *ReceivePack
 
-	receiveQueue *ReceiveQueue
+	receiveQueue *receiveQueue
 	nextSequenceId uint64
 
-	idleCondition *SequenceIdleCondition
+	idleCondition *sequenceIdleCondition
 
 	multiRouteWriter MultiRouteWriter
 }
@@ -1123,18 +1128,18 @@ func NewReceiveSequence(
 		receiveBufferSettings: receiveBufferSettings,
 		receiveContract: nil,
 		packs: make(chan *ReceivePack, receiveBufferSettings.SequenceBufferSize),
-		receiveQueue: NewReceiveQueue(),
+		receiveQueue: newReceiveQueue(),
 		nextSequenceId: 0,
-		idleCondition: NewSequenceIdleCondition(),
+		idleCondition: newSequenceIdleCondition(),
 	}
 }
 
 func (self *ReceiveSequence) Pack(receivePack *ReceivePack) (success bool) {
-	if !self.idleCondition.UpdateOpen() {
+	if !self.idleCondition.updateOpen() {
 		success = false
 		return
 	}
-	defer self.idleCondition.UpdateClose()
+	defer self.idleCondition.updateClose()
 	defer func() {
 		// this means there was some error in sequence processing
 		if err := recover(); err != nil {
@@ -1161,16 +1166,16 @@ func (self *ReceiveSequence) Run() {
 		// close contract
 		if self.receiveContract != nil {
 			self.contractManager.Complete(
-				self.receiveContract.ContractId,
-				self.receiveContract.AckedByteCount,
-				self.receiveContract.UnackedByteCount,
+				self.receiveContract.contractId,
+				self.receiveContract.ackedByteCount,
+				self.receiveContract.unackedByteCount,
 			)
 		}
 
 		// drain the buffer
-		for _, receiveItem := range self.receiveQueue.orderedReceiveItems {
+		for _, item := range self.receiveQueue.orderedItems {
 			peerAudit.Update(func(a *PeerAudit) {
-				a.discard(receiveItem.messageByteCount)
+				a.discard(item.messageByteCount)
 			})
 		}
 
@@ -1204,22 +1209,22 @@ func (self *ReceiveSequence) Run() {
 		} else {
 			timeout = self.receiveBufferSettings.GapTimeout
 			for 0 < self.receiveQueue.Len() {
-				receiveItem := self.receiveQueue.RemoveFirst()
+				item := self.receiveQueue.removeFirst()
 
-				itemGapTimeout := receiveItem.receiveTime.Add(self.receiveBufferSettings.GapTimeout).Sub(receiveTime)
+				itemGapTimeout := item.receiveTime.Add(self.receiveBufferSettings.GapTimeout).Sub(receiveTime)
 				if itemGapTimeout < 0 {
 					// did not receive a preceding message in time
 					// close sequence
 					return
 				}
 
-				if receiveItem.head && self.nextSequenceId < receiveItem.sequenceId {
+				if item.head && self.nextSequenceId < item.sequenceId {
 					// the sender has indicated this item is first in the sequence
 					// this would happen if the receiver lost state (e.g. recreated from zero state)
-					self.nextSequenceId = receiveItem.sequenceId
+					self.nextSequenceId = item.sequenceId
 				}
 
-				if receiveItem.sequenceId != self.nextSequenceId {
+				if item.sequenceId != self.nextSequenceId {
 					if itemGapTimeout < timeout {
 						timeout = itemGapTimeout
 					}
@@ -1230,14 +1235,14 @@ func (self *ReceiveSequence) Run() {
 				self.nextSequenceId += 1
 
 				// register contracts
-				for _, frame := range receiveItem.frames {
+				for _, frame := range item.frames {
 					if frame.MessageType == protocol.MessageType_CONTRACT {
 						// close out the previous contract
 						if self.receiveContract != nil {
 							self.contractManager.Complete(
-								self.receiveContract.ContractId,
-								self.receiveContract.AckedByteCount,
-								self.receiveContract.UnackedByteCount,
+								self.receiveContract.contractId,
+								self.receiveContract.ackedByteCount,
+								self.receiveContract.unackedByteCount,
 							)
 							self.receiveContract = nil
 						}
@@ -1248,7 +1253,7 @@ func (self *ReceiveSequence) Run() {
 							// bad message
 							// close sequence
 							peerAudit.Update(func(a *PeerAudit) {
-								a.badMessage(receiveItem.messageByteCount)
+								a.badMessage(item.messageByteCount)
 							})
 							return
 						}
@@ -1261,44 +1266,44 @@ func (self *ReceiveSequence) Run() {
 							// bad contract
 							// close sequence
 							peerAudit.Update(func(a *PeerAudit) {
-								a.badContract(receiveItem.messageByteCount)
+								a.badContract(item.messageByteCount)
 							})
 							return
 						}
 
-						self.receiveContract, err = NewSequenceContract(&contract)
+						self.receiveContract, err = newSequenceContract(&contract)
 						if err != nil {
 							// bad contract
 							// close sequence
 							peerAudit.Update(func(a *PeerAudit) {
-								a.badContract(receiveItem.messageByteCount)
+								a.badContract(item.messageByteCount)
 							})
 							return
 						}
 					}
 				}
-				if self.updateContract(receiveItem.messageByteCount) {
+				if self.updateContract(item.messageByteCount) {
 					peerAudit.Update(func(a *PeerAudit) {
-						a.received(receiveItem.messageByteCount)
+						a.received(item.messageByteCount)
 					})
-					receiveItem.receiveCallback(
+					item.receiveCallback(
 						self.sourceId,
-						receiveItem.frames,
-						self.receiveContract.ProvideMode,
+						item.frames,
+						self.receiveContract.provideMode,
 					)
-					self.ack(receiveItem.messageId)
+					self.ack(item.messageId)
 				} else {
 					// no contract
 					// close the sequence
 					peerAudit.Update(func(a *PeerAudit) {
-						a.discard(receiveItem.messageByteCount)
+						a.discard(item.messageByteCount)
 					})
 					return
 				}
 			}
 		}
 
-		checkpointId := self.idleCondition.Checkpoint()
+		checkpointId := self.idleCondition.checkpoint()
 		select {
 		case <- self.ctx.Done():
 			return
@@ -1323,14 +1328,14 @@ func (self *ReceiveSequence) Run() {
 			}
 			if self.nextSequenceId <= receivePack.Pack.SequenceId {
 				// replace with the latest value (check both messageId and sequenceId)
-				if receiveItem := self.receiveQueue.Remove(messageId); receiveItem != nil {
+				if item := self.receiveQueue.remove(messageId); item != nil {
 					peerAudit.Update(func(a *PeerAudit) {
-						a.resend(receiveItem.messageByteCount)
+						a.resend(item.messageByteCount)
 					})
 				}
-				if receiveItem := self.receiveQueue.RemoveBySequenceId(receivePack.Pack.SequenceId); receiveItem != nil {
+				if item := self.receiveQueue.removeBySequenceId(receivePack.Pack.SequenceId); item != nil {
 					peerAudit.Update(func(a *PeerAudit) {
-						a.resend(receiveItem.messageByteCount)
+						a.resend(item.messageByteCount)
 					})
 				}
 
@@ -1340,14 +1345,14 @@ func (self *ReceiveSequence) Run() {
 					if 0 == self.receiveQueue.Len() {
 						return true
 					}
-					return self.receiveQueue.ByteCount() + byteCount < self.receiveBufferSettings.ReceiveQueueMaxByteCount
+					return self.receiveQueue.byteCount + byteCount < self.receiveBufferSettings.ReceiveQueueMaxByteCount
 				}
 				
 				// remove later items to fit
 				for !canBuffer(receivePack.MessageByteCount) {
-					lastReceiveItem := self.receiveQueue.PeekLast()
-					if receivePack.Pack.SequenceId < lastReceiveItem.sequenceId {
-						self.receiveQueue.Remove(lastReceiveItem.messageId)
+					lastItem := self.receiveQueue.peekLast()
+					if receivePack.Pack.SequenceId < lastItem.sequenceId {
+						self.receiveQueue.remove(lastItem.messageId)
 					}
 				}
 
@@ -1378,7 +1383,7 @@ func (self *ReceiveSequence) Run() {
 		case <- time.After(timeout):
 			if 0 == self.receiveQueue.Len() {
 				// idle timeout
-				if self.idleCondition.Close(checkpointId) {
+				if self.idleCondition.close(checkpointId) {
 					// close the sequence
 					return
 				}
@@ -1389,10 +1394,10 @@ func (self *ReceiveSequence) Run() {
 		// check the resend abuse limits
 		// resends can appear normal but waste bandwidth
 		abuse := false
-		self.routeManager.receiverPeerAudit(self.sourceId, func(a *ReceiverPeerAudit) {
-			if self.receiveBufferSettings.ResendAbuseThreshold <= a.resendCount {
-				resendByteCountAbuse := a.sendByteCount * self.receiveBufferSettings.ResendAbuseMultiple <= a.resendByteCount
-				resedCountAbuse := a.sendCount * self.receiveBufferSettings.ResendAbuseMultiple <= a.resendCount
+		peerAudit.Update(func(a *PeerAudit) {
+			if self.receiveBufferSettings.ResendAbuseThreshold <= a.ResendCount {
+				resendByteCountAbuse := int(float32(a.SendByteCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendByteCount
+				resendCountAbuse := int(float32(a.SendCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendCount
 				abuse = resendByteCountAbuse || resendCountAbuse
 				a.Abuse = abuse
 			}
@@ -1422,45 +1427,47 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) error {
 
 	receiveTime := time.Now()
 
-	sequenceId := receivePack.pack.SequenceId()
+	sequenceId := receivePack.Pack.SequenceId
 	contractId := self.receiveContract.contractId
-	messageId, err := UlidFromProto(receivePack.pack.MessageId())
+	messageId, err := UlidFromProto(receivePack.Pack.MessageId)
 	if err != nil {
 		return errors.New("Bad message_id")
 	}
 
-	receiveItem := &ReceiveItem{
+	item := &receiveItem{
 		contractId: contractId,
 		messageId: messageId,
 		sequenceId: sequenceId,
 		receiveTime: receiveTime,
-		frames: receivePack.pack.Frames(),
-		messageByteCount: receivePack.messageByteCount,
-		receiveCallback: receivePack.receiveCallback,
+		frames: receivePack.Pack.Frames,
+		messageByteCount: receivePack.MessageByteCount,
+		receiveCallback: receivePack.ReceiveCallback,
 	}
 
-	self.receiveQueue.add(receiveItem)
+	self.receiveQueue.add(item)
+	return nil
 }
 
-func (self *ReceiveSequence) ack(messageId ulid.ULID) {
+func (self *ReceiveSequence) ack(messageId ulid.ULID) error {
 	ack := &protocol.Ack{
-		messageId: []byte(messageId),
+		MessageId: messageId.Bytes(),
 	}
 
-	ackBytes, _ := protobuf.Marshal(ack)
+	ackBytes, _ := proto.Marshal(ack)
 
 	transferFrame := &protocol.TransferFrame{
-		destinationId: []byte(self.sourceId),
-		sourceId: []byte(self.routeManager.ClientId()),
-		frame: &protocol.Frame{
-			MessageType: protocol.MessageType.ACK,
-			messageBytes: ackBytes,
+		DestinationId: self.sourceId.Bytes(),
+		SourceId: self.client.ClientId().Bytes(),
+		Frame: &protocol.Frame{
+			MessageType: protocol.MessageType_ACK,
+			MessageBytes: ackBytes,
 		},
 	}
 
-	transferFrameBytes, _ := protobuf.Marshal(transferFrame)
+	transferFrameBytes, _ := proto.Marshal(transferFrame)
 
-	multiRouteWriter.write(transferFrameBytes)
+	err := self.multiRouteWriter.Write(self.ctx, transferFrameBytes, -1)
+	return err
 }
 
 func (self *ReceiveSequence) Close() {
@@ -1468,7 +1475,7 @@ func (self *ReceiveSequence) Close() {
 }
 
 
-type ReceiveItem struct {
+type receiveItem struct {
 	contractId ulid.ULID
 	messageId ulid.ULID
 	
@@ -1484,170 +1491,183 @@ type ReceiveItem struct {
 }
 
 
-type ReceiveQueue struct {
-	orderedReceiveItems []*ReceiveItem
-	receiveItems map[ulid.ULID]*ReceiveItem
+// ordered by sequenceId
+type receiveQueue struct {
+	orderedItems []*receiveItem
+	// message_id -> item
+	messageItems map[ulid.ULID]*receiveItem
 	byteCount int
 }
 
-func NewReceiveQueue() *ReceiveQueue {
-	receiveQueue := &ReceiveQueue{
-		orderedReceiveItems: []*ReceiveItem{},
-		receiveItems: map[ulid.ULID]*ReceiveItem{},
+func newReceiveQueue() *receiveQueue {
+	receiveQueue := &receiveQueue{
+		orderedItems: []*receiveItem{},
+		messageItems: map[ulid.ULID]*receiveItem{},
 		byteCount: 0,
 	}
 	heap.Init(receiveQueue)
 	return receiveQueue
 }
 
-func (self *ReceiveQueue) Add(receiveItem *ReceiveItem) {
-	self.receiveItems[receiveItem.messageId] = receiveItem
-	heap.Push(self, receiveItem)
-	self.byteCount += receiveItem.messageByteCount
+func (self *receiveQueue) add(item *receiveItem) {
+	self.messageItems[item.messageId] = item
+	heap.Push(self, item)
+	self.byteCount += item.messageByteCount
 }
 
-func (self *ReceiveQueue) Remove(messageId ulid.ULID) *ReceiveItem {
-	receiveItem, ok := receiveItems[messageId]
+func (self *receiveQueue) remove(messageId ulid.ULID) *receiveItem {
+	item, ok := self.messageItems[messageId]
 	if !ok {
 		return nil
 	}
-	delete(self.receiveItems, messageId)
-	heap.Remove(self.orderedReceiveItems, receiveItem.heapIndex)
-	self.byteCount -= receiveItem.messageByteCount
+	delete(self.messageItems, messageId)
+	heap.Remove(self, item.heapIndex)
+	self.byteCount -= item.messageByteCount
+	return item
 }
 
-func (self *ReceiveQueue) RemoveBySequenceId(sequenceId uint64) *ReceiveItem {
-	i, found := sort.Find(len(self.orderedReceiveItems), func(i int)(int) {
-		return sequenceId - self.orderedReceiveItems[i].sequenceId
+func (self *receiveQueue) removeBySequenceId(sequenceId uint64) *receiveItem {
+	i, found := sort.Find(len(self.orderedItems), func(i int)(int) {
+		d := sequenceId - self.orderedItems[i].sequenceId
+		if d < 0 {
+			return -1
+		} else if 0 < d {
+			return 1
+		} else {
+			return 0
+		}
 	})
-	if found && sequenceId == self.orderedReceiveItems[i].sequenceId {
-		return remove(self.orderedReceiveItems[i].messageId)
+	if found && sequenceId == self.orderedItems[i].sequenceId {
+		return self.remove(self.orderedItems[i].messageId)
 	}
 	return nil
 }
 
-func (self *ReceiveQueue) RemoveFirst() *ReceiveItem {
+func (self *receiveQueue) removeFirst() *receiveItem {
 	first := heap.Pop(self)
 	if first == nil {
 		return nil
 	}
-	receiveItem := first.(*ReceiveItem)
-	delete(self.receiveItems, receiveItem.messageId)
-	self.byteCount -= receiveItem.messageByteCount
-	return receiveItem
+	item := first.(*receiveItem)
+	delete(self.messageItems, item.messageId)
+	self.byteCount -= item.messageByteCount
+	return item
 }
 
-func (self *ReceiveQueue) PeekLast() *ReceiveItem {
-	if len(self.orderedReceiveItems) == 0 {
+func (self *receiveQueue) peekLast() *receiveItem {
+	if len(self.orderedItems) == 0 {
 		return nil
 	}
-	return self.orderedReceiveItems[0]
-}
-
-func (self *ReceiveQueue) ByteCount() int {
-	return self.byteCount
+	return self.orderedItems[0]
 }
 
 // heap.Interface
 
-func (self *ReceiveQueue) Push(x any) {
-	receiveItem := x.(*ReceiveItem)
-	receiveItem.heapIndex = len(self.orderedReceiveItems)
-	self.orderedReceiveItems = append(self.orderedReceiveItems, receiveItem)
+func (self *receiveQueue) Push(x any) {
+	item := x.(*receiveItem)
+	item.heapIndex = len(self.orderedItems)
+	self.orderedItems = append(self.orderedItems, item)
 }
 
-func (self *ReceiveQueue) Pop() any {
-	i := len(self.orderedReceiveItems) - 1
-	receiveItem := self.orderedReceiveItems[i]
-	self.orderedReceiveItems[i] = nil
-	self.orderedReceiveItems = self.orderedReceiveItems[:n-1]
+func (self *receiveQueue) Pop() any {
+	n := len(self.orderedItems)
+	i := n - 1
+	item := self.orderedItems[i]
+	self.orderedItems[i] = nil
+	self.orderedItems = self.orderedItems[:n-1]
+	return item
 }
 
 // sort.Interface
 
-func (self *ReceiveQueue) Len() int {
-	return len(self.orderedReceiveItems)
+func (self *receiveQueue) Len() int {
+	return len(self.orderedItems)
 }
 
-func (self *ReceiveQueue) Less(i int, j int) bool {
-	return orderedReceiveItems[i].sequenceId < orderedReceiveItems[j].sequenceId
+func (self *receiveQueue) Less(i int, j int) bool {
+	return self.orderedItems[i].sequenceId < self.orderedItems[j].sequenceId
 }
 
-func (self *ReceiveQueue) Swap(i int, j int) {
-	a := orderedReceiveItems[i]
-	b := orderedReceiveItems[j]
+func (self *receiveQueue) Swap(i int, j int) {
+	a := self.orderedItems[i]
+	b := self.orderedItems[j]
 	b.heapIndex = i
-	orderedReceiveItems[i] = b
+	self.orderedItems[i] = b
 	a.heapIndex = j
-	orderedReceiveItems[j] = a
+	self.orderedItems[j] = a
 }
 
 
-type SequenceContract struct {
-	ContractId ulid.ULID
-	TransferByteCount int
-	ProvideMode protocol.ProvideMode
-	AckedByteCount int
-	UnackedByteCount int
+type sequenceContract struct {
+	contractId ulid.ULID
+	transferByteCount int
+	provideMode protocol.ProvideMode
+	
+	ackedByteCount int
+	unackedByteCount int
 }
 
-func NewSequenceContract(contract *protocol.Contract) (*SequenceContract, error) {
+func newSequenceContract(contract *protocol.Contract) (*sequenceContract, error) {
 	var storedContract protocol.StoredContract
-	err := protoful.Unmarshal(contract.StoredContractBytes, &storedContract)
+	err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return &SequenceContract{
-		ContractId: storedContract.ContractId,
-		TransferByteCount: storedContract.TransferByteCount(),
-		ProvideMode: contract.ProvideMode,
-		AckedByteCount: 0,
-		UnackedByteCount: 0,
+	contractId, err := UlidFromProto(storedContract.ContractId)
+	if err != nil {
+		return nil, err
+	}
+	return &sequenceContract{
+		contractId: contractId,
+		transferByteCount: int(storedContract.TransferByteCount),
+		provideMode: contract.ProvideMode,
+		ackedByteCount: 0,
+		unackedByteCount: 0,
 	}, nil
 }
 
-func (self *SequenceContract) Update(frameByteCount int) bool {
-	if TransferByteCount < AckedByteCount + UnackedByteCount + FrameByteCount {
+func (self *sequenceContract) update(byteCount int) bool {
+	if self.transferByteCount < self.ackedByteCount + self.unackedByteCount + byteCount {
 		// doesn't fit in contract
 		return false
 	}
-	UnackedByteCount += frameByteCount
+	self.unackedByteCount += byteCount
 	return true
 }
 
-func (self *SequenceContract) Ack(frameByteCount int) {
-	if UnackedByteCount < frameByteCount {
+func (self *sequenceContract) ack(byteCount int) {
+	if self.unackedByteCount < byteCount {
 		panic("Bad accounting.")
 	}
-	UnackedByteCount -= frameByteCount
-	AckedByteCount += frameByteCount
+	self.unackedByteCount -= byteCount
+	self.ackedByteCount += byteCount
 }
 
 
 // sequences close after a time with no messages
 // this coordinates the idle shutdown adding messages to the sequence channels
-type SequenceIdleCondition struct {
+type sequenceIdleCondition struct {
 	mutex sync.Mutex
 	modId uint64
 	updateOpenCount int
 	closed bool
 }
 
-func NewSequenceIdleCondition() *SequenceIdleCondition {
-	return &SequenceIdleCondition{
+func newSequenceIdleCondition() *sequenceIdleCondition {
+	return &sequenceIdleCondition{
 		modId: 0,
 		updateOpenCount: 0,
 		closed: false,
 	}
 }
 
-func (self *SequenceIdleCondition) Checkpoint() uint64 {
+func (self *sequenceIdleCondition) checkpoint() uint64 {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	return self.modId
 }
 
-func (self *SequenceIdleCondition) Close(checkpointId uint64) bool {
+func (self *sequenceIdleCondition) close(checkpointId uint64) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	if self.modId != checkpointId {
@@ -1660,7 +1680,7 @@ func (self *SequenceIdleCondition) Close(checkpointId uint64) bool {
 	return true
 }
 
-func (self *SequenceIdleCondition) UpdateOpen() bool {
+func (self *sequenceIdleCondition) updateOpen() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	if self.closed {
@@ -1671,7 +1691,7 @@ func (self *SequenceIdleCondition) UpdateOpen() bool {
 	return true
 }
 
-func (self *SequenceIdleCondition) UpdateClose() {
+func (self *sequenceIdleCondition) updateClose() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	self.updateOpenCount -= 1
@@ -1681,15 +1701,16 @@ func (self *SequenceIdleCondition) UpdateClose() {
 type PeerAudit struct {
 	startTime time.Time
 	lastModifiedTime time.Time
-    BadContractCount uint64
-    DiscardedByteCount uint64
-    DiscardedCount uint64
-    BadMessageByteCount uint64
-    BadMessageCount uint64
-    SendByteCount uint64
-    SendCount uint64
-    ResendByteCount uint64
-    ResendCount uint64
+	Abuse bool
+    BadContractCount int
+    DiscardedByteCount int
+    DiscardedCount int
+    BadMessageByteCount int
+    BadMessageCount int
+    SendByteCount int
+    SendCount int
+    ResendByteCount int
+    ResendCount int
 }
 
 func NewPeerAudit(startTime time.Time) *PeerAudit {
@@ -1750,8 +1771,8 @@ func NewSequencePeerAudit(client *Client, peerId ulid.ULID, maxAuditDuration tim
 func (self *SequencePeerAudit) Update(callback func(*PeerAudit)) {
 	auditTime := time.Now()
 
-	if self.peerAudit != nil && self.maxPeerAuditDuration <= auditTime - self.peerAudit.startTime {
-		self.complete()
+	if self.peerAudit != nil && self.maxAuditDuration <= auditTime.Sub(self.peerAudit.startTime) {
+		self.Complete()
 	}
 	if self.peerAudit == nil {
 		self.peerAudit = NewPeerAudit(auditTime)
@@ -1767,20 +1788,20 @@ func (self *SequencePeerAudit) Complete() {
 		return
 	}
 
-	self.client.Send(ToFrame(&Protocol.PeerAudit{
-		PeerId: []byte(sourceId),
-		Duration: math.Ceil((auditTime - peerAudit.startTime).Seconds()),
-		Abuse: peerAudit.Abuse,
-		BadContractCount: peerAudit.BadContractCount,
-	    DiscardedByteCount: peerAudit.DiscardedByteCount,
-	    DiscardedCount: peerAudit.DiscardedCount,
-	    BadMessageByteCount: peerAudit.BadMessageByteCount,
-	    BadMessageCount: peerAudit.BadMessageCount,
-	    SendByteCount: peerAudit.SendByteCount,
-	    SendCount: peerAudit.SendCount,
-	    ResendByteCount: peerAudit.ResendByteCount,
-	    ResendCount: peerAudit.ResendCount,
-	}))
+	self.client.SendControl(ToFrame(&protocol.PeerAudit{
+		PeerId: self.peerId.Bytes(),
+		Duration: uint32(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
+		Abuse: self.peerAudit.Abuse,
+		BadContractCount: uint32(self.peerAudit.BadContractCount),
+	    DiscardedByteCount: uint32(self.peerAudit.DiscardedByteCount),
+	    DiscardedCount: uint32(self.peerAudit.DiscardedCount),
+	    BadMessageByteCount: uint32(self.peerAudit.BadMessageByteCount),
+	    BadMessageCount: uint32(self.peerAudit.BadMessageCount),
+	    SendByteCount: uint32(self.peerAudit.SendByteCount),
+	    SendCount: uint32(self.peerAudit.SendCount),
+	    ResendByteCount: uint32(self.peerAudit.ResendByteCount),
+	    ResendCount: uint32(self.peerAudit.ResendCount),
+	}), nil)
 	self.peerAudit = nil
 }
 
@@ -1797,8 +1818,8 @@ type Transport interface {
 	// call `rematchTransport` to re-evaluate the weights. this is used for a control loop where the weight is adjusted to match the actual distribution
 	RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32
 		
-	MatchesSend(destinationId ulid.ULID)
-	MatchesReceive(destinationId ulid.ULID)
+	MatchesSend(destinationId ulid.ULID) bool
+	MatchesReceive(destinationId ulid.ULID) bool
 
 	// request that p2p and direct connections be re-established that include the source
 	// connections will be denied for sources that have bad audits
@@ -1819,6 +1840,7 @@ type MultiRouteReader interface {
 type RouteManager struct {
 	client *Client
 
+	mutex sync.Mutex
 	writerMatchState *MatchState
 	readerMatchState *MatchState
 }
@@ -1840,7 +1862,7 @@ func (self *RouteManager) OpenMultiRouteWriter(destinationId ulid.ULID) MultiRou
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	return self.writerMatchState.OpenMultiRouteSelector(destinationId).(MultiRouteWriter)
+	return MultiRouteWriter(self.writerMatchState.OpenMultiRouteSelector(destinationId))
 }
 
 func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
@@ -1854,7 +1876,7 @@ func (self *RouteManager) OpenMultiRouteReader(destinationId ulid.ULID) MultiRou
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	return self.readerMatchState.OpenMultiRouteSelector(destinationId).(MultiRouteReader)
+	return MultiRouteReader(self.readerMatchState.OpenMultiRouteSelector(destinationId))
 }
 
 func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
@@ -1912,14 +1934,14 @@ func NewMatchState(weightedRoutes bool, matches func(Transport, ulid.ULID)(bool)
 }
 
 func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
-	destinationIds, ok := transportMatchedDestinations[transport]
+	destinationIds, ok := self.transportMatchedDestinations[transport]
 	if !ok {
 		return nil
 	}
 	netStats := NewRouteStats()
 	for destinationId, _ := range destinationIds {
-		if multiRouteSelectors, ok := destinationMultiRouteSelectors[destinationId]; ok {
-			for _, multiRouteSelector := range multiRouteSelectors {
+		if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]; ok {
+			for multiRouteSelector, _  := range multiRouteSelectors {
 				if stats := multiRouteSelector.getTransportStats(transport); stats != nil {
 					netStats.sendCount += stats.sendCount
 					netStats.sendByteCount += stats.sendByteCount
@@ -1933,7 +1955,8 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 }
 
 func (self *MatchState) OpenMultiRouteSelector(destinationId ulid.ULID) *MultiRouteSelector {
-	multiRouteSelector := NewMultiRouteSelector(destinationId, self.weightedRoutes)
+	ctx, cancel := context.WithCancel(context.Background())
+	multiRouteSelector := NewMultiRouteSelector(ctx, cancel, destinationId, self.weightedRoutes)
 
 	multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]
 	if !ok {
@@ -1955,6 +1978,8 @@ func (self *MatchState) OpenMultiRouteSelector(destinationId ulid.ULID) *MultiRo
 			multiRouteSelector.updateTransport(transport, routes)
 		}
 	}
+
+	return multiRouteSelector
 }
 
 func (self *MatchState) CloseMultiRouteSelector(multiRouteSelector *MultiRouteSelector) {
@@ -1970,7 +1995,7 @@ func (self *MatchState) CloseMultiRouteSelector(multiRouteSelector *MultiRouteSe
 
 	if len(multiRouteSelectors) == 0 {
 		// clean up the destination
-		for transport, matchedDestinations := range self.transportMatchedDestinations {
+		for _, matchedDestinations := range self.transportMatchedDestinations {
 			delete(matchedDestinations, destinationId)
 		}
 	}
@@ -1978,9 +2003,9 @@ func (self *MatchState) CloseMultiRouteSelector(multiRouteSelector *MultiRouteSe
 
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 	if routes == nil {
-		if currentMatchedDestinations, ok := transportMatchedDestinations[transport]; ok {
+		if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
 			for destinationId, _ := range currentMatchedDestinations {
-				if multiRouteSelectors, ok := destinationMultiRouteSelectors[destinationId]; ok {
+				if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]; ok {
 					for multiRouteSelector, _ := range multiRouteSelectors {
 						multiRouteSelector.updateTransport(transport, nil)
 					}
@@ -1997,16 +2022,16 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 			if transport.MatchesSend(destinationId) {
 				matchedDestinations[destinationId] = true
 				for multiRouteSelector, _ := range multiRouteSelectors {
-					multiRouteWriter.updateTransport(transport, routes)
+					multiRouteSelector.updateTransport(transport, routes)
 				}
 			}
 		}
 
-		if currentMatchedDestinations, ok := transportMatchedDestinations[transport]; ok {
+		if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
 			for destinationId, _ := range currentMatchedDestinations {
 				if _, ok := currentMatchedDestinations[destinationId]; !ok {
 					// no longer matches
-					if multiRouteWriters, ok := destinationMultiRouteSelectors[destinationId]; ok {
+					if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]; ok {
 						for multiRouteSelector, _ := range multiRouteSelectors {
 							multiRouteSelector.updateTransport(transport, nil)
 						}
@@ -2026,33 +2051,39 @@ func (self *MatchState) Downgrade(sourceId ulid.ULID) {
 
 
 type MultiRouteSelector struct {
+	ctx context.Context
+	cancel context.CancelFunc
+
 	destinationId ulid.ULID
 	weightedRoutes bool
 
 	transportUpdate *Monitor
-	done chan struct{}
 
 	mutex sync.Mutex
-	transportRoutes map[Transport][]*Route
+	transportRoutes map[Transport][]Route
 	routeStats map[Route]*RouteStats
 	routeActive map[Route]bool
 	routeWeight map[Route]float32
 }
 
-func NewMultiRouteSelector(destinationId ulid.ULID, weightedRoutes bool) *MultiRouteSelector {
+func NewMultiRouteSelector(ctx context.Context, cancel context.CancelFunc, destinationId ulid.ULID, weightedRoutes bool) *MultiRouteSelector {
 	return &MultiRouteSelector{
+		ctx: ctx,
+		cancel: cancel,
 		destinationId: destinationId,
 		weightedRoutes: weightedRoutes,
 		transportUpdate: NewMonitor(),
-		done: make(chan struct{}),
-		transportRoutes: map[Transport][]*Route{},
+		transportRoutes: map[Transport][]Route{},
 		routeStats: map[Route]*RouteStats{},
-		routeActives: map[Route]bool{},
-		routeWeights: map[Route]float{},
+		routeActive: map[Route]bool{},
+		routeWeight: map[Route]float32{},
 	}
 }
 
 func (self *MultiRouteSelector) getTransportStats(transport Transport) *RouteStats {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
 	currentRoutes, ok := self.transportRoutes[transport]
 	if !ok {
 		return nil
@@ -2081,9 +2112,9 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 			return
 		}
 		for _, currentRoute := range currentRoutes {
-			delete(routeStats, currentRoute)
-			delete(routeActive, currentRoute)
-			delete(routeWeights, currentRoute)
+			delete(self.routeStats, currentRoute)
+			delete(self.routeActive, currentRoute)
+			delete(self.routeWeight, currentRoute)
 		}
 		delete(self.transportRoutes, transport)
 	} else {
@@ -2091,21 +2122,21 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 			for _, currentRoute := range currentRoutes {
 				if slices.Index(routes, currentRoute) < 0 {
 					// no longer present
-					delete(routeStats, currentRoute)
-					delete(routeActive, currentRoute)
-					delete(routeWeights, currentRoute)
+					delete(self.routeStats, currentRoute)
+					delete(self.routeActive, currentRoute)
+					delete(self.routeWeight, currentRoute)
 				}
 			}
 			for _, route := range routes {
 				if slices.Index(currentRoutes, route) < 0 {
 					// new route
-					self.routeActives[route] = true
+					self.routeActive[route] = true
 				}
 			}
 		} else {
 			for _, route := range routes {
 				// new route
-				self.routeActives[route] = true
+				self.routeActive[route] = true
 			}
 		}
 		// the following will be updated with the new routes in the weighting below
@@ -2116,7 +2147,7 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 	}
 
 	if self.weightedRoutes {
-		updatedRouteWeight := map[Route]float{}
+		updatedRouteWeight := map[Route]float32{}
 
 		transportStats := map[Transport]*RouteStats{}
 		for transport, currentRoutes := range self.transportRoutes {
@@ -2138,7 +2169,7 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 			orderedTransports[i] = orderedTransports[j]
 			orderedTransports[j] = t
 		})
-		slices.SortStableFunction(orderedTransports, func(a Transport, b Transport)(bool) {
+		slices.SortStableFunc(orderedTransports, func(a Transport, b Transport)(bool) {
 			return a.Priority() < b.Priority()
 		})
 
@@ -2153,7 +2184,7 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 				remainingStats[orderedTransports[j]] = transportStats[orderedTransports[j]]
 			}
 			canEval := transport.CanEvalRouteWeight(routeStats, remainingStats)
-			allCanEval &= canEval
+			allCanEval = allCanEval && canEval
 		}
 
 		if allCanEval {
@@ -2176,7 +2207,7 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 			self.routeWeight = updatedRouteWeight
 
 			updatedRouteStats := map[Route]*RouteStats{}
-			for transport, currentRoutes := range self.transportRoutes {
+			for _, currentRoutes := range self.transportRoutes {
 				for _, currentRoute := range currentRoutes {
 					// reset the stats
 					updatedRouteStats[currentRoute] = NewRouteStats()
@@ -2189,14 +2220,16 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 	self.transportUpdate.notifyAll()
 }
 
-func (self *MultiRouteSelector) getActiveRoutes() []*Route {
+func (self *MultiRouteSelector) getActiveRoutes() []Route {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	activeRoutes := []*Route{}
+	activeRoutes := []Route{}
 	for _, routes := range self.transportRoutes {
-		if self.routeActive[route] {
-			activeRoutes = append(activeRoutes, route)
+		for _, route := range routes {
+			if self.routeActive[route] {
+				activeRoutes = append(activeRoutes, route)
+			}
 		}
 	}
 
@@ -2215,19 +2248,19 @@ func (self *MultiRouteSelector) getActiveRoutes() []*Route {
 				var net float32
 				net = 0
 				for j := i; j < n; j += 1 {
-					net += self.routeWeight(activeRoutes[j])
+					net += self.routeWeight[activeRoutes[j]]
 				}
 				r := rand.Float32()
 				rnet := r * net
 				net = 0
 				for j := i; j < n; j += 1 {
-					net += self.routeWeight(activeRoutes[j])
+					net += self.routeWeight[activeRoutes[j]]
 					if rnet < net {
 						return j
 					}
 				}
-				panic()
-			}
+				panic("Incorrect weights")
+			}()
 			t := activeRoutes[i]
 			activeRoutes[i] = activeRoutes[j]
 			activeRoutes[j] = t
@@ -2241,7 +2274,7 @@ func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	if _, ok := routeActive[route]; ok {
+	if _, ok := self.routeActive[route]; ok {
 		self.routeActive[route] = false
 	}
 }
@@ -2250,7 +2283,7 @@ func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, send
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	if stats, ok := routeStats[route]; ok {
+	if stats, ok := self.routeStats[route]; ok {
 		stats.sendCount += sendCount
 		stats.sendByteCount += sendByteCount
 	}
@@ -2260,7 +2293,7 @@ func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	if stats, ok := routeStats[route]; ok {
+	if stats, ok := self.routeStats[route]; ok {
 		stats.receiveCount += receiveCount
 		stats.receiveByteCount += receiveByteCount
 	}
@@ -2276,7 +2309,7 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 
 		// select cases are in order:
 		// - ctx.Done
-		// - done
+		// - self.ctx.Done
 		// - route writes...
 		// - transport update
 		// - timeout (may not exist)
@@ -2285,16 +2318,16 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 
 		// add the context done case
 		contextDoneIndex := len(selectCases)
-		selectCases = append(selectCases, SelectCase{
+		selectCases = append(selectCases, reflect.SelectCase{
 			Dir: reflect.SelectRecv,
-			Chan: reflect.ValueOf(self.ctx.Done),
+			Chan: reflect.ValueOf(ctx.Done()),
 		})
 
 		// add the done case
 		doneIndex := len(selectCases)
-		selectCases = append(selectCases, SelectCase{
+		selectCases = append(selectCases, reflect.SelectCase{
 			Dir: reflect.SelectRecv,
-			Chan: reflect.ValueOf(self.done),
+			Chan: reflect.ValueOf(self.ctx.Done()),
 		})
 
 		// add all the route
@@ -2302,7 +2335,7 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 		if 0 < len(activeRoutes) {
 			sendValue := reflect.ValueOf(transportFrameBytes)
 			for _, route := range activeRoutes {
-				selectCases = append(selectCases, SelectCase{
+				selectCases = append(selectCases, reflect.SelectCase{
 					Dir: reflect.SelectSend,
 					Chan: reflect.ValueOf(route),
 					Send: sendValue,
@@ -2312,24 +2345,24 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 
 		// add the update case
 		transportUpdateIndex := len(selectCases)
-		selectCases = append(selectCases, SelectCase{
+		selectCases = append(selectCases, reflect.SelectCase{
 			Dir: reflect.SelectRecv,
 			Chan: reflect.ValueOf(notify),
 		})
 
 		timeoutIndex := len(selectCases)
-		if 0 <= remainingTimeout {
-			remainingTimeout := enterTime + timeout - time.Now()
+		if 0 <= timeout {
+			remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
 			if remainingTimeout <= 0 {
 				// add a default case
-				selectCases = append(selectCases, SelectCase{
+				selectCases = append(selectCases, reflect.SelectCase{
 					Dir: reflect.SelectDefault,
 				})
 			} else {
 				// add a timeout case
-				selectCases = append(selectCases, SelectCase{
+				selectCases = append(selectCases, reflect.SelectCase{
 					Dir: reflect.SelectRecv,
-					Chan: reflect.ValueOf(time.Afte(remainingTimeout)),
+					Chan: reflect.ValueOf(time.After(remainingTimeout)),
 				})
 			}
 		}
@@ -2370,7 +2403,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 		
 		// select cases are in order:
 		// - ctx.Done
-		// - done
+		// - self.ctx.Done
 		// - route reads...
 		// - transport update
 		// - timeout (may not exist)
@@ -2379,23 +2412,23 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 
 		// add the context done case
 		contextDoneIndex := len(selectCases)
-		selectCases = append(selectCases, SelectCase{
+		selectCases = append(selectCases, reflect.SelectCase{
 			Dir: reflect.SelectRecv,
-			Chan: reflect.ValueOf(self.ctx.Done),
+			Chan: reflect.ValueOf(self.ctx.Done()),
 		})
 
 		// add the done case
 		doneIndex := len(selectCases)
-		selectCases = append(selectCases, SelectCase{
+		selectCases = append(selectCases, reflect.SelectCase{
 			Dir: reflect.SelectRecv,
-			Chan: reflect.ValueOf(self.done),
+			Chan: reflect.ValueOf(self.ctx.Done()),
 		})
 
 		// add all the route
 		routeStartIndex := len(selectCases)
 		if 0 < len(activeRoutes) {
 			for _, route := range activeRoutes {
-				selectCases = append(selectCases, SelectCase{
+				selectCases = append(selectCases, reflect.SelectCase{
 					Dir: reflect.SelectRecv,
 					Chan: reflect.ValueOf(route),
 				})
@@ -2404,24 +2437,24 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 
 		// add the update case
 		transportUpdateIndex := len(selectCases)
-		selectCases = append(selectCases, SelectCase{
+		selectCases = append(selectCases, reflect.SelectCase{
 			Dir: reflect.SelectRecv,
 			Chan: reflect.ValueOf(notify),
 		})
 
 		timeoutIndex := len(selectCases)
-		if 0 <= remainingTimeout {
-			remainingTimeout := enterTime + timeout - time.Now()
+		if 0 <= timeout {
+			remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
 			if remainingTimeout <= 0 {
 				// add a default case
-				selectCases = append(selectCases, SelectCase{
+				selectCases = append(selectCases, reflect.SelectCase{
 					Dir: reflect.SelectDefault,
 				})
 			} else {
 				// add a timeout case
-				selectCases = append(selectCases, SelectCase{
+				selectCases = append(selectCases, reflect.SelectCase{
 					Dir: reflect.SelectRecv,
-					Chan: reflect.ValueOf(time.Afte(remainingTimeout)),
+					Chan: reflect.ValueOf(time.After(remainingTimeout)),
 				})
 			}
 		}
@@ -2442,7 +2475,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 			routeIndex := chosenIndex - routeStartIndex
 			route := activeRoutes[routeIndex]
 			if ok {
-				transportFrameBytes := value.([]byte)
+				transportFrameBytes := value.Bytes()
 				self.updateReceiveStats(route, 1, len(transportFrameBytes))
 				return transportFrameBytes, nil
 			} else {
@@ -2454,8 +2487,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 }
 
 func (self *MultiRouteSelector) Close() {
-	defer recover()
-	close(self.done)
+	self.cancel()
 }
 
 
@@ -2476,11 +2508,8 @@ func NewRouteStats() *RouteStats {
 }
 
 
-
-
-
 type ContractManagerSettings struct {
-	standardTransferBytes int
+	StandardTransferByteCount int
 }
 
 func DefaultContractManagerSettings() *ContractManagerSettings {
@@ -2489,7 +2518,7 @@ func DefaultContractManagerSettings() *ContractManagerSettings {
 }
 
 
-type ContractErrorFunction = func()
+type ContractErrorFunction = func(protocol.ContractError)
 
 
 type ContractManager struct {
@@ -2506,37 +2535,36 @@ type ContractManager struct {
 	receiveNoContractClientIds map[ulid.ULID]bool
 	sendNoContractClientIds map[ulid.ULID]bool
 
-	contractErrorCallbacks CallbackList[ContractErrorFunction]
+	contractErrorCallbacks *CallbackList[ContractErrorFunction]
 }
 
-func NewContractManager(client *Client, contractManagerSettings *ContractManagerSettings) {
-	// at a minimum messages to/from the platform (CONTROL_ID) do not need a contract
+func NewContractManager(client *Client, contractManagerSettings *ContractManagerSettings) *ContractManager {
+	// at a minimum messages to/from the platform (ControlId) do not need a contract
 	// this is because the platform is needed to create contracts
-	receiveNoContractClientIds := map[*ULID]bool{
-		CONTROL_ID: true,
+	receiveNoContractClientIds := map[ulid.ULID]bool{
+		ControlId: true,
 	}
-	sendNoContractClientIds := map[*ULID]bool{
-		CONTROL_ID: true,
+	sendNoContractClientIds := map[ulid.ULID]bool{
+		ControlId: true,
 	}
 
 	contractManager := &ContractManager{
 		client: client,
 		contractManagerSettings: contractManagerSettings,
-		providerSecretKeys: map[protocol.ProvideMode][]byte{},
-		destinationContracts: map[ulid.ULID][]*protocol.Contract{},
-		contractUpdate: NewMonitor(),
+		provideSecretKeys: map[protocol.ProvideMode][]byte{},
+		destinationContracts: map[ulid.ULID]*ContractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds: sendNoContractClientIds,
 		contractErrorCallbacks: NewCallbackList[ContractErrorFunction](),
 	}
 
-	client.addReceiveCallback(contractManager.receive)
+	client.AddReceiveCallback(contractManager.receive)
 
 	return contractManager
 }
 
 func (self *ContractManager) StandardTransferByteCount() int {
-	return self.contractManagerSettings.standardTransferBytes
+	return self.contractManagerSettings.StandardTransferByteCount
 }
 
 func (self *ContractManager) addContractErrorCallback(contractErrorCallback ContractErrorFunction) {
@@ -2548,17 +2576,17 @@ func (self *ContractManager) removeContractErrorCallback(contractErrorCallback C
 }
 
 // ReceiveFunction
-func (self *ContractManager) receive(sourceId ulid.ULID, frames []*protocol.Frame, provideMode protocol.ProvideMode, err error) {
+func (self *ContractManager) receive(sourceId ulid.ULID, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	switch sourceId {
-	case CONTROL_ID:
+	case ControlId:
 		for _, frame := range frames {
-			switch frame.MessageType() {
-			case protocol.MessageType.CREATE_CONTRACT_RESULT:
-				var createContractResult CreateContractResult
-				if err := protobuf.Unmarshal(frame.MessageBytes(), &createContractResult); err != nil {
-					if contractError := createContractResult.Error(); contractError != nil {
-						self.error(contractError)
-					} else if contract := createContractResult.Contract(); contract != nil {
+			switch frame.MessageType {
+			case protocol.MessageType_CREATE_CONTRACT_RESULT:
+				var createContractResult protocol.CreateContractResult
+				if err := proto.Unmarshal(frame.MessageBytes, &createContractResult); err != nil {
+					if contractError := createContractResult.Error; contractError != nil {
+						self.error(*contractError)
+					} else if contract := createContractResult.Contract; contract != nil {
 						self.addContract(contract)
 					}
 				}
@@ -2568,7 +2596,7 @@ func (self *ContractManager) receive(sourceId ulid.ULID, frames []*protocol.Fram
 }
 
 // ContractErrorFunction
-func (self *ContractManager) error(contractError *protocol.ContractError) {
+func (self *ContractManager) error(contractError protocol.ContractError) {
 	for _, contractErrorCallback := range self.contractErrorCallbacks.get() {
 		func() {
 			defer recover()
@@ -2593,7 +2621,7 @@ func (self *ContractManager) setProvideModes(provideModes map[protocol.ProvideMo
 			if provideSecretKey, ok := self.provideSecretKeys[provideMode]; !ok {
 				// generate a new key
 				provideSecretKey = make([]byte, 32)
-		    	_, err = rand.Read(provideSecretKey)
+		    	_, err := rand.Read(provideSecretKey)
 		    	if err != nil {
 		    		panic(err)
 		    	}
@@ -2625,7 +2653,7 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 		return false
 	}
 
-	mac := hmac.New(sha256.New, key)
+	mac := hmac.New(sha256.New, provideSecretKey)
 	expectedHmac := mac.Sum(storedContractBytes)
 	return hmac.Equal(storedContractHmac, expectedHmac)
 }
@@ -2650,9 +2678,9 @@ func (self *ContractManager) ReceiveNoContract(sourceId ulid.ULID) bool {
 	return false
 }
 
-func (self *ContractManager) TakeContract(ctx context.Context, destinationId ulid.ULID, timeout time.Duration) (*protocol.Contract, error) {
-	contractQueue := openContractQueue(destionationId)
-	defer closeContractQueue(destinationId)
+func (self *ContractManager) TakeContract(ctx context.Context, destinationId ulid.ULID, timeout time.Duration) *protocol.Contract {
+	contractQueue := self.openContractQueue(destinationId)
+	defer self.closeContractQueue(destinationId)
 
 	enterTime := time.Now()
 	for {
@@ -2665,20 +2693,20 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId uli
 
 		if timeout < 0 {
 			select {
-			case ctx.Done:
+			case <- ctx.Done():
 				return nil
-			case notify:
+			case <- notify:
 			}
 		} else {
-			remainingTimeout := enterTime + timeout - time.Now()
+			remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
 			if remainingTimeout <= 0 {
 				return nil
 			} else {
 				select {
-				case ctx.Done:
+				case <- ctx.Done():
 					return nil
-				case notify:
-				case time.After(remainingTimeout):
+				case <- notify:
+				case <- time.After(remainingTimeout):
 					return nil
 				}
 			}
@@ -2686,19 +2714,38 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId uli
 	}
 }
 
-func (self *ContractManager) addContract(contract *protocol.Contract) {
+func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	destinationId := UlidFromProto(contract.GetDestinationId())
+	var storedContract protocol.StoredContract
+	err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
+	if err != nil {
+		return err
+	}
 
-	contractQueue := openContractQueue(destionationId)
-	defer closeContractQueue(destinationId)
+	sourceId, err := UlidFromProto(storedContract.SourceId)
+	if err != nil {
+		return err
+	}
+
+	if self.client.ClientId() != sourceId {
+		return errors.New("Contract source must be this client.")
+	}
+
+	destinationId, err := UlidFromProto(storedContract.DestinationId)
+	if err != nil {
+		return err
+	}
+
+	contractQueue := self.openContractQueue(destinationId)
+	defer self.closeContractQueue(destinationId)
 
 	contractQueue.add(contract)
+	return nil
 }
 
-func (self *ContractManager) openContractQueue(destionationId ulid.ULID) *ContractQueue {
+func (self *ContractManager) openContractQueue(destinationId ulid.ULID) *ContractQueue {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2728,18 +2775,18 @@ func (self *ContractManager) closeContractQueue(destinationId ulid.ULID) {
 
 func (self *ContractManager) CreateContract(destinationId ulid.ULID) {
 	// look at destinationContracts and last contract to get previous contract id
-	createContract := CreateContract{
-		destionationId: []byte(destinationId),
-		transferByteCount: self.contractManagerSettings.transferByteCount,
+	createContract := &protocol.CreateContract{
+		DestinationId: destinationId.Bytes(),
+		TransferByteCount: uint32(self.contractManagerSettings.StandardTransferByteCount),
 	}
-	self.client.Send(createContract)
+	self.client.SendControl(ToFrame(createContract), nil)
 }
 
 func (self *ContractManager) Complete(contractId ulid.ULID, ackedByteCount int, unackedByteCount int) {
-	closeContract := CloseContract{
-		ContractId: []byte(contractId),
-		AckedByteCount: ackedByteCount,
-		UnackedByteCount: unackedByteCount,
+	closeContract := &protocol.CloseContract{
+		ContractId: contractId.Bytes(),
+		AckedByteCount: uint32(ackedByteCount),
+		UnackedByteCount: uint32(unackedByteCount),
 	}
 	self.client.SendControl(ToFrame(closeContract), nil)
 }
@@ -2747,7 +2794,7 @@ func (self *ContractManager) Complete(contractId ulid.ULID, ackedByteCount int, 
 func (self *ContractManager) Close() {
 	// FIXME close known pending contracts
 	// pending contracts in flight will just timeout on the platform
-	self.client.removeReceiveCallback(self.receive)
+	self.client.RemoveReceiveCallback(self.receive)
 }
 
 
