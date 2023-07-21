@@ -8,14 +8,13 @@ option go_package = "bringyour.com/protocol";
 // flatten all message types into this enum
 enum MessageType {
     PACK = 0;
-    PACK_RESET_SEQUENCE = 1;
-    ACK = 2;
-    CONTRACT = 3;
-    PROVIDE = 4;
-    CREATE_CONTRACT = 5;
-    CREATE_CONTRACT_RESULT = 6;
-    CLOSE_CONTRACT = 7;
-    PEER_AUDIT = 8;
+    ACK = 1;
+    CONTRACT = 2;
+    PROVIDE = 3;
+    CREATE_CONTRACT = 4;
+    CREATE_CONTRACT_RESULT = 5;
+    CLOSE_CONTRACT = 6;
+    PEER_AUDIT = 7;
 }
 
 

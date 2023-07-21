@@ -32,10 +32,10 @@ message Pack {
     // ulid
     bytes message_id = 1;
     uint64 sequence_id = 2;
-    // this marks the first message in the sender's sequence
+    // this marks the head message in the sender's sequence
     // it means that any message with an earlier sequence_id won't arrive
     // and is used when a receiver is recreated with zero state
-    bool first = 3;
+    bool head = 3;
 
     repeated Frame frames = 4;
 }
@@ -44,14 +44,18 @@ message Pack {
 // ack of a later message means all prior messages have been ackd
 message Ack {
     // ulid
-    bytes messsage_id = 1;
+    bytes message_id = 1;
 }
 
 
 // this is a connection local message that is sent at the start of each connection to the control platform
-// there is no response. the other side should close the connection if no auth
+// there is no response. the other side will close the connection if no auth
+// no auth can happen if the jwt is not valid, or the client_id is not associated with the jwt
+// note that association of the client_id to the jwt uses the api (see openapi spec in the api dir)
 message ControlAuth {
     bytes by_jwt = 1;
+    // ulid
+    bytes client_id = 2;
 }
 
 
@@ -102,7 +106,7 @@ message Contract {
     bytes stored_contract_bytes = 1;
     // `stored_contract_bytes` signed with the `provider_secret_key`
     bytes stored_contract_hmac = 2;
-    ProvideMode mode = 3;
+    ProvideMode provide_mode = 3;
 }
 
 
@@ -127,14 +131,17 @@ message CloseContract {
 message PeerAudit {
     // ulid
     bytes peer_id = 1;
-    uint64 bad_contract_count = 2;
-    uint64 discarded_byte_count = 3;
-    uint64 discarded_count = 4;
-    uint64 bad_message_byte_count = 5;
-    uint64 bad_message_count = 6;
-    uint64 send_byte_count = 7;
-    uint64 send_count = 8;
-    uint64 resend_byte_count = 9;
-    uint64 resend_count = 10;
+    // number of seconds in the audit
+    uint64 duration = 2;
+    bool abuse = 3;
+    uint64 bad_contract_count = 4;
+    uint64 discarded_byte_count = 5;
+    uint64 discarded_count = 6;
+    uint64 bad_message_byte_count = 7;
+    uint64 bad_message_count = 8;
+    uint64 send_byte_count = 9;
+    uint64 send_count = 10;
+    uint64 resend_byte_count = 11;
+    uint64 resend_count = 12;
 }
 

@@ -1,24 +1,36 @@
+package connect
 
-
+import (
+	"sync"
+)
 
 type Monitor struct {
-	update chan struct{}
+	mutex sync.Mutex
+	notify chan struct{}
 }
 
-func NotifyChannel() chan struct{} {
-	return update
+func NewMonitor() *Monitor {
+	return &Monitor{
+		notify: make(chan struct{}),
+	}
 }
 
-func notifyAll() {
-	// close the update channel and create a new one
+func (self *Monitor) NotifyChannel() chan struct{} {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	return notify
 }
 
-
-
+func (self *Monitor) notifyAll() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	close(self.notify)
+	self.notify = make(chan struct{})
+}
 
 
 // makes a copy of the list on update
-type CallbackList[T] struct {
+type CallbackList[T any] struct {
 	mutex sync.Mutex
 	callbacks []T
 }
