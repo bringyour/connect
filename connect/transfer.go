@@ -29,6 +29,7 @@ Sends frames to destinations with properties:
 - frames are received in order of send
 - sender is notified when frames are received
 - sender and receiver account for mutual transfer with a shared contract
+- return transfer is accounted to the sender
 - support for multiple routes to the destination
 - senders are verified with pre-exchanged keys
 - high throughput and bounded resource usage
@@ -70,6 +71,98 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 }
 
 
+
+
+// comparable
+type TransferPath struct {
+	source Path
+	destination Path
+}
+
+
+func ParseProtocol(protcolTransferPath protocol.TransferPath) (transferPath *TransferPath, err error) {
+
+}
+
+func Protocol() *protocol.TransferPath {
+
+}
+
+
+
+// todo implement comparable
+type Path struct {
+	clientIds []ulid.ULID
+	streamId ulid.ULID
+	// optional. Omit if there is no nat
+	// if there is a nat, the cleintId will always be length 1
+	nextHopNatId *ulid.ULID
+}
+
+
+func NextHopClientId() ulid.ULID {
+	return clientIds[0]
+}
+
+func DestinationClientId() ulid.ULID {
+	return clientIds[len(clientIds) - 1]
+}
+
+
+
+type StreamManager struct {
+
+}
+
+// this sets up nats along the path
+func CreateStream(destinationIds []ulid.ULID) {
+
+}
+
+func TakePath(destinationIds []ulid.ULID, timeout time.Duration) (*Path, error) {
+
+}
+
+func CreateAndTakePath(destinationIds []ulid.ULID, timeout time.Duration) (*Path, error) {
+	self.CreateStream(destinationIds)
+	return self.TakePath(destinationIds, timeout)
+}
+
+
+
+
+// send *Path
+// receive *Path
+
+
+
+/*
+// stream_ids must be globally unique to work with multi hop routing (all hops charge the sender)
+// so a stream id is a pair of client_id, local_id
+
+// implement comparable
+type StreamId struct {
+	localId ulid.ULID
+}
+
+func NewStreamId(clientId ulid.ULID) *StreamId {
+
+}
+
+func ParseStreamId(streamIdBytes []byte) *StreamId {
+	
+}
+
+func Bytes() []byte {
+
+}
+*/
+
+
+
+
+
+
 // FIXME support the context deadline
 
 // note all callbacks are wrapped to check for nil and recover from errors
@@ -104,6 +197,22 @@ func (self *Client) ClientId() ulid.ULID {
 	return self.clientId
 }
 
+// FIXME attach a source path to each sendPack to allow forwarding
+
+// FIXME need a ForwardWithTimeout function that allows setting a source path
+
+// send seqeunce allocates the nat id/allows fast retrieval. warm the receive sequence with the nat on first allocation
+// 
+// receive.initNat(source, natDestination)
+// key sequence by (source, dest)? TransferPath
+
+
+// all sends create a return nat
+// send.initNat (source, destination) returnSource, returnDestination
+// receiveSequence.initNat(returnSource, returnDestination, source)
+
+// FIXME multi-hop uses destinationIds []ulid.ULID, peeled back at each hop
+// FIXME multi-hop multi_hop_destination_key, multi_hop_source_key allow nat lookups to go back to source
 func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId ulid.ULID, ackCallback AckFunction, timeout time.Duration) bool {
 	safeAckCallback := func(err error) {
 		if ackCallback != nil {
@@ -114,7 +223,7 @@ func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId ulid.UL
 	messageByteCount := len(frame.MessageBytes)
 	sendPack := &SendPack{
 		Frame: frame,
-		DestinationId: destinationId,
+		TransferPath: NewTransferPath(Path.NextHop(self.clientId, streamId), destinationId),
 		AckCallback: safeAckCallback,
 		MessageByteCount: messageByteCount,
 	}

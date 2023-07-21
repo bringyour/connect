@@ -6,11 +6,47 @@ import "frame.proto";
 option go_package = "bringyour.com/protocol";
 
 
+
+// stream_id
+
+// destination hops
+// src=id, dest=id, id, id, id
+// src=id+nat, dest=id, id, id
+// nat, nat, nat, id
+
+// receiving (when there is a nat dest), source builds back into the original dest array
+// src=id dest=id+nat
+// src=id, id dest=id+nat
+
+
+
+// the goal of the transfer path is to allow multiple hop destinations
+// while each hop cannot determine how many hops came before
+// only the original sender knows there are no prior hops
+message TransferPath {
+    // ulid
+    repeated bytes destination_ids = 1;
+    // ulid
+    repeated bytes source_ids = 2;
+
+    optional bytes destination_nat_id
+    optional bytes source_nat_id
+    // ulid
+    bytes stream_id
+}
+
+// there's a weakness with the initial transfer path model where early hops ("entry nodes") know with good confidence the sender, 
+// because they know the destination path and the prob of the path length being complete
+// (later hops "exit nodes" do not know the sender)
+// the v2 which is supported by the protocol but not live,
+// uses the platform to set up a nat_id for each hop on the route so that a message could just be sent to the next destination nat
+// any node would not know how many remaining destination hops, avoiding the "entry node" weakness
+
+
+
 message TransferFrame {
-    // ulid
-    bytes destination_id = 1;
-    // ulid
-    bytes source_id = 2;
+    TransferPath transfer_path;
+
     Frame frame = 3;
 
     // TODO have the option to use fully encrypt the frame bytes using pke
@@ -56,6 +92,8 @@ message ControlAuth {
     bytes by_jwt = 1;
     // ulid
     bytes client_id = 2;
+    // the version of the app, a semver managed by warp
+    string app_version = 3;
 }
 
 
@@ -78,13 +116,38 @@ message ProvideKey {
 }
 
 
+
+message CreateStream {
+
+    // hops on the stream
+    // ulid
+    repeated bytes destination_ids = 1;
+        
+    // when evaluating the completed contracts, the send and receive count involving the source_id
+    // is the baseline to evaluate the other contracts for disputes
+    // ulid
+    bytes source_id 
+
+}
+
+message CreateStreamResult {
+    error
+    stream_id
+
+    // if nats were set up along the route, this is the next hop
+    destination_nat_id
+}
+
+
+
 // control message to create a contract
-// acks with a CreateContractResult
-// source_id cannot equal destination_id
+// platform sends a CreateContractResult
 message CreateContract {
     // ulid
     bytes destination_id = 1;
     uint32 transfer_byte_count = 2;
+
+    bytes stream_id
 }
 
 
@@ -114,6 +177,7 @@ message StoredContract {
     bytes contract_id = 1;
     bytes source_id = 2;
     bytes destination_id = 3;
+    bytes stream_id
     uint32 transfer_byte_count = 4;
 }
 
