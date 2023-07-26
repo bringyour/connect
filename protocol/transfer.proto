@@ -75,13 +75,18 @@ message Pack {
 
     repeated Frame frames = 4;
 }
+// TODO there is no syn because we assume for now all sequences start at 0
 
 
 // ack of a later message means all prior messages have been ackd
 message Ack {
     // ulid
     bytes message_id = 1;
+    // TODO all data buffered in the receiver is selectively acked. When released it is acked with `selective=false`
+    // TODO bool selective = 2;
+    // TODO blocking send items are fast retransmitted once if a later selective ack is received
 }
+// TODO the message id avoid overlapping sequence ids across seqeunce isntances, but using sequence_id here would be fine following a correct initial sequence number
 
 
 // this is a connection local message that is sent at the start of each connection to the control platform
@@ -136,6 +141,12 @@ message CreateStreamResult {
 
     // if nats were set up along the route, this is the next hop
     destination_nat_id
+}
+
+
+message CloseStream {
+    // ulid
+    bytes stream_id;
 }
 
 

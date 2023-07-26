@@ -416,6 +416,15 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 		case <- self.ctx.Done():
 			return
 		case sendPack := <- self.sendPacks:
+			// FIXME if destination is self, run as a receive
+			/*
+			receiveBuffer.Pack(&ReceivePack{
+				SourceId: sourceId,
+				Pack: &pack,
+				ReceiveCallback: self.receive,
+				MessageByteCount: messageByteCount,
+			})
+			/*/
 			sendBuffer.Pack(sendPack)
 		}
 	}
@@ -426,8 +435,10 @@ type SendBufferSettings struct {
 	ContractTimeout time.Duration
 	ContractRetryInterval time.Duration
 
+	// TODO replace this with round trip time estimation
 	// resend timeout is the initial time between successive send attempts. Does linear backoff
 	ResendInterval time.Duration
+
 	// on ack timeout, no longer attempt to retransmit and notify of ack failure
 	AckTimeout time.Duration
 	IdleTimeout time.Duration
@@ -955,6 +966,7 @@ func (self *SendSequence) receiveAck(messageId ulid.ULID) {
 		// message not pending ack
 		return
 	}
+	// acks are cumulative
 	// implicitly ack all earlier items in the sequence
 	i := 0
 	for ; i < len(self.sendItems); i += 1 {
@@ -1915,6 +1927,7 @@ func (self *SequencePeerAudit) Complete() {
 }
 
 
+// routes are expected to have flow control and error detection and rejection
 type Route = chan []byte
 
 
@@ -2648,13 +2661,17 @@ type ContractManager struct {
 }
 
 func NewContractManager(client *Client, contractManagerSettings *ContractManagerSettings) *ContractManager {
-	// at a minimum messages to/from the platform (ControlId) do not need a contract
-	// this is because the platform is needed to create contracts
+	// at a minimum 
+	// - messages to/from the platform (ControlId) do not need a contract
+	//   this is because the platform is needed to create contracts
+	// - messages to self do not need a contract
 	receiveNoContractClientIds := map[ulid.ULID]bool{
 		ControlId: true,
+		client.ClientId(): true,
 	}
 	sendNoContractClientIds := map[ulid.ULID]bool{
 		ControlId: true,
+		client.ClientId(): true,
 	}
 
 	contractManager := &ContractManager{
