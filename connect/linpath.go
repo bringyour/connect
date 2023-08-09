@@ -14,3 +14,14 @@ package connect
 
 
 
+// FIXME latencyclient
+// FIXME after each measurement, send an update to the control
+// FIXME ping both ipv4 and ipv6
+// FIXME a client that has ipv6 support can only select providers that have ipv6 ping results
+// FIXME the platform determines a client has ipv6 support depending on whether it has ipv6 ping results
+
+// FIXME all clients are enabled with ipv4 support
+// FIXME option to enable ipv6 but that limits the number of matching providers
+
+
+

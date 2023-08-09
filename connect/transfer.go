@@ -171,6 +171,7 @@ type Client struct {
 	clientId ulid.ULID
 
 	ctx context.Context
+	cancel context.CancelFunc
 
 	sendBufferSettings *SendBufferSettings
 	receiveBufferSettings *ReceiveBufferSettings
@@ -241,6 +242,8 @@ func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId ulid.UL
 		}
 	} else {
 		select {
+		case <- self.ctx.Done():
+			return false
 		case self.sendPacks <- sendPack:
 			return true
 		case <- time.After(timeout):
@@ -255,8 +258,8 @@ func (self *Client) SendControlWithTimeout(frame *protocol.Frame, ackCallback Ac
 	return self.SendWithTimeout(frame, ControlId, ackCallback, timeout)
 }
 
-func (self *Client) Send(frame *protocol.Frame, destinationId ulid.ULID, ackCallback AckFunction) bool {
-	return self.SendWithTimeout(frame, destinationId, ackCallback, -1)
+func (self *Client) Send(frame *protocol.Frame, destinationId ulid.ULID, ackCallback AckFunction) {
+	self.SendWithTimeout(frame, destinationId, ackCallback, -1)
 }
 
 func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) bool {
@@ -430,6 +433,10 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 	}
 }
 
+func (self *Client) Close() {
+	self.cancel()
+}
+
 
 type SendBufferSettings struct {
 	ContractTimeout time.Duration
@@ -522,6 +529,7 @@ func (self *SendBuffer) Pack(sendPack *SendPack) {
 	}
 
 	if !initSendSequence().Pack(sendPack) {
+		// sequence closed
 		delete(self.sendSequences, sendPack.DestinationId)
 		initSendSequence().Pack(sendPack)
 	}
