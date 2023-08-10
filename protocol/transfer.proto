@@ -6,48 +6,20 @@ import "frame.proto";
 option go_package = "bringyour.com/protocol";
 
 
-
-// stream_id
-
-// destination hops
-// src=id, dest=id, id, id, id
-// src=id+nat, dest=id, id, id
-// nat, nat, nat, id
-
-// receiving (when there is a nat dest), source builds back into the original dest array
-// src=id dest=id+nat
-// src=id, id dest=id+nat
-
-
-
-// the goal of the transfer path is to allow multiple hop destinations
-// while each hop cannot determine how many hops came before
-// only the original sender knows there are no prior hops
 message TransferPath {
     // ulid
-    repeated bytes destination_ids = 1;
+    bytes destination_id = 1;
     // ulid
-    repeated bytes source_ids = 2;
-
-    optional bytes destination_nat_id
-    optional bytes source_nat_id
+    bytes source_id = 2;
     // ulid
-    bytes stream_id
+    bytes stream_id = 3;
 }
-
-// there's a weakness with the initial transfer path model where early hops ("entry nodes") know with good confidence the sender, 
-// because they know the destination path and the prob of the path length being complete
-// (later hops "exit nodes" do not know the sender)
-// the v2 which is supported by the protocol but not live,
-// uses the platform to set up a nat_id for each hop on the route so that a message could just be sent to the next destination nat
-// any node would not know how many remaining destination hops, avoiding the "entry node" weakness
-
 
 
 message TransferFrame {
-    TransferPath transfer_path;
+    TransferPath transfer_path = 1;
 
-    Frame frame = 3;
+    Frame frame = 2;
 
     // TODO have the option to use fully encrypt the frame bytes using pke
     // TODO for the initial use case of already encrypted frame data, this is not needed
@@ -82,10 +54,10 @@ message Pack {
 message Ack {
     // ulid
     bytes message_id = 1;
-    // TODO all data buffered in the receiver is selectively acked. When released it is acked with `selective=false`
-    // TODO bool selective = 2;
-    // TODO blocking send items are fast retransmitted once if a later selective ack is received
+    // all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
+    bool selective = 2;
 }
+// TODO consider blocking send items to be fast retransmitted once if a later selective ack is received
 // TODO the message id avoid overlapping sequence ids across seqeunce isntances, but using sequence_id here would be fine following a correct initial sequence number
 
 
@@ -106,6 +78,7 @@ enum ProvideMode {
     NETWORK = 0;
     FF = 1;
     PUBLIC = 2;
+    STREAM = 3;
 }
 
 
@@ -121,34 +94,46 @@ message ProvideKey {
 }
 
 
-
 message CreateStream {
-
-    // hops on the stream
     // ulid
     repeated bytes destination_ids = 1;
-        
-    // when evaluating the completed contracts, the send and receive count involving the source_id
-    // is the baseline to evaluate the other contracts for disputes
-    // ulid
-    bytes source_id 
+}
+// the creator knows all the hops on the stream
+// when evaluating the completed contracts, the send and receive count involving the source_id
+// is the baseline to evaluate the other contracts for disputes
 
+
+enum StreamError {
+    STREAM_NO_PERMISSION = 0;
 }
 
-message CreateStreamResult {
-    error
-    stream_id
 
-    // if nats were set up along the route, this is the next hop
-    destination_nat_id
+// the client uses this stream_id to send a message to the first destination_id
+message CreateStreamResult {
+    optional StreamError error = 1;
+    optional bytes stream_id = 2;
 }
 
 
 message CloseStream {
     // ulid
-    bytes stream_id;
+    bytes stream_id = 1;
 }
 
+
+// each hop on the stream receives this to configure its state
+message StreamOpen {
+    optional TransferPath source = 1;
+    optional TransferPath destination = 2;
+    // all contracts for this stream will be signed with this key
+    ProvideKey key = 3;
+}
+
+// each hop on the stream receives this to configure its state
+message StreamClose {
+    optional TransferPath source = 1;
+    optional TransferPath destination = 2;
+}
 
 
 // control message to create a contract
@@ -157,14 +142,12 @@ message CreateContract {
     // ulid
     bytes destination_id = 1;
     uint32 transfer_byte_count = 2;
-
-    bytes stream_id
 }
 
 
 enum ContractError {
-    NO_PERMISSION = 0;
-    INSUFFICIENT_BALANCE = 1;
+    CONTRACT_NO_PERMISSION = 0;
+    CONTRACT_INSUFFICIENT_BALANCE = 1;
 }
 
 
@@ -180,16 +163,18 @@ message Contract {
     bytes stored_contract_bytes = 1;
     // `stored_contract_bytes` signed with the `provider_secret_key`
     bytes stored_contract_hmac = 2;
+    // the client must always verify the provide mode by matching the `provider_secret_key` for that mode to the hmac
     ProvideMode provide_mode = 3;
 }
 
 
 message StoredContract {
     bytes contract_id = 1;
-    bytes source_id = 2;
-    bytes destination_id = 3;
-    bytes stream_id
-    uint32 transfer_byte_count = 4;
+    uint32 transfer_byte_count = 2;
+    // ulid, used only for non-stream provide modes
+    optional bytes source_id = 3;
+    // ulid, used only for non-stream provide modes
+    optional bytes destination_id = 4;
 }
 
 

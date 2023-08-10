@@ -1,3 +1,4 @@
+package connect
 
 // ConnectRouter
 //     transports
@@ -15,7 +16,7 @@
 
 // all operations on the router run async and are meant to be used directly from an app
 
-
+/*
 func NewRouter(clientId) *Router {
 
 }
@@ -56,3 +57,4 @@ func SetProvide(bool) {
 func Close() {
 
 }
+*/

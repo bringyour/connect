@@ -59,6 +59,17 @@ var ControlId = ulid.ULID([]byte{
 })
 
 
+// in this case there are no intermediary hops
+// the contract is signed with the local provide keys
+var DirectStreamId = ulid.ULID([]byte{
+	0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+})
+
+
+
 func DefaultSendBufferSettings() *SendBufferSettings {
 	// FIXME
 	return nil
@@ -92,11 +103,8 @@ func Protocol() *protocol.TransferPath {
 
 // todo implement comparable
 type Path struct {
-	clientIds []ulid.ULID
+	clientId ulid.ULID
 	streamId ulid.ULID
-	// optional. Omit if there is no nat
-	// if there is a nat, the cleintId will always be length 1
-	nextHopNatId *ulid.ULID
 }
 
 
@@ -1770,60 +1778,6 @@ func (self *sequenceContract) ack(byteCount int) {
 	}
 	self.unackedByteCount -= byteCount
 	self.ackedByteCount += byteCount
-}
-
-
-// sequences close after a time with no messages
-// this coordinates the idle shutdown adding messages to the sequence channels
-type sequenceIdleCondition struct {
-	mutex sync.Mutex
-	modId uint64
-	updateOpenCount int
-	closed bool
-}
-
-func newSequenceIdleCondition() *sequenceIdleCondition {
-	return &sequenceIdleCondition{
-		modId: 0,
-		updateOpenCount: 0,
-		closed: false,
-	}
-}
-
-func (self *sequenceIdleCondition) checkpoint() uint64 {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-	return self.modId
-}
-
-func (self *sequenceIdleCondition) close(checkpointId uint64) bool {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-	if self.modId != checkpointId {
-		return false
-	}
-	if 0 < self.updateOpenCount {
-		return false
-	}
-	self.closed = true
-	return true
-}
-
-func (self *sequenceIdleCondition) updateOpen() bool {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-	if self.closed {
-		return false
-	}
-	self.modId += 1
-	self.updateOpenCount += 1
-	return true
-}
-
-func (self *sequenceIdleCondition) updateClose() {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-	self.updateOpenCount -= 1
 }
 
 

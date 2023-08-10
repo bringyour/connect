@@ -43,13 +43,13 @@ func NewCallbackList[T any]() *CallbackList[T] {
 	}
 }
 
-func (self *CallbackList[T]) get() []T {
+func (self *CallbackList[T]) Get() []T {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	return self.callbacks
 }
 
-func (self *CallbackList[T]) add(callback T) {
+func (self *CallbackList[T]) Add(callback T) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -65,7 +65,7 @@ func (self *CallbackList[T]) add(callback T) {
 	self.callbacks = nextCallbacks
 }
 
-func  (self *CallbackList[T]) remove(callback T) {
+func  (self *CallbackList[T]) Remove(callback T) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -79,5 +79,58 @@ func  (self *CallbackList[T]) remove(callback T) {
 	nextCallbacks := slices.Clone(self.callbacks)
 	nextCallbacks = slices.Delete(nextCallbacks, i, i)
 	self.callbacks = nextCallbacks
+}
+
+
+// this coordinates and idle shutdown when the shutdown and adding to the work channel are on separate goroutines
+type IdleCondition struct {
+	mutex sync.Mutex
+	modId uint64
+	updateOpenCount int
+	closed bool
+}
+
+func NewIdleCondition() *IdleCondition {
+	return &IdleCondition{
+		modId: 0,
+		updateOpenCount: 0,
+		closed: false,
+	}
+}
+
+func (self *IdleCondition) Checkpoint() uint64 {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	return self.modId
+}
+
+func (self *IdleCondition) Close(checkpointId uint64) bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	if self.modId != checkpointId {
+		return false
+	}
+	if 0 < self.updateOpenCount {
+		return false
+	}
+	self.closed = true
+	return true
+}
+
+func (self *IdleCondition) UpdateOpen() bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	if self.closed {
+		return false
+	}
+	self.modId += 1
+	self.updateOpenCount += 1
+	return true
+}
+
+func (self *IdleCondition) UpdateClose() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	self.updateOpenCount -= 1
 }
 
