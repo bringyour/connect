@@ -91,13 +91,13 @@ type TransferPath struct {
 }
 
 
-func ParseProtocol(protcolTransferPath protocol.TransferPath) (transferPath *TransferPath, err error) {
+// func ParseProtocol(protcolTransferPath protocol.TransferPath) (transferPath *TransferPath, err error) {
 
-}
+// }
 
-func Protocol() *protocol.TransferPath {
+// func Protocol() *protocol.TransferPath {
 
-}
+// }
 
 
 
@@ -108,16 +108,7 @@ type Path struct {
 }
 
 
-func NextHopClientId() ulid.ULID {
-	return clientIds[0]
-}
-
-func DestinationClientId() ulid.ULID {
-	return clientIds[len(clientIds) - 1]
-}
-
-
-
+/*
 type StreamManager struct {
 
 }
@@ -136,7 +127,7 @@ func CreateAndTakePath(destinationIds []ulid.ULID, timeout time.Duration) (*Path
 	return self.TakePath(destinationIds, timeout)
 }
 
-
+*/
 
 
 // send *Path
@@ -232,7 +223,7 @@ func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId ulid.UL
 	messageByteCount := len(frame.MessageBytes)
 	sendPack := &SendPack{
 		Frame: frame,
-		TransferPath: NewTransferPath(Path.NextHop(self.clientId, streamId), destinationId),
+		DestinationId: destinationId,
 		AckCallback: safeAckCallback,
 		MessageByteCount: messageByteCount,
 	}
@@ -270,13 +261,13 @@ func (self *Client) Send(frame *protocol.Frame, destinationId ulid.ULID, ackCall
 	self.SendWithTimeout(frame, destinationId, ackCallback, -1)
 }
 
-func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) bool {
-	return self.Send(frame, ControlId, ackCallback)
+func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) {
+	self.Send(frame, ControlId, ackCallback)
 }
 
 // ReceiveFunction
 func (self *Client) receive(sourceId ulid.ULID, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-	for _, receiveCallback := range self.receiveCallbacks.get() {
+	for _, receiveCallback := range self.receiveCallbacks.Get() {
 		func() {
 			defer recover()
 			receiveCallback(sourceId, frames, provideMode)
@@ -286,7 +277,7 @@ func (self *Client) receive(sourceId ulid.ULID, frames []*protocol.Frame, provid
 
 // ForwardFunction
 func (self *Client) forward(sourceId ulid.ULID, destinationId ulid.ULID, transferFrameBytes []byte) {
-	for _, forwardCallback := range self.forwardCallbacks.get() {
+	for _, forwardCallback := range self.forwardCallbacks.Get() {
 		func() {
 			defer recover()
 			forwardCallback(sourceId, destinationId, transferFrameBytes)
@@ -295,19 +286,19 @@ func (self *Client) forward(sourceId ulid.ULID, destinationId ulid.ULID, transfe
 }
 
 func (self *Client) AddReceiveCallback(receiveCallback ReceiveFunction) {
-	self.receiveCallbacks.add(receiveCallback)
+	self.receiveCallbacks.Add(receiveCallback)
 }
 
 func (self *Client) RemoveReceiveCallback(receiveCallback ReceiveFunction) {
-	self.receiveCallbacks.remove(receiveCallback)
+	self.receiveCallbacks.Remove(receiveCallback)
 }
 
 func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) {
-	self.forwardCallbacks.add(forwardCallback)
+	self.forwardCallbacks.Add(forwardCallback)
 }
 
 func (self *Client) RemoveForwardCallback(forwardCallback ForwardFunction) {
-	self.forwardCallbacks.remove(forwardCallback)
+	self.forwardCallbacks.Remove(forwardCallback)
 }
 
 func (self *Client) Run(routeManager *RouteManager, contractManager *ContractManager) {
@@ -588,7 +579,7 @@ type SendSequence struct {
 	sendItems []*sendItem
 	nextSequenceId uint64
 
-	idleCondition *sequenceIdleCondition
+	idleCondition *IdleCondition
 
 	multiRouteWriter MultiRouteWriter
 }
@@ -617,16 +608,16 @@ func NewSendSequence(
 		resendQueue: newResendQueue(),
 		sendItems: []*sendItem{},
 		nextSequenceId: 0,
-		idleCondition: newSequenceIdleCondition(),
+		idleCondition: NewIdleCondition(),
 	}
 }
 
 func (self *SendSequence) Pack(sendPack *SendPack) (success bool) {
-	if !self.idleCondition.updateOpen() {
+	if !self.idleCondition.UpdateOpen() {
 		success = false
 		return
 	}
-	defer self.idleCondition.updateClose()
+	defer self.idleCondition.UpdateClose()
 	defer func() {
 		// this means there was some error in sequence processing
 		if err := recover(); err != nil {
@@ -639,11 +630,11 @@ func (self *SendSequence) Pack(sendPack *SendPack) (success bool) {
 }
 
 func (self *SendSequence) Ack(ack *protocol.Ack) (success bool) {
-	if !self.idleCondition.updateOpen() {
+	if !self.idleCondition.UpdateOpen() {
 		success = false
 		return
 	}
-	defer self.idleCondition.updateClose()
+	defer self.idleCondition.UpdateClose()
 	defer func() {
 		// this means there was some error in sequence processing
 		if err := recover(); err != nil {
@@ -769,7 +760,7 @@ func (self *SendSequence) Run() {
 				// resend
 			}
 		} else {
-			checkpointId := self.idleCondition.checkpoint()
+			checkpointId := self.idleCondition.Checkpoint()
 			select {
 			case <- self.ctx.Done():
 				return
@@ -802,7 +793,7 @@ func (self *SendSequence) Run() {
 			case <- time.After(timeout):
 				if 0 == self.resendQueue.Len() {
 					// idle timeout
-					if self.idleCondition.close(checkpointId) {
+					if self.idleCondition.Close(checkpointId) {
 						// close the sequence
 						return
 					}
@@ -928,8 +919,11 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) e
 	packBytes, _ := proto.Marshal(pack)
 
 	transferFrame := &protocol.TransferFrame{
-		DestinationId: self.destinationId.Bytes(),
-		SourceId: self.client.ClientId().Bytes(),
+		TransferPath: &protocol.TransferPath{
+			DestinationId: self.destinationId.Bytes(),
+			SourceId: self.client.ClientId().Bytes(),
+			StreamId: DirectStreamId.Bytes(),
+		},
 		Frame: &protocol.Frame{
 			MessageType: protocol.MessageType_PACK,
 			MessageBytes: packBytes,
@@ -1242,7 +1236,7 @@ type ReceiveSequence struct {
 	receiveQueue *receiveQueue
 	nextSequenceId uint64
 
-	idleCondition *sequenceIdleCondition
+	idleCondition *IdleCondition
 
 	multiRouteWriter MultiRouteWriter
 }
@@ -1267,16 +1261,16 @@ func NewReceiveSequence(
 		packs: make(chan *ReceivePack, receiveBufferSettings.SequenceBufferSize),
 		receiveQueue: newReceiveQueue(),
 		nextSequenceId: 0,
-		idleCondition: newSequenceIdleCondition(),
+		idleCondition: NewIdleCondition(),
 	}
 }
 
 func (self *ReceiveSequence) Pack(receivePack *ReceivePack) (success bool) {
-	if !self.idleCondition.updateOpen() {
+	if !self.idleCondition.UpdateOpen() {
 		success = false
 		return
 	}
-	defer self.idleCondition.updateClose()
+	defer self.idleCondition.UpdateClose()
 	defer func() {
 		// this means there was some error in sequence processing
 		if err := recover(); err != nil {
@@ -1440,7 +1434,7 @@ func (self *ReceiveSequence) Run() {
 			}
 		}
 
-		checkpointId := self.idleCondition.checkpoint()
+		checkpointId := self.idleCondition.Checkpoint()
 		select {
 		case <- self.ctx.Done():
 			return
@@ -1520,7 +1514,7 @@ func (self *ReceiveSequence) Run() {
 		case <- time.After(timeout):
 			if 0 == self.receiveQueue.Len() {
 				// idle timeout
-				if self.idleCondition.close(checkpointId) {
+				if self.idleCondition.Close(checkpointId) {
 					// close the sequence
 					return
 				}
@@ -1593,8 +1587,11 @@ func (self *ReceiveSequence) ack(messageId ulid.ULID) error {
 	ackBytes, _ := proto.Marshal(ack)
 
 	transferFrame := &protocol.TransferFrame{
-		DestinationId: self.sourceId.Bytes(),
-		SourceId: self.client.ClientId().Bytes(),
+		TransferPath: &protocol.TransferPath{
+			DestinationId: self.sourceId.Bytes(),
+			SourceId: self.client.ClientId().Bytes(),
+			StreamId: DirectStreamId.Bytes(),
+		},
 		Frame: &protocol.Frame{
 			MessageType: protocol.MessageType_ACK,
 			MessageBytes: ackBytes,
@@ -2656,11 +2653,11 @@ func (self *ContractManager) StandardTransferByteCount() int {
 }
 
 func (self *ContractManager) addContractErrorCallback(contractErrorCallback ContractErrorFunction) {
-	self.contractErrorCallbacks.add(contractErrorCallback)
+	self.contractErrorCallbacks.Add(contractErrorCallback)
 }
 
 func (self *ContractManager) removeContractErrorCallback(contractErrorCallback ContractErrorFunction) {
-	self.contractErrorCallbacks.remove(contractErrorCallback)
+	self.contractErrorCallbacks.Remove(contractErrorCallback)
 }
 
 // ReceiveFunction
@@ -2685,7 +2682,7 @@ func (self *ContractManager) receive(sourceId ulid.ULID, frames []*protocol.Fram
 
 // ContractErrorFunction
 func (self *ContractManager) error(contractError protocol.ContractError) {
-	for _, contractErrorCallback := range self.contractErrorCallbacks.get() {
+	for _, contractErrorCallback := range self.contractErrorCallbacks.Get() {
 		func() {
 			defer recover()
 			contractErrorCallback(contractError)

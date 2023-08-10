@@ -2,6 +2,7 @@ package connect
 
 import (
 	"sync"
+	"time"
 
 	"golang.org/x/exp/slices"
 )
@@ -132,5 +133,16 @@ func (self *IdleCondition) UpdateClose() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	self.updateOpenCount -= 1
+}
+
+
+func MinTime(a time.Time, bs ...time.Time) time.Time {
+	min := a
+	for _, b := range bs {
+		if b.Before(min) {
+			min = b
+		}
+	}
+	return min
 }
 

@@ -1,6 +1,6 @@
 module bringyour.com/connect
 
-go 1.20
+go 1.21
 
 require bringyour.com/protocol v0.0.0
 

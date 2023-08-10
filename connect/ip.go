@@ -34,6 +34,14 @@ import (
 
 
 
+func DefaultUdpBufferSettings() *UdpBufferSettings {
+    return nil
+}
+
+func DefaultTcpBufferSettings() *TcpBufferSettings {
+    return nil
+}
+
 
 
 // receive from a raw socket
@@ -67,6 +75,8 @@ func NewRemoteUserNat(ctx context.Context, receiveBufferSize int) *RemoteUserNat
         ctx: cancelCtx,
         cancel: cancel,
         receivePackets: make(chan *ReceivePacket, receiveBufferSize),
+        udpBufferSettings: DefaultUdpBufferSettings(),
+        tcpBufferSettings: DefaultTcpBufferSettings(),
         sendCallbacks: NewCallbackList[SendPacketFunction](),
     }
 }
@@ -487,13 +497,16 @@ func (self *UdpSequence) Run() {
             default:
             }
 
-            deadline := Min(time.Now().Add(self.udpBufferSettings.ReadPollTimeout), readTimeout)
+            deadline := MinTime(
+                time.Now().Add(self.udpBufferSettings.ReadPollTimeout),
+                readTimeout,
+            )
             socket.SetReadDeadline(deadline)
             n, err := socket.Read(buffer)
 
             if 0 < n {
                 for i := 0; i < n; i += self.udpBufferSettings.SendMtu {
-                    j := Min(i + self.udpBufferSettings.SendMtu, n)
+                    j := min(i + self.udpBufferSettings.SendMtu, n)
                     packet, err := self.DataPacket(buffer[i:j])
                     if err != nil {
                         return
@@ -533,7 +546,10 @@ func (self *UdpSequence) Run() {
                 default:
                 }
 
-                deadline := Min(time.Now().Add(self.udpBufferSettings.WritePollTimeout), writeTimeout)
+                deadline := MinTime(
+                    time.Now().Add(self.udpBufferSettings.WritePollTimeout),
+                    writeTimeout,
+                )
                 socket.SetWriteDeadline(deadline)
                 n, err := socket.Write(payload)
                 payload = payload[n:len(payload)]
@@ -915,7 +931,10 @@ func (self *TcpSequence) Run() {
             default:
             }
 
-            deadline := Min(readTimeout, time.Now().Add(self.tcpBufferSettings.ReadPollTimeout))
+            deadline := MinTime(
+                time.Now().Add(self.tcpBufferSettings.ReadPollTimeout),
+                readTimeout,
+            )
             socket.SetReadDeadline(deadline)
             
             n, err := socket.Read(buffer)
@@ -928,7 +947,7 @@ func (self *TcpSequence) Run() {
                     for i := 0; i < n; i += self.tcpBufferSettings.SendMtu {
                         // since the transfer from local to remove is lossless and preserves order,
                         // do not worry about retransmits
-                        j := Min(i + self.tcpBufferSettings.SendMtu, n)
+                        j := min(i + self.tcpBufferSettings.SendMtu, n)
                         payload := buffer[i:j]
                         packet, err := self.DataPacket(payload)
                         if err != nil {
@@ -983,7 +1002,10 @@ func (self *TcpSequence) Run() {
                 default:
                 }
 
-                deadline := Min(writeTimeout, time.Now().Add(self.tcpBufferSettings.WritePollTimeout))
+                deadline := MinTime(
+                    time.Now().Add(self.tcpBufferSettings.WritePollTimeout),
+                    writeTimeout,
+                )
                 socket.SetWriteDeadline(deadline)
                 n, err := socket.Write(payload)
                 payload = payload[n:len(payload)]
