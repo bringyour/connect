@@ -23,7 +23,8 @@ import (
 
 
 func main() {
-    log := connect.LogFn("test-ip-local")
+    log := connect.LogFn(connect.LogLevelInfo, "test-ip-local")
+    connect.GlobalLogLevel = connect.LogLevelDebug
 
     interfaceName := "tun0"
     clientPath := connect.Path{

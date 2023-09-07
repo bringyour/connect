@@ -16,7 +16,7 @@ import (
 )
 
 
-var ipLog = LogFn("ip")
+var ipLog = LogFn(LogLevelDebug, "ip")
 
 
 // TODO as a test call RemoteUserNat directly from an Android VPN
@@ -40,10 +40,19 @@ var ipLog = LogFn("ip")
 
 // TODO
 // - tcp timeout
-// - mtu calculation
-// - udp logging
+// - (DONE) mtu calculation
+// - (DONE) udp logging
 // - (DONE; this is all logging overhead) udp performance
+// - global logging level
 
+
+const IPv4HeaderSizeWithoutExtensions = 20
+const IPv6HeaderSize = 40
+const UDPHeaderSize = 8
+const TCPHeaderSizeWithoutExtensions = 20
+
+
+// FIXME logging mode
 
 
 func DefaultUdpBufferSettings() *UdpBufferSettings {
@@ -53,11 +62,9 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
         ReadPollTimeout: 60 * time.Second,
         WritePollTimeout: 60 * time.Second,
         IdleTimeout: 60 * time.Second,
-        // FIXME fix packet fragmentation to consider the MTU with headers
-        Mtu: 1400,
+        Mtu: 1500,
         ReadBufferSize: 4096,
         ChannelBufferSize: 32,
-        // FIXME write buffer, read buffer
     }
 }
 
@@ -68,10 +75,10 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
         WriteTimeout: 60 * time.Second,
         ReadPollTimeout: 60 * time.Second,
         WritePollTimeout: 60 * time.Second,
+        IdleTimeout: 60 * time.Second,
         ReadBufferSize: 4096,
         ChannelBufferSize: 32,
-        // FIXME fix packet fragmentation to consider the MTU with headers
-        Mtu: 1400,
+        Mtu: 1500,
     }
     tcpBufferSettings.WindowSize = tcpBufferSettings.ChannelBufferSize * tcpBufferSettings.Mtu / 2
     return tcpBufferSettings
@@ -449,6 +456,7 @@ func (self *UdpBuffer[BufferId]) udpReceive(
 
 
 type UdpSequence struct {
+    log LogFunction
     ctx context.Context
     cancel context.CancelFunc
     sendCallback SendPacketFunction
@@ -468,26 +476,27 @@ func NewUdpSequence(ctx context.Context, sendCallback SendPacketFunction,
         destinationIp net.IP, destinationPort layers.UDPPort,
         udpBufferSettings *UdpBufferSettings) *UdpSequence {
     cancelCtx, cancel := context.WithCancel(ctx)
+    streamState := StreamState{
+        source: source,
+        ipVersion: ipVersion,
+        sourceIp: sourceIp,
+        sourcePort: sourcePort,
+        destinationIp: destinationIp,
+        destinationPort: destinationPort,
+    }
     return &UdpSequence{
-    //     log: SubLogFn(ipLog, fmt.Sprintf(
-    //         "UdpSequence(%s %s)",
-    //         streamState.SourceAuthority(),
-    //         streamState.DestinationAuthority(),
-    //     )),
+        log: SubLogFn(LogLevelDebug, ipLog, fmt.Sprintf(
+            "UdpSequence(%s %s)",
+            streamState.SourceAuthority(),
+            streamState.DestinationAuthority(),
+        )),
         ctx: cancelCtx,
         cancel: cancel,
         sendCallback: sendCallback,
         receiveItems: make(chan *UpdReceiveItem, udpBufferSettings.ChannelBufferSize),
         udpBufferSettings: udpBufferSettings,
         idleCondition: NewIdleCondition(),
-        StreamState: StreamState{
-            source: source,
-            ipVersion: ipVersion,
-            sourceIp: sourceIp,
-            sourcePort: sourcePort,
-            destinationIp: destinationIp,
-            destinationPort: destinationPort,
-        },
+        StreamState: streamState,
     }
 }
 
@@ -529,18 +538,20 @@ func (self *UdpSequence) Run() {
         }()
     }()
 
+    send := func(packet []byte) {
+        self.sendCallback(self.source, packet)
+    }
+
+    self.log("[init]connect")
     socket, err := net.Dial(
         "udp",
-        net.JoinHostPort(self.destinationIp.String(), strconv.Itoa(int(self.destinationPort))),
+        self.DestinationAuthority(),
     )
     if err != nil {
         return
     }
     defer socket.Close()
-
-    // socket.(*net.UDPConn).SetWriteBuffer(1024 * 16)
-    // socket.(*net.UDPConn).SetReadBuffer(1024 * 16)
-    
+    self.log("[init]connect success")
 
     go func() {
         defer self.Close()
@@ -548,7 +559,7 @@ func (self *UdpSequence) Run() {
         buffer := make([]byte, self.udpBufferSettings.ReadBufferSize)
 
         readTimeout := time.Now().Add(self.udpBufferSettings.ReadTimeout)
-        for {
+        for forwardIter := 0; ; forwardIter += 1 {
             select {
             case <- self.ctx.Done():
                 return
@@ -562,15 +573,20 @@ func (self *UdpSequence) Run() {
             socket.SetReadDeadline(deadline)
             n, err := socket.Read(buffer)
 
+            if err == nil {
+                self.log("[f%d]receive(%d)", forwardIter, n)
+            } else {
+                self.log("[f%d]receive(%d err=%s)", forwardIter, n, err)
+            }
+
             if 0 < n {
-                // FIXME forming the packets should take the mtu, since the mtu calculation includes the header size
-                for i := 0; i < n; i += self.udpBufferSettings.Mtu {
-                    j := min(i + self.udpBufferSettings.Mtu, n)
-                    packet, err := self.DataPacket(buffer[i:j])
-                    if err != nil {
-                        return
-                    }
-                    self.sendCallback(self.source, packet)
+                packets, err := self.DataPackets(buffer, n, self.udpBufferSettings.Mtu)
+                if err != nil {
+                    return
+                }
+                for _, packet := range packets {
+                    self.log("[f%d]send (%d)", forwardIter, len(packet))
+                    send(packet)
                 }
                 readTimeout = time.Now().Add(self.udpBufferSettings.ReadTimeout)
             }
@@ -578,6 +594,7 @@ func (self *UdpSequence) Run() {
             if err != nil {
                 if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
                     if readTimeout.Before(time.Now()) {
+                        self.log("[f%d]timeout")
                         return
                     }
                     continue
@@ -589,7 +606,7 @@ func (self *UdpSequence) Run() {
         }
     }()
 
-    for {
+    for receiveIter := 0; ; receiveIter += 1 {
         checkpointId := self.idleCondition.Checkpoint()
         select {
         case <- self.ctx.Done():
@@ -598,6 +615,9 @@ func (self *UdpSequence) Run() {
             writeTimeout := time.Now().Add(self.udpBufferSettings.WriteTimeout)
 
             payload := receiveItem.udp.Payload
+
+            self.log("[r%d]receive(%d)", receiveIter, len(payload))
+
             for 0 < len(payload) {
                 select {
                 case <- self.ctx.Done():
@@ -611,7 +631,15 @@ func (self *UdpSequence) Run() {
                 )
                 socket.SetWriteDeadline(deadline)
                 n, err := socket.Write(payload)
+
+                if err == nil {
+                    self.log("[r%d]forward (%d)", receiveIter, n)
+                } else {
+                    self.log("[r%d]forward (%d err=%s)", receiveIter, n, err)
+                }
+
                 payload = payload[n:len(payload)]
+
                 if err != nil {
                     if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
                         if writeTimeout.Before(time.Now()) {
@@ -628,6 +656,7 @@ func (self *UdpSequence) Run() {
         case <- time.After(self.udpBufferSettings.IdleTimeout):
             if self.idleCondition.Close(checkpointId) {
                 // close the sequence
+                self.log("[r%d]timeout", receiveIter)
                 return
             }
             // else there pending updates
@@ -653,7 +682,23 @@ type StreamState struct {
     destinationIp net.IP
     destinationPort layers.UDPPort
 }
-func (self *StreamState) DataPacket(payload []byte) ([]byte, error) {
+
+func (self *StreamState) SourceAuthority() string {
+    return net.JoinHostPort(
+        self.sourceIp.String(),
+        strconv.Itoa(int(self.sourcePort)),
+    )
+}
+
+func (self *StreamState) DestinationAuthority() string {
+    return net.JoinHostPort(
+        self.destinationIp.String(),
+        strconv.Itoa(int(self.destinationPort)),
+    )
+}
+
+func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, error) {
+    headerSize := 0
     var ip gopacket.NetworkLayer
     switch self.ipVersion {
     case 4:
@@ -664,6 +709,7 @@ func (self *StreamState) DataPacket(payload []byte) ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolUDP,
         }
+        headerSize += IPv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -672,6 +718,7 @@ func (self *StreamState) DataPacket(payload []byte) ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolUDP,
         }
+        headerSize += IPv6HeaderSize
     }
 
     udp := layers.UDP{
@@ -679,25 +726,49 @@ func (self *StreamState) DataPacket(payload []byte) ([]byte, error) {
         DstPort: self.sourcePort,
     }
     udp.SetNetworkLayerForChecksum(ip)
+    headerSize += UDPHeaderSize
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
-        // FixLengths: true,
+        FixLengths: true,
     }
 
-    buffer := gopacket.NewSerializeBuffer()
-
-    err := gopacket.SerializeLayers(buffer, options,
-        ip.(gopacket.SerializableLayer),
-        &udp,
-        gopacket.Payload(payload),
-    )
-
-    if err != nil {
-        return nil, err
+    if headerSize + n <= mtu {
+        buffer := gopacket.NewSerializeBufferExpectedSize(headerSize + n, 0)
+        err := gopacket.SerializeLayers(buffer, options,
+            ip.(gopacket.SerializableLayer),
+            &udp,
+            gopacket.Payload(payload[0:n]),
+        )
+        if err != nil {
+            return nil, err
+        }
+        packet := buffer.Bytes()
+        return [][]byte{packet}, nil
+    } else {
+        // fragment
+        buffer := gopacket.NewSerializeBufferExpectedSize(mtu, 0)
+        packetSize := mtu - headerSize
+        packets := make([][]byte, 0, (n + packetSize) / packetSize)
+        for i := 0; i < n; {
+            j := min(i + packetSize, n)
+            err := gopacket.SerializeLayers(buffer, options,
+                ip.(gopacket.SerializableLayer),
+                &udp,
+                gopacket.Payload(payload[i:j]),
+            )
+            if err != nil {
+                return nil, err
+            }
+            packet := buffer.Bytes()
+            packetCopy := make([]byte, len(packet))
+            copy(packetCopy, packet)
+            packets = append(packets, packetCopy)
+            buffer.Clear()
+            i = j
+        }
+        return packets, nil
     }
-    packet := buffer.Bytes()
-    return packet, nil
 }
 
 
@@ -707,6 +778,7 @@ type TcpBufferSettings struct {
     WriteTimeout time.Duration
     ReadPollTimeout time.Duration
     WritePollTimeout time.Duration
+    IdleTimeout time.Duration
     ReadBufferSize int
     ChannelBufferSize int
     Mtu int
@@ -903,7 +975,7 @@ func NewTcpSequence(ctx context.Context, sendCallback SendPacketFunction,
         windowSize: uint16(tcpBufferSettings.WindowSize),
     }
     return &TcpSequence{
-        log: SubLogFn(ipLog, fmt.Sprintf(
+        log: SubLogFn(LogLevelDebug, ipLog, fmt.Sprintf(
             "TcpSequence(%s %s)",
             connectionState.SourceAuthority(),
             connectionState.DestinationAuthority(),
@@ -1009,9 +1081,7 @@ func (self *TcpSequence) Run() {
         }
     }
 
-
     self.log("[init]connect")
-
     socket, err := net.DialTimeout(
         "tcp",
         self.DestinationAuthority(),
@@ -1055,31 +1125,27 @@ func (self *TcpSequence) Run() {
             }
 
             if 0 < n {
-
-                for i := 0; i < n; {
-                    // FIXME we are not receiving acks
-                    self.mutex.Lock()
-                    // since the transfer from local to remove is lossless and preserves order,
-                    // do not worry about retransmits
-                    j := min(i + self.tcpBufferSettings.Mtu, n)
-                    payload := buffer[i:j]
-                    packet, err := self.DataPacket(payload)
-                    if err != nil {
-                        return
-                    }
-                    self.sendSeq += uint32(len(payload))
-                    self.log("[f%d]send(%d) (%d)", forwardIter, len(payload), self.sendSeq)
-                    send(packet)
-                    self.mutex.Unlock()
-                    i = j
+                // since the transfer from local to remove is lossless and preserves order,
+                // do not worry about retransmits
+                self.mutex.Lock()
+                packets, err := self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
+                if err != nil {
+                    return
                 }
-
+                self.log("[f%d]send(%d %d %d)", forwardIter, n, len(packets), self.sendSeq)
+                self.sendSeq += uint32(n)
+                for _, packet := range packets {   
+                    send(packet)
+                }
+                self.mutex.Unlock()
+                
                 readTimeout = time.Now().Add(self.tcpBufferSettings.ReadTimeout)
             }
             
             if err != nil {
                 if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
                     if readTimeout.Before(time.Now()) {
+                        self.log("[f%d]timeout", forwardIter)
                         return
                     }
                     continue
@@ -1093,13 +1159,12 @@ func (self *TcpSequence) Run() {
 
     // FIXME idle condition
     for receiveIter := 0; ; receiveIter += 1 {
+        checkpointId := self.idleCondition.Checkpoint()
         select {
         case <- self.ctx.Done():
             return
         case receiveItem := <- self.receiveItems:
             self.log("[r%d]receive(%d %s)", receiveIter, len(receiveItem.tcp.Payload), tcpFlagsString(receiveItem.tcp))
-
-            
 
             if self.receiveSeq != receiveItem.tcp.Seq {
                 // a retransmit
@@ -1142,14 +1207,19 @@ func (self *TcpSequence) Run() {
                 default:
                 }
 
-
                 deadline := MinTime(
                     time.Now().Add(self.tcpBufferSettings.WritePollTimeout),
                     writeTimeout,
                 )
                 socket.SetWriteDeadline(deadline)
                 n, err := socket.Write(payload)
-                self.log("[r%d]forward(%d)", receiveIter, n)
+
+                if err == nil {
+                    self.log("[r%d]forward(%d)", receiveIter, n)
+                } else {
+                    self.log("[r%d]forward(%d err=%s)", receiveIter, n, err)
+                }
+
                 payload = payload[n:len(payload)]
 
 
@@ -1178,6 +1248,13 @@ func (self *TcpSequence) Run() {
                 }
                 break
             }
+        case <- time.After(self.tcpBufferSettings.IdleTimeout):
+            if self.idleCondition.Close(checkpointId) {
+                // close the sequence
+                self.log("[r%d]timeout", receiveIter)
+                return
+            }
+            // else there pending updates
         }
     }
 }
@@ -1217,6 +1294,7 @@ func (self *ConnectionState) DestinationAuthority() string {
 }
 
 func (self *ConnectionState) SynAck() ([]byte, error) {
+    headerSize := 0
     var ip gopacket.NetworkLayer
     switch self.ipVersion {
     case 4:
@@ -1227,6 +1305,7 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
+        headerSize += IPv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1235,6 +1314,7 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
+        headerSize += IPv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1247,13 +1327,14 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
+    headerSize += TCPHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
         FixLengths: true,
     }
 
-    buffer := gopacket.NewSerializeBuffer()
+    buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
 
     err := gopacket.SerializeLayers(buffer, options,
         ip.(gopacket.SerializableLayer),
@@ -1268,6 +1349,7 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 }
 
 func (self *ConnectionState) FinAck() ([]byte, error) {
+    headerSize := 0
     var ip gopacket.NetworkLayer
     switch self.ipVersion {
     case 4:
@@ -1278,6 +1360,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
+        headerSize += IPv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1286,6 +1369,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
+        headerSize += IPv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1298,13 +1382,14 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
+    headerSize += TCPHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
         FixLengths: true,
     }
 
-    buffer := gopacket.NewSerializeBuffer()
+    buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
 
     err := gopacket.SerializeLayers(buffer, options,
         ip.(gopacket.SerializableLayer),
@@ -1319,6 +1404,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
 }
 
 func (self *ConnectionState) PureAck() ([]byte, error) {
+    headerSize := 0
     var ip gopacket.NetworkLayer
     switch self.ipVersion {
     case 4:
@@ -1329,6 +1415,7 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
+        headerSize += IPv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1337,6 +1424,7 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
+        headerSize += IPv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1348,13 +1436,14 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
+    headerSize += TCPHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
         FixLengths: true,
     }
 
-    buffer := gopacket.NewSerializeBuffer()
+    buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
 
     err := gopacket.SerializeLayers(buffer, options,
         ip.(gopacket.SerializableLayer),
@@ -1368,7 +1457,8 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
     return packet, nil
 }
 
-func (self *ConnectionState) DataPacket(payload []byte) ([]byte, error) {
+func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]byte, error) {
+    headerSize := 0
     var ip gopacket.NetworkLayer
     switch self.ipVersion {
     case 4:
@@ -1379,6 +1469,7 @@ func (self *ConnectionState) DataPacket(payload []byte) ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
+        headerSize += IPv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1387,6 +1478,7 @@ func (self *ConnectionState) DataPacket(payload []byte) ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
+        headerSize += IPv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1398,25 +1490,50 @@ func (self *ConnectionState) DataPacket(payload []byte) ([]byte, error) {
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
+    headerSize += TCPHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
         FixLengths: true,
     }
 
-    buffer := gopacket.NewSerializeBuffer()
-
-    err := gopacket.SerializeLayers(buffer, options,
-        ip.(gopacket.SerializableLayer),
-        &tcp,
-        gopacket.Payload(payload),
-    )
-
-    if err != nil {
-        return nil, err
+    if headerSize + n <= mtu {
+        buffer := gopacket.NewSerializeBufferExpectedSize(headerSize + n, 0)
+        err := gopacket.SerializeLayers(buffer, options,
+            ip.(gopacket.SerializableLayer),
+            &tcp,
+            gopacket.Payload(payload[0:n]),
+        )
+        if err != nil {
+            return nil, err
+        }
+        packet := buffer.Bytes()
+        return [][]byte{packet}, nil
+    } else {
+        // fragment
+        buffer := gopacket.NewSerializeBufferExpectedSize(mtu, 0)
+        packetSize := mtu - headerSize
+        packets := [][]byte{}
+        for i := 0; i < n; {
+            j := min(i + packetSize, n)
+            tcp.Seq = self.sendSeq + uint32(i)
+            err := gopacket.SerializeLayers(buffer, options,
+                ip.(gopacket.SerializableLayer),
+                &tcp,
+                gopacket.Payload(payload[i:j]),
+            )
+            if err != nil {
+                return nil, err
+            }
+            packet := buffer.Bytes()
+            packetCopy := make([]byte, len(packet))
+            copy(packetCopy, packet)
+            packets = append(packets, packetCopy)
+            buffer.Clear()
+            i = j
+        }
+        return packets, nil
     }
-    packet := buffer.Bytes()
-    return packet, nil
 }
 
 
