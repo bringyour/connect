@@ -83,6 +83,7 @@ enum ProvideMode {
 
 
 message Provide {
+    // FIXME move this to PKE public key
     repeated ProvideKey keys = 1;
 }
 
@@ -125,6 +126,7 @@ message CloseStream {
 message StreamOpen {
     optional TransferPath source = 1;
     optional TransferPath destination = 2;
+    // FIXME move this to PKE public key
     // all contracts for this stream will be signed with this key
     ProvideKey key = 3;
 }
@@ -161,6 +163,7 @@ message CreateContractResult {
 message Contract {
     // ulid
     bytes stored_contract_bytes = 1;
+    // FIXME move this to PKE encrypted value
     // `stored_contract_bytes` signed with the `provider_secret_key`
     bytes stored_contract_hmac = 2;
     // the client must always verify the provide mode by matching the `provider_secret_key` for that mode to the hmac

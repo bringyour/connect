@@ -23,6 +23,8 @@ import (
 )
 
 
+
+
 /*
 Sends frames to destinations with properties:
 - as long the sending client is active, frames are eventually delivered up to timeout
@@ -46,12 +48,12 @@ Each route should apply the forwarding ACL:
 type AckFunction = func(err error)
 // provideMode is the mode of where these frames are from: network, friends and family, public
 // provideMode nil means no contract
-type ReceiveFunction = func(sourceId ulid.ULID, frames []*protocol.Frame, provideMode protocol.ProvideMode)
-type ForwardFunction = func(sourceId ulid.ULID, destinationId ulid.ULID, transferFrameBytes []byte)
+type ReceiveFunction = func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode)
+type ForwardFunction = func(sourceId Id, destinationId Id, transferFrameBytes []byte)
 
 
 // destination id for control messages
-var ControlId = ulid.ULID([]byte{
+var ControlId = Id([]byte{
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
@@ -61,7 +63,7 @@ var ControlId = ulid.ULID([]byte{
 
 // in this case there are no intermediary hops
 // the contract is signed with the local provide keys
-var DirectStreamId = ulid.ULID([]byte{
+var DirectStreamId = Id([]byte{
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
@@ -103,8 +105,8 @@ type TransferPath struct {
 
 // todo implement comparable
 type Path struct {
-	clientId ulid.ULID
-	streamId ulid.ULID
+	ClientId Id
+	StreamId Id
 }
 
 
@@ -114,15 +116,15 @@ type StreamManager struct {
 }
 
 // this sets up nats along the path
-func CreateStream(destinationIds []ulid.ULID) {
+func CreateStream(destinationIds []Id) {
 
 }
 
-func TakePath(destinationIds []ulid.ULID, timeout time.Duration) (*Path, error) {
+func TakePath(destinationIds []Id, timeout time.Duration) (*Path, error) {
 
 }
 
-func CreateAndTakePath(destinationIds []ulid.ULID, timeout time.Duration) (*Path, error) {
+func CreateAndTakePath(destinationIds []Id, timeout time.Duration) (*Path, error) {
 	self.CreateStream(destinationIds)
 	return self.TakePath(destinationIds, timeout)
 }
@@ -141,10 +143,10 @@ func CreateAndTakePath(destinationIds []ulid.ULID, timeout time.Duration) (*Path
 
 // implement comparable
 type StreamId struct {
-	localId ulid.ULID
+	localId Id
 }
 
-func NewStreamId(clientId ulid.ULID) *StreamId {
+func NewStreamId(clientId Id) *StreamId {
 
 }
 
@@ -167,7 +169,7 @@ func Bytes() []byte {
 // note all callbacks are wrapped to check for nil and recover from errors
 
 type Client struct {
-	clientId ulid.ULID
+	clientId Id
 
 	ctx context.Context
 	cancel context.CancelFunc
@@ -181,7 +183,7 @@ type Client struct {
 	forwardCallbacks *CallbackList[ForwardFunction]
 }
 
-func NewClient(clientId ulid.ULID, ctx context.Context, sendBufferSize int) *Client {
+func NewClient(clientId Id, ctx context.Context, sendBufferSize int) *Client {
 	return &Client{
 		clientId: clientId,
 		ctx: ctx,
@@ -193,7 +195,7 @@ func NewClient(clientId ulid.ULID, ctx context.Context, sendBufferSize int) *Cli
 	}
 }
 
-func (self *Client) ClientId() ulid.ULID {
+func (self *Client) ClientId() Id {
 	return self.clientId
 }
 
@@ -211,9 +213,9 @@ func (self *Client) ClientId() ulid.ULID {
 // send.initNat (source, destination) returnSource, returnDestination
 // receiveSequence.initNat(returnSource, returnDestination, source)
 
-// FIXME multi-hop uses destinationIds []ulid.ULID, peeled back at each hop
+// FIXME multi-hop uses destinationIds []Id, peeled back at each hop
 // FIXME multi-hop multi_hop_destination_key, multi_hop_source_key allow nat lookups to go back to source
-func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId ulid.ULID, ackCallback AckFunction, timeout time.Duration) bool {
+func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId Id, ackCallback AckFunction, timeout time.Duration) bool {
 	safeAckCallback := func(err error) {
 		if ackCallback != nil {
 			defer recover()
@@ -257,7 +259,7 @@ func (self *Client) SendControlWithTimeout(frame *protocol.Frame, ackCallback Ac
 	return self.SendWithTimeout(frame, ControlId, ackCallback, timeout)
 }
 
-func (self *Client) Send(frame *protocol.Frame, destinationId ulid.ULID, ackCallback AckFunction) {
+func (self *Client) Send(frame *protocol.Frame, destinationId Id, ackCallback AckFunction) {
 	self.SendWithTimeout(frame, destinationId, ackCallback, -1)
 }
 
@@ -266,7 +268,7 @@ func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) 
 }
 
 // ReceiveFunction
-func (self *Client) receive(sourceId ulid.ULID, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *Client) receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	for _, receiveCallback := range self.receiveCallbacks.Get() {
 		func() {
 			defer recover()
@@ -276,7 +278,7 @@ func (self *Client) receive(sourceId ulid.ULID, frames []*protocol.Frame, provid
 }
 
 // ForwardFunction
-func (self *Client) forward(sourceId ulid.ULID, destinationId ulid.ULID, transferFrameBytes []byte) {
+func (self *Client) forward(sourceId Id, destinationId Id, transferFrameBytes []byte) {
 	for _, forwardCallback := range self.forwardCallbacks.Get() {
 		func() {
 			defer recover()
@@ -325,7 +327,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 		multiRouteReader := routeManager.OpenMultiRouteReader(self.clientId)
 		defer routeManager.CloseMultiRouteReader(multiRouteReader)
 
-		updatePeerAudit := func(sourceId ulid.ULID, callback func(*PeerAudit)) {
+		updatePeerAudit := func(sourceId Id, callback func(*PeerAudit)) {
 			// immediately send peer audits at this level
 			peerAudit := NewSequencePeerAudit(self, sourceId, 0)
 			peerAudit.Update(callback)
@@ -346,12 +348,12 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 				// bad protobuf (unexpected, see route note above)
 				continue
 			}
-			sourceId, err := UlidFromProto(filteredTransferFrame.GetSourceId())
+			sourceId, err := IdFromProto(filteredTransferFrame.GetSourceId())
 			if err != nil {
 				// bad protobuf (unexpected, see route note above)
 				continue
 			}
-			destinationId, err := UlidFromProto(filteredTransferFrame.GetDestinationId())
+			destinationId, err := IdFromProto(filteredTransferFrame.GetDestinationId())
 			if err != nil {
 				// bad protobuf (unexpected, see route note above)
 				continue
@@ -461,7 +463,7 @@ type SendPack struct {
 	// frame and destination is repacked by the send buffer into a Pack,
 	// with destination and frame from the tframe, and other pack properties filled in by the buffer
 	Frame *protocol.Frame
-	DestinationId ulid.ULID
+	DestinationId Id
 	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
 	AckCallback AckFunction
 	MessageByteCount int
@@ -478,7 +480,7 @@ type SendBuffer struct {
 
 	mutex sync.Mutex
 	// destination id -> send sequence
-	sendSequences map[ulid.ULID]*SendSequence
+	sendSequences map[Id]*SendSequence
 }
 
 func NewSendBuffer(ctx context.Context,
@@ -492,7 +494,7 @@ func NewSendBuffer(ctx context.Context,
 		routeManager: routeManager,
 		contractManager: contractManager,
 		sendBufferSettings: sendBufferSettings,
-		sendSequences: map[ulid.ULID]*SendSequence{},
+		sendSequences: map[Id]*SendSequence{},
 	}
 }
 
@@ -534,7 +536,7 @@ func (self *SendBuffer) Pack(sendPack *SendPack) {
 	}
 }
 
-func (self *SendBuffer) Ack(sourceId ulid.ULID, ack *protocol.Ack) {
+func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -565,12 +567,12 @@ type SendSequence struct {
 	client *Client
 	routeManager *RouteManager
 	contractManager *ContractManager
-	destinationId ulid.ULID
+	destinationId Id
 
 	sendBufferSettings *SendBufferSettings
 
 	sendContract *sequenceContract
-	sendContracts map[ulid.ULID]*sequenceContract
+	sendContracts map[Id]*sequenceContract
 
 	packs chan *SendPack
 	acks chan *protocol.Ack
@@ -589,7 +591,7 @@ func NewSendSequence(
 		client *Client,
 		routeManager *RouteManager,
 		contractManager *ContractManager,
-		destinationId ulid.ULID,
+		destinationId Id,
 		sendBufferSettings *SendBufferSettings) *SendSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
@@ -602,7 +604,7 @@ func NewSendSequence(
 		destinationId: destinationId,
 		sendBufferSettings: sendBufferSettings,
 		sendContract: nil,
-		sendContracts: map[ulid.ULID]*sequenceContract{},
+		sendContracts: map[Id]*sequenceContract{},
 		packs: make(chan *SendPack, sendBufferSettings.SequenceBufferSize),
 		acks: make(chan *protocol.Ack, sendBufferSettings.SequenceBufferSize),
 		resendQueue: newResendQueue(),
@@ -749,7 +751,7 @@ func (self *SendSequence) Run() {
 			case <- self.ctx.Done():
 				return
 			case ack := <- self.acks:
-				messageId, err := UlidFromProto(ack.MessageId)
+				messageId, err := IdFromProto(ack.MessageId)
 				if err != nil {
 					// bad message
 					// close sequence
@@ -765,7 +767,7 @@ func (self *SendSequence) Run() {
 			case <- self.ctx.Done():
 				return
 			case ack := <- self.acks:
-				messageId, err := UlidFromProto(ack.MessageId)
+				messageId, err := IdFromProto(ack.MessageId)
 				if err != nil {
 					// bad message
 					// close sequence
@@ -902,7 +904,7 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 
 func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) error {
 	sendTime := time.Now()
-	messageId := ulid.Make()
+	messageId := Id(ulid.Make())
 	sequenceId := self.nextSequenceId
 	contractId := self.sendContract.contractId
 	head := 0 == len(self.sendItems)
@@ -970,7 +972,7 @@ func (self *SendSequence) setHead(transferFrameBytes []byte) []byte {
 	return transferFrameBytesWithHead
 }
 
-func (self *SendSequence) receiveAck(messageId ulid.ULID) {
+func (self *SendSequence) receiveAck(messageId Id) {
 	item, ok := self.resendQueue.messageItems[messageId]
 	if !ok {
 		// message not pending ack
@@ -1007,8 +1009,8 @@ func (self *SendSequence) Close() {
 
 
 type sendItem struct {
-	messageId ulid.ULID
-	contractId ulid.ULID
+	messageId Id
+	contractId Id
 	sequenceId uint64
 	head bool
 	sendTime time.Time
@@ -1025,14 +1027,14 @@ type sendItem struct {
 type resendQueue struct {
 	orderedItems []*sendItem
 	// message_id -> item
-	messageItems map[ulid.ULID]*sendItem
+	messageItems map[Id]*sendItem
 	byteCount int
 }
 
 func newResendQueue() *resendQueue {
 	resendQueue := &resendQueue{
 		orderedItems: []*sendItem{},
-		messageItems: map[ulid.ULID]*sendItem{},
+		messageItems: map[Id]*sendItem{},
 		byteCount: 0,
 	}
 	heap.Init(resendQueue)
@@ -1045,7 +1047,7 @@ func (self *resendQueue) add(item *sendItem) {
 	self.byteCount += len(item.transferFrameBytes)
 }
 
-func (self *resendQueue) remove(messageId ulid.ULID) *sendItem {
+func (self *resendQueue) remove(messageId Id) *sendItem {
 	item, ok := self.messageItems[messageId]
 	if !ok {
 		return nil
@@ -1126,7 +1128,7 @@ type ReceiveBufferSettings struct {
 
 
 type ReceivePack struct {
-	SourceId ulid.ULID
+	SourceId Id
 	Pack *protocol.Pack
 	ReceiveCallback ReceiveFunction
 	MessageByteCount int
@@ -1143,7 +1145,7 @@ type ReceiveBuffer struct {
 
 	mutex sync.Mutex
 	// source id -> receive sequence
-	receiveSequences map[ulid.ULID]*ReceiveSequence
+	receiveSequences map[Id]*ReceiveSequence
 }
 
 func NewReceiveBuffer(ctx context.Context,
@@ -1157,7 +1159,7 @@ func NewReceiveBuffer(ctx context.Context,
 		routeManager: routeManager,
 		contractManager: contractManager,
 		receiveBufferSettings: receiveBufferSettings,
-		receiveSequences: map[ulid.ULID]*ReceiveSequence{},
+		receiveSequences: map[Id]*ReceiveSequence{},
 	}
 }
 
@@ -1225,7 +1227,7 @@ type ReceiveSequence struct {
 	routeManager *RouteManager
 	contractManager *ContractManager
 
-	sourceId ulid.ULID
+	sourceId Id
 
 	receiveBufferSettings *ReceiveBufferSettings
 
@@ -1246,7 +1248,7 @@ func NewReceiveSequence(
 		client *Client,
 		routeManager *RouteManager,
 		contractManager *ContractManager,
-		sourceId ulid.ULID,
+		sourceId Id,
 		receiveBufferSettings *ReceiveBufferSettings) *ReceiveSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	return &ReceiveSequence{
@@ -1439,7 +1441,7 @@ func (self *ReceiveSequence) Run() {
 		case <- self.ctx.Done():
 			return
 		case receivePack := <- self.packs:
-			messageId, err := UlidFromProto(receivePack.Pack.MessageId)
+			messageId, err := IdFromProto(receivePack.Pack.MessageId)
 			if err != nil {
 				// bad message
 				// close the sequence
@@ -1560,7 +1562,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) error {
 
 	sequenceId := receivePack.Pack.SequenceId
 	contractId := self.receiveContract.contractId
-	messageId, err := UlidFromProto(receivePack.Pack.MessageId)
+	messageId, err := IdFromProto(receivePack.Pack.MessageId)
 	if err != nil {
 		return errors.New("Bad message_id")
 	}
@@ -1579,7 +1581,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) error {
 	return nil
 }
 
-func (self *ReceiveSequence) ack(messageId ulid.ULID) error {
+func (self *ReceiveSequence) ack(messageId Id) error {
 	ack := &protocol.Ack{
 		MessageId: messageId.Bytes(),
 	}
@@ -1610,8 +1612,8 @@ func (self *ReceiveSequence) Close() {
 
 
 type receiveItem struct {
-	contractId ulid.ULID
-	messageId ulid.ULID
+	contractId Id
+	messageId Id
 	
 	sequenceId uint64
 	head bool
@@ -1629,14 +1631,14 @@ type receiveItem struct {
 type receiveQueue struct {
 	orderedItems []*receiveItem
 	// message_id -> item
-	messageItems map[ulid.ULID]*receiveItem
+	messageItems map[Id]*receiveItem
 	byteCount int
 }
 
 func newReceiveQueue() *receiveQueue {
 	receiveQueue := &receiveQueue{
 		orderedItems: []*receiveItem{},
-		messageItems: map[ulid.ULID]*receiveItem{},
+		messageItems: map[Id]*receiveItem{},
 		byteCount: 0,
 	}
 	heap.Init(receiveQueue)
@@ -1649,7 +1651,7 @@ func (self *receiveQueue) add(item *receiveItem) {
 	self.byteCount += item.messageByteCount
 }
 
-func (self *receiveQueue) remove(messageId ulid.ULID) *receiveItem {
+func (self *receiveQueue) remove(messageId Id) *receiveItem {
 	item, ok := self.messageItems[messageId]
 	if !ok {
 		return nil
@@ -1733,7 +1735,7 @@ func (self *receiveQueue) Swap(i int, j int) {
 
 
 type sequenceContract struct {
-	contractId ulid.ULID
+	contractId Id
 	transferByteCount int
 	provideMode protocol.ProvideMode
 	
@@ -1747,7 +1749,7 @@ func newSequenceContract(contract *protocol.Contract) (*sequenceContract, error)
 	if err != nil {
 		return nil, err
 	}
-	contractId, err := UlidFromProto(storedContract.ContractId)
+	contractId, err := IdFromProto(storedContract.ContractId)
 	if err != nil {
 		return nil, err
 	}
@@ -1833,13 +1835,13 @@ func (self *PeerAudit) resend(byteCount int) {
 
 type SequencePeerAudit struct {
 	client *Client
-	peerId ulid.ULID
+	peerId Id
 	maxAuditDuration time.Duration
 
 	peerAudit *PeerAudit
 }
 
-func NewSequencePeerAudit(client *Client, peerId ulid.ULID, maxAuditDuration time.Duration) *SequencePeerAudit {
+func NewSequencePeerAudit(client *Client, peerId Id, maxAuditDuration time.Duration) *SequencePeerAudit {
 	return &SequencePeerAudit{
 		client: client,
 		peerId: peerId,
@@ -1899,12 +1901,12 @@ type Transport interface {
 	// call `rematchTransport` to re-evaluate the weights. this is used for a control loop where the weight is adjusted to match the actual distribution
 	RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32
 		
-	MatchesSend(destinationId ulid.ULID) bool
-	MatchesReceive(destinationId ulid.ULID) bool
+	MatchesSend(destinationId Id) bool
+	MatchesReceive(destinationId Id) bool
 
 	// request that p2p and direct connections be re-established that include the source
 	// connections will be denied for sources that have bad audits
-	Downgrade(sourceId ulid.ULID)
+	Downgrade(sourceId Id)
 }
 
 
@@ -1935,11 +1937,11 @@ func NewRouteManager(client *Client) *RouteManager {
 	}
 }
 
-func (self *RouteManager) DowngradeReceiverConnection(sourceId ulid.ULID) {
+func (self *RouteManager) DowngradeReceiverConnection(sourceId Id) {
 	self.readerMatchState.Downgrade(sourceId)
 }
 
-func (self *RouteManager) OpenMultiRouteWriter(destinationId ulid.ULID) MultiRouteWriter {
+func (self *RouteManager) OpenMultiRouteWriter(destinationId Id) MultiRouteWriter {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -1953,7 +1955,7 @@ func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
 	self.writerMatchState.CloseMultiRouteSelector(w.(*MultiRouteSelector))
 }
 
-func (self *RouteManager) OpenMultiRouteReader(destinationId ulid.ULID) MultiRouteReader {
+func (self *RouteManager) OpenMultiRouteReader(destinationId Id) MultiRouteReader {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -1995,22 +1997,22 @@ func (self *RouteManager) Close() {
 
 type MatchState struct {
 	weightedRoutes bool
-	matches func(Transport, ulid.ULID)(bool)
+	matches func(Transport, Id)(bool)
 
 	transportRoutes map[Transport][]Route
 
-	destinationMultiRouteSelectors map[ulid.ULID]map[*MultiRouteSelector]bool
+	destinationMultiRouteSelectors map[Id]map[*MultiRouteSelector]bool
 
-	transportMatchedDestinations map[Transport]map[ulid.ULID]bool
+	transportMatchedDestinations map[Transport]map[Id]bool
 }
 
 // note weighted routes typically are used by the sender not receiver
-func NewMatchState(weightedRoutes bool, matches func(Transport, ulid.ULID)(bool)) *MatchState {
+func NewMatchState(weightedRoutes bool, matches func(Transport, Id)(bool)) *MatchState {
 	return &MatchState{
 		weightedRoutes: weightedRoutes,
 		matches: matches,
-		destinationMultiRouteSelectors: map[ulid.ULID]map[*MultiRouteSelector]bool{},
-		transportMatchedDestinations: map[Transport]map[ulid.ULID]bool{},
+		destinationMultiRouteSelectors: map[Id]map[*MultiRouteSelector]bool{},
+		transportMatchedDestinations: map[Transport]map[Id]bool{},
 	}
 }
 
@@ -2035,7 +2037,7 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 	return netStats
 }
 
-func (self *MatchState) OpenMultiRouteSelector(destinationId ulid.ULID) *MultiRouteSelector {
+func (self *MatchState) OpenMultiRouteSelector(destinationId Id) *MultiRouteSelector {
 	ctx, cancel := context.WithCancel(context.Background())
 	multiRouteSelector := NewMultiRouteSelector(ctx, cancel, destinationId, self.weightedRoutes)
 
@@ -2049,7 +2051,7 @@ func (self *MatchState) OpenMultiRouteSelector(destinationId ulid.ULID) *MultiRo
 	for transport, routes := range self.transportRoutes {
 		matchedDestinations, ok := self.transportMatchedDestinations[transport]
 		if !ok {
-			matchedDestinations := map[ulid.ULID]bool{}
+			matchedDestinations := map[Id]bool{}
 			self.transportMatchedDestinations[transport] = matchedDestinations
 		}
 
@@ -2097,7 +2099,7 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 		delete(self.transportMatchedDestinations, transport)
 		delete(self.transportRoutes, transport)
 	} else {
-		matchedDestinations := map[ulid.ULID]bool{}
+		matchedDestinations := map[Id]bool{}
 
 		for destinationId, multiRouteSelectors := range self.destinationMultiRouteSelectors {
 			if transport.MatchesSend(destinationId) {
@@ -2126,7 +2128,7 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 	}
 }
 
-func (self *MatchState) Downgrade(sourceId ulid.ULID) {
+func (self *MatchState) Downgrade(sourceId Id) {
 	// FIXME request downgrade from the transports
 }
 
@@ -2135,7 +2137,7 @@ type MultiRouteSelector struct {
 	ctx context.Context
 	cancel context.CancelFunc
 
-	destinationId ulid.ULID
+	destinationId Id
 	weightedRoutes bool
 
 	transportUpdate *Monitor
@@ -2147,7 +2149,7 @@ type MultiRouteSelector struct {
 	routeWeight map[Route]float32
 }
 
-func NewMultiRouteSelector(ctx context.Context, cancel context.CancelFunc, destinationId ulid.ULID, weightedRoutes bool) *MultiRouteSelector {
+func NewMultiRouteSelector(ctx context.Context, cancel context.CancelFunc, destinationId Id, weightedRoutes bool) *MultiRouteSelector {
 	return &MultiRouteSelector{
 		ctx: ctx,
 		cancel: cancel,
@@ -2611,10 +2613,10 @@ type ContractManager struct {
 
 	provideSecretKeys map[protocol.ProvideMode][]byte
 
-	destinationContracts map[ulid.ULID]*ContractQueue
+	destinationContracts map[Id]*ContractQueue
 	
-	receiveNoContractClientIds map[ulid.ULID]bool
-	sendNoContractClientIds map[ulid.ULID]bool
+	receiveNoContractClientIds map[Id]bool
+	sendNoContractClientIds map[Id]bool
 
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
 }
@@ -2624,11 +2626,11 @@ func NewContractManager(client *Client, contractManagerSettings *ContractManager
 	// - messages to/from the platform (ControlId) do not need a contract
 	//   this is because the platform is needed to create contracts
 	// - messages to self do not need a contract
-	receiveNoContractClientIds := map[ulid.ULID]bool{
+	receiveNoContractClientIds := map[Id]bool{
 		ControlId: true,
 		client.ClientId(): true,
 	}
-	sendNoContractClientIds := map[ulid.ULID]bool{
+	sendNoContractClientIds := map[Id]bool{
 		ControlId: true,
 		client.ClientId(): true,
 	}
@@ -2637,7 +2639,7 @@ func NewContractManager(client *Client, contractManagerSettings *ContractManager
 		client: client,
 		contractManagerSettings: contractManagerSettings,
 		provideSecretKeys: map[protocol.ProvideMode][]byte{},
-		destinationContracts: map[ulid.ULID]*ContractQueue{},
+		destinationContracts: map[Id]*ContractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds: sendNoContractClientIds,
 		contractErrorCallbacks: NewCallbackList[ContractErrorFunction](),
@@ -2661,7 +2663,7 @@ func (self *ContractManager) removeContractErrorCallback(contractErrorCallback C
 }
 
 // ReceiveFunction
-func (self *ContractManager) receive(sourceId ulid.ULID, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	switch sourceId {
 	case ControlId:
 		for _, frame := range frames {
@@ -2743,7 +2745,7 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 	return hmac.Equal(storedContractHmac, expectedHmac)
 }
 
-func (self *ContractManager) SendNoContract(destinationId ulid.ULID) bool {
+func (self *ContractManager) SendNoContract(destinationId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2753,7 +2755,7 @@ func (self *ContractManager) SendNoContract(destinationId ulid.ULID) bool {
 	return false
 }
 
-func (self *ContractManager) ReceiveNoContract(sourceId ulid.ULID) bool {
+func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2763,7 +2765,7 @@ func (self *ContractManager) ReceiveNoContract(sourceId ulid.ULID) bool {
 	return false
 }
 
-func (self *ContractManager) TakeContract(ctx context.Context, destinationId ulid.ULID, timeout time.Duration) *protocol.Contract {
+func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id, timeout time.Duration) *protocol.Contract {
 	contractQueue := self.openContractQueue(destinationId)
 	defer self.closeContractQueue(destinationId)
 
@@ -2809,7 +2811,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 		return err
 	}
 
-	sourceId, err := UlidFromProto(storedContract.SourceId)
+	sourceId, err := IdFromProto(storedContract.SourceId)
 	if err != nil {
 		return err
 	}
@@ -2818,7 +2820,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 		return errors.New("Contract source must be this client.")
 	}
 
-	destinationId, err := UlidFromProto(storedContract.DestinationId)
+	destinationId, err := IdFromProto(storedContract.DestinationId)
 	if err != nil {
 		return err
 	}
@@ -2830,7 +2832,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	return nil
 }
 
-func (self *ContractManager) openContractQueue(destinationId ulid.ULID) *ContractQueue {
+func (self *ContractManager) openContractQueue(destinationId Id) *ContractQueue {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2844,7 +2846,7 @@ func (self *ContractManager) openContractQueue(destinationId ulid.ULID) *Contrac
 	return contractQueue
 }
 
-func (self *ContractManager) closeContractQueue(destinationId ulid.ULID) {
+func (self *ContractManager) closeContractQueue(destinationId Id) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2858,7 +2860,7 @@ func (self *ContractManager) closeContractQueue(destinationId ulid.ULID) {
 	}
 }
 
-func (self *ContractManager) CreateContract(destinationId ulid.ULID) {
+func (self *ContractManager) CreateContract(destinationId Id) {
 	// look at destinationContracts and last contract to get previous contract id
 	createContract := &protocol.CreateContract{
 		DestinationId: destinationId.Bytes(),
@@ -2867,7 +2869,7 @@ func (self *ContractManager) CreateContract(destinationId ulid.ULID) {
 	self.client.SendControl(ToFrame(createContract), nil)
 }
 
-func (self *ContractManager) Complete(contractId ulid.ULID, ackedByteCount int, unackedByteCount int) {
+func (self *ContractManager) Complete(contractId Id, ackedByteCount int, unackedByteCount int) {
 	closeContract := &protocol.CloseContract{
 		ContractId: contractId.Bytes(),
 		AckedByteCount: uint32(ackedByteCount),
