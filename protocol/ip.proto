@@ -5,6 +5,6 @@ option go_package = "bringyour.com/protocol";
 
 
 // fixme parse the packet
-message IpPacket {
-	
-}
+//message IpPacket {
+//	
+//}

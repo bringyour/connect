@@ -7,14 +7,20 @@ option go_package = "bringyour.com/protocol";
 // frames are used at all levels
 // flatten all message types into this enum
 enum MessageType {
-    PACK = 0;
-    ACK = 1;
-    CONTRACT = 2;
-    PROVIDE = 3;
-    CREATE_CONTRACT = 4;
-    CREATE_CONTRACT_RESULT = 5;
-    CLOSE_CONTRACT = 6;
-    PEER_AUDIT = 7;
+    TransferPack = 0;
+    TransferAck = 1;
+    TransferContract = 2;
+    TransferProvide = 3;
+    TransferAuth = 4;
+    TransferCreateStream = 5;
+    TransferCreateStreamResult = 6;
+    TransferCloseStream = 7;
+    TransferStreamOpen = 8;
+    TransferStreamClose = 9;
+    TransferCreateContract = 10;
+    TransferCreateContractResult = 11;
+    TransferCloseContract = 12;
+    TransferPeerAudit = 13;
 }
 
 
@@ -22,3 +28,4 @@ message Frame {
     MessageType message_type = 1;
     bytes message_bytes = 2;
 }
+

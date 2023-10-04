@@ -65,12 +65,15 @@ message Ack {
 // there is no response. the other side will close the connection if no auth
 // no auth can happen if the jwt is not valid, or the client_id is not associated with the jwt
 // note that association of the client_id to the jwt uses the api (see openapi spec in the api dir)
-message ControlAuth {
-    bytes by_jwt = 1;
-    // ulid
-    bytes client_id = 2;
+message Auth {
+    // the jwt will have the client_id in it
+    string by_jwt = 1;
     // the version of the app, a semver managed by warp
-    string app_version = 3;
+    string app_version = 2;
+
+    // the pair (client_id, instance_id) represents a single in memory instance
+    // this helps the platform distinguish multiple instances from multiple transports of the same instance
+    bytes instance_id = 3;
 }
 
 

@@ -8,6 +8,7 @@ import (
     "strconv"
     "fmt"
     "strings"
+    "errors"
 
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
@@ -16,43 +17,21 @@ import (
 )
 
 
+/*
+implements user-space NAT (UNAT) and packet inspection
+The UNAT emulates a raw socket using user-space sockets.
+
+*/
+
+
 var ipLog = LogFn(LogLevelDebug, "ip")
 
+const Ipv4HeaderSizeWithoutExtensions = 20
+const Ipv6HeaderSize = 40
+const UdpHeaderSize = 8
+const TcpHeaderSizeWithoutExtensions = 20
 
-// TODO as a test call RemoteUserNat directly from an Android VPN
-// TODO make sure to exclude the app from the vpn by setting the network of the app to null
-
-// TODO LocalUserNat received packet, runs security checks, and then calls callback to pass on the packet
-
-
-// apply userspacenat
-
-// buffer (processes raw packets in flight):
-// 1. require tls
-// 2. inspect sni. reject self signed certs. extract stream information and expose it
-// 3. 
-
-// type AnalysisEvent 
-// source Path
-// - errors, transfer stats, etc
-
-
-
-// TODO
-// - tcp timeout
-// - (DONE) mtu calculation
-// - (DONE) udp logging
-// - (DONE; this is all logging overhead) udp performance
-// - global logging level
-
-
-const IPv4HeaderSizeWithoutExtensions = 20
-const IPv6HeaderSize = 40
-const UDPHeaderSize = 8
-const TCPHeaderSizeWithoutExtensions = 20
-
-
-// FIXME logging mode
+const debugVerifyHeaders = false
 
 
 func DefaultUdpBufferSettings() *UdpBufferSettings {
@@ -709,7 +688,7 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolUDP,
         }
-        headerSize += IPv4HeaderSizeWithoutExtensions
+        headerSize += Ipv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -718,7 +697,7 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolUDP,
         }
-        headerSize += IPv6HeaderSize
+        headerSize += Ipv6HeaderSize
     }
 
     udp := layers.UDP{
@@ -726,12 +705,29 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
         DstPort: self.sourcePort,
     }
     udp.SetNetworkLayerForChecksum(ip)
-    headerSize += UDPHeaderSize
+    headerSize += UdpHeaderSize
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
         FixLengths: true,
     }
+
+
+    if debugVerifyHeaders {
+        buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
+        err := gopacket.SerializeLayers(buffer, options,
+            ip.(gopacket.SerializableLayer),
+            &udp,
+        )
+        if err != nil {
+            return nil, err
+        }
+        packetHeaders := buffer.Bytes()
+        if headerSize != len(packetHeaders) {
+            return nil, errors.New(fmt.Sprintf("Header check failed %d <> %d", headerSize, len(packetHeaders)))
+        }
+    }
+
 
     if headerSize + n <= mtu {
         buffer := gopacket.NewSerializeBufferExpectedSize(headerSize + n, 0)
@@ -939,8 +935,15 @@ func (self *TcpBuffer[BufferId]) tcpReceive(
     sequence.receive(provideMode, tcp)
 }
 
+/*
+** Important implementation note **
+In this implementation, packet flow from the UNAT to the source
+is assumed to never require retransmits. The retrasmit logic
+is not implemented.
+This is a safe assumption when moving packets from local raw socket
+to the UNAT via `transfer`, which is lossless and in-order.
 
-
+*/
 type TcpSequence struct {
     log LogFunction
     ctx context.Context
@@ -1157,7 +1160,6 @@ func (self *TcpSequence) Run() {
         }
     }()
 
-    // FIXME idle condition
     for receiveIter := 0; ; receiveIter += 1 {
         checkpointId := self.idleCondition.Checkpoint()
         select {
@@ -1305,7 +1307,7 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
-        headerSize += IPv4HeaderSizeWithoutExtensions
+        headerSize += Ipv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1314,7 +1316,7 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
-        headerSize += IPv6HeaderSize
+        headerSize += Ipv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1327,7 +1329,7 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
-    headerSize += TCPHeaderSizeWithoutExtensions
+    headerSize += TcpHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
@@ -1360,7 +1362,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
-        headerSize += IPv4HeaderSizeWithoutExtensions
+        headerSize += Ipv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1369,7 +1371,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
-        headerSize += IPv6HeaderSize
+        headerSize += Ipv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1382,7 +1384,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
-    headerSize += TCPHeaderSizeWithoutExtensions
+    headerSize += TcpHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
@@ -1415,7 +1417,7 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
-        headerSize += IPv4HeaderSizeWithoutExtensions
+        headerSize += Ipv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1424,7 +1426,7 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
-        headerSize += IPv6HeaderSize
+        headerSize += Ipv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1436,7 +1438,7 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
-    headerSize += TCPHeaderSizeWithoutExtensions
+    headerSize += TcpHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
@@ -1469,7 +1471,7 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
             DstIP: self.sourceIp,
             Protocol: layers.IPProtocolTCP,
         }
-        headerSize += IPv4HeaderSizeWithoutExtensions
+        headerSize += Ipv4HeaderSizeWithoutExtensions
     case 6:
         ip = &layers.IPv6{
             Version: 6,
@@ -1478,7 +1480,7 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
             DstIP: self.sourceIp,
             NextHeader: layers.IPProtocolTCP,
         }
-        headerSize += IPv6HeaderSize
+        headerSize += Ipv6HeaderSize
     }
 
     tcp := layers.TCP{
@@ -1490,11 +1492,26 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)
-    headerSize += TCPHeaderSizeWithoutExtensions
+    headerSize += TcpHeaderSizeWithoutExtensions
 
     options := gopacket.SerializeOptions{
         ComputeChecksums: true,
         FixLengths: true,
+    }
+
+    if debugVerifyHeaders {
+        buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
+        err := gopacket.SerializeLayers(buffer, options,
+            ip.(gopacket.SerializableLayer),
+            &tcp,
+        )
+        if err != nil {
+            return nil, err
+        }
+        packetHeaders := buffer.Bytes()
+        if headerSize != len(packetHeaders) {
+            return nil, errors.New(fmt.Sprintf("Header check failed %d <> %d", headerSize, len(packetHeaders)))
+        }
     }
 
     if headerSize + n <= mtu {

@@ -39,11 +39,19 @@ Sends frames to destinations with properties:
 */
 
 /*
-Each route should apply the forwarding ACL:
+Each transport should apply the forwarding ACL:
 - reject if source id does not match network id
 - reject if not an active contract between sender and receiver
 
 */
+
+
+// The transfer speed of each client is limited by its slowest destination.
+// All traffic is multiplexed to a single connection, and blocking
+// the connection ultimately limits the rate of `SendWithTimeout`.
+// In this a client is similar to a socket. Multiple clients
+// can be active in parallel, each limited by their slowest destination.
+
 
 type AckFunction = func(err error)
 // provideMode is the mode of where these frames are from: network, friends and family, public
@@ -70,6 +78,8 @@ var DirectStreamId = Id([]byte{
 	0x00, 0x00, 0x00, 0x00,
 })
 
+
+const DefaultSendBufferSize = 32
 
 
 func DefaultSendBufferSettings() *SendBufferSettings {
@@ -183,6 +193,10 @@ type Client struct {
 	forwardCallbacks *CallbackList[ForwardFunction]
 }
 
+func NewClientWithDefaults(clientId Id, ctx context.Context) *Client {
+	return NewClient(clientId, ctx, DefaultSendBufferSize)
+}
+
 func NewClient(clientId Id, ctx context.Context, sendBufferSize int) *Client {
 	return &Client{
 		clientId: clientId,
@@ -212,6 +226,15 @@ func (self *Client) ClientId() Id {
 // all sends create a return nat
 // send.initNat (source, destination) returnSource, returnDestination
 // receiveSequence.initNat(returnSource, returnDestination, source)
+
+
+func (self *Client) Forward(transferFrameBytes []byte) {
+
+	// FIXME
+	// TODO: forward should put the message on the transport, but not run the ack logic
+	// FIXME just use Send, and send internally decides whether to use send buffer or forward buffer
+}
+
 
 // FIXME multi-hop uses destinationIds []Id, peeled back at each hop
 // FIXME multi-hop multi_hop_destination_key, multi_hop_source_key allow nat lookups to go back to source
@@ -374,7 +397,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 				// TODO apply source verification+decryption with pke
 
 				switch frame.GetMessageType() {
-				case protocol.MessageType_ACK:
+				case protocol.MessageType_TransferAck:
 					var ack protocol.Ack
 					if err := proto.Unmarshal(frame.GetMessageBytes(), &ack); err != nil {
 						// bad protobuf
@@ -384,7 +407,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 						continue
 					}
 					sendBuffer.Ack(sourceId, &ack)
-				case protocol.MessageType_PACK:
+				case protocol.MessageType_TransferPack:
 					var pack protocol.Pack
 					if err := proto.Unmarshal(frame.GetMessageBytes(), &pack); err != nil {
 						// bad protobuf
@@ -859,7 +882,7 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 
 			// append the contract to the sequence
 			err := self.send(&protocol.Frame{
-				MessageType: protocol.MessageType_CONTRACT,
+				MessageType: protocol.MessageType_TransferContract,
 				MessageBytes: contractMessageBytes,
 			}, nil)
 			return err == nil
@@ -920,14 +943,15 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) e
 
 	packBytes, _ := proto.Marshal(pack)
 
+	clientId := self.client.ClientId()
 	transferFrame := &protocol.TransferFrame{
 		TransferPath: &protocol.TransferPath{
 			DestinationId: self.destinationId.Bytes(),
-			SourceId: self.client.ClientId().Bytes(),
+			SourceId: clientId.Bytes(),
 			StreamId: DirectStreamId.Bytes(),
 		},
 		Frame: &protocol.Frame{
-			MessageType: protocol.MessageType_PACK,
+			MessageType: protocol.MessageType_TransferPack,
 			MessageBytes: packBytes,
 		},
 	}
@@ -1369,7 +1393,7 @@ func (self *ReceiveSequence) Run() {
 
 				// register contracts
 				for _, frame := range item.frames {
-					if frame.MessageType == protocol.MessageType_CONTRACT {
+					if frame.MessageType == protocol.MessageType_TransferContract {
 						// close out the previous contract
 						if self.receiveContract != nil {
 							self.contractManager.Complete(
@@ -1588,14 +1612,15 @@ func (self *ReceiveSequence) ack(messageId Id) error {
 
 	ackBytes, _ := proto.Marshal(ack)
 
+	clientId := self.client.ClientId()
 	transferFrame := &protocol.TransferFrame{
 		TransferPath: &protocol.TransferPath{
 			DestinationId: self.sourceId.Bytes(),
-			SourceId: self.client.ClientId().Bytes(),
+			SourceId: clientId.Bytes(),
 			StreamId: DirectStreamId.Bytes(),
 		},
 		Frame: &protocol.Frame{
-			MessageType: protocol.MessageType_ACK,
+			MessageType: protocol.MessageType_TransferAck,
 			MessageBytes: ackBytes,
 		},
 	}
@@ -1870,7 +1895,7 @@ func (self *SequencePeerAudit) Complete() {
 		return
 	}
 
-	self.client.SendControl(ToFrame(&protocol.PeerAudit{
+	self.client.SendControl(RequireToFrame(&protocol.PeerAudit{
 		PeerId: self.peerId.Bytes(),
 		Duration: uint32(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
 		Abuse: self.peerAudit.Abuse,
@@ -1893,6 +1918,7 @@ type Route = chan []byte
 
 
 type Transport interface {
+	// lower priority takes precedence
 	Priority() int
 	
 	CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool
@@ -1900,7 +1926,7 @@ type Transport interface {
 	// the remaining are the lower priority transports
 	// call `rematchTransport` to re-evaluate the weights. this is used for a control loop where the weight is adjusted to match the actual distribution
 	RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32
-		
+	
 	MatchesSend(destinationId Id) bool
 	MatchesReceive(destinationId Id) bool
 
@@ -2668,7 +2694,7 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 	case ControlId:
 		for _, frame := range frames {
 			switch frame.MessageType {
-			case protocol.MessageType_CREATE_CONTRACT_RESULT:
+			case protocol.MessageType_TransferCreateContractResult:
 				var createContractResult protocol.CreateContractResult
 				if err := proto.Unmarshal(frame.MessageBytes, &createContractResult); err != nil {
 					if contractError := createContractResult.Error; contractError != nil {
@@ -2727,7 +2753,7 @@ func (self *ContractManager) setProvideModes(provideModes map[protocol.ProvideMo
 	provide := &protocol.Provide{
 		Keys: provideKeys,
 	}
-	self.client.SendControl(ToFrame(provide), nil)
+	self.client.SendControl(RequireToFrame(provide), nil)
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
@@ -2866,7 +2892,7 @@ func (self *ContractManager) CreateContract(destinationId Id) {
 		DestinationId: destinationId.Bytes(),
 		TransferByteCount: uint32(self.contractManagerSettings.StandardTransferByteCount),
 	}
-	self.client.SendControl(ToFrame(createContract), nil)
+	self.client.SendControl(RequireToFrame(createContract), nil)
 }
 
 func (self *ContractManager) Complete(contractId Id, ackedByteCount int, unackedByteCount int) {
@@ -2875,7 +2901,7 @@ func (self *ContractManager) Complete(contractId Id, ackedByteCount int, unacked
 		AckedByteCount: uint32(ackedByteCount),
 		UnackedByteCount: uint32(unackedByteCount),
 	}
-	self.client.SendControl(ToFrame(closeContract), nil)
+	self.client.SendControl(RequireToFrame(closeContract), nil)
 }
 
 func (self *ContractManager) Close() {

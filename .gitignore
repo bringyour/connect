@@ -1,2 +1,5 @@
 **/build
 **/.DS_Store
+
+connectctl/connectctl
+test-ip-local/test-ip-local
