@@ -142,8 +142,8 @@ func (self *PlatformTransport) Run() {
 	receiveTransport := newPlatformReceiveTransport()
 
 	defer func() {
-		self.routeManager.removeTransport(sendTransport)
-		self.routeManager.removeTransport(receiveTransport)
+		self.routeManager.RemoveTransport(sendTransport)
+		self.routeManager.RemoveTransport(receiveTransport)
 		sendTransport.Close()
 		receiveTransport.Close()
 	}()
@@ -190,12 +190,12 @@ func (self *PlatformTransport) Run() {
 		func() {
 			handleCtx, handleCancel := context.WithCancel(self.ctx)
 
-			self.routeManager.updateTransport(sendTransport, []Route{sendTransport.send})
-			self.routeManager.updateTransport(receiveTransport, []Route{receiveTransport.receive})
+			self.routeManager.UpdateTransport(sendTransport, []Route{sendTransport.send})
+			self.routeManager.UpdateTransport(receiveTransport, []Route{receiveTransport.receive})
 
 			closeHandle := func() {
-				self.routeManager.removeTransport(sendTransport)
-				self.routeManager.removeTransport(receiveTransport)
+				self.routeManager.RemoveTransport(sendTransport)
+				self.routeManager.RemoveTransport(receiveTransport)
 				handleCancel()
 				ws.Close()
 			}

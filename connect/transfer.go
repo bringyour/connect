@@ -1995,7 +1995,7 @@ func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
 	self.readerMatchState.CloseMultiRouteSelector(r.(*MultiRouteSelector))
 }
 
-func (self *RouteManager) updateTransport(transport Transport, routes []Route) {
+func (self *RouteManager) UpdateTransport(transport Transport, routes []Route) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2003,8 +2003,8 @@ func (self *RouteManager) updateTransport(transport Transport, routes []Route) {
 	self.readerMatchState.updateTransport(transport, routes)
 }
 
-func (self *RouteManager) removeTransport(transport Transport) {
-	self.updateTransport(transport, nil)
+func (self *RouteManager) RemoveTransport(transport Transport) {
+	self.UpdateTransport(transport, nil)
 }
 
 func (self *RouteManager) getTransportStats(transport Transport) (writerStats *RouteStats, readerStats *RouteStats) {
@@ -2645,6 +2645,10 @@ type ContractManager struct {
 	sendNoContractClientIds map[Id]bool
 
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
+}
+
+func NewContractManagerWithDefaults(client *Client) *ContractManager {
+	return NewContractManager(client, DefaultContractManagerSettings())
 }
 
 func NewContractManager(client *Client, contractManagerSettings *ContractManagerSettings) *ContractManager {
