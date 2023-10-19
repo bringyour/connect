@@ -77,11 +77,13 @@ message Auth {
 }
 
 
+// each mode implies all the lower modes
 enum ProvideMode {
-    NETWORK = 0;
-    FF = 1;
-    PUBLIC = 2;
-    STREAM = 3;
+    None = 0; // this is interpreted the same as a `null` provide mode
+    Network = 1;
+    FriendsAndFamily = 2;
+    Public = 3;
+    Stream = 4;
 }
 
 
@@ -151,8 +153,9 @@ message CreateContract {
 
 
 enum ContractError {
-    CONTRACT_NO_PERMISSION = 0;
-    CONTRACT_INSUFFICIENT_BALANCE = 1;
+    NoPermission = 0;
+    InsufficientBalance = 1;
+    Setup = 2;
 }
 
 
