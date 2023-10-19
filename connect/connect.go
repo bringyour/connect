@@ -18,8 +18,7 @@ func (self *Id) Bytes() []byte {
 }
 
 
-// FIXME rename to IdFromSlice
-func IdFromProto(idBytes []byte) (Id, error) {
+func IdFromBytes(idBytes []byte) (Id, error) {
 	if len(idBytes) != 16 {
 		return Id{}, errors.New("Id must be 16 bytes")
 	}

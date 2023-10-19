@@ -58,6 +58,7 @@ type AckFunction = func(err error)
 // provideMode nil means no contract
 type ReceiveFunction = func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode)
 type ForwardFunction = func(sourceId Id, destinationId Id, transferFrameBytes []byte)
+type ContractErrorFunction = func(protocol.ContractError)
 
 
 // destination id for control messages
@@ -79,21 +80,51 @@ var DirectStreamId = Id([]byte{
 })
 
 
-const DefaultSendBufferSize = 32
+const DefaultClientBufferSize = 32
 
 
 func DefaultSendBufferSettings() *SendBufferSettings {
-	// FIXME
-	return nil
+	return &SendBufferSettings{
+		ContractTimeout: 30 * time.Second,
+		ContractRetryInterval: 5 * time.Second,
+		ResendInterval: 2 * time.Second,
+		AckTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second,
+		SequenceBufferSize: 30,
+		ResendQueueMaxByteCount: 1024 * 1024,
+		MinMessageByteCount: 1,
+	}
 }
 
 
 func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
-	// FIXME
-	return nil
+	return &ReceiveBufferSettings {
+		AckInterval: 5 * time.Second,
+		GapTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second,
+		SequenceBufferSize: 30,
+		ReceiveQueueMaxByteCount: 1024 * 1024,
+		MinMessageByteCount: 1,
+		ResendAbuseThreshold: 4,
+		ResendAbuseMultiple: 0.5,
+		MaxPeerAuditDuration: 60 * time.Second,
+	}
 }
 
 
+func DefaultForwardBufferSettings() *ForwardBufferSettings {
+	return &ForwardBufferSettings {
+		IdleTimeout: 120 * time.Second,
+		SequenceBufferSize: 30,
+	}
+}
+
+
+func DefaultContractManagerSettings() *ContractManagerSettings {
+	return &ContractManagerSettings{
+		StandardTransferByteCount: 8 * 1024 * 1024 * 1024,
+	}
+}
 
 
 // comparable
@@ -103,107 +134,70 @@ type TransferPath struct {
 }
 
 
-// func ParseProtocol(protcolTransferPath protocol.TransferPath) (transferPath *TransferPath, err error) {
-
-// }
-
-// func Protocol() *protocol.TransferPath {
-
-// }
-
-
-
-// todo implement comparable
+// comparable
 type Path struct {
 	ClientId Id
 	StreamId Id
 }
 
 
-/*
-type StreamManager struct {
-
+type SendPack struct {
+	// frame and destination is repacked by the send buffer into a Pack,
+	// with destination and frame from the tframe, and other pack properties filled in by the buffer
+	Frame *protocol.Frame
+	DestinationId Id
+	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
+	AckCallback AckFunction
+	MessageByteCount int
 }
 
-// this sets up nats along the path
-func CreateStream(destinationIds []Id) {
 
+type ReceivePack struct {
+	SourceId Id
+	Pack *protocol.Pack
+	ReceiveCallback ReceiveFunction
+	MessageByteCount int
 }
 
-func TakePath(destinationIds []Id, timeout time.Duration) (*Path, error) {
 
+type ForwardPack struct {
+	DestinationId Id
+	TransferFrameBytes []byte
 }
 
-func CreateAndTakePath(destinationIds []Id, timeout time.Duration) (*Path, error) {
-	self.CreateStream(destinationIds)
-	return self.TakePath(destinationIds, timeout)
-}
-
-*/
-
-
-// send *Path
-// receive *Path
-
-
-
-/*
-// stream_ids must be globally unique to work with multi hop routing (all hops charge the sender)
-// so a stream id is a pair of client_id, local_id
-
-// implement comparable
-type StreamId struct {
-	localId Id
-}
-
-func NewStreamId(clientId Id) *StreamId {
-
-}
-
-func ParseStreamId(streamIdBytes []byte) *StreamId {
-	
-}
-
-func Bytes() []byte {
-
-}
-*/
-
-
-
-
-
-
-// FIXME support the context deadline
 
 // note all callbacks are wrapped to check for nil and recover from errors
-
 type Client struct {
 	clientId Id
 
+	// TODO support the context deadline
 	ctx context.Context
 	cancel context.CancelFunc
 
 	sendBufferSettings *SendBufferSettings
 	receiveBufferSettings *ReceiveBufferSettings
+	forwardBufferSettings *ForwardBufferSettings
 
 	sendPacks chan *SendPack
+	forwardPacks chan *ForwardPack
 
 	receiveCallbacks *CallbackList[ReceiveFunction]
 	forwardCallbacks *CallbackList[ForwardFunction]
 }
 
 func NewClientWithDefaults(clientId Id, ctx context.Context) *Client {
-	return NewClient(clientId, ctx, DefaultSendBufferSize)
+	return NewClient(clientId, ctx, DefaultClientBufferSize)
 }
 
-func NewClient(clientId Id, ctx context.Context, sendBufferSize int) *Client {
+func NewClient(clientId Id, ctx context.Context, clientBufferSize int) *Client {
 	return &Client{
 		clientId: clientId,
 		ctx: ctx,
 		sendBufferSettings: DefaultSendBufferSettings(),
 		receiveBufferSettings: DefaultReceiveBufferSettings(),
-		sendPacks: make(chan *SendPack, sendBufferSize),
+		forwardBufferSettings: DefaultForwardBufferSettings(),
+		sendPacks: make(chan *SendPack, clientBufferSize),
+		forwardPacks: make(chan *ForwardPack, clientBufferSize),
 		receiveCallbacks: NewCallbackList[ReceiveFunction](),
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
@@ -213,31 +207,50 @@ func (self *Client) ClientId() Id {
 	return self.clientId
 }
 
-// FIXME attach a source path to each sendPack to allow forwarding
+func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.Duration) bool {
+	var filteredTransferFrame protocol.FilteredTransferFrame
+	if err := proto.Unmarshal(transferFrameBytes, &filteredTransferFrame); err != nil {
+		// bad protobuf
+		return false
+	}
+	destinationId, err := IdFromBytes(filteredTransferFrame.GetDestinationId())
+	if err != nil {
+		// bad protobuf
+		return false
+	}
 
-// FIXME need a ForwardWithTimeout function that allows setting a source path
-
-// send seqeunce allocates the nat id/allows fast retrieval. warm the receive sequence with the nat on first allocation
-// 
-// receive.initNat(source, natDestination)
-// key sequence by (source, dest)? TransferPath
-
-
-// all sends create a return nat
-// send.initNat (source, destination) returnSource, returnDestination
-// receiveSequence.initNat(returnSource, returnDestination, source)
-
-
-func (self *Client) Forward(transferFrameBytes []byte) {
-
-	// FIXME
-	// TODO: forward should put the message on the transport, but not run the ack logic
-	// FIXME just use Send, and send internally decides whether to use send buffer or forward buffer
+	forwardPack := &ForwardPack{
+		DestinationId: destinationId,
+		TransferFrameBytes: transferFrameBytes,
+	}
+	if timeout < 0 {
+		self.forwardPacks <- forwardPack
+		return true
+	} else if 0 == timeout {
+		select {
+		case self.forwardPacks <- forwardPack:
+			return true
+		default:
+			// full
+			return false
+		}
+	} else {
+		select {
+		case <- self.ctx.Done():
+			return false
+		case self.forwardPacks <- forwardPack:
+			return true
+		case <- time.After(timeout):
+			// full
+			return false
+		}
+	}
 }
 
+func (self *Client) Forward(transferFrameBytes []byte) {
+	self.ForwardWithTimeout(transferFrameBytes, -1)
+}
 
-// FIXME multi-hop uses destinationIds []Id, peeled back at each hop
-// FIXME multi-hop multi_hop_destination_key, multi_hop_source_key allow nat lookups to go back to source
 func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId Id, ackCallback AckFunction, timeout time.Duration) bool {
 	safeAckCallback := func(err error) {
 		if ackCallback != nil {
@@ -344,6 +357,8 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 	defer sendBuffer.Close()
 	receiveBuffer := NewReceiveBuffer(self.ctx, self, routeManager, contractManager, self.receiveBufferSettings)
 	defer receiveBuffer.Close()
+	forwardBuffer := NewForwardBuffer(self.ctx, self, routeManager, contractManager, self.forwardBufferSettings)
+	defer forwardBuffer.Close()
 
 	// receive
 	go func() {
@@ -371,12 +386,12 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 				// bad protobuf (unexpected, see route note above)
 				continue
 			}
-			sourceId, err := IdFromProto(filteredTransferFrame.GetSourceId())
+			sourceId, err := IdFromBytes(filteredTransferFrame.GetSourceId())
 			if err != nil {
 				// bad protobuf (unexpected, see route note above)
 				continue
 			}
-			destinationId, err := IdFromProto(filteredTransferFrame.GetDestinationId())
+			destinationId, err := IdFromBytes(filteredTransferFrame.GetDestinationId())
 			if err != nil {
 				// bad protobuf (unexpected, see route note above)
 				continue
@@ -437,22 +452,42 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 		}
 	}()
 
+	// forward
+	go func() {
+		for {
+			select {
+			case <- self.ctx.Done():
+				return
+			case forwardPack := <- self.forwardPacks:
+				forwardBuffer.Pack(forwardPack)
+			}
+		}
+	}()
+
 	// send
 	for {
 		select {
 		case <- self.ctx.Done():
 			return
 		case sendPack := <- self.sendPacks:
-			// FIXME if destination is self, run as a receive
-			/*
-			receiveBuffer.Pack(&ReceivePack{
-				SourceId: sourceId,
-				Pack: &pack,
-				ReceiveCallback: self.receive,
-				MessageByteCount: messageByteCount,
-			})
-			/*/
-			sendBuffer.Pack(sendPack)
+			if sendPack.DestinationId == self.clientId {
+				// loopback
+				func() {
+					defer func() {
+						if err := recover(); err != nil {
+							sendPack.AckCallback(err.(error))
+						}
+					}()
+					self.receive(
+						self.clientId,
+						[]*protocol.Frame{sendPack.Frame},
+						protocol.ProvideMode_Network,
+					)
+					sendPack.AckCallback(nil)
+				}()
+			} else {
+				sendBuffer.Pack(sendPack)
+			}
 		}
 	}
 }
@@ -476,20 +511,9 @@ type SendBufferSettings struct {
 
 	SequenceBufferSize int
 
-	MinMessageByteCount int
-
 	ResendQueueMaxByteCount int
-}
 
-
-type SendPack struct {
-	// frame and destination is repacked by the send buffer into a Pack,
-	// with destination and frame from the tframe, and other pack properties filled in by the buffer
-	Frame *protocol.Frame
-	DestinationId Id
-	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
-	AckCallback AckFunction
-	MessageByteCount int
+	MinMessageByteCount int
 }
 
 
@@ -774,7 +798,7 @@ func (self *SendSequence) Run() {
 			case <- self.ctx.Done():
 				return
 			case ack := <- self.acks:
-				messageId, err := IdFromProto(ack.MessageId)
+				messageId, err := IdFromBytes(ack.MessageId)
 				if err != nil {
 					// bad message
 					// close sequence
@@ -790,7 +814,7 @@ func (self *SendSequence) Run() {
 			case <- self.ctx.Done():
 				return
 			case ack := <- self.acks:
-				messageId, err := IdFromProto(ack.MessageId)
+				messageId, err := IdFromBytes(ack.MessageId)
 				if err != nil {
 					// bad message
 					// close sequence
@@ -822,7 +846,7 @@ func (self *SendSequence) Run() {
 						// close the sequence
 						return
 					}
-					// else there pending updates
+					// else there are pending updates
 				}
 			}
 		}
@@ -1139,23 +1163,14 @@ type ReceiveBufferSettings struct {
 	// this is the max memory used per source
 	ReceiveQueueMaxByteCount int
 
+	MinMessageByteCount int
+
 	// min number of resends before checking abuse
 	ResendAbuseThreshold int
 	// max legit fraction of sends that are resends
 	ResendAbuseMultiple float32
 
-
 	MaxPeerAuditDuration time.Duration
-
-	MinMessageByteCount int
-}
-
-
-type ReceivePack struct {
-	SourceId Id
-	Pack *protocol.Pack
-	ReceiveCallback ReceiveFunction
-	MessageByteCount int
 }
 
 
@@ -1465,7 +1480,7 @@ func (self *ReceiveSequence) Run() {
 		case <- self.ctx.Done():
 			return
 		case receivePack := <- self.packs:
-			messageId, err := IdFromProto(receivePack.Pack.MessageId)
+			messageId, err := IdFromBytes(receivePack.Pack.MessageId)
 			if err != nil {
 				// bad message
 				// close the sequence
@@ -1544,7 +1559,7 @@ func (self *ReceiveSequence) Run() {
 					// close the sequence
 					return
 				}
-				// else there pending updates
+				// else there are pending updates
 			}
 		}
 
@@ -1586,7 +1601,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) error {
 
 	sequenceId := receivePack.Pack.SequenceId
 	contractId := self.receiveContract.contractId
-	messageId, err := IdFromProto(receivePack.Pack.MessageId)
+	messageId, err := IdFromBytes(receivePack.Pack.MessageId)
 	if err != nil {
 		return errors.New("Bad message_id")
 	}
@@ -1774,7 +1789,7 @@ func newSequenceContract(contract *protocol.Contract) (*sequenceContract, error)
 	if err != nil {
 		return nil, err
 	}
-	contractId, err := IdFromProto(storedContract.ContractId)
+	contractId, err := IdFromBytes(storedContract.ContractId)
 	if err != nil {
 		return nil, err
 	}
@@ -1802,6 +1817,178 @@ func (self *sequenceContract) ack(byteCount int) {
 	}
 	self.unackedByteCount -= byteCount
 	self.ackedByteCount += byteCount
+}
+
+
+type ForwardBufferSettings struct {
+	IdleTimeout time.Duration
+
+	SequenceBufferSize int
+}
+
+
+type ForwardBuffer struct {
+	ctx context.Context
+	client *Client
+	contractManager *ContractManager
+	routeManager *RouteManager
+
+	forwardBufferSettings *ForwardBufferSettings
+
+	mutex sync.Mutex
+	// destination id -> forward sequence
+	forwardSequences map[Id]*ForwardSequence
+}
+
+func NewForwardBuffer(ctx context.Context,
+		client *Client,
+		routeManager *RouteManager,
+		contractManager *ContractManager,
+		forwardBufferSettings *ForwardBufferSettings) *ForwardBuffer {
+	return &ForwardBuffer{
+		ctx: ctx,
+		client: client,
+		routeManager: routeManager,
+		contractManager: contractManager,
+		forwardBufferSettings: forwardBufferSettings,
+		forwardSequences: map[Id]*ForwardSequence{},
+	}
+}
+
+func (self *ForwardBuffer) Pack(forwardPack *ForwardPack) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	initForwardSequence := func()(*ForwardSequence) {
+		forwardSequence, ok := self.forwardSequences[forwardPack.DestinationId]
+		if ok {
+			return forwardSequence
+		}
+		forwardSequence = NewForwardSequence(
+			self.ctx,
+			self.client,
+			self.routeManager,
+			self.contractManager,
+			forwardPack.DestinationId,
+			self.forwardBufferSettings,
+		)
+		self.forwardSequences[forwardPack.DestinationId] = forwardSequence
+		go func() {
+			forwardSequence.Run()
+
+			self.mutex.Lock()
+			defer self.mutex.Unlock()
+			// clean up
+			if forwardSequence == self.forwardSequences[forwardPack.DestinationId] {
+				delete(self.forwardSequences, forwardPack.DestinationId)
+			}
+		}()
+		return forwardSequence
+	}
+
+	if !initForwardSequence().Pack(forwardPack) {
+		delete(self.forwardSequences, forwardPack.DestinationId)
+		initForwardSequence().Pack(forwardPack)
+	}
+}
+
+func (self *ForwardBuffer) Close() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// close all open sequences
+	for _, forwardSequence := range self.forwardSequences {
+		forwardSequence.Close()
+	}
+}
+
+
+type ForwardSequence struct {
+	ctx context.Context
+	cancel context.CancelFunc
+
+	client *Client
+	routeManager *RouteManager
+	contractManager *ContractManager
+
+	destinationId Id
+
+	forwardBufferSettings *ForwardBufferSettings
+
+	packs chan *ForwardPack
+
+	idleCondition *IdleCondition
+
+	multiRouteWriter MultiRouteWriter
+}
+
+func NewForwardSequence(
+		ctx context.Context,
+		client *Client,
+		routeManager *RouteManager,
+		contractManager *ContractManager,
+		destinationId Id,
+		forwardBufferSettings *ForwardBufferSettings) *ForwardSequence {
+	cancelCtx, cancel := context.WithCancel(ctx)
+	return &ForwardSequence{
+		ctx: cancelCtx,
+		cancel: cancel,
+		client: client,
+		routeManager: routeManager,
+		contractManager: contractManager,
+		destinationId: destinationId,
+		forwardBufferSettings: forwardBufferSettings,
+		packs: make(chan *ForwardPack, forwardBufferSettings.SequenceBufferSize),
+		idleCondition: NewIdleCondition(),
+	}
+}
+
+func (self *ForwardSequence) Pack(forwardPack *ForwardPack) (success bool) {
+	if !self.idleCondition.UpdateOpen() {
+		success = false
+		return
+	}
+	defer self.idleCondition.UpdateClose()
+	defer func() {
+		// this means there was some error in sequence processing
+		if err := recover(); err != nil {
+			success = false
+		}
+	}()
+	self.packs <- forwardPack
+	success = true
+	return
+}
+
+func (self *ForwardSequence) Run() {
+	defer func() {
+		self.Close()
+
+		close(self.packs)
+	}()
+
+	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.destinationId)
+	defer self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
+
+	for {
+		checkpointId := self.idleCondition.Checkpoint()
+		select {
+		case <- self.ctx.Done():
+			return
+		case forwardPack := <- self.packs:
+			self.multiRouteWriter.Write(self.ctx, forwardPack.TransferFrameBytes, -1)
+		case <- time.After(self.forwardBufferSettings.IdleTimeout):
+			if self.idleCondition.Close(checkpointId) {
+				// close the sequence
+				return
+			}
+			// else there are pending updates
+		}
+	}
+}
+
+func (self *ForwardSequence) Close() {
+	self.cancel()
 }
 
 
@@ -2621,14 +2808,6 @@ type ContractManagerSettings struct {
 	StandardTransferByteCount int
 }
 
-func DefaultContractManagerSettings() *ContractManagerSettings {
-	// FIXME
-	return nil
-}
-
-
-type ContractErrorFunction = func(protocol.ContractError)
-
 
 type ContractManager struct {
 	client *Client
@@ -2841,7 +3020,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 		return err
 	}
 
-	sourceId, err := IdFromProto(storedContract.SourceId)
+	sourceId, err := IdFromBytes(storedContract.SourceId)
 	if err != nil {
 		return err
 	}
@@ -2850,7 +3029,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 		return errors.New("Contract source must be this client.")
 	}
 
-	destinationId, err := IdFromProto(storedContract.DestinationId)
+	destinationId, err := IdFromBytes(storedContract.DestinationId)
 	if err != nil {
 		return err
 	}
