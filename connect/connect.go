@@ -20,10 +20,6 @@ func NewId() Id {
 	return Id(ulid.Make())
 }
 
-func (self *Id) Bytes() []byte {
-	return self[0:16]
-}
-
 func IdFromBytes(idBytes []byte) (Id, error) {
 	if len(idBytes) != 16 {
 		return Id{}, errors.New("Id must be 16 bytes")
@@ -41,6 +37,14 @@ func RequireIdFromBytes(idBytes []byte) Id {
 
 func ParseId(idStr string) (Id, error) {
 	return parseUuid(idStr) 
+}
+
+func (self *Id) Bytes() []byte {
+	return self[0:16]
+}
+
+func (self *Id) String() string {
+	return encodeUuid(*self)
 }
 
 
@@ -63,6 +67,12 @@ func parseUuid(src string) (dst [16]byte, err error) {
 	copy(dst[:], buf)
 	return dst, err
 }
+
+
+func encodeUuid(src [16]byte) string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x", src[0:4], src[4:6], src[6:8], src[8:10], src[10:16])
+}
+
 
 
 func ToFrame(message proto.Message) (*protocol.Frame, error) {
@@ -96,6 +106,8 @@ func ToFrame(message proto.Message) (*protocol.Frame, error) {
 		messageType = protocol.MessageType_TransferCloseContract
 	case *protocol.PeerAudit:
 		messageType = protocol.MessageType_TransferPeerAudit
+	case *protocol.SimpleMessage:
+		messageType = protocol.MessageType_TestSimpleMessage
 	default:
 		return nil, fmt.Errorf("Unknown message type: %T", v)
 	}
@@ -150,6 +162,8 @@ func FromFrame(frame *protocol.Frame) (proto.Message, error) {
 		message = &protocol.CloseContract{}
 	case protocol.MessageType_TransferPeerAudit:
 		message = &protocol.PeerAudit{}
+	case protocol.MessageType_TestSimpleMessage:
+		message = &protocol.SimpleMessage{}
 	default:
 		return nil, fmt.Errorf("Unknown message type: %s", frame.MessageType)
 	}

@@ -190,8 +190,10 @@ func NewClientWithDefaults(ctx context.Context, clientId Id) *Client {
 }
 
 func NewClient(ctx context.Context, clientId Id, clientBufferSize int) *Client {
+	cancelCtx, cancel := context.WithCancel(ctx)
 	return &Client{
-		ctx: ctx,
+		ctx: cancelCtx,
+		cancel: cancel,
 		clientId: clientId,
 		instanceId: NewId(),
 		sendBufferSettings: DefaultSendBufferSettings(),
@@ -2229,6 +2231,7 @@ func NewMatchState(weightedRoutes bool, matches func(Transport, Id)(bool)) *Matc
 	return &MatchState{
 		weightedRoutes: weightedRoutes,
 		matches: matches,
+		transportRoutes: map[Transport][]Route{},
 		destinationMultiRouteSelectors: map[Id]map[*MultiRouteSelector]bool{},
 		transportMatchedDestinations: map[Transport]map[Id]bool{},
 	}

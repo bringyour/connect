@@ -39,7 +39,7 @@ import (
 const ConnectCtlVersion = "0.0.1"
 
 const DefaultApiUrl = "https://api.bringyour.com"
-const DefaultConnectUrl = "https://connect.bringyour.com"
+const DefaultConnectUrl = "wss://connect.bringyour.com"
 
 
 var Out *log.Logger
@@ -61,11 +61,15 @@ The default urls are:
 
 Usage:
     connectctl create-network [--api_url=<api_url>]
-        --network_name=<name>
-        --name=<name>
+        --network_name=<network_name>
+        --user_name=<user_name>
         --user_auth=<user_auth>
         --password=<password>
-    connectctl verify-network [--api_url=<api_url>] <code>
+    connectctl verify-send [--api_url=<api_url>]
+        --user_auth=<user_auth>
+    connectctl verify-network [--api_url=<api_url>]
+        --user_auth=<user_auth>
+        --code=<code>
     connectctl login-network [--api_url=<api_url>]
         --user_auth=<user_auth>
         --password=<password>
@@ -74,7 +78,7 @@ Usage:
         --code=<code>
     connectctl client-id [--api_url=<api_url>] --jwt=<jwt> 
     connectctl send [--connect_url=<connect_url>] --jwt=<jwt>
-        --destination=<destination_id>
+        --destination_id=<destination_id>
         [<message>]
     connectctl sink [--connect_url=<connect_url>] --jwt=<jwt>
         [--message_count=<message_count>]
@@ -84,13 +88,13 @@ Options:
     --version                        Show version.
     --api_url=<api_url>
     --connect_url=<connect_url>
-    --network_name=<name>
-    --name=<name>
+    --network_name=<network_name>
+    --user_name=<user_name>
     --user_auth=<user_auth>
     --password=<password>
     --code=<code>
     --jwt=<jwt>                      Your platform JWT.
-    --destination=<destination_id>   Destination client_id
+    --destination_id=<destination_id>   Destination client_id
     --message_count=<message_count>  Print this many messages then exit.`,
         DefaultApiUrl,
         DefaultConnectUrl,
@@ -103,6 +107,8 @@ Options:
 
     if createNetwork_, _ := opts.Bool("create-network"); createNetwork_ {
         createNetwork(opts)
+    } else if verifySend_, _ := opts.Bool("verify-send"); verifySend_ {
+        verifySend(opts)
     } else if verifyNetwork_, _ := opts.Bool("verify-network"); verifyNetwork_ {
         verifyNetwork(opts)
     } else if loginNetwork_, _ := opts.Bool("login-network"); loginNetwork_ {
@@ -117,6 +123,33 @@ Options:
 }
 
 
+func printResult(result map[string]any) {
+    expandByJwt(result)
+    
+    out, err := json.MarshalIndent(result, "", "  ")
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("%s\n", out)
+}
+
+func expandByJwt(result map[string]any) {
+    if jwt, ok := result["by_jwt"]; ok {
+        claims := gojwt.MapClaims{}
+        gojwt.NewParser().ParseUnverified(jwt.(string), claims)
+
+        for claimKey, claimValue := range claims {
+            result[fmt.Sprintf("by_jwt_%s", claimKey)] = claimValue
+        }
+    }
+    for _, value := range result {
+        if subResult, ok := value.(map[string]any); ok {
+            expandByJwt(subResult)
+        }
+    }
+}
+
+
 func createNetwork(opts docopt.Opts) {
     apiUrl, err := opts.String("--api_url")
     if err != nil {
@@ -125,7 +158,7 @@ func createNetwork(opts docopt.Opts) {
 
     networkName, _ := opts.String("--network_name")
 
-    userName, _ := opts.String("--name")
+    userName, _ := opts.String("--user_name")
 
     userAuth, _ := opts.String("--user_auth")
 
@@ -144,6 +177,8 @@ func createNetwork(opts docopt.Opts) {
 
     reqBody, err := json.Marshal(args)
 
+    // fmt.Printf("request: %s\n", reqBody)
+
     req, err := http.NewRequest(
         "POST",
         fmt.Sprintf("%s/auth/network-create", apiUrl),
@@ -160,20 +195,75 @@ func createNetwork(opts docopt.Opts) {
 
     res, err := client.Do(req)
     if err != nil {
+        panic(err)
+    }
+    resBody, err := io.ReadAll(res.Body)
+    if err != nil {
+        panic(err)
+    }
+
+    // fmt.Printf("response: %s\n", resBody)
+
+    result := map[string]any{}
+    err = json.Unmarshal(resBody, &result)
+    if err != nil {
+        panic(err)
+    }
+
+    printResult(result)
+}
+
+
+func verifySend(opts docopt.Opts) {
+    apiUrl, err := opts.String("--api_url")
+    if err != nil {
+        apiUrl = DefaultApiUrl
+    }
+
+    userAuth, _ := opts.String("--user_auth")
+
+    timeout := 5 * time.Second
+
+
+    // /auth/verify-send
+    args := map[string]any{}
+    args["user_auth"] = userAuth
+
+    reqBody, err := json.Marshal(args)
+
+    req, err := http.NewRequest(
+        "POST",
+        fmt.Sprintf("%s/auth/verify-send", apiUrl),
+        bytes.NewReader(reqBody),
+    )
+    if err != nil {
+        return
+    }
+    req.Header.Set("Content-Type", "application/json")
+
+    client := &http.Client{
+        Timeout: timeout,
+    }
+
+    res, err := client.Do(req)
+    if err != nil {
+        panic(err)
         return
     }
     resBody, err := io.ReadAll(res.Body)
     if err != nil {
+        panic(err)
         return
     }
 
     result := map[string]any{}
     err = json.Unmarshal(resBody, &result)
     if err != nil {
+        panic(err)
         return
     }
 
-    fmt.Printf("%s\n", result)
+    printResult(result)
 }
 
 
@@ -213,20 +303,23 @@ func verifyNetwork(opts docopt.Opts) {
 
     res, err := client.Do(req)
     if err != nil {
+        panic(err)
         return
     }
     resBody, err := io.ReadAll(res.Body)
     if err != nil {
+        panic(err)
         return
     }
 
     result := map[string]any{}
     err = json.Unmarshal(resBody, &result)
     if err != nil {
+        panic(err)
         return
     }
 
-    fmt.Printf("%s\n", result)
+    printResult(result)
 }
 
 
@@ -267,20 +360,23 @@ func loginNetwork(opts docopt.Opts) {
 
     res, err := client.Do(req)
     if err != nil {
+        panic(err)
         return
     }
     resBody, err := io.ReadAll(res.Body)
     if err != nil {
+        panic(err)
         return
     }
 
     result := map[string]any{}
     err = json.Unmarshal(resBody, &result)
     if err != nil {
+        panic(err)
         return
     }
 
-    fmt.Printf("%s\n", result)
+    printResult(result)
 }
 
 
@@ -298,17 +394,18 @@ func clientId(opts docopt.Opts) {
     timeout := 5 * time.Second
 
 
-    // /auth/verify
+    // /network/auth-client
     args := map[string]any{}
     args["description"] = ""
     args["device_spec"] = ""
     
     reqBody, err := json.Marshal(args)
 
+    // fmt.Printf("request: %s\n", reqBody)
 
     req, err := http.NewRequest(
         "POST",
-        fmt.Sprintf("%s/auth/verify", apiUrl),
+        fmt.Sprintf("%s/network/auth-client", apiUrl),
         bytes.NewReader(reqBody),
     )
     if err != nil {
@@ -323,20 +420,25 @@ func clientId(opts docopt.Opts) {
 
     res, err := client.Do(req)
     if err != nil {
+        panic(err)
         return
     }
     resBody, err := io.ReadAll(res.Body)
     if err != nil {
+        panic(err)
         return
     }
+
+    // fmt.Printf("response: %s\n", resBody)
 
     result := map[string]any{}
     err = json.Unmarshal(resBody, &result)
     if err != nil {
+        panic(err)
         return
     }
 
-    fmt.Printf("%s\n", result)
+    printResult(result)
 }
 
 
@@ -365,6 +467,8 @@ func send(opts docopt.Opts) {
         fmt.Printf("JWT has invalid client_id (%T).\n", v)
         return
     }
+
+    fmt.Printf("client_id: %s\n", clientId.String())
 
     connectUrl, err := opts.String("--connect_url")
     if err != nil {
@@ -404,7 +508,7 @@ func send(opts docopt.Opts) {
     }
     platformTransport := connect.NewPlatformTransportWithDefaults(
         cancelCtx,
-        connectUrl,
+        fmt.Sprintf("%s/", connectUrl),
         auth,
     )
     defer platformTransport.Close()
@@ -415,6 +519,7 @@ func send(opts docopt.Opts) {
     acks := make(chan error)
     defer close(acks)
 
+    // FIXME break into 2k chunks
     message := &protocol.SimpleMessage{
         Content: messageContent,
     }
@@ -466,6 +571,9 @@ func sink(opts docopt.Opts) {
         return
     }
 
+    fmt.Printf("client_id: %s\n", clientId.String())
+
+
     connectUrl, err := opts.String("--connect_url")
     if err != nil {
         connectUrl = DefaultConnectUrl
@@ -498,7 +606,7 @@ func sink(opts docopt.Opts) {
     }
     platformTransport := connect.NewPlatformTransportWithDefaults(
         cancelCtx,
-        connectUrl,
+        fmt.Sprintf("%s/", connectUrl),
         auth,
     )
     defer platformTransport.Close()
@@ -522,6 +630,8 @@ func sink(opts docopt.Opts) {
         }
     })
 
+
+    // FIXME reassemble the chunks. Only a complete message counts as 1 against the message count
     for i := 0; messageCount < 0 || i < messageCount; i += 1 {
         select {
         case receive := <- receives:

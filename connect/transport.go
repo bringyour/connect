@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 	"net"
+	"fmt"
 
 	"github.com/gorilla/websocket"
 
@@ -154,8 +155,11 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 			HandshakeTimeout: self.settings.WsHandshakeTimeout,
 		}
 
-		ws, _, err := wsDialer.Dial(self.platformUrl, nil)
+		fmt.Printf("Connecting to %s ...\n", self.platformUrl)
+
+		ws, _, err := wsDialer.DialContext(self.ctx, self.platformUrl, nil)
 		if err != nil {
+			fmt.Printf("Error (%s)\n", err)
 			select {
 			case <- self.ctx.Done():
 				return
@@ -164,19 +168,33 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 			}
 		}
 
+		fmt.Printf("Connected to %s!\n", self.platformUrl)
+
 		ws.SetWriteDeadline(time.Now().Add(self.settings.AuthTimeout))
 		if err := ws.WriteMessage(websocket.BinaryMessage, authBytes); err != nil {
 			ws.Close()
-			continue
+			fmt.Printf("Error (%s)\n", err)
+			select {
+			case <- self.ctx.Done():
+				return
+			case <- time.After(self.settings.ReconnectTimeout):
+				continue
+			}
 		}
 		ws.SetReadDeadline(time.Now().Add(self.settings.AuthTimeout))
 		if _, _, err := ws.ReadMessage(); err != nil {
 			ws.Close()
-			continue
+			fmt.Printf("Error (%s)\n", err)
+			select {
+			case <- self.ctx.Done():
+				return
+			case <- time.After(self.settings.ReconnectTimeout):
+				continue
+			}
 		}
 
-		ws.SetWriteDeadline(time.UnixMilli(0))
-		ws.SetReadDeadline(time.UnixMilli(0))
+		ws.SetWriteDeadline(time.Time{})
+		ws.SetReadDeadline(time.Time{})
 
 		func() {
 			handleCtx, handleCancel := context.WithCancel(self.ctx)
@@ -202,14 +220,16 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 					default:
 					}
 
-					if messageType, message, err := ws.ReadMessage(); err != nil {
-						switch messageType {
-						case websocket.BinaryMessage:
-							select {
-							case <- handleCtx.Done():
-								return
-							case receiveTransport.receive <- message:
-							}
+					messageType, message, err := ws.ReadMessage()
+					if err != nil {
+						return
+					}
+					switch messageType {
+					case websocket.BinaryMessage:
+						select {
+						case <- handleCtx.Done():
+							return
+						case receiveTransport.receive <- message:
 						}
 					}
 				}
@@ -353,7 +373,7 @@ func NewExtenderDialContext(
 			HandshakeTimeout: settings.WsHandshakeTimeout,
 		}
 
-		ws, _, err := wsDialer.Dial(extenderUrl, nil)
+		ws, _, err := wsDialer.DialContext(ctx, extenderUrl, nil)
 		if err != nil {
 			return nil, err
 		}
