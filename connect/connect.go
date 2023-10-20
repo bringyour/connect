@@ -4,8 +4,11 @@ import (
 	"errors"
 	// "log"
 	"fmt"
+	"encoding/hex"
 
 	"google.golang.org/protobuf/proto"
+
+	"github.com/oklog/ulid/v2"
 
 	"bringyour.com/protocol"
 )
@@ -13,16 +16,52 @@ import (
 
 type Id [16]byte
 
+func NewId() Id {
+	return Id(ulid.Make())
+}
+
 func (self *Id) Bytes() []byte {
 	return self[0:16]
 }
-
 
 func IdFromBytes(idBytes []byte) (Id, error) {
 	if len(idBytes) != 16 {
 		return Id{}, errors.New("Id must be 16 bytes")
 	}
 	return Id(idBytes), nil
+}
+
+func RequireIdFromBytes(idBytes []byte) Id {
+	id, err := IdFromBytes(idBytes)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
+func ParseId(idStr string) (Id, error) {
+	return parseUuid(idStr) 
+}
+
+
+func parseUuid(src string) (dst [16]byte, err error) {
+	switch len(src) {
+	case 36:
+		src = src[0:8] + src[9:13] + src[14:18] + src[19:23] + src[24:]
+	case 32:
+		// dashes already stripped, assume valid
+	default:
+		// assume invalid.
+		return dst, fmt.Errorf("cannot parse UUID %v", src)
+	}
+
+	buf, err := hex.DecodeString(src)
+	if err != nil {
+		return dst, err
+	}
+
+	copy(dst[:], buf)
+	return dst, err
 }
 
 

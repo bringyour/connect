@@ -17,7 +17,6 @@ import (
 	"golang.org/x/exp/slices"
 
 	"google.golang.org/protobuf/proto"
-	"github.com/oklog/ulid/v2"
 
 	"bringyour.com/protocol"
 )
@@ -169,6 +168,7 @@ type ForwardPack struct {
 // note all callbacks are wrapped to check for nil and recover from errors
 type Client struct {
 	clientId Id
+	instanceId Id
 
 	// TODO support the context deadline
 	ctx context.Context
@@ -185,14 +185,15 @@ type Client struct {
 	forwardCallbacks *CallbackList[ForwardFunction]
 }
 
-func NewClientWithDefaults(clientId Id, ctx context.Context) *Client {
-	return NewClient(clientId, ctx, DefaultClientBufferSize)
+func NewClientWithDefaults(ctx context.Context, clientId Id) *Client {
+	return NewClient(ctx, clientId, DefaultClientBufferSize)
 }
 
-func NewClient(clientId Id, ctx context.Context, clientBufferSize int) *Client {
+func NewClient(ctx context.Context, clientId Id, clientBufferSize int) *Client {
 	return &Client{
-		clientId: clientId,
 		ctx: ctx,
+		clientId: clientId,
+		instanceId: NewId(),
 		sendBufferSettings: DefaultSendBufferSettings(),
 		receiveBufferSettings: DefaultReceiveBufferSettings(),
 		forwardBufferSettings: DefaultForwardBufferSettings(),
@@ -205,6 +206,10 @@ func NewClient(clientId Id, ctx context.Context, clientBufferSize int) *Client {
 
 func (self *Client) ClientId() Id {
 	return self.clientId
+}
+
+func (self *Client) InstanceId() Id {
+	return self.instanceId
 }
 
 func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.Duration) bool {
@@ -951,7 +956,7 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 
 func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) error {
 	sendTime := time.Now()
-	messageId := Id(ulid.Make())
+	messageId := NewId()
 	sequenceId := self.nextSequenceId
 	contractId := self.sendContract.contractId
 	head := 0 == len(self.sendItems)

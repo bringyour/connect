@@ -21,6 +21,7 @@ enum MessageType {
     TransferCreateContractResult = 11;
     TransferCloseContract = 12;
     TransferPeerAudit = 13;
+    TestSimpleMessage = 14;
 }
 
 

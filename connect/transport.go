@@ -69,15 +69,12 @@ type PlatformTransport struct {
 	auth *ClientAuth
 	dialContext DialContextFunc
 	settings *PlatformTransportSettings
-
-	routeManager *RouteManager
 }
 
 func NewPlatformTransportWithDefaults(
 	ctx context.Context,
 	platformUrl string,
 	auth *ClientAuth,
-	routeManager *RouteManager,
 ) *PlatformTransport {
 	settings := DefaultPlatformTransportSettings()
 
@@ -91,7 +88,6 @@ func NewPlatformTransportWithDefaults(
 		auth,
 		dialer.DialContext,
 		settings,
-		routeManager,
 	)
 }
 
@@ -101,7 +97,6 @@ func NewPlatformTransportWithExtender(
 	platformUrl string,
 	auth *ClientAuth,
 	settings *PlatformTransportSettings,
-	routeManager *RouteManager,
 ) *PlatformTransport {
 	return NewPlatformTransport(
 		ctx,
@@ -109,7 +104,6 @@ func NewPlatformTransportWithExtender(
 		auth,
 		NewExtenderDialContext(extenderUrl, settings),
 		settings,
-		routeManager,
 	)
 }
 
@@ -119,7 +113,6 @@ func NewPlatformTransport(
 	auth *ClientAuth,
 	dialContext DialContextFunc,
 	settings *PlatformTransportSettings,
-	routeManager *RouteManager,
 ) *PlatformTransport {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	transport := &PlatformTransport{
@@ -129,21 +122,19 @@ func NewPlatformTransport(
 		auth: auth,
 		dialContext: dialContext,
 		settings: settings,
-		routeManager: routeManager,
 	}
-	go transport.Run()
 	return transport
 }
 
-func (self *PlatformTransport) Run() {
+func (self *PlatformTransport) Run(routeManager *RouteManager) {
 	// connect and update route manager for this transport
 
 	sendTransport := newPlatformSendTransport()
 	receiveTransport := newPlatformReceiveTransport()
 
 	defer func() {
-		self.routeManager.RemoveTransport(sendTransport)
-		self.routeManager.RemoveTransport(receiveTransport)
+		routeManager.RemoveTransport(sendTransport)
+		routeManager.RemoveTransport(receiveTransport)
 		sendTransport.Close()
 		receiveTransport.Close()
 	}()
@@ -190,12 +181,12 @@ func (self *PlatformTransport) Run() {
 		func() {
 			handleCtx, handleCancel := context.WithCancel(self.ctx)
 
-			self.routeManager.UpdateTransport(sendTransport, []Route{sendTransport.send})
-			self.routeManager.UpdateTransport(receiveTransport, []Route{receiveTransport.receive})
+			routeManager.UpdateTransport(sendTransport, []Route{sendTransport.send})
+			routeManager.UpdateTransport(receiveTransport, []Route{receiveTransport.receive})
 
 			closeHandle := func() {
-				self.routeManager.RemoveTransport(sendTransport)
-				self.routeManager.RemoveTransport(receiveTransport)
+				routeManager.RemoveTransport(sendTransport)
+				routeManager.RemoveTransport(receiveTransport)
 				handleCancel()
 				ws.Close()
 			}

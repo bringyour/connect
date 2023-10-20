@@ -2,12 +2,13 @@ package main
 
 
 import (
-    // "fmt"
+    "context"
+    "fmt"
     "os"
     // "os/exec"
     // "path/filepath"
     // "encoding/json"
-    // "time"
+    "time"
     // "strings"
     // "math"
     // "reflect"
@@ -21,37 +22,17 @@ import (
     // "golang.org/x/exp/maps"
     // "golang.org/x/exp/slices"
 
+    gojwt "github.com/golang-jwt/jwt/v5"
+
     "github.com/docopt/docopt-go"
+
+    "bringyour.com/connect"
+    "bringyour.com/protocol"
 )
-
-// --jwt <jwt> client create
-// client ls
-// client rm
-
-
-// --jwt <jwt> sink
-// --jwt <jwt> send --destination <client_id> <message>
-
-// forward or drop all incoming messages to a random client
-// --jwt <jwt> bounce <client_id>...
-
-
-
-// connectctl --jwt <jwt> client-id
-// gets a new jwt with a new client id
-
-
-// and end to end bounce test that sets up clients and floods them with messages that bounce and sink
-// only one of c clients is a sink
-// connectctl test-bounce -c <client count> -n <message count> -s <message size>
-
-
-// TODO allow copy paste of the JWT out of the web ui
-// TODO support multiple decoding keys for the JWT, and use the latest one for signing
-
 
 
 const ConnectCtlVersion = "0.0.1"
+
 
 var Out *log.Logger
 var Err *log.Logger
@@ -62,134 +43,221 @@ func init() {
 }
 
 
-
 func main() {
-	usage := `Connect control.
+    usage := `Connect control.
+
+The default urls are:
+    api_url: https://api.bringyour.com
+    connect_url: https://connect.bringyour.com
 
 Usage:
-    connectctl client-id --jwt=<jwt> 
-    connectctl send --jwt=<jwt> --destination=<destination_id> <message>
-    connectctl sink --jwt=<jwt> [--message_count=<message_count>]
-    connectctl bounce --jwt=<jwt> --destination=<destination_id>... [--message_count=<message_count>]
-    connectctl test-bounce --jwt=<jwt> --client_count=<client_count> --message_size=<message_size> [--message_count=<message_count>]
+    connectctl create-network [--api_url=<api_url>]
+        --network_name=<name>
+        --name=<name>
+        --user_auth=<user_auth>
+        --password=<password>
+    connectctl verify-network [--api_url=<api_url>] <code>
+    connectctl login-network [--api_url=<api_url>]
+        --user_auth=<user_auth>
+        --password=<password>
+    connectctl verify-network [--api_url=<api_url>] <code>
+    connectctl client-id [--api_url=<api_url>] --jwt=<jwt> 
+    connectctl send [--connect_url=<connect_url>] --jwt=<jwt>
+        --destination=<destination_id>
+        [<message>]
+    connectctl sink [--connect_url=<connect_url>] --jwt=<jwt>
+        [--message_count=<message_count>]
     
 Options:
-    -h --help                  Show this screen.
-    --version                  Show version.
+    -h --help                        Show this screen.
+    --version                        Show version.
+    --api_url=<api_url>
+    --connect_url=<connect_url>
+    --network_name=<name>
+    --name=<name>
+    --user_auth=<user_auth>
+    --password=<password>
     --jwt=<jwt>                      Your platform JWT.
-    --destination=<destination_id>			   Destination client_id
-    --message_count=<message_count>			   Process this many messages then exit.
-    --client_count=<client_count>             Number of parallel clients.
-    --message_size=<message_size>             Bytes per message. Can use suffixes: b, kib, mib`
+    --destination=<destination_id>   Destination client_id
+    --message_count=<message_count>  Print this many messages then exit.`
 
     opts, err := docopt.ParseArgs(usage, os.Args[1:], ConnectCtlVersion)
     if err != nil {
         panic(err)
     }
 
-    if clientId_, _ := opts.Bool("clientid"); clientId_ {
+    if createNetwork_, _ := opts.Bool("create-network"); createNetwork_ {
+        createNetwork(opts)
+    } else if verifyNetwork_, _ := opts.Bool("verify-network"); verifyNetwork_ {
+        verifyNetwork(opts)
+    } else if loginNetwork_, _ := opts.Bool("login-network"); loginNetwork_ {
+        loginNetwork(opts)
+    } else if clientId_, _ := opts.Bool("client-id"); clientId_ {
         clientId(opts)
     } else if send_, _ := opts.Bool("send"); send_ {
-    	send(opts)
+        send(opts)
     } else if sink_, _ := opts.Bool("sink"); sink_ {
-    	sink(opts)
-    } else if bounce_, _ := opts.Bool("bounce"); bounce_ {
-    	bounce(opts)
-    } else if testBounce_, _ := opts.Bool("test-bounce"); testBounce_ {
-    	testBounce(opts)
+        sink(opts)
     }
+}
+
+
+func createNetwork(opts docopt.Opts) {
+
+    // post create network
+}
+
+
+func verifyNetwork(opts docopt.Opts) {
+    // post verify code
+    // print jwt
+
+}
+
+
+func loginNetwork(opts docopt.Opts) {
+    // login
+    // print jwt
+
 }
 
 
 // use the given jwt to generate a new jwt with a new client id
 func clientId(opts docopt.Opts) {
-	jwt, _ := opts.String("--jwt")
+    jwt, _ := opts.String("--jwt")
 
-	// TODO make post to client route to attach a new client id to the jwt
+    // TODO make post to client route to attach a new client id to the jwt
 
-	log.Printf("%s", jwt)
+    log.Printf("%s", jwt)
 }
 
 
 // send a message
 func send(opts docopt.Opts) {
-	jwt, _ := opts.String("--jwt")
+    jwt, _ := opts.String("--jwt")
 
-	destinationId, _ := opts.String("--destination_id")
+    destinationIdStr, _ := opts.String("--destination_id")
 
-	message, _ := opts.String("message")
+    messageContent, _ := opts.String("message")
 
-	// TODO create a client
-	// TODO create a transport to platform using the jwt
-	// TODO send a message
 
-	log.Printf("%s %s %s", jwt, destinationId, message)
+    connectUrl := ""
+
+    timeout := 30 * time.Second
+
+
+    destinationId, err := connect.ParseId(destinationIdStr)
+    if err != nil {
+        fmt.Printf("Invalid destination_id (%s).\n", err)
+        return
+    }
+
+
+    // TODO create a client
+    // TODO create a transport to platform using the jwt
+    // TODO send a message
+
+
+    cancelCtx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+
+
+    var clientId connect.Id
+
+    claims := gojwt.MapClaims{}
+    gojwt.NewParser().ParseUnverified(jwt, claims)
+
+    jwtClientId, ok := claims["client_id"]
+    if !ok {
+        fmt.Printf("JWT does not have a client_id.\n")
+        return
+    }
+    switch v := jwtClientId.(type) {
+    case string:
+        clientId, err = connect.ParseId(v)
+        if err != nil {
+            fmt.Printf("JWT has invalid client_id (%s).\n", err)
+            return
+        }
+    default:
+        fmt.Printf("JWT has invalid client_id (%T).\n", v)
+        return
+    }
+    
+
+
+    client := connect.NewClientWithDefaults(
+        cancelCtx,
+        clientId,
+    )
+    defer client.Close()
+
+    routeManager := connect.NewRouteManager(client)
+    contractManager := connect.NewContractManagerWithDefaults(client)
+
+    go client.Run(routeManager, contractManager)
+
+    auth := &connect.ClientAuth{
+        ByJwt: jwt,
+        InstanceId: client.InstanceId(),
+        AppVersion: fmt.Sprintf("connectctl %s", ConnectCtlVersion),
+    }
+    platformTransport := connect.NewPlatformTransportWithDefaults(
+        cancelCtx,
+        connectUrl,
+        auth,
+    )
+    defer platformTransport.Close()
+
+    go platformTransport.Run(routeManager)
+
+
+    ack := make(chan error)
+
+
+
+    message := &protocol.SimpleMessage{
+        Content: messageContent,
+    }
+
+    client.Send(
+        connect.RequireToFrame(message),
+        destinationId,
+        func(err error) {
+            ack <- err
+        },
+    )
+
+    select {
+    case err := <- ack:
+        if err == nil {
+            fmt.Printf("Message acked.")
+        } else {
+            fmt.Printf("Message not acked (%s).", err)
+        }
+    case <- time.After(timeout):
+        fmt.Printf("Message not acked (timeout).")
+    }
 }
-
 
 
 // listen for messages
 func sink(opts docopt.Opts) {
-	jwt, _ := opts.String("--jwt")
+    jwt, _ := opts.String("--jwt")
 
-	var messageCount int
-	if messageCount_, err := opts.Int("--message_count"); err == nil {
-		messageCount = messageCount_
-	} else {
-		messageCount = -1
-	}
+    var messageCount int
+    if messageCount_, err := opts.Int("--message_count"); err == nil {
+        messageCount = messageCount_
+    } else {
+        messageCount = -1
+    }
 
 
 
-	// TODO create a client
-	// TODO create a transport to platform using the jwt
-	// TODO listen for messages
+    // TODO create a client
+    // TODO create a transport to platform using the jwt
+    // TODO listen for messages
 
-	log.Printf("%s %d", jwt, messageCount)
+    log.Printf("%s %d", jwt, messageCount)
 }
-
-
-// forward messages to a random choice of one destination
-func bounce(opts docopt.Opts) {
-	jwt, _ := opts.String("--jwt")
-
-	destinationIds, _ := opts.String("--destination_id")
-
-	message, _ := opts.String("message")
-
-	var messageCount int
-	if messageCount_, err := opts.Int("--message_count"); err == nil {
-		messageCount = messageCount_
-	} else {
-		messageCount = -1
-	}
-
-	log.Printf("%s %s %s %d", jwt, destinationIds, message, messageCount)
-
-}
-
-
-// end to end test that creates bounce and sink clients, and generates messages
-// this is a stress test that tests 1. system throughput, and 2. correct delivery of messages
-func testBounce(opts docopt.Opts) {
-
-	jwt, _ := opts.String("--jwt")
-
-	clientCount, _ := opts.Int("--client_count")
-	messageSize, _ := opts.Int("--message_size")
-
-	var messageCount int
-	if messageCount_, err := opts.Int("--message_count"); err == nil {
-		messageCount = messageCount_
-	} else {
-		messageCount = -1
-	}
-
-	log.Printf("%s %d %d %d", jwt, clientCount, messageSize, messageCount)
-}
-
-
-
-
-
-
