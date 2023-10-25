@@ -13,6 +13,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"runtime/debug"
+	"fmt"
 
 	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
@@ -264,8 +265,8 @@ func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.D
 	}
 }
 
-func (self *Client) Forward(transferFrameBytes []byte) {
-	self.ForwardWithTimeout(transferFrameBytes, -1)
+func (self *Client) Forward(transferFrameBytes []byte) bool {
+	return self.ForwardWithTimeout(transferFrameBytes, -1)
 }
 
 func (self *Client) SendWithTimeout(frame *protocol.Frame, destinationId Id, ackCallback AckFunction, timeout time.Duration) bool {
@@ -325,12 +326,12 @@ func (self *Client) SendControlWithTimeout(frame *protocol.Frame, ackCallback Ac
 	return self.SendWithTimeout(frame, ControlId, ackCallback, timeout)
 }
 
-func (self *Client) Send(frame *protocol.Frame, destinationId Id, ackCallback AckFunction) {
-	self.SendWithTimeout(frame, destinationId, ackCallback, -1)
+func (self *Client) Send(frame *protocol.Frame, destinationId Id, ackCallback AckFunction) bool {
+	return self.SendWithTimeout(frame, destinationId, ackCallback, -1)
 }
 
-func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) {
-	self.Send(frame, ControlId, ackCallback)
+func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) bool {
+	return self.Send(frame, ControlId, ackCallback)
 }
 
 // ReceiveFunction
@@ -2653,7 +2654,7 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 
 	transferLog("NOTIFY NEW ROUTE")
 	// debug.PrintStack()
-	self.transportUpdate.notifyAll()
+	self.transportUpdate.NotifyAll()
 }
 
 func (self *MultiRouteSelector) getActiveRoutes() []Route {
@@ -3109,6 +3110,19 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 	return hmac.Equal(storedContractHmac, expectedHmac)
 }
 
+func (self *ContractManager) GetProvideSecretKey(provideMode protocol.ProvideMode) ([]byte, bool) {
+	provideSecretKey, ok := self.provideSecretKeys[provideMode]
+	return provideSecretKey, ok
+}
+
+func (self *ContractManager) RequireProvideSecretKey(provideMode protocol.ProvideMode) []byte {
+	secretKey, ok := self.GetProvideSecretKey(provideMode)
+	if !ok {
+		panic(fmt.Errorf("Missing provide secret for %s", provideMode))
+	}
+	return secretKey
+}
+
 func (self *ContractManager) SendNoContract(destinationId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -3302,7 +3316,7 @@ func (self *ContractQueue) add(contract *protocol.Contract) {
 
 	self.contracts = append(self.contracts, contract)
 
-	self.updateMonitor.notifyAll()
+	self.updateMonitor.NotifyAll()
 }
 
 func (self *ContractQueue) empty() bool {

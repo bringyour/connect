@@ -25,7 +25,7 @@ func (self *Monitor) NotifyChannel() chan struct{} {
 	return self.notify
 }
 
-func (self *Monitor) notifyAll() {
+func (self *Monitor) NotifyAll() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	close(self.notify)
