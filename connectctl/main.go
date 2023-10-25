@@ -482,7 +482,7 @@ func send(opts docopt.Opts) {
         return
     }
     
-    messageContent, _ := opts.String("message")
+    messageContent, _ := opts.String("<message>")
 
     timeout := 30 * time.Second
 
@@ -516,8 +516,13 @@ func send(opts docopt.Opts) {
     go platformTransport.Run(routeManager)
 
 
+    provideModes := map[protocol.ProvideMode]bool{
+        protocol.ProvideMode_Network: true,
+    }
+    contractManager.SetProvideModes(provideModes)
+
+
     acks := make(chan error)
-    defer close(acks)
 
     // FIXME break into 2k chunks
     message := &protocol.SimpleMessage{
@@ -597,6 +602,11 @@ func sink(opts docopt.Opts) {
     routeManager := connect.NewRouteManager(client)
     contractManager := connect.NewContractManagerWithDefaults(client)
 
+    provideModes := map[protocol.ProvideMode]bool{
+        protocol.ProvideMode_Network: true,
+    }
+    contractManager.SetProvideModes(provideModes)
+
     go client.Run(routeManager, contractManager)
 
     auth := &connect.ClientAuth{
@@ -620,8 +630,7 @@ func sink(opts docopt.Opts) {
     }
 
     receives := make(chan *Receive)
-    defer close(receives)
-
+    
     client.AddReceiveCallback(func(sourceId connect.Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
         receives <- &Receive{
             sourceId: sourceId,

@@ -27,6 +27,8 @@ type Log struct {
     level int
 } 
 
+// FIXME just use a leveled logger interface
+// FIXME source code line not correct with these wrappers
 func LogFn(level int, tag string) LogFunction {
     return func(format string, a ...any) {
         if level <= GlobalLogLevel {

@@ -7,7 +7,7 @@ option go_package = "bringyour.com/protocol";
 
 
 message SimpleMessage {
-    int message_index = 1;
-    int message_count = 2;
+    uint32 message_index = 1;
+    uint32 message_count = 2;
     string content = 3;
 }

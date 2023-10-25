@@ -134,6 +134,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 	receiveTransport := newPlatformReceiveTransport()
 
 	defer func() {
+		self.cancel()
 		routeManager.RemoveTransport(sendTransport)
 		routeManager.RemoveTransport(receiveTransport)
 		sendTransport.Close()
@@ -221,7 +222,9 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 					}
 
 					messageType, message, err := ws.ReadMessage()
+					fmt.Printf("Read message %s\n", message)
 					if err != nil {
+						fmt.Printf("Read message error %s\n", err)
 						return
 					}
 					switch messageType {
@@ -240,11 +243,14 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 				case <- handleCtx.Done():
 					return
 				case message := <- sendTransport.send:
+					fmt.Printf("!!!! WRITE MESSAGE %s\n", message)
 					if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
+						fmt.Printf("Write message error %s\n", err)
 						return
 					}
 				case <- time.After(self.settings.PingTimeout):
 					if err := ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+						fmt.Printf("Write ping error %s\n", err)
 		                return
 		            }
 		        }

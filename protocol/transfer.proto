@@ -29,10 +29,7 @@ message TransferFrame {
 
 // this is the minimal subset of `TransferFrame` used when making a routing decision
 message FilteredTransferFrame {
-    // ulid
-    bytes destination_id = 1;
-    // ulid
-    bytes source_id = 2;
+    TransferPath transfer_path = 1;
 }
 
 
