@@ -644,7 +644,7 @@ func sink(opts docopt.Opts) {
     for i := 0; messageCount < 0 || i < messageCount; i += 1 {
         select {
         case receive := <- receives:
-            fmt.Printf("%s %s %s\n", receive.sourceId, receive.frames, receive.provideMode)
+            fmt.Printf("GOT A MESSAGE %s %s %s\n", receive.sourceId, receive.frames, receive.provideMode)
         }
     }
 }

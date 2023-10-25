@@ -12,7 +12,7 @@ import (
 	"reflect"
 	"crypto/hmac"
 	"crypto/sha256"
-	// "runtime/debug"
+	"runtime/debug"
 
 	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
@@ -867,7 +867,7 @@ func (self *SendSequence) Run() {
 					return
 				}
 				if self.updateContract(len(sendPack.Frame.MessageBytes)) {
-					transferLog("CONTRACT UPDATED")
+					transferLog("CONTRACT UPDATED %s", sendPack.Frame)
 					err := self.send(sendPack.Frame, sendPack.AckCallback)
 					transferLog("SEND LOOP SENT! %s", err)
 					if err != nil {
@@ -904,10 +904,13 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 		transferLog("UPDATE CONTRACT NOT REQUIRED %s", self.destinationId.String())
 		return true
 	}
+	transferLog("UPDATE CONTRACT HAVE %s", self.sendContract)
 	if self.sendContract != nil {
 		if self.sendContract.update(messageByteCount) {
+			transferLog("UPDATE CONTRACT UPDATED")
 			return true
 		} else {
+			transferLog("UPDATE CONTRACT CLOSE")
 			self.contractManager.Complete(
 				self.sendContract.contractId,
 				self.sendContract.ackedByteCount,
@@ -930,6 +933,7 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 
 	next := func(contract *protocol.Contract)(bool) {
 		sendContract, err := newSequenceContract(contract)
+		transferLog("GOT A CONTRACT PARSED TO SEND CONTRACT %s %s", sendContract, err)
 		if err != nil {
 			// malformed, drop
 			return false
@@ -946,6 +950,8 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 		}
 
 		if sendContract.update(messageByteCount + len(contractMessageBytes)) {
+			transferLog("CONTRACT UPDATED AND APPEARS GOOD %s", sendContract)
+
 			self.sendContract = sendContract
 			self.sendContracts[sendContract.contractId] = sendContract
 
@@ -953,9 +959,11 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 			err := self.send(&protocol.Frame{
 				MessageType: protocol.MessageType_TransferContract,
 				MessageBytes: contractMessageBytes,
-			}, nil)
+			}, func(error){})
 			return err == nil
 		} else {
+			transferLog("CONTRACT UPDATED AND DOES NOT WORK %s", sendContract)
+
 			// this contract doesn't fit the message
 			// just close it since it was never send to the other side
 			self.contractManager.Complete(sendContract.contractId, 0, 0)
@@ -967,15 +975,12 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 	transferLog("CONTRACT LOOP")
 
 	if nextContract := self.contractManager.TakeContract(self.ctx, self.destinationId, 0); nextContract != nil {
-		transferLog("GOT A CONTRACT")
+		transferLog("GOT A CONTRACT INSTANT")
 		// async queue up the next contract
-		self.contractManager.CreateContract(self.destinationId)
 		if next(nextContract) {
 			return true
 		}
 	}
-
-	self.contractManager.CreateContract(self.destinationId)
 
 	endTime := time.Now().Add(self.sendBufferSettings.ContractTimeout)
 	for {
@@ -984,23 +989,25 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 			return false
 		}
 
+		self.contractManager.CreateContract(self.destinationId)
+
 		if self.sendBufferSettings.ContractRetryInterval < timeout {
 			timeout = self.sendBufferSettings.ContractRetryInterval
 		}
 
 		if nextContract := self.contractManager.TakeContract(self.ctx, self.destinationId, timeout); nextContract != nil {
+			transferLog("GOT A CONTRACT")
 			// async queue up the next contract
-			self.contractManager.CreateContract(self.destinationId)
 			if next(nextContract) {
 				return true
 			}
 		}
-
-		self.contractManager.CreateContract(self.destinationId)
 	}
 }
 
 func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) error {
+	debug.PrintStack()
+
 	sendTime := time.Now()
 	messageId := NewId()
 	sequenceId := self.nextSequenceId
@@ -1044,6 +1051,7 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) e
 		resendTime: sendTime.Add(self.sendBufferSettings.ResendInterval),
 		sendCount: 1,
 		head: head,
+		messageBytes: len(frame.MessageBytes),
 		transferFrameBytes: transferFrameBytes,
 		ackCallback: ackCallback,
 	}
@@ -1098,7 +1106,7 @@ func (self *SendSequence) receiveAck(messageId Id) {
 
 		if implicitItem.contractId != nil {
 			sendContract := self.sendContracts[*implicitItem.contractId]
-			sendContract.ack(len(implicitItem.transferFrameBytes))
+			sendContract.ack(implicitItem.messageBytes)
 			if sendContract.unackedByteCount == 0 {
 				self.contractManager.Complete(
 					sendContract.contractId,
@@ -1159,6 +1167,7 @@ type sendItem struct {
 	sendTime time.Time
 	resendTime time.Time
 	sendCount int
+	messageBytes int
 	transferFrameBytes []byte
 	ackCallback AckFunction
 
@@ -1303,6 +1312,7 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack) {
 
 	// new sequence
 	if receivePack.Pack.SequenceId == 0 {
+		transferLog("RESET RECEIVE SEQUENCE")
 		if receiveSequence, ok := self.receiveSequences[receivePack.SourceId]; ok {
 			receiveSequence.Cancel()
 			delete(self.receiveSequences, receivePack.SourceId)
@@ -1427,7 +1437,7 @@ func (self *ReceiveSequence) Run() {
 	)
 
 	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.sourceId)
-	self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
+	defer self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
 
 	for {
 		receiveTime := time.Now()
@@ -1907,11 +1917,14 @@ type sequenceContract struct {
 }
 
 func newSequenceContract(contract *protocol.Contract) (*sequenceContract, error) {
-	var storedContract protocol.StoredContract
-	err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
+	storedContract := &protocol.StoredContract{}
+	err := proto.Unmarshal(contract.StoredContractBytes, storedContract)
 	if err != nil {
 		return nil, err
 	}
+
+	transferLog("NEW SEQUENCE CONTRACT GOT %+v", *storedContract)
+
 	contractId, err := IdFromBytes(storedContract.ContractId)
 	if err != nil {
 		return nil, err
@@ -2206,17 +2219,17 @@ func (self *SequencePeerAudit) Complete() {
 
 	self.client.SendControl(RequireToFrame(&protocol.PeerAudit{
 		PeerId: self.peerId.Bytes(),
-		Duration: uint32(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
+		Duration: uint64(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
 		Abuse: self.peerAudit.Abuse,
-		BadContractCount: uint32(self.peerAudit.BadContractCount),
-	    DiscardedByteCount: uint32(self.peerAudit.DiscardedByteCount),
-	    DiscardedCount: uint32(self.peerAudit.DiscardedCount),
-	    BadMessageByteCount: uint32(self.peerAudit.BadMessageByteCount),
-	    BadMessageCount: uint32(self.peerAudit.BadMessageCount),
-	    SendByteCount: uint32(self.peerAudit.SendByteCount),
-	    SendCount: uint32(self.peerAudit.SendCount),
-	    ResendByteCount: uint32(self.peerAudit.ResendByteCount),
-	    ResendCount: uint32(self.peerAudit.ResendCount),
+		BadContractCount: uint64(self.peerAudit.BadContractCount),
+	    DiscardedByteCount: uint64(self.peerAudit.DiscardedByteCount),
+	    DiscardedCount: uint64(self.peerAudit.DiscardedCount),
+	    BadMessageByteCount: uint64(self.peerAudit.BadMessageByteCount),
+	    BadMessageCount: uint64(self.peerAudit.BadMessageCount),
+	    SendByteCount: uint64(self.peerAudit.SendByteCount),
+	    SendCount: uint64(self.peerAudit.SendCount),
+	    ResendByteCount: uint64(self.peerAudit.ResendByteCount),
+	    ResendCount: uint64(self.peerAudit.ResendCount),
 	}), nil)
 	self.peerAudit = nil
 }
@@ -2762,6 +2775,13 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 			Chan: reflect.ValueOf(self.ctx.Done()),
 		})
 
+		// add the update case
+		transportUpdateIndex := len(selectCases)
+		selectCases = append(selectCases, reflect.SelectCase{
+			Dir: reflect.SelectRecv,
+			Chan: reflect.ValueOf(notify),
+		})
+
 		// add all the route
 		routeStartIndex := len(selectCases)
 		if 0 < len(activeRoutes) {
@@ -2774,13 +2794,6 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 				})
 			}
 		}
-
-		// add the update case
-		transportUpdateIndex := len(selectCases)
-		selectCases = append(selectCases, reflect.SelectCase{
-			Dir: reflect.SelectRecv,
-			Chan: reflect.ValueOf(notify),
-		})
 
 		timeoutIndex := len(selectCases)
 		if 0 <= timeout {
@@ -2852,6 +2865,13 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 			Chan: reflect.ValueOf(self.ctx.Done()),
 		})
 
+		// add the update case
+		transportUpdateIndex := len(selectCases)
+		selectCases = append(selectCases, reflect.SelectCase{
+			Dir: reflect.SelectRecv,
+			Chan: reflect.ValueOf(notify),
+		})
+
 		// add all the route
 		routeStartIndex := len(selectCases)
 		if 0 < len(activeRoutes) {
@@ -2863,13 +2883,6 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 				})
 			}
 		}
-
-		// add the update case
-		transportUpdateIndex := len(selectCases)
-		selectCases = append(selectCases, reflect.SelectCase{
-			Dir: reflect.SelectRecv,
-			Chan: reflect.ValueOf(notify),
-		})
 
 		timeoutIndex := len(selectCases)
 		if 0 <= timeout {
@@ -3127,6 +3140,8 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 		notify := contractQueue.updateMonitor.NotifyChannel()
 		contract := contractQueue.poll()
 
+		transferLog("CONTRACT TAKE LOOP FOUND %s", contract)
+
 		if contract != nil {
 			return contract
 		}
@@ -3214,10 +3229,11 @@ func (self *ContractManager) closeContractQueue(destinationId Id) {
 
 func (self *ContractManager) CreateContract(destinationId Id) {
 	transferLog("CONTRACT MANAGER CREATE CONTRACT %s", destinationId.String())
+	debug.PrintStack()
 	// look at destinationContracts and last contract to get previous contract id
 	createContract := &protocol.CreateContract{
 		DestinationId: destinationId.Bytes(),
-		TransferByteCount: uint32(self.contractManagerSettings.StandardTransferByteCount),
+		TransferByteCount: uint64(self.contractManagerSettings.StandardTransferByteCount),
 	}
 	self.client.SendControl(RequireToFrame(createContract), nil)
 }
@@ -3225,8 +3241,8 @@ func (self *ContractManager) CreateContract(destinationId Id) {
 func (self *ContractManager) Complete(contractId Id, ackedByteCount int, unackedByteCount int) {
 	closeContract := &protocol.CloseContract{
 		ContractId: contractId.Bytes(),
-		AckedByteCount: uint32(ackedByteCount),
-		UnackedByteCount: uint32(unackedByteCount),
+		AckedByteCount: uint64(ackedByteCount),
+		UnackedByteCount: uint64(unackedByteCount),
 	}
 	self.client.SendControl(RequireToFrame(closeContract), nil)
 }
