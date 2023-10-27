@@ -36,26 +36,28 @@ message FilteredTransferFrame {
 message Pack {
     // ulid
     bytes message_id = 1;
-    uint64 sequence_id = 2;
+    // ulid
+    bytes sequence_id = 2;
+    uint64 sequence_number = 3;
     // this marks the head message in the sender's sequence
     // it means that any message with an earlier sequence_id won't arrive
     // and is used when a receiver is recreated with zero state
-    bool head = 3;
+    bool head = 4;
 
-    repeated Frame frames = 4;
+    repeated Frame frames = 5;
 }
-// TODO there is no syn because we assume for now all sequences start at 0
 
 
 // ack of a later message means all prior messages have been ackd
 message Ack {
     // ulid
     bytes message_id = 1;
+    // ulid
+    bytes sequence_id = 2;
     // all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
-    bool selective = 2;
+    bool selective = 3;
 }
-// TODO consider blocking send items to be fast retransmitted once if a later selective ack is received
-// TODO the message id avoid overlapping sequence ids across seqeunce isntances, but using sequence_id here would be fine following a correct initial sequence number
+// TODO potential sender improvement: consider blocking send items to be fast retransmitted once if a later selective ack is received
 
 
 // this is a connection local message that is sent at the start of each connection to the control platform

@@ -4,7 +4,7 @@ import (
 	"context"
     "testing"
     "time"
-    // mathrand "math/rand"
+    mathrand "math/rand"
     "fmt"
     "crypto/hmac"
 	"crypto/sha256"
@@ -17,27 +17,18 @@ import (
 )
 
 
+func TestSendReceiveSenderReset(t *testing.T) {
+	// in this case two senders with the same client_id send after each other
+	// The receiver should be able to reset using the new sequence_id
 
-func TestSendReceiveRestart(t *testing.T) {
+	// timeout between receives or acks
+	timeout := 300 * time.Second
+	// number of messages
+	n := 10
+
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// client a
-	// client b
-	// connected with a randomized channel
-
-	// send createcontractresult into a
-
-	// send test messages from a to b
-	// check that each message gets acked
-	// on b, check that each message gets received
-
-	// create a new a2 with same client_id but different instance_id
-	// send test messages from a to b
-	// verify the same (acked and received)
-
-	timeout := 30 * time.Second
-	n := 10
 
 	aClientId := NewId()
 	bClientId := NewId()
@@ -45,26 +36,35 @@ func TestSendReceiveRestart(t *testing.T) {
 	aSend := make(chan []byte)
 	bSend := make(chan []byte)
 
-	_, bReceive := newConditioner(ctx, aSend)
-	_, aReceive := newConditioner(ctx, bSend)
+	aConditioner, bReceive := newConditioner(ctx, aSend)
+	bConditioner, aReceive := newConditioner(ctx, bSend)
 
-	aSendTransport := newSendTransport(aSend)
-	aReceiveTransport := newReceiveTransport(aReceive)
+	aConditioner.update(func() {
+		aConditioner.randomDelay = 10 * time.Second
+		aConditioner.lossProbability = 0.5
+	})
 
-	bSendTransport := newSendTransport(bSend)
-	bReceiveTransport := newReceiveTransport(bReceive)
+	bConditioner.update(func() {
+		bConditioner.randomDelay = 10 * time.Second
+		bConditioner.lossProbability = 0.5
+	})
+
+	aSendTransport := newSendTransport()
+	aReceiveTransport := newReceiveTransport()
+
+	bSendTransport := newSendTransport()
+	bReceiveTransport := newReceiveTransport()
 
 	provideModes := map[protocol.ProvideMode]bool{
         protocol.ProvideMode_Network: true,
     }
-	
 
 
 	a := NewClientWithDefaults(ctx, aClientId)
 	aRouteManager := NewRouteManager(a)
 	aContractManager := NewContractManagerWithDefaults(a)
 	defer func() {
-		a.Close()
+		a.Cancel()
 		aRouteManager.Close()
 		aContractManager.Close()
 	}()
@@ -77,12 +77,11 @@ func TestSendReceiveRestart(t *testing.T) {
     aContractManager.SetProvideModes(provideModes)
 
 
-
 	b := NewClientWithDefaults(ctx, bClientId)
 	bRouteManager := NewRouteManager(b)
 	bContractManager := NewContractManagerWithDefaults(b)
 	defer func() {
-		b.Close()
+		b.Cancel()
 		bRouteManager.Close()
 		bContractManager.Close()
 	}()
@@ -95,28 +94,36 @@ func TestSendReceiveRestart(t *testing.T) {
 	bContractManager.SetProvideModes(provideModes)
 
 
-
-
-
 	acks := make(chan error)
-	receives := make(chan []*protocol.Frame)
+	receives := make(chan *protocol.SimpleMessage)
 
 	b.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-		receives <- frames
+		for _, frame := range frames {
+			message, err := FromFrame(frame)
+			if err != nil {
+				panic(err)
+			}
+			switch v := message.(type) {
+			case *protocol.SimpleMessage:
+				receives <- v
+			}
+		}
 	})
 
 	var ackCount int
 	var receiveCount int
 	
-
-
 	
-	a.SendWithTimeout(requireContractResult(
-		protocol.ProvideMode_Network,
-		aContractManager.RequireProvideSecretKey(protocol.ProvideMode_Network),
+	aReceive <- requireTransferFrameBytes(
+		requireContractResultInitialPack(
+			protocol.ProvideMode_Network,
+			bContractManager.RequireProvideSecretKey(protocol.ProvideMode_Network),
+			aClientId,
+			bClientId,
+		),
+		ControlId,
 		aClientId,
-		bClientId,
-	), aClientId, nil, timeout)
+	)
 	
 
 	go func() {
@@ -140,9 +147,11 @@ func TestSendReceiveRestart(t *testing.T) {
 		select {
 		case <- ctx.Done():
 			return
-		case <- receives:
+		case message := <- receives:
+			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
 			receiveCount += 1
-		case <- acks:
+		case err := <- acks:
+			assert.Equal(t, err, nil)
 			ackCount += 1
 		case <- time.After(timeout):
 			t.FailNow()
@@ -153,7 +162,7 @@ func TestSendReceiveRestart(t *testing.T) {
 	assert.Equal(t, n, ackCount)
 
 
-	a.Close()
+	a.Cancel()
 	aRouteManager.RemoveTransport(aSendTransport)
 	aRouteManager.RemoveTransport(aReceiveTransport)
 
@@ -162,7 +171,7 @@ func TestSendReceiveRestart(t *testing.T) {
 	a2RouteManager := NewRouteManager(a2)
 	a2ContractManager := NewContractManagerWithDefaults(a2)
 	defer func() {
-		a2.Close()
+		a2.Cancel()
 		a2RouteManager.Close()
 		a2ContractManager.Close()
 	}()
@@ -175,15 +184,16 @@ func TestSendReceiveRestart(t *testing.T) {
 	a2ContractManager.SetProvideModes(provideModes)
 
 
-
-
-
-	a2.SendWithTimeout(requireContractResult(
-		protocol.ProvideMode_Network,
-		a2ContractManager.RequireProvideSecretKey(protocol.ProvideMode_Network),
+	aReceive <- requireTransferFrameBytes(
+		requireContractResultInitialPack(
+			protocol.ProvideMode_Network,
+			bContractManager.RequireProvideSecretKey(protocol.ProvideMode_Network),
+			aClientId,
+			bClientId,
+		),
+		ControlId,
 		aClientId,
-		bClientId,
-	), aClientId, nil, timeout)
+	)
 
 
 	go func() {
@@ -207,9 +217,11 @@ func TestSendReceiveRestart(t *testing.T) {
 		select {
 		case <- ctx.Done():
 			return
-		case <- receives:
+		case message := <- receives:
+			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
 			receiveCount += 1
-		case <- acks:
+		case err := <- acks:
+			assert.Equal(t, err, nil)
 			ackCount += 1
 		case <- time.After(timeout):
 			t.FailNow()
@@ -218,14 +230,10 @@ func TestSendReceiveRestart(t *testing.T) {
 
 	assert.Equal(t, n, receiveCount)
 	assert.Equal(t, n, ackCount)
-
-	a2.Close()
-	b.Close()
 }
 
 
-
-func createContractResult(
+func createContractResultInitialPack(
 	provideMode protocol.ProvideMode,
 	provideSecretKey []byte,
 	sourceId Id,
@@ -255,23 +263,82 @@ func createContractResult(
 		},
 	}
 
-	return ToFrame(message)
+	frame, err := ToFrame(message)
+	if err != nil {
+		return nil, err
+	}
+
+	messageId := NewId()
+	sequenceId := NewId()
+	pack := &protocol.Pack{
+		MessageId: messageId.Bytes(),
+		SequenceId: sequenceId.Bytes(),
+		SequenceNumber: 0,
+		Head: true,
+		Frames: []*protocol.Frame{frame},
+	}
+
+	return ToFrame(pack)
 }
 
 
-func requireContractResult(
+func requireContractResultInitialPack(
 	provideMode protocol.ProvideMode,
 	provideSecretKey []byte,
 	sourceId Id,
 	destinationId Id,
 ) *protocol.Frame {
-	frame, err := createContractResult(provideMode, provideSecretKey, sourceId, destinationId)
+	frame, err := createContractResultInitialPack(provideMode, provideSecretKey, sourceId, destinationId)
 	if err != nil {
 		panic(err)
 	}
 	return frame
 }
 
+
+func createTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId Id) ([]byte, error) {
+	transferFrame := &protocol.TransferFrame{
+		TransferPath: &protocol.TransferPath{
+			SourceId: sourceId.Bytes(),
+			DestinationId: destinationId.Bytes(),
+			StreamId: DirectStreamId.Bytes(),
+		},
+		Frame: frame,
+	}
+
+	return proto.Marshal(transferFrame)
+}
+
+
+func requireTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId Id) []byte {
+	b, err := createTransferFrameBytes(frame, sourceId, destinationId)
+	if err != nil {
+		panic(err)
+	}
+
+	var filteredTransferFrame protocol.FilteredTransferFrame
+	if err := proto.Unmarshal(b, &filteredTransferFrame); err != nil {
+		panic(err)
+	}
+	sourceId_, err := IdFromBytes(filteredTransferFrame.TransferPath.SourceId)
+	if err != nil {
+		panic(err)
+	}
+	destinationId_, err := IdFromBytes(filteredTransferFrame.TransferPath.DestinationId)
+	if err != nil {
+		panic(err)
+	}
+
+	if sourceId != sourceId_ {
+		panic(fmt.Errorf("%s <> %s", sourceId.String(), sourceId_.String()))
+	}
+
+	if destinationId != destinationId_ {
+		panic(fmt.Errorf("%s <> %s", destinationId.String(), destinationId_.String()))
+	}
+
+	return b
+}
 
 
 
@@ -282,7 +349,7 @@ type conditioner struct {
 	hold bool
 	inversionWindow time.Duration
 	invertFraction float32
-	lossFraction float32
+	lossProbability float32
 	monitor *Monitor
 }
 
@@ -290,11 +357,8 @@ func newConditioner(ctx context.Context, in chan []byte) (*conditioner, chan []b
 	c := &conditioner{
 		ctx: ctx,
 		fixedDelay: 0,
-		randomDelay: 5 * time.Second,
-		hold: false,
-		inversionWindow: 10 * time.Second,
-		invertFraction: 1.0,
-		lossFraction: 0.5,
+		randomDelay: 0,
+		lossProbability: 0,
 		monitor: NewMonitor(),
 	}
 	out := make(chan []byte)
@@ -310,23 +374,50 @@ func (self *conditioner) update(callback func()) {
 func (self *conditioner) run(in chan []byte, out chan []byte) {
 	defer close(out)
 
-	// startTime := time.Now()
-
 	for {
 		select {
 		case <- self.ctx.Done():
 			return
+		case <- self.monitor.NotifyChannel():
+			continue
 		case b, ok := <- in:
 			if !ok {
 				return
 			}
-			// FIXME condition
 
-			select {
-			case <- self.ctx.Done():
-				return
-			case out <- b:
+			if mathrand.Float32() < self.lossProbability {
+				continue
 			}
+
+			delay := self.fixedDelay
+			if 0 < self.randomDelay {
+				delay += time.Duration(mathrand.Intn(int(self.randomDelay)))
+			}
+
+			if delay <= 0 {
+				select {
+				case <- self.ctx.Done():
+					return
+				case out <- b:
+				}
+			} else {
+				go func() {
+					select {
+					case <- self.ctx.Done():
+						return
+					case <- time.After(delay):
+					}
+
+					select {
+					case <- self.ctx.Done():
+						return
+					case out <- b:
+					}
+				}()
+			}
+
+
+				
 		}
 	}
 }
@@ -336,13 +427,10 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 
 // conforms to `Transport`
 type sendTransport struct {
-	send chan []byte
 }
 
-func newSendTransport(send chan []byte) *sendTransport {
-	return &sendTransport{
-		send: send,
-	}
+func newSendTransport() *sendTransport {
+	return &sendTransport{}
 }
 
 func (self *sendTransport) Priority() int {
@@ -373,13 +461,10 @@ func (self *sendTransport) Downgrade(sourceId Id) {
 
 // conforms to `Transport`
 type receiveTransport struct {
-	receive chan []byte
 }
 
-func newReceiveTransport(receive chan []byte) *receiveTransport {
-	return &receiveTransport{
-		receive: receive,
-	}
+func newReceiveTransport() *receiveTransport {
+	return &receiveTransport{}
 }
 
 func (self *receiveTransport) Priority() int {
