@@ -9,9 +9,12 @@ import (
     "fmt"
     "strings"
     "errors"
+    mathrand "math/rand"
 
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
+
+    "google.golang.org/protobuf/proto"
 
     "bringyour.com/protocol"
 )
@@ -65,64 +68,72 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 
 
 
-// receive from a raw socket
-type ReceivePacketFunction func(source Path, provideMode protocol.ProvideMode, packet []byte)
+// send from a raw socket
+type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, packet []byte)
 
 
-// send to a raw socket
-type SendPacketFunction func(destination Path, packet []byte)
+// receive into a raw socket
+type ReceivePacketFunction func(source Path, packet []byte)
 
 
+
+// FIXME rename this to local user nat
 
 // forwards packets using user space sockets
 // this assumes transfer between the packet source and this is lossless and in order,
 // so the protocol stack implementations do not implement any retransmit logic
-type RemoteUserNat struct {
+type LocalUserNat struct {
     ctx context.Context
     cancel context.CancelFunc
 
-    receivePackets chan *ReceivePacket
+    sendPackets chan *SendPacket
 
     udpBufferSettings *UdpBufferSettings
     tcpBufferSettings *TcpBufferSettings
 
-    // send callback
-    sendCallbacks *CallbackList[SendPacketFunction]
+    // receive callback
+    receiveCallbacks *CallbackList[ReceivePacketFunction]
 }
 
-func NewRemoteUserNatWithDefaults(ctx context.Context) *RemoteUserNat {
-    return NewRemoteUserNat(ctx, 32)
+func NewLocalUserNatWithDefaults(ctx context.Context) *LocalUserNat {
+    return NewLocalUserNat(ctx, 32)
 }
 
-func NewRemoteUserNat(ctx context.Context, receiveBufferSize int) *RemoteUserNat {
+func NewLocalUserNat(ctx context.Context, sendBufferSize int) *LocalUserNat {
     cancelCtx, cancel := context.WithCancel(ctx)
 
-    return &RemoteUserNat{
+    return &LocalUserNat{
         ctx: cancelCtx,
         cancel: cancel,
-        receivePackets: make(chan *ReceivePacket, receiveBufferSize),
+        sendPackets: make(chan *SendPacket, sendBufferSize),
         udpBufferSettings: DefaultUdpBufferSettings(),
         tcpBufferSettings: DefaultTcpBufferSettings(),
-        sendCallbacks: NewCallbackList[SendPacketFunction](),
+        receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
     }
 }
 
 // TODO provide mode of the destination determines filtering rules - e.g. local networks
 // TODO currently filter all local networks and non-encrypted traffic
-func (self *RemoteUserNat) ReceiveWithTimeout(source Path, provideMode protocol.ProvideMode,
+func (self *LocalUserNat) SendWithTimeout(source Path, provideMode protocol.ProvideMode,
         packet []byte, timeout time.Duration) bool {
-    ipLog("ReceiveWithTimeout(%s, %s, %d, %s)", source, provideMode, len(packet), timeout)
-    receivePacket := &ReceivePacket{
+    ipLog("SendWithTimeout(%s, %s, %d, %s)", source, provideMode, len(packet), timeout)
+    sendPacket := &SendPacket{
         source: source,
         provideMode: provideMode,
         packet: packet,
     }
     if timeout < 0 {
-        self.receivePackets <- receivePacket
-        return true
+        select {
+        case <- self.ctx.Done():
+            return false
+        case self.sendPackets <- sendPacket:
+            return true
+        }
     } else if 0 == timeout {
         select {
-        case self.receivePackets <- receivePacket:
+        case <- self.ctx.Done():
+            return false
+        case self.sendPackets <- sendPacket:
             return true
         default:
             // full
@@ -132,7 +143,7 @@ func (self *RemoteUserNat) ReceiveWithTimeout(source Path, provideMode protocol.
         select {
         case <- self.ctx.Done():
             return false
-        case self.receivePackets <- receivePacket:
+        case self.sendPackets <- sendPacket:
             return true
         case <- time.After(timeout):
             // full
@@ -141,41 +152,42 @@ func (self *RemoteUserNat) ReceiveWithTimeout(source Path, provideMode protocol.
     }
 }
 
-func (self *RemoteUserNat) Receive(source Path, provideMode protocol.ProvideMode, packet []byte) {
-    self.ReceiveWithTimeout(source, provideMode, packet, -1)
+// `SendPacketFunction`
+func (self *LocalUserNat) Send(source Path, provideMode protocol.ProvideMode, packet []byte) {
+    self.SendWithTimeout(source, provideMode, packet, -1)
 }
 
-func (self *RemoteUserNat) ReceiveN(source Path, provideMode protocol.ProvideMode, packet []byte, n int) {
-    self.Receive(source, provideMode, packet[0:n])
+// func (self *LocalUserNat) ReceiveN(source Path, provideMode protocol.ProvideMode, packet []byte, n int) {
+//     self.Receive(source, provideMode, packet[0:n])
+// }
+
+func (self *LocalUserNat) AddReceivePacketCallback(receiveCallback ReceivePacketFunction) {
+    self.receiveCallbacks.Add(receiveCallback)
 }
 
-func (self *RemoteUserNat) AddSendPacketCallback(sendCallback SendPacketFunction) {
-    self.sendCallbacks.Add(sendCallback)
+func (self *LocalUserNat) RemoveReceivePacketCallback(receiveCallback ReceivePacketFunction) {
+    self.receiveCallbacks.Remove(receiveCallback)
 }
 
-func (self *RemoteUserNat) RemoveSendPacketCallback(sendCallback SendPacketFunction) {
-    self.sendCallbacks.Remove(sendCallback)
-}
-
-// SendPacketFunction
-func (self *RemoteUserNat) send(destination Path, packet []byte) {
-    for _, sendCallback := range self.sendCallbacks.Get() {
-        sendCallback(destination, packet)
+// `ReceivePacketFunction`
+func (self *LocalUserNat) receive(source Path, packet []byte) {
+    for _, receiveCallback := range self.receiveCallbacks.Get() {
+        receiveCallback(source, packet)
     }
 }
 
-func (self *RemoteUserNat) Run() {
-    udp4Buffer := NewUdp4Buffer(self.ctx, self.send, self.udpBufferSettings)
-    udp6Buffer := NewUdp6Buffer(self.ctx, self.send, self.udpBufferSettings)
-    tcp4Buffer := NewTcp4Buffer(self.ctx, self.send, self.tcpBufferSettings)
-    tcp6Buffer := NewTcp6Buffer(self.ctx, self.send, self.tcpBufferSettings)
+func (self *LocalUserNat) Run() {
+    udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.udpBufferSettings)
+    udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.udpBufferSettings)
+    tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.tcpBufferSettings)
+    tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.tcpBufferSettings)
 
     for {
         select {
         case <- self.ctx.Done():
             return
-        case receivePacket := <- self.receivePackets:
-            ipPacket := receivePacket.packet
+        case sendPacket := <- self.sendPackets:
+            ipPacket := sendPacket.packet
             ipVersion := uint8(ipPacket[0]) >> 4
             switch ipVersion {
             case 4:
@@ -186,9 +198,9 @@ func (self *RemoteUserNat) Run() {
                     udp := layers.UDP{}
                     udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-                    udp4Buffer.receive(
-                        receivePacket.source,
-                        receivePacket.provideMode,
+                    udp4Buffer.send(
+                        sendPacket.source,
+                        sendPacket.provideMode,
                         &ipv4,
                         &udp,
                     )
@@ -196,9 +208,9 @@ func (self *RemoteUserNat) Run() {
                     tcp := layers.TCP{}
                     tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-                    tcp4Buffer.receive(
-                        receivePacket.source,
-                        receivePacket.provideMode,
+                    tcp4Buffer.send(
+                        sendPacket.source,
+                        sendPacket.provideMode,
                         &ipv4,
                         &tcp,
                     )
@@ -213,9 +225,9 @@ func (self *RemoteUserNat) Run() {
                     udp := layers.UDP{}
                     udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
-                    udp6Buffer.receive(
-                        receivePacket.source,
-                        receivePacket.provideMode,
+                    udp6Buffer.send(
+                        sendPacket.source,
+                        sendPacket.provideMode,
                         &ipv6,
                         &udp,
                     )
@@ -223,9 +235,9 @@ func (self *RemoteUserNat) Run() {
                     tcp := layers.TCP{}
                     tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
-                    tcp6Buffer.receive(
-                        receivePacket.source,
-                        receivePacket.provideMode,
+                    tcp6Buffer.send(
+                        sendPacket.source,
+                        sendPacket.provideMode,
                         &ipv6,
                         &tcp,
                     )
@@ -237,11 +249,11 @@ func (self *RemoteUserNat) Run() {
     }
 }
 
-func (self *RemoteUserNat) Close() {
+func (self *LocalUserNat) Close() {
     self.cancel()
 }
 
-type ReceivePacket struct {
+type SendPacket struct {
     source Path
     provideMode protocol.ProvideMode
     packet []byte
@@ -304,19 +316,19 @@ type Udp4Buffer struct {
     UdpBuffer[BufferId4]
 }
 
-func NewUdp4Buffer(ctx context.Context, sendCallback SendPacketFunction,
+func NewUdp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
         udpBufferSettings *UdpBufferSettings) *Udp4Buffer {
     return &Udp4Buffer{
         UdpBuffer: UdpBuffer[BufferId4]{
             ctx: ctx,
-            sendCallback: sendCallback,
+            receiveCallback: receiveCallback,
             udpBufferSettings: udpBufferSettings,
             sequences: map[BufferId4]*UdpSequence{},
         },
     }
 }
 
-func (self *Udp4Buffer) receive(source Path, provideMode protocol.ProvideMode,
+func (self *Udp4Buffer) send(source Path, provideMode protocol.ProvideMode,
         ipv4 *layers.IPv4, udp *layers.UDP) {
     bufferId := NewBufferId4(
         source,
@@ -324,7 +336,7 @@ func (self *Udp4Buffer) receive(source Path, provideMode protocol.ProvideMode,
         ipv4.DstIP, int(udp.DstPort),
     )
 
-    self.udpReceive(
+    self.udpSend(
         bufferId,
         ipv4.SrcIP,
         ipv4.DstIP,
@@ -340,19 +352,19 @@ type Udp6Buffer struct {
     UdpBuffer[BufferId6]
 }
 
-func NewUdp6Buffer(ctx context.Context, sendCallback SendPacketFunction,
+func NewUdp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
         udpBufferSettings *UdpBufferSettings) *Udp6Buffer {
     return &Udp6Buffer{
         UdpBuffer: UdpBuffer[BufferId6]{
             ctx: ctx,
-            sendCallback: sendCallback,
+            receiveCallback: receiveCallback,
             udpBufferSettings: udpBufferSettings,
             sequences: map[BufferId6]*UdpSequence{},
         },
     }
 }
 
-func (self *Udp6Buffer) receive(source Path, provideMode protocol.ProvideMode,
+func (self *Udp6Buffer) send(source Path, provideMode protocol.ProvideMode,
         ipv6 *layers.IPv6, udp *layers.UDP) {
     bufferId := NewBufferId6(
         source,
@@ -360,7 +372,7 @@ func (self *Udp6Buffer) receive(source Path, provideMode protocol.ProvideMode,
         ipv6.DstIP, int(udp.DstPort),
     )
 
-    self.udpReceive(
+    self.udpSend(
         bufferId,
         ipv6.SrcIP,
         ipv6.DstIP,
@@ -374,7 +386,7 @@ func (self *Udp6Buffer) receive(source Path, provideMode protocol.ProvideMode,
 
 type UdpBuffer[BufferId comparable] struct {
     ctx context.Context
-    sendCallback SendPacketFunction
+    receiveCallback ReceivePacketFunction
     udpBufferSettings *UdpBufferSettings
 
     mutex sync.Mutex
@@ -383,7 +395,7 @@ type UdpBuffer[BufferId comparable] struct {
 }
 
 
-func (self *UdpBuffer[BufferId]) udpReceive(
+func (self *UdpBuffer[BufferId]) udpSend(
     bufferId BufferId,
     sourceIp net.IP,
     destinationIp net.IP,
@@ -402,7 +414,7 @@ func (self *UdpBuffer[BufferId]) udpReceive(
         }
         sequence = NewUdpSequence(
             self.ctx,
-            self.sendCallback,
+            self.receiveCallback,
             source,
             ipVersion,
             sourceIp,
@@ -425,10 +437,10 @@ func (self *UdpBuffer[BufferId]) udpReceive(
         return sequence
     }
 
-    if !initSequence().receive(provideMode, udp) {
+    if !initSequence().send(provideMode, udp) {
         // sequence closed
         delete(self.sequences, bufferId)
-        initSequence().receive(provideMode, udp)
+        initSequence().send(provideMode, udp)
     }
 }
 
@@ -438,17 +450,17 @@ type UdpSequence struct {
     log LogFunction
     ctx context.Context
     cancel context.CancelFunc
-    sendCallback SendPacketFunction
+    receiveCallback ReceivePacketFunction
     udpBufferSettings *UdpBufferSettings
 
-    receiveItems chan *UpdReceiveItem
+    sendItems chan *UdpSendItem
 
     idleCondition *IdleCondition
 
     StreamState
 }
 
-func NewUdpSequence(ctx context.Context, sendCallback SendPacketFunction,
+func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         source Path, 
         ipVersion int,
         sourceIp net.IP, sourcePort layers.UDPPort,
@@ -471,15 +483,15 @@ func NewUdpSequence(ctx context.Context, sendCallback SendPacketFunction,
         )),
         ctx: cancelCtx,
         cancel: cancel,
-        sendCallback: sendCallback,
-        receiveItems: make(chan *UpdReceiveItem, udpBufferSettings.ChannelBufferSize),
+        receiveCallback: receiveCallback,
+        sendItems: make(chan *UdpSendItem, udpBufferSettings.ChannelBufferSize),
         udpBufferSettings: udpBufferSettings,
         idleCondition: NewIdleCondition(),
         StreamState: streamState,
     }
 }
 
-func (self *UdpSequence) receive(provideMode protocol.ProvideMode, udp *layers.UDP) (success bool) {
+func (self *UdpSequence) send(provideMode protocol.ProvideMode, udp *layers.UDP) (success bool) {
     if !self.idleCondition.UpdateOpen() {
         success = false
         return
@@ -491,7 +503,7 @@ func (self *UdpSequence) receive(provideMode protocol.ProvideMode, udp *layers.U
             success = false
         }
     }()
-    self.receiveItems <- &UpdReceiveItem{
+    self.sendItems <- &UdpSendItem{
         provideMode: provideMode,
         udp: udp,
     }
@@ -503,12 +515,12 @@ func (self *UdpSequence) Run() {
     defer func() {
         self.Close()
 
-        close(self.receiveItems)
+        close(self.sendItems)
         // drain and drop
         func() {
             for {
                 select {
-                case _, ok := <- self.receiveItems:
+                case _, ok := <- self.sendItems:
                     if !ok {
                         return
                     }
@@ -517,8 +529,8 @@ func (self *UdpSequence) Run() {
         }()
     }()
 
-    send := func(packet []byte) {
-        self.sendCallback(self.source, packet)
+    receive := func(packet []byte) {
+        self.receiveCallback(self.source, packet)
     }
 
     self.log("[init]connect")
@@ -553,9 +565,9 @@ func (self *UdpSequence) Run() {
             n, err := socket.Read(buffer)
 
             if err == nil {
-                self.log("[f%d]receive(%d)", forwardIter, n)
+                self.log("[f%d]send(%d)", forwardIter, n)
             } else {
-                self.log("[f%d]receive(%d err=%s)", forwardIter, n, err)
+                self.log("[f%d]send(%d err=%s)", forwardIter, n, err)
             }
 
             if 0 < n {
@@ -564,8 +576,8 @@ func (self *UdpSequence) Run() {
                     return
                 }
                 for _, packet := range packets {
-                    self.log("[f%d]send (%d)", forwardIter, len(packet))
-                    send(packet)
+                    self.log("[f%d]receive (%d)", forwardIter, len(packet))
+                    receive(packet)
                 }
                 readTimeout = time.Now().Add(self.udpBufferSettings.ReadTimeout)
             }
@@ -585,17 +597,17 @@ func (self *UdpSequence) Run() {
         }
     }()
 
-    for receiveIter := 0; ; receiveIter += 1 {
+    for sendIter := 0; ; sendIter += 1 {
         checkpointId := self.idleCondition.Checkpoint()
         select {
         case <- self.ctx.Done():
             return
-        case receiveItem := <- self.receiveItems:
+        case sendItem := <- self.sendItems:
             writeTimeout := time.Now().Add(self.udpBufferSettings.WriteTimeout)
 
-            payload := receiveItem.udp.Payload
+            payload := sendItem.udp.Payload
 
-            self.log("[r%d]receive(%d)", receiveIter, len(payload))
+            self.log("[r%d]receive(%d)", sendIter, len(payload))
 
             for 0 < len(payload) {
                 select {
@@ -612,9 +624,9 @@ func (self *UdpSequence) Run() {
                 n, err := socket.Write(payload)
 
                 if err == nil {
-                    self.log("[r%d]forward (%d)", receiveIter, n)
+                    self.log("[r%d]forward (%d)", sendIter, n)
                 } else {
-                    self.log("[r%d]forward (%d err=%s)", receiveIter, n, err)
+                    self.log("[r%d]forward (%d err=%s)", sendIter, n, err)
                 }
 
                 payload = payload[n:len(payload)]
@@ -635,7 +647,7 @@ func (self *UdpSequence) Run() {
         case <- time.After(self.udpBufferSettings.IdleTimeout):
             if self.idleCondition.Close(checkpointId) {
                 // close the sequence
-                self.log("[r%d]timeout", receiveIter)
+                self.log("[r%d]timeout", sendIter)
                 return
             }
             // else there pending updates
@@ -647,7 +659,7 @@ func (self *UdpSequence) Close() {
     self.cancel()
 }
 
-type UpdReceiveItem struct {
+type UdpSendItem struct {
     source Path
     provideMode protocol.ProvideMode
     udp *layers.UDP
@@ -788,19 +800,19 @@ type Tcp4Buffer struct {
     TcpBuffer[BufferId4]
 }
 
-func NewTcp4Buffer(ctx context.Context, sendCallback SendPacketFunction,
+func NewTcp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
         tcpBufferSettings *TcpBufferSettings) *Tcp4Buffer {
     return &Tcp4Buffer{
         TcpBuffer: TcpBuffer[BufferId4]{
             ctx: ctx,
-            sendCallback: sendCallback,
+            receiveCallback: receiveCallback,
             tcpBufferSettings: tcpBufferSettings,
             sequences: map[BufferId4]*TcpSequence{},
         },
     }
 }
 
-func (self *Tcp4Buffer) receive(source Path, provideMode protocol.ProvideMode, 
+func (self *Tcp4Buffer) send(source Path, provideMode protocol.ProvideMode, 
         ipv4 *layers.IPv4, tcp *layers.TCP) {
     bufferId := NewBufferId4(
         source,
@@ -808,7 +820,7 @@ func (self *Tcp4Buffer) receive(source Path, provideMode protocol.ProvideMode,
         ipv4.DstIP, int(tcp.DstPort),
     )
 
-    self.tcpReceive(
+    self.tcpSend(
         bufferId,
         ipv4.SrcIP,
         ipv4.DstIP,
@@ -828,19 +840,19 @@ type Tcp6Buffer struct {
     TcpBuffer[BufferId6]
 }
 
-func NewTcp6Buffer(ctx context.Context, sendCallback SendPacketFunction,
+func NewTcp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
         tcpBufferSettings *TcpBufferSettings) *Tcp6Buffer {
     return &Tcp6Buffer{
         TcpBuffer: TcpBuffer[BufferId6]{
             ctx: ctx,
-            sendCallback: sendCallback,
+            receiveCallback: receiveCallback,
             tcpBufferSettings: tcpBufferSettings,
             sequences: map[BufferId6]*TcpSequence{},
         },
     }
 }
 
-func (self *Tcp6Buffer) receive(source Path, provideMode protocol.ProvideMode, 
+func (self *Tcp6Buffer) send(source Path, provideMode protocol.ProvideMode, 
         ipv6 *layers.IPv6, tcp *layers.TCP) {
     bufferId := NewBufferId6(
         source,
@@ -848,7 +860,7 @@ func (self *Tcp6Buffer) receive(source Path, provideMode protocol.ProvideMode,
         ipv6.DstIP, int(tcp.DstPort),
     )
 
-    self.tcpReceive(
+    self.tcpSend(
         bufferId,
         ipv6.SrcIP,
         ipv6.DstIP,
@@ -862,7 +874,7 @@ func (self *Tcp6Buffer) receive(source Path, provideMode protocol.ProvideMode,
 
 type TcpBuffer[BufferId comparable] struct {
     ctx context.Context
-    sendCallback SendPacketFunction
+    receiveCallback ReceivePacketFunction
     tcpBufferSettings *TcpBufferSettings
 
     mutex sync.Mutex
@@ -871,7 +883,7 @@ type TcpBuffer[BufferId comparable] struct {
 }
 
 
-func (self *TcpBuffer[BufferId]) tcpReceive(
+func (self *TcpBuffer[BufferId]) tcpSend(
     bufferId BufferId,
     sourceIp net.IP,
     destinationIp net.IP,
@@ -896,7 +908,7 @@ func (self *TcpBuffer[BufferId]) tcpReceive(
         if tcp.SYN {
             sequence = NewTcpSequence(
                 self.ctx,
-                self.sendCallback,
+                self.receiveCallback,
                 source,
                 ipVersion,
                 sourceIp,
@@ -932,7 +944,7 @@ func (self *TcpBuffer[BufferId]) tcpReceive(
             return
         }
     }
-    sequence.receive(provideMode, tcp)
+    sequence.send(provideMode, tcp)
 }
 
 /*
@@ -949,18 +961,18 @@ type TcpSequence struct {
     ctx context.Context
     cancel context.CancelFunc
     
-    sendCallback SendPacketFunction
+    receiveCallback ReceivePacketFunction
 
     tcpBufferSettings *TcpBufferSettings
 
-    receiveItems chan *TcpReceiveItem
+    sendItems chan *TcpSendItem
 
     idleCondition *IdleCondition
 
     ConnectionState
 }
 
-func NewTcpSequence(ctx context.Context, sendCallback SendPacketFunction,
+func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         source Path,
         ipVersion int,
         sourceIp net.IP, sourcePort layers.TCPPort,
@@ -985,15 +997,15 @@ func NewTcpSequence(ctx context.Context, sendCallback SendPacketFunction,
         )),
         ctx: cancelCtx,
         cancel: cancel,
-        sendCallback: sendCallback,
+        receiveCallback: receiveCallback,
         tcpBufferSettings: tcpBufferSettings,
-        receiveItems: make(chan *TcpReceiveItem, tcpBufferSettings.ChannelBufferSize),
+        sendItems: make(chan *TcpSendItem, tcpBufferSettings.ChannelBufferSize),
         idleCondition: NewIdleCondition(),
         ConnectionState: connectionState,
     }
 }
 
-func (self *TcpSequence) receive(provideMode protocol.ProvideMode, tcp *layers.TCP) (success bool) {
+func (self *TcpSequence) send(provideMode protocol.ProvideMode, tcp *layers.TCP) (success bool) {
     if !self.idleCondition.UpdateOpen() {
         success = false
         return
@@ -1005,7 +1017,7 @@ func (self *TcpSequence) receive(provideMode protocol.ProvideMode, tcp *layers.T
             success = false
         }
     }()
-    self.receiveItems <- &TcpReceiveItem{
+    self.sendItems <- &TcpSendItem{
         provideMode: provideMode,
         tcp: tcp,
     }
@@ -1017,13 +1029,13 @@ func (self *TcpSequence) Run() {
     defer func() {
         self.Close()
 
-        close(self.receiveItems)
+        close(self.sendItems)
 
         // drain and drop
         func() {
             for {
                 select {
-                case _, ok := <- self.receiveItems:
+                case _, ok := <- self.sendItems:
                     if !ok {
                         return
                     }
@@ -1033,8 +1045,8 @@ func (self *TcpSequence) Run() {
     }()
 
 
-    send := func(packet []byte) {
-        self.sendCallback(self.source, packet)
+    receive := func(packet []byte) {
+        self.receiveCallback(self.source, packet)
     }
     // send a final FIN+ACK
     defer func() {
@@ -1044,8 +1056,8 @@ func (self *TcpSequence) Run() {
         if err != nil {
             return
         }
-        self.log("[final]send FIN+ACK (%d)", self.receiveSeq)
-        send(packet)
+        self.log("[final]send FIN+ACK (%d)", self.sendSeq)
+        receive(packet)
         self.mutex.Unlock()
     }()
 
@@ -1054,32 +1066,32 @@ func (self *TcpSequence) Run() {
         select {
         case <- self.ctx.Done():
             return
-        case receiveItem := <- self.receiveItems:
-            self.log("[init]receive(%d)", len(receiveItem.tcp.BaseLayer.Payload))
+        case sendItem := <- self.sendItems:
+            self.log("[init]send(%d)", len(sendItem.tcp.BaseLayer.Payload))
             // the first packet must be a syn
-            if receiveItem.tcp.SYN {
+            if sendItem.tcp.SYN {
                 self.log("[init]SYN")
 
                 self.mutex.Lock()
-                // receiveSeq is the next expected sequence number
+                // sendSeq is the next expected sequence number
                 // SYN and FIN consume one
-                self.receiveSeq = receiveItem.tcp.Seq + 1
+                self.sendSeq = sendItem.tcp.Seq + 1
                 // start the send seq at 0
                 // this is arbitrary, and since there is no transport security risk back to sender is fine
-                self.sendSeq = 0
+                self.receiveSeq = 0
                 packet, err := self.SynAck()
                 if err != nil {
                     return
                 }
-                self.log("[init]send SYN+ACK")
-                send(packet)
-                self.sendSeq += 1
+                self.log("[init]receive SYN+ACK")
+                receive(packet)
+                self.receiveSeq += 1
                 self.mutex.Unlock()
                 
                 syn = true
             } else {
                 // an ACK here could be for a previous FIN
-                self.log("[init]waiting for SYN (%s)", tcpFlagsString(receiveItem.tcp))
+                self.log("[init]waiting for SYN (%s)", tcpFlagsString(sendItem.tcp))
             }
         }
     }
@@ -1122,9 +1134,9 @@ func (self *TcpSequence) Run() {
             n, err := socket.Read(buffer)
 
             if err == nil {
-                self.log("[f%d]receive(%d)", forwardIter, n)
+                self.log("[f%d]send(%d)", forwardIter, n)
             } else {
-                self.log("[f%d]receive(%d) (err=%s)", forwardIter, n, err)
+                self.log("[f%d]send(%d) (err=%s)", forwardIter, n, err)
             }
 
             if 0 < n {
@@ -1135,10 +1147,10 @@ func (self *TcpSequence) Run() {
                 if err != nil {
                     return
                 }
-                self.log("[f%d]send(%d %d %d)", forwardIter, n, len(packets), self.sendSeq)
-                self.sendSeq += uint32(n)
+                self.log("[f%d]receive(%d %d %d)", forwardIter, n, len(packets), self.receiveSeq)
+                self.receiveSeq += uint32(n)
                 for _, packet := range packets {   
-                    send(packet)
+                    receive(packet)
                 }
                 self.mutex.Unlock()
                 
@@ -1160,48 +1172,48 @@ func (self *TcpSequence) Run() {
         }
     }()
 
-    for receiveIter := 0; ; receiveIter += 1 {
+    for sendIter := 0; ; sendIter += 1 {
         checkpointId := self.idleCondition.Checkpoint()
         select {
         case <- self.ctx.Done():
             return
-        case receiveItem := <- self.receiveItems:
-            self.log("[r%d]receive(%d %s)", receiveIter, len(receiveItem.tcp.Payload), tcpFlagsString(receiveItem.tcp))
+        case sendItem := <- self.sendItems:
+            self.log("[r%d]receive(%d %s)", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
 
-            if self.receiveSeq != receiveItem.tcp.Seq {
+            if self.sendSeq != sendItem.tcp.Seq {
                 // a retransmit
                 // since the transfer from local to remote is lossless and preserves order,
                 // the packet is already pending. Ignore.
                 self.mutex.Lock()
-                self.log("[r%d]retransmit (%d %d)", receiveIter, self.receiveSeq, receiveItem.tcp.Seq)
+                self.log("[r%d]retransmit (%d %d)", sendIter, self.sendSeq, sendItem.tcp.Seq)
                 self.mutex.Unlock()
                 continue
             }
 
             // ignore ACKs because we do not need to retransmit (see above)
-            if receiveItem.tcp.ACK {
+            if sendItem.tcp.ACK {
                 self.mutex.Lock()
-                self.log("[r%d]ACK (%d %d)", receiveIter, self.sendSeq, receiveItem.tcp.Ack)
+                self.log("[r%d]ACK (%d %d)", sendIter, self.receiveSeq, sendItem.tcp.Ack)
                 self.mutex.Unlock()
             }
 
-            if receiveItem.tcp.FIN {
-                self.log("[r%d]FIN", receiveIter)
+            if sendItem.tcp.FIN {
+                self.log("[r%d]FIN", sendIter)
                 self.mutex.Lock()
-                self.receiveSeq += 1
+                self.sendSeq += 1
                 self.mutex.Unlock()
                 return
             }
 
-            if receiveItem.tcp.RST {
+            if sendItem.tcp.RST {
                 // a RST typically appears for a bad TCP segment
-                self.log("[r%d]RST", receiveIter)
+                self.log("[r%d]RST", sendIter)
                 return
             }
 
             writeTimeout := time.Now().Add(self.tcpBufferSettings.WriteTimeout)
 
-            payload := receiveItem.tcp.Payload
+            payload := sendItem.tcp.Payload
             for 0 < len(payload) {
                 select {
                 case <- self.ctx.Done():
@@ -1217,9 +1229,9 @@ func (self *TcpSequence) Run() {
                 n, err := socket.Write(payload)
 
                 if err == nil {
-                    self.log("[r%d]forward(%d)", receiveIter, n)
+                    self.log("[r%d]forward(%d)", sendIter, n)
                 } else {
-                    self.log("[r%d]forward(%d err=%s)", receiveIter, n, err)
+                    self.log("[r%d]forward(%d err=%s)", sendIter, n, err)
                 }
 
                 payload = payload[n:len(payload)]
@@ -1227,13 +1239,13 @@ func (self *TcpSequence) Run() {
 
                 if 0 < n {
                     self.mutex.Lock()
-                    self.receiveSeq += uint32(n)
+                    self.sendSeq += uint32(n)
                     packet, err := self.PureAck()
                     if err != nil {
                         return
                     }
-                    self.log("[r%d]send ACK (%d)", receiveIter, self.receiveSeq)
-                    send(packet)
+                    self.log("[r%d]receive ACK (%d)", sendIter, self.sendSeq)
+                    receive(packet)
                     self.mutex.Unlock()
                 }
 
@@ -1253,7 +1265,7 @@ func (self *TcpSequence) Run() {
         case <- time.After(self.tcpBufferSettings.IdleTimeout):
             if self.idleCondition.Close(checkpointId) {
                 // close the sequence
-                self.log("[r%d]timeout", receiveIter)
+                self.log("[r%d]timeout", sendIter)
                 return
             }
             // else there pending updates
@@ -1261,7 +1273,7 @@ func (self *TcpSequence) Run() {
     }
 }
 
-type TcpReceiveItem struct {
+type TcpSendItem struct {
     provideMode protocol.ProvideMode
     tcp *layers.TCP
 }
@@ -1276,8 +1288,8 @@ type ConnectionState struct {
 
     mutex sync.Mutex
 
-    receiveSeq uint32
     sendSeq uint32
+    receiveSeq uint32
     windowSize uint16
 }
 
@@ -1322,8 +1334,8 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
     tcp := layers.TCP{
         SrcPort: self.destinationPort,
         DstPort: self.sourcePort,
-        Seq: self.sendSeq,
-        Ack: self.receiveSeq,
+        Seq: self.receiveSeq,
+        Ack: self.sendSeq,
         ACK: true,
         SYN: true,
         Window: self.windowSize,
@@ -1377,8 +1389,8 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
     tcp := layers.TCP{
         SrcPort: self.destinationPort,
         DstPort: self.sourcePort,
-        Seq: self.sendSeq,
-        Ack: self.receiveSeq,
+        Seq: self.receiveSeq,
+        Ack: self.sendSeq,
         ACK: true,
         FIN: true,
         Window: self.windowSize,
@@ -1432,8 +1444,8 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
     tcp := layers.TCP{
         SrcPort: self.destinationPort,
         DstPort: self.sourcePort,
-        Seq: self.sendSeq,
-        Ack: self.receiveSeq,
+        Seq: self.receiveSeq,
+        Ack: self.sendSeq,
         ACK: true,
         Window: self.windowSize,
     }
@@ -1486,8 +1498,8 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
     tcp := layers.TCP{
         SrcPort: self.destinationPort,
         DstPort: self.sourcePort,
-        Seq: self.sendSeq,
-        Ack: self.receiveSeq,
+        Seq: self.receiveSeq,
+        Ack: self.sendSeq,
         ACK: true,
         Window: self.windowSize,
     }
@@ -1533,7 +1545,7 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
         packets := [][]byte{}
         for i := 0; i < n; {
             j := min(i + packetSize, n)
-            tcp.Seq = self.sendSeq + uint32(i)
+            tcp.Seq = self.receiveSeq + uint32(i)
             err := gopacket.SerializeLayers(buffer, options,
                 ip.(gopacket.SerializableLayer),
                 &tcp,
@@ -1585,3 +1597,293 @@ func tcpFlagsString(tcp *layers.TCP) string {
     }
     return strings.Join(flags, ", ")
 }
+
+
+type RemoteUserNatProvider struct {
+    client *Client
+    localUserNat *LocalUserNat
+    securityPolicy *SecurityPolicy
+}
+
+func NewRemoteUserNatProvider(client *Client, localUserNat *LocalUserNat) *RemoteUserNatProvider {
+    userNatProvider := &RemoteUserNatProvider{
+        client: client,
+        localUserNat: localUserNat,
+        securityPolicy: DefaultSecurityPolicy(),
+    }
+
+    localUserNat.AddReceivePacketCallback(userNatProvider.Receive)
+    client.AddReceiveCallback(userNatProvider.ClientReceive)
+
+    return userNatProvider
+}
+
+// `ReceivePacketFunction`
+func (self *RemoteUserNatProvider) Receive(destination Path, packet []byte) {
+    ipPacketFromProvider := &protocol.IpPacketFromProvider{
+        IpPacket: &protocol.IpPacket{
+            PacketBytes: packet,
+        },
+    }
+    frame, err := ToFrame(ipPacketFromProvider)
+    if err != nil {
+        panic(err)
+    }
+
+    success := self.client.Send(frame, destination.destinationId, func(err error) {
+        // todo log
+    })
+    if !success {
+        // LOG("dropped packet")
+        // todo log
+    }
+}
+
+// `connect.ReceiveFunction`
+func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+    for _, frame := range frames {
+        switch frame.MessageType {
+        case protocol.MessageType_IpIpPacketToProvider:
+            ipPacketToProvider_, err := FromFrame(frame)
+            if err != nil {
+                panic(err)
+            }
+            ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
+
+            packet := ipPacketToProvider.IpPacket.PacketBytes
+            r := self.securityPolicy.Scan(provideMode, packet)
+            switch r {
+            case SecurityPolicyResultAllow:
+                source := Path{sourceId: sourceId}
+                self.localUserNat.Send(source, provideMode, packet)
+            }
+        }
+    }
+}
+
+func (self *RemoteUserNatProvider) Close() {
+    self.client.RemoveReceiveCallback(self.ClientReceive)
+    self.localUserNat.RemoveReceivePacketCallback(self.Receive)
+}
+
+
+type RemoteUserNatClient struct {
+    client *Client
+    receivePacketCallback ReceivePacketFunction
+    securityPolicy *SecurityPolicy
+    pathTable *PathTable
+    sourceFilter map[Path]bool
+    // the provide mode of the source packets
+    // for locally generated packets this is `ProvideMode_Network`
+    provideMode protocol.ProvideMode
+}
+
+func NewRemoteUserNatClient(
+    client *Client,
+    receivePacketCallback ReceivePacketFunction,
+    destinations []Path,
+    provideMode protocol.ProvideMode,
+) (*RemoteUserNatClient, error) {
+    pathTable, err := NewPathTable(destinations)
+    if err != nil {
+        return nil, err
+    }
+
+    sourceFilter := map[Path]bool{}
+    for _, destination := range destinations {
+        sourceFilter[destination] = true
+    }
+
+    userNatClient := &RemoteUserNatClient{
+        client: client,
+        receivePacketCallback: receivePacketCallback,
+        securityPolicy: DefaultSecurityPolicy(),
+        pathTable: pathTable,
+        sourceFilter: sourceFilter,
+        provideMode: provideMode,
+    }
+
+    client.AddReceiveCallback(userNatClient.ClientReceive)
+
+    return userNatClient, nil
+}
+
+// `SendPacketFunction`
+func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
+    minRelationship := max(provideMode, self.provideMode)
+
+    r := self.securityPolicy.Scan(minRelationship, packet)
+    switch r {
+    case SecurityPolicyResultAllow:
+        destination, err := self.pathTable.SelectDestination(packet)
+        if err != nil {
+            // drop
+            // TODO log
+        }
+
+        ipPacketToProvider := &protocol.IpPacketToProvider{
+            IpPacket: &protocol.IpPacket{
+                PacketBytes: packet,
+            },
+        }
+        frame, err := ToFrame(ipPacketToProvider)
+        if err != nil {
+            panic(err)
+        }
+
+        self.client.Send(frame, destination.ClientId, func(err error) {
+            // TODO log if no ack
+        })
+    }
+}
+
+// `connect.ReceiveFunction`
+func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+    source := Path{sourceId: sourceId}
+
+    // only process frames from the destinations
+    if allow, ok := self.sourceFilter[source]; !ok || !allow {
+        return
+    }
+
+    for _, frame := range frames {
+        switch frame.MessageType {
+        case protocol.MessageType_IpIpPacketFromProvider:
+            ipPacketFromProvider_, err := FromFrame(frame)
+            if err != nil {
+                panic(err)
+            }
+            ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
+
+            self.receivePacketCallback(source, ipPacketFromProvider.IpPacket.PacketBytes)
+        }
+    }
+}
+
+func (self *RemoteUserNatClient) Close() {
+    self.client.RemoveReceiveCallback(self.ClientReceive)
+}
+
+
+type PathTable struct {
+    destinations []Path
+
+    // TODO clean up entries that haven't been used in some time
+    paths map[ipPath]Path
+}
+
+func NewPathTable(destinations []Path) (*PathTable, error) {
+    if len(destinations) == 0 {
+        return nil, errors.New("No destinations.")
+    }
+    return &PathTable{
+        destinations: destinations,
+        paths: map[ipPath]Path{},
+    }, nil
+}
+
+func (self *PathTable) SelectDestination(packet []byte) (Path, error) {
+    if len(self.destinations) == 1 {
+        return self.destinations[0], nil
+    }
+
+    ipPath, err := parseIpPath(packet)
+    if err != nil {
+        return Path{}, err
+    }
+    if path, ok := self.paths[ipPath]; ok {
+        return path, nil
+    }
+    i := mathrand.Intn(len(self.destinations))
+    path := self.destinations[i]
+    self.paths[ipPath] = path
+    return path, nil
+}
+
+
+type IpProtocol int
+const (
+    IpProtocolTcp IpProtocol = 0
+    IpProtocolUdp IpProtocol = 1
+)
+
+
+type ipPath struct {
+    protocol IpProtocol
+    version int
+    sourceIp net.IP
+    sourcePort int
+    destinationIp net.IP
+    destinationPort int
+}
+// FIXME ip4Path, ip6Path are comparable
+
+func (self *ipPath) toIp4Path() ip4Path {
+    // FIXME
+}
+
+func (self *ipPath) toIp6Path() ip6Path {
+    // FIXME
+}
+
+
+
+func parseIpPath(packet []byte) (*ipPath, error) {
+    // FIXME
+}
+
+
+type SecurityPolicyResult int
+const (
+    SecurityPolicyResultDrop SecurityPolicyResult = 0
+    SecurityPolicyResultAllow SecurityPolicyResult = 1
+)
+
+
+type SecurityPolicy struct {
+}
+
+func DefaultSecurityPolicy() *SecurityPolicy {
+    return &SecurityPolicy{}
+}
+
+func (self *SecurityPolicy) Scan(provideMode protocol.ProvideMode, packet []byte) SecurityPolicyResult {
+    ipPath, err := parseIpPath(packet)
+    if err != nil {
+        // back ip packet
+        return SecurityPolicyResultDrop
+    }
+
+    if protocol.ProvideMode_Public <= provideMode {
+        // apply public rules:
+        // - only public unicast network destinations
+        // - only sni-encrypted traffic
+
+        if !isPublicUnicast(ipPath.destinationIp) {
+            return SecurityPolicyResultDrop 
+        }
+
+        // sni
+        // fixme: for now approximate this by allowing only port 443
+        if ipPath.destinationPort != 443 {
+            return SecurityPolicyResultDrop
+        }
+    }
+
+    return SecurityScanResultAllow
+}
+
+
+func isPublicUnicast(ip net.IP) {
+    switch {
+    case ip.isPrivate(), 
+            ip.isLoopback(),
+            ip.isLinkLocalUnicast(),
+            ip.isMulticast(),
+            ip.isUnspecified():
+        return false
+    default:
+        return true
+    }
+}
+

@@ -22,6 +22,8 @@ enum MessageType {
     TransferCloseContract = 12;
     TransferPeerAudit = 13;
     TestSimpleMessage = 14;
+    IpIpPacketToProvider = 15;
+    IpIpPacketFromProvider = 16;
 }
 
 

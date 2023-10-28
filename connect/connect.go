@@ -108,6 +108,10 @@ func ToFrame(message proto.Message) (*protocol.Frame, error) {
 		messageType = protocol.MessageType_TransferPeerAudit
 	case *protocol.SimpleMessage:
 		messageType = protocol.MessageType_TestSimpleMessage
+	case *protocol.IpPacketToProvider:
+		messageType = protocol.MessageType_IpIpPacketToProvider
+	case *protocol.IpPacketFromProvider:
+		messageType = protocol.MessageType_IpIpPacketFromProvider
 	default:
 		return nil, fmt.Errorf("Unknown message type: %T", v)
 	}
@@ -164,6 +168,10 @@ func FromFrame(frame *protocol.Frame) (proto.Message, error) {
 		message = &protocol.PeerAudit{}
 	case protocol.MessageType_TestSimpleMessage:
 		message = &protocol.SimpleMessage{}
+	case protocol.MessageType_IpIpPacketToProvider:
+		message = &protocol.IpPacketToProvider{}
+	case protocol.MessageType_IpIpPacketFromProvider:
+		message = &protocol.IpPacketFromProvider{}
 	default:
 		return nil, fmt.Errorf("Unknown message type: %s", frame.MessageType)
 	}
