@@ -68,25 +68,27 @@ type ContractErrorFunction = func(protocol.ContractError)
 
 
 // destination id for control messages
-var ControlId = Id([]byte{
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-})
+var ControlId = Id{}
 
 
 // in this case there are no intermediary hops
 // the contract is signed with the local provide keys
-var DirectStreamId = Id([]byte{
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-})
+var DirectStreamId = Id{}
 
 
 const DefaultClientBufferSize = 32
+
+
+func mib(c ByteCount) ByteCount {
+	c *= ByteCount(1024 * 1024)
+	return c
+}
+
+
+func gib(c ByteCount) ByteCount {
+	c *= ByteCount(1024 * 1024 * 1024)
+	return c
+}
 
 
 func DefaultSendBufferSettings() *SendBufferSettings {
@@ -100,8 +102,8 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		// pause on resend for selectively acked messaged
 		SelectiveAckTimeout: 10 * time.Second,
 		SequenceBufferSize: 30,
-		ResendQueueMaxByteCount: 1024 * 1024,
-		MinMessageByteCount: 1,
+		ResendQueueMaxByteCount: mib(8),
+		MinMessageByteCount: ByteCount(1),
 	}
 }
 
@@ -112,8 +114,8 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		GapTimeout: 300 * time.Second,
 		IdleTimeout: 500 * time.Second,
 		SequenceBufferSize: 30,
-		ReceiveQueueMaxByteCount: 1024 * 1024,
-		MinMessageByteCount: 1,
+		ReceiveQueueMaxByteCount: mib(8),
+		MinMessageByteCount: ByteCount(1),
 		ResendAbuseThreshold: 4,
 		ResendAbuseMultiple: 0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
@@ -131,7 +133,7 @@ func DefaultForwardBufferSettings() *ForwardBufferSettings {
 
 func DefaultContractManagerSettings() *ContractManagerSettings {
 	return &ContractManagerSettings{
-		StandardTransferByteCount: 8 * 1024 * 1024 * 1024,
+		StandardTransferByteCount: gib(8),
 	}
 }
 
@@ -157,7 +159,7 @@ type SendPack struct {
 	DestinationId Id
 	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
 	AckCallback AckFunction
-	MessageByteCount int
+	MessageByteCount ByteCount
 }
 
 
@@ -166,7 +168,7 @@ type ReceivePack struct {
 	SequenceId Id
 	Pack *protocol.Pack
 	ReceiveCallback ReceiveFunction
-	MessageByteCount int
+	MessageByteCount ByteCount
 }
 
 
@@ -223,6 +225,14 @@ func (self *Client) ClientId() Id {
 
 func (self *Client) InstanceId() Id {
 	return self.instanceId
+}
+
+func (self *Client) ReportAbuse(sourceId Id) {
+	peerAudit := NewSequencePeerAudit(self, sourceId, 0)
+	peerAudit.Update(func (peerAudit *PeerAudit) {
+		peerAudit.Abuse = true
+	})
+	peerAudit.Complete()
 }
 
 func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.Duration) bool {
@@ -288,7 +298,7 @@ func (self *Client) SendWithTimeout(
 		}
 	}
 
-	messageByteCount := len(frame.MessageBytes)
+	messageByteCount := ByteCount(len(frame.MessageBytes))
 	sendPack := &SendPack{
 		Frame: frame,
 		DestinationId: destinationId,
@@ -434,7 +444,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 				if err := proto.Unmarshal(transferFrameBytes, transferFrame); err != nil {
 					// bad protobuf
 					updatePeerAudit(sourceId, func(a *PeerAudit) {
-						a.badMessage(len(transferFrameBytes))
+						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
 					continue
 				}
@@ -448,7 +458,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 					if err := proto.Unmarshal(frame.GetMessageBytes(), ack); err != nil {
 						// bad protobuf
 						updatePeerAudit(sourceId, func(a *PeerAudit) {
-							a.badMessage(len(transferFrameBytes))
+							a.badMessage(ByteCount(len(transferFrameBytes)))
 						})
 						continue
 					}
@@ -459,7 +469,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 					if err := proto.Unmarshal(frame.GetMessageBytes(), pack); err != nil {
 						// bad protobuf
 						updatePeerAudit(sourceId, func(a *PeerAudit) {
-							a.badMessage(len(transferFrameBytes))
+							a.badMessage(ByteCount(len(transferFrameBytes)))
 						})
 						continue
 					}
@@ -468,9 +478,9 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 						// bad protobuf
 						continue
 					}
-					messageByteCount := 0
+					messageByteCount := ByteCount(0)
 					for _, frame := range pack.Frames {
-						messageByteCount += len(frame.MessageBytes)
+						messageByteCount += ByteCount(len(frame.MessageBytes))
 					}
 					transferLog("[%s] Receive pack %s ->: %s", self.clientId.String(), sourceId.String(), pack.Frames)
 					receiveBuffer.Pack(&ReceivePack{
@@ -483,7 +493,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 				default:
 					transferLog("[%s] Receive unknown -> %s: %s", self.clientId.String(), sourceId.String(), frame)
 					updatePeerAudit(sourceId, func(a *PeerAudit) {
-						a.badMessage(len(transferFrameBytes))
+						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
 				}
 			} else {
@@ -492,7 +502,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 					if err := proto.Unmarshal(transferFrameBytes, transferFrame); err != nil {
 						// bad protobuf
 						updatePeerAudit(sourceId, func(a *PeerAudit) {
-							a.badMessage(len(transferFrameBytes))
+							a.badMessage(ByteCount(len(transferFrameBytes)))
 						})
 						continue
 					}
@@ -506,7 +516,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 						if err := proto.Unmarshal(frame.GetMessageBytes(), ack); err != nil {
 							// bad protobuf
 							updatePeerAudit(sourceId, func(a *PeerAudit) {
-								a.badMessage(len(transferFrameBytes))
+								a.badMessage(ByteCount(len(transferFrameBytes)))
 							})
 							continue
 						}
@@ -516,13 +526,13 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 						if err := proto.Unmarshal(frame.GetMessageBytes(), pack); err != nil {
 							// bad protobuf
 							updatePeerAudit(sourceId, func(a *PeerAudit) {
-								a.badMessage(len(transferFrameBytes))
+								a.badMessage(ByteCount(len(transferFrameBytes)))
 							})
 							continue
 						}
-						messageByteCount := 0
+						messageByteCount := ByteCount(0)
 						for _, frame := range pack.Frames {
-							messageByteCount += len(frame.MessageBytes)
+							messageByteCount += ByteCount(len(frame.MessageBytes))
 						}
 						transferLog("[%s] Forward pack %s ->: %s", self.clientId.String(), sourceId.String(), pack.Frames)
 					default:
@@ -622,9 +632,9 @@ type SendBufferSettings struct {
 
 	SequenceBufferSize int
 
-	ResendQueueMaxByteCount int
+	ResendQueueMaxByteCount ByteCount
 
-	MinMessageByteCount int
+	MinMessageByteCount ByteCount
 }
 
 
@@ -930,7 +940,7 @@ func (self *SendSequence) Run() {
 					// close the sequence
 					return
 				}
-				if self.updateContract(len(sendPack.Frame.MessageBytes)) {
+				if self.updateContract(ByteCount(len(sendPack.Frame.MessageBytes))) {
 					transferLog("[%s] Have contract, sending -> %s: %s", self.clientId.String(), self.destinationId.String(), sendPack.Frame)
 					err := self.send(sendPack.Frame, sendPack.AckCallback)
 					if err != nil {
@@ -958,7 +968,7 @@ func (self *SendSequence) Run() {
 	}
 }
 
-func (self *SendSequence) updateContract(messageByteCount int) bool {
+func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	// `sendNoContract` is a mutual configuration 
 	// both sides must configure themselves to require no contract from each other
 	if self.contractManager.SendNoContract(self.destinationId) {
@@ -980,7 +990,7 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 
 	// the max overhead of the pack frame
 	// this is needed because the size of the contract pack is counted against the contract
-	maxContractMessageByteCount := 256
+	maxContractMessageByteCount := ByteCount(256)
 
 	if self.contractManager.StandardTransferByteCount() < messageByteCount + maxContractMessageByteCount {
 		// this pack does not fit into a standard contract
@@ -997,15 +1007,15 @@ func (self *SendSequence) updateContract(messageByteCount int) bool {
 
 		contractMessageBytes, _ := proto.Marshal(contract)
 
-		if len(contractMessageBytes) < self.sendBufferSettings.MinMessageByteCount {
+		if ByteCount(len(contractMessageBytes)) < self.sendBufferSettings.MinMessageByteCount {
 			panic("Contract does not meet the minimum message size requirement.")
 		}
 
-		if maxContractMessageByteCount < len(contractMessageBytes) {
+		if maxContractMessageByteCount < ByteCount(len(contractMessageBytes)) {
 			panic("Bad estimate for contract max size could result in infinite contract retries.")
 		}
 
-		if sendContract.update(messageByteCount + len(contractMessageBytes)) {
+		if sendContract.update(messageByteCount + ByteCount(len(contractMessageBytes))) {
 			transferLog("[%s] Send contract %s -> %s", self.clientId.String(), sendContract.contractId.String(), self.destinationId.String())
 			self.sendContract = sendContract
 			self.sendContracts[sendContract.contractId] = sendContract
@@ -1098,7 +1108,7 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction) e
 		resendTime: sendTime.Add(self.sendBufferSettings.ResendInterval),
 		sendCount: 1,
 		head: head,
-		messageBytes: len(frame.MessageBytes),
+		messageByteCount: ByteCount(len(frame.MessageBytes)),
 		transferFrameBytes: transferFrameBytes,
 		ackCallback: ackCallback,
 		selectiveAckEnd: time.Time{},
@@ -1165,7 +1175,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 
 		if implicitItem.contractId != nil {
 			itemSendContract := self.sendContracts[*implicitItem.contractId]
-			itemSendContract.ack(implicitItem.messageBytes)
+			itemSendContract.ack(implicitItem.messageByteCount)
 			// not current and closed
 			if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
 				self.contractManager.Complete(
@@ -1227,7 +1237,7 @@ type sendItem struct {
 	sendTime time.Time
 	resendTime time.Time
 	sendCount int
-	messageBytes int
+	messageByteCount ByteCount
 	transferFrameBytes []byte
 	ackCallback AckFunction
 
@@ -1246,14 +1256,14 @@ type resendQueue struct {
 	orderedItems []*sendItem
 	// message_id -> item
 	messageItems map[Id]*sendItem
-	byteCount int
+	byteCount ByteCount
 }
 
 func newResendQueue() *resendQueue {
 	resendQueue := &resendQueue{
 		orderedItems: []*sendItem{},
 		messageItems: map[Id]*sendItem{},
-		byteCount: 0,
+		byteCount: ByteCount(0),
 	}
 	heap.Init(resendQueue)
 	return resendQueue
@@ -1265,7 +1275,7 @@ func (self *resendQueue) add(item *sendItem) {
 	// if self.orderedItems[item.heapIndex] != item {
 	// 	panic(fmt.Errorf(""))
 	// }
-	self.byteCount += len(item.transferFrameBytes)
+	self.byteCount += ByteCount(len(item.transferFrameBytes))
 }
 
 func (self *resendQueue) remove(messageId Id) *sendItem {
@@ -1283,7 +1293,7 @@ func (self *resendQueue) remove(messageId Id) *sendItem {
 	// 	return i.messageId == messageId
 	// })
 	// heap.Init(self)
-	self.byteCount -= len(item.transferFrameBytes)
+	self.byteCount -= ByteCount(len(item.transferFrameBytes))
 	return item
 }
 
@@ -1294,7 +1304,7 @@ func (self *resendQueue) removeFirst() *sendItem {
 	}
 	item := first.(*sendItem)
 	delete(self.messageItems, item.messageId)
-	self.byteCount -= len(item.transferFrameBytes)
+	self.byteCount -= ByteCount(len(item.transferFrameBytes))
 	return item
 }
 
@@ -1342,14 +1352,14 @@ type ReceiveBufferSettings struct {
 
 	SequenceBufferSize int
 	// this is the max memory used per source
-	ReceiveQueueMaxByteCount int
+	ReceiveQueueMaxByteCount ByteCount
 
-	MinMessageByteCount int
+	MinMessageByteCount ByteCount
 
 	// min number of resends before checking abuse
 	ResendAbuseThreshold int
 	// max legit fraction of sends that are resends
-	ResendAbuseMultiple float32
+	ResendAbuseMultiple float64
 
 	MaxPeerAuditDuration time.Duration
 }
@@ -1609,7 +1619,7 @@ func (self *ReceiveSequence) Run() {
 							// bad contract
 							// close sequence
 							self.peerAudit.Update(func(a *PeerAudit) {
-								a.badContract(item.messageByteCount)
+								a.badContract()
 							})
 							return
 						}
@@ -1619,7 +1629,7 @@ func (self *ReceiveSequence) Run() {
 							// bad contract
 							// close sequence
 							self.peerAudit.Update(func(a *PeerAudit) {
-								a.badContract(item.messageByteCount)
+								a.badContract()
 							})
 							return
 						}
@@ -1699,7 +1709,7 @@ func (self *ReceiveSequence) Run() {
 				}
 
 				// store only up to a max size in the receive queue
-				canBuffer := func(byteCount int)(bool) {
+				canBuffer := func(byteCount ByteCount)(bool) {
 					// always allow at least one item in the receive queue
 					if 0 == self.receiveQueue.Len() {
 						return true
@@ -1758,13 +1768,16 @@ func (self *ReceiveSequence) Run() {
 			}
 		}
 
+
+		// FIXME audit SendCount is currently not being updated
+		/*
 		// check the resend abuse limits
 		// resends can appear normal but waste bandwidth
 		abuse := false
 		self.peerAudit.Update(func(a *PeerAudit) {
 			if self.receiveBufferSettings.ResendAbuseThreshold <= a.ResendCount {
-				resendByteCountAbuse := int(float32(a.SendByteCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendByteCount
-				resendCountAbuse := int(float32(a.SendCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendCount
+				resendByteCountAbuse := ByteCount(float64(a.SendByteCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendByteCount
+				resendCountAbuse := int(float64(a.SendCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendCount
 				abuse = resendByteCountAbuse || resendCountAbuse
 				a.Abuse = abuse
 			}
@@ -1774,10 +1787,11 @@ func (self *ReceiveSequence) Run() {
 			self.routeManager.DowngradeReceiverConnection(self.sourceId)
 			return
 		}
+		*/
 	}
 }
 
-func (self *ReceiveSequence) updateContract(byteCount int) bool {
+func (self *ReceiveSequence) updateContract(byteCount ByteCount) bool {
 	// `receiveNoContract` is a mutual configuration 
 	// both sides must configure themselves to require no contract from each other
 	if self.contractManager.ReceiveNoContract(self.sourceId) {
@@ -1904,7 +1918,7 @@ type receiveItem struct {
 	head bool
 	receiveTime time.Time
 	frames []*protocol.Frame
-	messageByteCount int
+	messageByteCount ByteCount
 	receiveCallback ReceiveFunction
 
 	// FIXME remove heapIndex
@@ -1918,7 +1932,7 @@ type receiveQueue struct {
 	orderedItems []*receiveItem
 	// message_id -> item
 	messageItems map[Id]*receiveItem
-	byteCount int
+	byteCount ByteCount
 }
 
 func newReceiveQueue() *receiveQueue {
@@ -2032,14 +2046,14 @@ func (self *receiveQueue) Swap(i int, j int) {
 
 type sequenceContract struct {
 	contractId Id
-	transferByteCount int
+	transferByteCount ByteCount
 	provideMode protocol.ProvideMode
 
 	sourceId Id
 	destinationId Id
 	
-	ackedByteCount int
-	unackedByteCount int
+	ackedByteCount ByteCount
+	unackedByteCount ByteCount
 }
 
 func newSequenceContract(contract *protocol.Contract) (*sequenceContract, error) {
@@ -2066,16 +2080,16 @@ func newSequenceContract(contract *protocol.Contract) (*sequenceContract, error)
 
 	return &sequenceContract{
 		contractId: contractId,
-		transferByteCount: int(storedContract.TransferByteCount),
+		transferByteCount: ByteCount(storedContract.TransferByteCount),
 		provideMode: contract.ProvideMode,
 		sourceId: sourceId,
 		destinationId: destinationId,
-		ackedByteCount: 0,
-		unackedByteCount: 0,
+		ackedByteCount: ByteCount(0),
+		unackedByteCount: ByteCount(0),
 	}, nil
 }
 
-func (self *sequenceContract) update(byteCount int) bool {
+func (self *sequenceContract) update(byteCount ByteCount) bool {
 	if self.transferByteCount < self.ackedByteCount + self.unackedByteCount + byteCount {
 		// doesn't fit in contract
 		return false
@@ -2084,7 +2098,7 @@ func (self *sequenceContract) update(byteCount int) bool {
 	return true
 }
 
-func (self *sequenceContract) ack(byteCount int) {
+func (self *sequenceContract) ack(byteCount ByteCount) {
 	if self.unackedByteCount < byteCount {
 		panic("Bad accounting.")
 	}
@@ -2269,13 +2283,14 @@ type PeerAudit struct {
 	lastModifiedTime time.Time
 	Abuse bool
     BadContractCount int
-    DiscardedByteCount int
+    DiscardedByteCount ByteCount
     DiscardedCount int
-    BadMessageByteCount int
+    BadMessageByteCount ByteCount
     BadMessageCount int
-    SendByteCount int
+    // FIXME rename to Transfer*
+    SendByteCount ByteCount
     SendCount int
-    ResendByteCount int
+    ResendByteCount ByteCount
     ResendCount int
 }
 
@@ -2284,35 +2299,39 @@ func NewPeerAudit(startTime time.Time) *PeerAudit {
 		startTime: startTime,
 		lastModifiedTime: startTime,
 		BadContractCount: 0,
-	    DiscardedByteCount: 0,
+	    DiscardedByteCount: ByteCount(0),
 	    DiscardedCount: 0,
-	    BadMessageByteCount: 0,
+	    BadMessageByteCount: ByteCount(0),
 	    BadMessageCount: 0,
-	    SendByteCount: 0,
+	    SendByteCount: ByteCount(0),
 	    SendCount: 0,
-	    ResendByteCount: 0,
+	    ResendByteCount: ByteCount(0),
 	    ResendCount: 0,
 	}
 }
 
-func (self *PeerAudit) badMessage(byteCount int) {
-
+func (self *PeerAudit) badMessage(byteCount ByteCount) {
+	self.BadMessageCount += 1
+	self.BadMessageByteCount += byteCount
 }
 
-func (self *PeerAudit) discard(byteCount int) {
-
+func (self *PeerAudit) discard(byteCount ByteCount) {
+	self.DiscardedCount += 1
+	self.DiscardedByteCount += byteCount
 }
 
-func (self *PeerAudit) badContract(byteCount int) {
-
+func (self *PeerAudit) badContract() {
+	self.BadContractCount += 1
 }
 
-func (self *PeerAudit) received(byteCount int) {
-
+func (self *PeerAudit) received(byteCount ByteCount) {
+	self.SendCount += 1
+	self.SendByteCount += byteCount
 }
 
-func (self *PeerAudit) resend(byteCount int) {
-
+func (self *PeerAudit) resend(byteCount ByteCount) {
+	self.ResendCount += 1
+	self.ResendByteCount += byteCount
 }
 
 
@@ -2850,7 +2869,7 @@ func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	}
 }
 
-func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, sendByteCount int) {
+func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, sendByteCount ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2863,7 +2882,7 @@ func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, send
 	stats.sendByteCount += sendByteCount
 }
 
-func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int, receiveByteCount int) {
+func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int, receiveByteCount ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -2960,7 +2979,7 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 			// a route
 			routeIndex := chosenIndex - routeStartIndex
 			route := activeRoutes[routeIndex]
-			self.updateSendStats(route, 1, len(transportFrameBytes))
+			self.updateSendStats(route, 1, ByteCount(len(transportFrameBytes)))
 			return nil
 		}
 	}
@@ -3049,7 +3068,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 			route := activeRoutes[routeIndex]
 			if ok {
 				transportFrameBytes := value.Bytes()
-				self.updateReceiveStats(route, 1, len(transportFrameBytes))
+				self.updateReceiveStats(route, 1, ByteCount(len(transportFrameBytes)))
 				return transportFrameBytes, nil
 			} else {
 				// mark the route as closed, try again
@@ -3066,23 +3085,23 @@ func (self *MultiRouteSelector) Close() {
 
 type RouteStats struct {
 	sendCount int
-	sendByteCount int
+	sendByteCount ByteCount
 	receiveCount int
-	receiveByteCount int
+	receiveByteCount ByteCount
 }
 
 func NewRouteStats() *RouteStats {
 	return &RouteStats{
 		sendCount: 0,
-		sendByteCount: 0,
+		sendByteCount: ByteCount(0),
 		receiveCount: 0,
-		receiveByteCount: 0,
+		receiveByteCount: ByteCount(0),
 	}
 }
 
 
 type ContractManagerSettings struct {
-	StandardTransferByteCount int
+	StandardTransferByteCount ByteCount
 }
 
 
@@ -3136,7 +3155,7 @@ func NewContractManager(client *Client, contractManagerSettings *ContractManager
 	return contractManager
 }
 
-func (self *ContractManager) StandardTransferByteCount() int {
+func (self *ContractManager) StandardTransferByteCount() ByteCount {
 	return self.contractManagerSettings.StandardTransferByteCount
 }
 
@@ -3373,7 +3392,7 @@ func (self *ContractManager) CreateContract(destinationId Id) {
 	self.client.SendControl(RequireToFrame(createContract), nil)
 }
 
-func (self *ContractManager) Complete(contractId Id, ackedByteCount int, unackedByteCount int) {
+func (self *ContractManager) Complete(contractId Id, ackedByteCount ByteCount, unackedByteCount ByteCount) {
 	closeContract := &protocol.CloseContract{
 		ContractId: contractId.Bytes(),
 		AckedByteCount: uint64(ackedByteCount),

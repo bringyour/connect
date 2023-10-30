@@ -40,12 +40,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	bConditioner, aReceive := newConditioner(ctx, bSend)
 
 	aConditioner.update(func() {
-		aConditioner.randomDelay = 10 * time.Second
+		aConditioner.randomDelay = 5 * time.Second
 		aConditioner.lossProbability = 0.5
 	})
 
 	bConditioner.update(func() {
-		bConditioner.randomDelay = 10 * time.Second
+		bConditioner.randomDelay = 5 * time.Second
 		bConditioner.lossProbability = 0.5
 	})
 
