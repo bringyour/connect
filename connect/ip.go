@@ -14,7 +14,7 @@ import (
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
 
-    "google.golang.org/protobuf/proto"
+    // "google.golang.org/protobuf/proto"
 
     "bringyour.com/protocol"
 )
@@ -102,7 +102,7 @@ func NewLocalUserNatWithDefaults(ctx context.Context) *LocalUserNat {
 func NewLocalUserNat(ctx context.Context, sendBufferSize int) *LocalUserNat {
     cancelCtx, cancel := context.WithCancel(ctx)
 
-    return &LocalUserNat{
+    localUserNat := &LocalUserNat{
         ctx: cancelCtx,
         cancel: cancel,
         sendPackets: make(chan *SendPacket, sendBufferSize),
@@ -110,11 +110,14 @@ func NewLocalUserNat(ctx context.Context, sendBufferSize int) *LocalUserNat {
         tcpBufferSettings: DefaultTcpBufferSettings(),
         receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
     }
+    go localUserNat.Run()
+
+    return localUserNat
 }
 
 // TODO provide mode of the destination determines filtering rules - e.g. local networks
 // TODO currently filter all local networks and non-encrypted traffic
-func (self *LocalUserNat) SendWithTimeout(source Path, provideMode protocol.ProvideMode,
+func (self *LocalUserNat) SendPacketWithTimeout(source Path, provideMode protocol.ProvideMode,
         packet []byte, timeout time.Duration) bool {
     ipLog("SendWithTimeout(%s, %s, %d, %s)", source, provideMode, len(packet), timeout)
     sendPacket := &SendPacket{
@@ -153,8 +156,8 @@ func (self *LocalUserNat) SendWithTimeout(source Path, provideMode protocol.Prov
 }
 
 // `SendPacketFunction`
-func (self *LocalUserNat) Send(source Path, provideMode protocol.ProvideMode, packet []byte) {
-    self.SendWithTimeout(source, provideMode, packet, -1)
+func (self *LocalUserNat) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
+    self.SendPacketWithTimeout(source, provideMode, packet, -1)
 }
 
 // func (self *LocalUserNat) ReceiveN(source Path, provideMode protocol.ProvideMode, packet []byte, n int) {
@@ -1630,12 +1633,11 @@ func (self *RemoteUserNatProvider) Receive(destination Path, packet []byte) {
         panic(err)
     }
 
-    success := self.client.Send(frame, destination.destinationId, func(err error) {
-        // todo log
+    success := self.client.Send(frame, destination.ClientId, func(err error) {
+        // TODO log
     })
     if !success {
-        // LOG("dropped packet")
-        // todo log
+        // TODO log
     }
 }
 
@@ -1651,11 +1653,13 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
             ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
 
             packet := ipPacketToProvider.IpPacket.PacketBytes
-            r := self.securityPolicy.Scan(provideMode, packet)
+            r := self.securityPolicy.Inspect(provideMode, packet)
             switch r {
             case SecurityPolicyResultAllow:
-                source := Path{sourceId: sourceId}
-                self.localUserNat.Send(source, provideMode, packet)
+                source := Path{ClientId: sourceId}
+                self.localUserNat.SendPacket(source, provideMode, packet)
+            case SecurityPolicyResultIncident:
+                self.client.ReportAbuse(sourceId)
             }
         }
     }
@@ -1712,7 +1716,7 @@ func NewRemoteUserNatClient(
 func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
     minRelationship := max(provideMode, self.provideMode)
 
-    r := self.securityPolicy.Scan(minRelationship, packet)
+    r := self.securityPolicy.Inspect(minRelationship, packet)
     switch r {
     case SecurityPolicyResultAllow:
         destination, err := self.pathTable.SelectDestination(packet)
@@ -1739,7 +1743,7 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
 
 // `connect.ReceiveFunction`
 func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-    source := Path{sourceId: sourceId}
+    source := Path{ClientId: sourceId}
 
     // only process frames from the destinations
     if allow, ok := self.sourceFilter[source]; !ok || !allow {
@@ -1769,7 +1773,8 @@ type PathTable struct {
     destinations []Path
 
     // TODO clean up entries that haven't been used in some time
-    paths map[ipPath]Path
+    paths4 map[ip4Path]Path
+    paths6 map[ip6Path]Path
 }
 
 func NewPathTable(destinations []Path) (*PathTable, error) {
@@ -1778,7 +1783,8 @@ func NewPathTable(destinations []Path) (*PathTable, error) {
     }
     return &PathTable{
         destinations: destinations,
-        paths: map[ipPath]Path{},
+        paths4: map[ip4Path]Path{},
+        paths6: map[ip6Path]Path{},
     }, nil
 }
 
@@ -1791,13 +1797,29 @@ func (self *PathTable) SelectDestination(packet []byte) (Path, error) {
     if err != nil {
         return Path{}, err
     }
-    if path, ok := self.paths[ipPath]; ok {
+    switch ipPath.version {
+    case 4:
+        ip4Path := ipPath.toIp4Path()
+        if path, ok := self.paths4[ip4Path]; ok {
+            return path, nil
+        }
+        i := mathrand.Intn(len(self.destinations))
+        path := self.destinations[i]
+        self.paths4[ip4Path] = path
         return path, nil
+    case 6:
+        ip6Path := ipPath.toIp6Path()
+        if path, ok := self.paths6[ip6Path]; ok {
+            return path, nil
+        }
+        i := mathrand.Intn(len(self.destinations))
+        path := self.destinations[i]
+        self.paths6[ip6Path] = path
+        return path, nil
+    default:
+        // no support for this version
+        return Path{}, fmt.Errorf("No support for ip version %d", ipPath.version)
     }
-    i := mathrand.Intn(len(self.destinations))
-    path := self.destinations[i]
-    self.paths[ipPath] = path
-    return path, nil
 }
 
 
@@ -1816,20 +1838,118 @@ type ipPath struct {
     destinationIp net.IP
     destinationPort int
 }
-// FIXME ip4Path, ip6Path are comparable
+
+func parseIpPath(ipPacket []byte) (*ipPath, error) {
+    ipVersion := uint8(ipPacket[0]) >> 4
+    switch ipVersion {
+    case 4:
+        ipv4 := layers.IPv4{}
+        ipv4.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
+        switch ipv4.Protocol {
+        case layers.IPProtocolUDP:
+            udp := layers.UDP{}
+            udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+
+            return &ipPath {
+                protocol: IpProtocolUdp,
+                version: int(ipVersion),
+                sourceIp: ipv4.SrcIP,
+                sourcePort: int(udp.SrcPort),
+                destinationIp: ipv4.DstIP,
+                destinationPort: int(udp.DstPort),
+            }, nil
+        case layers.IPProtocolTCP:
+            tcp := layers.TCP{}
+            tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+
+            return &ipPath {
+                protocol: IpProtocolUdp,
+                version: int(ipVersion),
+                sourceIp: ipv4.SrcIP,
+                sourcePort: int(tcp.SrcPort),
+                destinationIp: ipv4.DstIP,
+                destinationPort: int(tcp.DstPort),
+            }, nil
+        default:
+            // no support for this protocol
+            return nil, fmt.Errorf("No support for protocol %d", ipv4.Protocol)
+        }
+    case 6:
+        ipv6 := layers.IPv6{}
+        ipv6.DecodeFromBytes(ipPacket, gopacket.NilDecodeFeedback)
+        switch ipv6.NextHeader {
+        case layers.IPProtocolUDP:
+            udp := layers.UDP{}
+            udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+
+            return &ipPath {
+                protocol: IpProtocolUdp,
+                version: int(ipVersion),
+                sourceIp: ipv6.SrcIP,
+                sourcePort: int(udp.SrcPort),
+                destinationIp: ipv6.DstIP,
+                destinationPort: int(udp.DstPort),
+            }, nil
+        case layers.IPProtocolTCP:
+            tcp := layers.TCP{}
+            tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+
+            return &ipPath {
+                protocol: IpProtocolUdp,
+                version: int(ipVersion),
+                sourceIp: ipv6.SrcIP,
+                sourcePort: int(tcp.SrcPort),
+                destinationIp: ipv6.DstIP,
+                destinationPort: int(tcp.DstPort),
+            }, nil
+        default:
+            // no support for this protocol
+            return nil, fmt.Errorf("No support for protocol %d", ipv6.NextHeader)
+        }
+    default:
+        // no support for this version
+        return nil, fmt.Errorf("No support for ip version %d", ipVersion)
+    }
+}
 
 func (self *ipPath) toIp4Path() ip4Path {
-    // FIXME
+    return ip4Path{
+        protocol: self.protocol,
+        sourceIp: [4]byte(self.sourceIp),
+        sourcePort: self.sourcePort,
+        destinationIp: [4]byte(self.destinationIp),
+        destinationPort: self.destinationPort,
+    }
 }
 
 func (self *ipPath) toIp6Path() ip6Path {
-    // FIXME
+    return ip6Path{
+        protocol: self.protocol,
+        sourceIp: [16]byte(self.sourceIp),
+        sourcePort: self.sourcePort,
+        destinationIp: [16]byte(self.destinationIp),
+        destinationPort: self.destinationPort,
+    }
 }
 
 
+// comparable
+type ip4Path struct {
+    protocol IpProtocol
+    sourceIp [4]byte
+    sourcePort int
+    destinationIp [4]byte
+    destinationPort int
+}
 
-func parseIpPath(packet []byte) (*ipPath, error) {
-    // FIXME
+
+// comparable
+type ip6Path struct {
+    protocol IpProtocol
+    sourceIp [16]byte
+    sourcePort int
+    destinationIp [16]byte
+    destinationPort int
 }
 
 
@@ -1837,6 +1957,7 @@ type SecurityPolicyResult int
 const (
     SecurityPolicyResultDrop SecurityPolicyResult = 0
     SecurityPolicyResultAllow SecurityPolicyResult = 1
+    SecurityPolicyResultIncident SecurityPolicyResult = 2
 )
 
 
@@ -1847,7 +1968,7 @@ func DefaultSecurityPolicy() *SecurityPolicy {
     return &SecurityPolicy{}
 }
 
-func (self *SecurityPolicy) Scan(provideMode protocol.ProvideMode, packet []byte) SecurityPolicyResult {
+func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []byte) SecurityPolicyResult {
     ipPath, err := parseIpPath(packet)
     if err != nil {
         // back ip packet
@@ -1860,7 +1981,7 @@ func (self *SecurityPolicy) Scan(provideMode protocol.ProvideMode, packet []byte
         // - only sni-encrypted traffic
 
         if !isPublicUnicast(ipPath.destinationIp) {
-            return SecurityPolicyResultDrop 
+            return SecurityPolicyResultIncident 
         }
 
         // sni
@@ -1870,17 +1991,17 @@ func (self *SecurityPolicy) Scan(provideMode protocol.ProvideMode, packet []byte
         }
     }
 
-    return SecurityScanResultAllow
+    return SecurityPolicyResultAllow
 }
 
 
-func isPublicUnicast(ip net.IP) {
+func isPublicUnicast(ip net.IP) bool {
     switch {
-    case ip.isPrivate(), 
-            ip.isLoopback(),
-            ip.isLinkLocalUnicast(),
-            ip.isMulticast(),
-            ip.isUnspecified():
+    case ip.IsPrivate(), 
+            ip.IsLoopback(),
+            ip.IsLinkLocalUnicast(),
+            ip.IsMulticast(),
+            ip.IsUnspecified():
         return false
     default:
         return true
