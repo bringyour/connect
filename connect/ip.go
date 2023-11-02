@@ -1978,15 +1978,24 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
     if protocol.ProvideMode_Public <= provideMode {
         // apply public rules:
         // - only public unicast network destinations
-        // - only sni-encrypted traffic
+        // - only sni-encrypted traffic or dns
 
         if !isPublicUnicast(ipPath.destinationIp) {
             return SecurityPolicyResultIncident 
         }
 
-        // sni
-        // fixme: for now approximate this by allowing only port 443
-        if ipPath.destinationPort != 443 {
+        // sni or dns
+        // fixme: for now approximate this by allowing only ports 443 (https) and 53 (dns)
+        allow := func()(bool) {
+            switch ipPath.destinationPort {
+            case 443, 53:
+                // allow for both tcp and udp
+                return true
+            default:
+                return false
+            }
+        }
+        if !allow() {
             return SecurityPolicyResultDrop
         }
     }
