@@ -170,11 +170,6 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	a2 := NewClientWithDefaults(ctx, aClientId)
 	a2RouteManager := NewRouteManager(a2)
 	a2ContractManager := NewContractManagerWithDefaults(a2)
-	defer func() {
-		a2.Cancel()
-		a2RouteManager.Close()
-		a2ContractManager.Close()
-	}()
 
 	go a2.Run(a2RouteManager, a2ContractManager)
 
@@ -230,6 +225,10 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	assert.Equal(t, n, receiveCount)
 	assert.Equal(t, n, ackCount)
+
+	a2.Cancel()
+	b.Cancel()
+	cancel()
 }
 
 

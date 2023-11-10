@@ -27,8 +27,13 @@ The UNAT emulates a raw socket using user-space sockets.
 */
 
 
+// FIXME tune this
+const SendTimeout = 200 * time.Millisecond
+
+
 var ipLog = LogFn(LogLevelDebug, "ip")
 
+const DefaultMtu = 1440
 const Ipv4HeaderSizeWithoutExtensions = 20
 const Ipv6HeaderSize = 40
 const UdpHeaderSize = 8
@@ -44,8 +49,9 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
         ReadPollTimeout: 60 * time.Second,
         WritePollTimeout: 60 * time.Second,
         IdleTimeout: 60 * time.Second,
-        Mtu: 1500,
-        ReadBufferSize: 4096,
+        Mtu: DefaultMtu,
+        // avoid fragmentation
+        ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
         ChannelBufferSize: 32,
     }
 }
@@ -58,9 +64,10 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
         ReadPollTimeout: 60 * time.Second,
         WritePollTimeout: 60 * time.Second,
         IdleTimeout: 60 * time.Second,
-        ReadBufferSize: 4096,
         ChannelBufferSize: 32,
-        Mtu: 1500,
+        Mtu: DefaultMtu,
+        // avoid fragmentation
+        ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
     }
     tcpBufferSettings.WindowSize = tcpBufferSettings.ChannelBufferSize * tcpBufferSettings.Mtu / 2
     return tcpBufferSettings
@@ -73,7 +80,7 @@ type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, pack
 
 
 // receive into a raw socket
-type ReceivePacketFunction func(source Path, packet []byte)
+type ReceivePacketFunction func(source Path, ipProtocol IpProtocol, packet []byte)
 
 
 
@@ -173,9 +180,9 @@ func (self *LocalUserNat) RemoveReceivePacketCallback(receiveCallback ReceivePac
 }
 
 // `ReceivePacketFunction`
-func (self *LocalUserNat) receive(source Path, packet []byte) {
+func (self *LocalUserNat) receive(source Path, ipProtocol IpProtocol, packet []byte) {
     for _, receiveCallback := range self.receiveCallbacks.Get() {
-        receiveCallback(source, packet)
+        receiveCallback(source, ipProtocol, packet)
     }
 }
 
@@ -533,7 +540,7 @@ func (self *UdpSequence) Run() {
     }()
 
     receive := func(packet []byte) {
-        self.receiveCallback(self.source, packet)
+        self.receiveCallback(self.source, IpProtocolUdp, packet)
     }
 
     self.log("[init]connect")
@@ -1049,7 +1056,7 @@ func (self *TcpSequence) Run() {
 
 
     receive := func(packet []byte) {
-        self.receiveCallback(self.source, packet)
+        self.receiveCallback(self.source, IpProtocolTcp, packet)
     }
     // send a final FIN+ACK
     defer func() {
@@ -1622,7 +1629,14 @@ func NewRemoteUserNatProvider(client *Client, localUserNat *LocalUserNat) *Remot
 }
 
 // `ReceivePacketFunction`
-func (self *RemoteUserNatProvider) Receive(destination Path, packet []byte) {
+func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, packet []byte) {
+    if self.client.ClientId() == source.ClientId {
+        // locally generated traffic
+        return
+    }
+
+    fmt.Printf("REMOTE USER NAT PROVIDER RETURN\n")
+
     ipPacketFromProvider := &protocol.IpPacketFromProvider{
         IpPacket: &protocol.IpPacket{
             PacketBytes: packet,
@@ -1633,11 +1647,19 @@ func (self *RemoteUserNatProvider) Receive(destination Path, packet []byte) {
         panic(err)
     }
 
-    success := self.client.Send(frame, destination.ClientId, func(err error) {
+    // fmt.Printf("SEND PROTOCOL %s\n", ipProtocol)
+    opts := []any{}
+    switch ipProtocol {
+    case IpProtocolUdp:
+        opts = append(opts, NoAck())
+    }
+    success := self.client.SendWithTimeout(frame, source.ClientId, func(err error) {
         // TODO log
-    })
+        ipLog("!! RETURN PACKET (%s)", err)
+    }, SendTimeout, opts...)
     if !success {
         // TODO log
+        ipLog("!! RETURN PACKET NOT SENT")
     }
 }
 
@@ -1646,6 +1668,8 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
     for _, frame := range frames {
         switch frame.MessageType {
         case protocol.MessageType_IpIpPacketToProvider:
+            fmt.Printf("REMOTE USER NAT PROVIDER SEND\n")
+
             ipPacketToProvider_, err := FromFrame(frame)
             if err != nil {
                 panic(err)
@@ -1654,10 +1678,15 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
 
             packet := ipPacketToProvider.IpPacket.PacketBytes
             r := self.securityPolicy.Inspect(provideMode, packet)
+            ipLog("CLIENT RECEIVE %d -> %s", len(packet), r)
             switch r {
             case SecurityPolicyResultAllow:
                 source := Path{ClientId: sourceId}
-                self.localUserNat.SendPacket(source, provideMode, packet)
+                success := self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, SendTimeout)
+                if !success {
+                    // TODO log
+                    ipLog("!! FORWARD PACKET NOT SENT")
+                }
             case SecurityPolicyResultIncident:
                 self.client.ReportAbuse(sourceId)
             }
@@ -1714,6 +1743,8 @@ func NewRemoteUserNatClient(
 
 // `SendPacketFunction`
 func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
+    fmt.Printf("REMOTE USER NAT CLIENT SEND\n")
+
     minRelationship := max(provideMode, self.provideMode)
 
     r := self.securityPolicy.Inspect(minRelationship, packet)
@@ -1723,6 +1754,8 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
         if err != nil {
             // drop
             // TODO log
+            ipLog("NO DESTINATION (%s)", err)
+            return
         }
 
         ipPacketToProvider := &protocol.IpPacketToProvider{
@@ -1735,9 +1768,15 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
             panic(err)
         }
 
-        self.client.Send(frame, destination.ClientId, func(err error) {
+        // the sender will control transfer
+        opts := []any{NoAck()}
+        success := self.client.SendWithTimeout(frame, destination.ClientId, func(err error) {
             // TODO log if no ack
-        })
+            ipLog("!! OUT PACKET (%s)", err)
+        }, SendTimeout, opts...)
+        if !success {
+            ipLog("!! OUT PACKET NOT SENT")
+        }
     }
 }
 
@@ -1747,19 +1786,22 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
 
     // only process frames from the destinations
     if allow, ok := self.sourceFilter[source]; !ok || !allow {
+        ipLog("PACKET FILTERED")
         return
     }
 
     for _, frame := range frames {
         switch frame.MessageType {
         case protocol.MessageType_IpIpPacketFromProvider:
+            fmt.Printf("REMOTE USER NAT CLIENT RETURN\n")
+            
             ipPacketFromProvider_, err := FromFrame(frame)
             if err != nil {
                 panic(err)
             }
             ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
 
-            self.receivePacketCallback(source, ipPacketFromProvider.IpPacket.PacketBytes)
+            self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
         }
     }
 }
@@ -1825,8 +1867,9 @@ func (self *PathTable) SelectDestination(packet []byte) (Path, error) {
 
 type IpProtocol int
 const (
-    IpProtocolTcp IpProtocol = 0
-    IpProtocolUdp IpProtocol = 1
+    IpProtocolUnknown IpProtocol = 0
+    IpProtocolTcp IpProtocol = 1
+    IpProtocolUdp IpProtocol = 2
 )
 
 
@@ -1984,6 +2027,9 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
             return SecurityPolicyResultIncident 
         }
 
+
+        // FIXME just block 80
+        /*
         // sni or dns
         // fixme: for now approximate this by allowing only ports 443 (https) and 53 (dns)
         allow := func()(bool) {
@@ -1998,6 +2044,7 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
         if !allow() {
             return SecurityPolicyResultDrop
         }
+        */
     }
 
     return SecurityPolicyResultAllow

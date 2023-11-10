@@ -45,6 +45,11 @@ message Pack {
     bool head = 4;
 
     repeated Frame frames = 5;
+
+    // when true, deliver out of sequence with no acks and no retry
+    // use true when there is an external transfer control
+    // default to false for backward compatibility
+    bool nack = 6;
 }
 
 
