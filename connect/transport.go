@@ -29,11 +29,6 @@ const BUFFER = 1
 // add the source ip as the X-Extender header
 
 
-// FIXME
-
-const WriteTimeout = 15 * time.Second
-
-
 const DefaultHttpConnectTimeout = 5 * time.Second
 const DefaultWsHandshakeTimeout = 5 * time.Second
 const DefaultAuthTimeout = 5 * time.Second
@@ -52,6 +47,7 @@ type PlatformTransportSettings struct {
     WriteTimeout time.Duration
     ReadTimeout time.Duration
 }
+
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
     return &PlatformTransportSettings{
@@ -294,7 +290,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                     case <- handleCtx.Done():
                         return
                     case receiveTransport.receive <- message:
-                    case <- time.After(WriteTimeout):
+                    case <- time.After(self.settings.WriteTimeout):
                         fmt.Printf("TIMEOUT J\n")
                     }
                 }

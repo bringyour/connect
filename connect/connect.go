@@ -13,6 +13,21 @@ import (
 // use this type when counting bytes
 type ByteCount = int
 
+func kib(c ByteCount) ByteCount {
+	c *= ByteCount(1024)
+	return c
+}
+
+func mib(c ByteCount) ByteCount {
+	c *= ByteCount(1024 * 1024)
+	return c
+}
+
+func gib(c ByteCount) ByteCount {
+	c *= ByteCount(1024 * 1024 * 1024)
+	return c
+}
+
 
 type Id [16]byte
 

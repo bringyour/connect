@@ -3,8 +3,7 @@ package connect
 import (
 	"sync"
 	"time"
-
-	"golang.org/x/exp/slices"
+	"slices"
 )
 
 

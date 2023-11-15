@@ -2021,30 +2021,28 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
     if protocol.ProvideMode_Public <= provideMode {
         // apply public rules:
         // - only public unicast network destinations
-        // - only sni-encrypted traffic or dns
+        // - block insecure or known unencrypted traffic
 
         if !isPublicUnicast(ipPath.destinationIp) {
             return SecurityPolicyResultIncident 
         }
 
-
-        // FIXME just block 80
-        /*
-        // sni or dns
-        // fixme: for now approximate this by allowing only ports 443 (https) and 53 (dns)
+        // block insecure or unencrypted traffic is implemented as a block list,
+        // rather than an allow list.
+        // Known insecure traffic and unencrypted is blocked.
+        // This currently includes:
+        // - port 80 (http)
         allow := func()(bool) {
             switch ipPath.destinationPort {
-            case 443, 53:
-                // allow for both tcp and udp
-                return true
-            default:
+            case 80:
                 return false
+            default:
+                return true
             }
         }
         if !allow() {
             return SecurityPolicyResultDrop
         }
-        */
     }
 
     return SecurityPolicyResultAllow

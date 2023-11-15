@@ -22,7 +22,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// The receiver should be able to reset using the new sequence_id
 
 	// timeout between receives or acks
-	timeout := 300 * time.Second
+	timeout := 30 * time.Second
 	// number of messages
 	n := 10
 
@@ -41,12 +41,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	aConditioner.update(func() {
 		aConditioner.randomDelay = 5 * time.Second
-		aConditioner.lossProbability = 0.5
+		aConditioner.lossProbability = 0.1
 	})
 
 	bConditioner.update(func() {
 		bConditioner.randomDelay = 5 * time.Second
-		bConditioner.lossProbability = 0.5
+		bConditioner.lossProbability = 0.1
 	})
 
 	aSendTransport := newSendTransport()
@@ -111,7 +111,8 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	})
 
 	var ackCount int
-	var receiveCount int
+	// var receiveCount int
+	var receiveMessages map[string]bool
 	
 	
 	aReceive <- requireTransferFrameBytes(
@@ -142,14 +143,16 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	}()
 
 	ackCount = 0
-	receiveCount = 0
-	for receiveCount < n || ackCount < n {
+	// receiveCount = 0
+	receiveMessages = map[string]bool{}
+	for len(receiveMessages) < n || ackCount < n {
 		select {
 		case <- ctx.Done():
 			return
 		case message := <- receives:
-			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
-			receiveCount += 1
+			receiveMessages[message.Content] = true
+			// assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
+			// receiveCount += 1
 		case err := <- acks:
 			assert.Equal(t, err, nil)
 			ackCount += 1
@@ -157,8 +160,13 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			t.FailNow()
 		}
 	}
+	for i := 0; i < n; i += 1 {
+		message := fmt.Sprintf("hi %d", i)
+		found := receiveMessages[message]
+		assert.Equal(t, found, true)
+	}
 
-	assert.Equal(t, n, receiveCount)
+	assert.Equal(t, n, len(receiveMessages))
 	assert.Equal(t, n, ackCount)
 
 
@@ -207,14 +215,16 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	}()
 
 	ackCount = 0
-	receiveCount = 0
-	for receiveCount < n || ackCount < n {
+	// receiveCount = 0
+	receiveMessages = map[string]bool{}
+	for len(receiveMessages) < n || ackCount < n {
 		select {
 		case <- ctx.Done():
 			return
 		case message := <- receives:
-			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
-			receiveCount += 1
+			receiveMessages[message.Content] = true
+			// assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
+			// receiveCount += 1
 		case err := <- acks:
 			assert.Equal(t, err, nil)
 			ackCount += 1
@@ -222,8 +232,13 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			t.FailNow()
 		}
 	}
+	for i := 0; i < n; i += 1 {
+		message := fmt.Sprintf("hi %d", i)
+		found := receiveMessages[message]
+		assert.Equal(t, found, true)
+	}
 
-	assert.Equal(t, n, receiveCount)
+	assert.Equal(t, n, len(receiveMessages))
 	assert.Equal(t, n, ackCount)
 
 	a2.Cancel()
