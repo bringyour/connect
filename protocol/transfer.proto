@@ -1,0 +1,220 @@
+syntax = "proto3";
+package bringyour;
+
+import "frame.proto";
+
+option go_package = "bringyour.com/protocol";
+
+
+message TransferPath {
+    // ulid
+    bytes destination_id = 1;
+    // ulid
+    bytes source_id = 2;
+    // ulid
+    bytes stream_id = 3;
+}
+
+
+message TransferFrame {
+    TransferPath transfer_path = 1;
+
+    Frame frame = 2;
+
+    // TODO have the option to use fully encrypt the frame bytes using pke
+    // TODO for the initial use case of already encrypted frame data, this is not needed
+    // optional bool encrypted = 4;
+}
+
+
+// this is the minimal subset of `TransferFrame` used when making a routing decision
+message FilteredTransferFrame {
+    TransferPath transfer_path = 1;
+}
+
+
+message Pack {
+    // ulid
+    bytes message_id = 1;
+    // ulid
+    bytes sequence_id = 2;
+    uint64 sequence_number = 3;
+    // this marks the head message in the sender's sequence
+    // it means that any message with an earlier sequence_id won't arrive
+    // and is used when a receiver is recreated with zero state
+    bool head = 4;
+
+    repeated Frame frames = 5;
+
+    // when true, deliver out of sequence with no acks and no retry
+    // use true when there is an external transfer control
+    // default to false for backward compatibility
+    bool nack = 6;
+}
+
+
+// ack of a later message means all prior messages have been ackd
+message Ack {
+    // ulid
+    bytes message_id = 1;
+    // ulid
+    bytes sequence_id = 2;
+    // all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
+    bool selective = 3;
+}
+// TODO potential sender improvement: consider blocking send items to be fast retransmitted once if a later selective ack is received
+
+
+// this is a connection local message that is sent at the start of each connection to the control platform
+// there is no response. the other side will close the connection if no auth
+// no auth can happen if the jwt is not valid, or the client_id is not associated with the jwt
+// note that association of the client_id to the jwt uses the api (see openapi spec in the api dir)
+message Auth {
+    // the jwt will have the client_id in it
+    string by_jwt = 1;
+    // the version of the app, a semver managed by warp
+    string app_version = 2;
+
+    // the pair (client_id, instance_id) represents a single in memory instance
+    // this helps the platform distinguish multiple instances from multiple transports of the same instance
+    bytes instance_id = 3;
+}
+
+
+// each mode implies all the lower modes
+enum ProvideMode {
+    None = 0; // this is interpreted the same as a `null` provide mode
+    Network = 1;
+    FriendsAndFamily = 2;
+    Public = 3;
+    Stream = 4;
+}
+
+
+message Provide {
+    // FIXME move this to PKE public key
+    repeated ProvideKey keys = 1;
+}
+
+
+message ProvideKey {
+    ProvideMode mode = 1;
+    // used to sign the `StoredContract` bytes
+    bytes provide_secret_key = 2;
+}
+
+
+message CreateStream {
+    // ulid
+    repeated bytes destination_ids = 1;
+}
+// the creator knows all the hops on the stream
+// when evaluating the completed contracts, the send and receive count involving the source_id
+// is the baseline to evaluate the other contracts for disputes
+
+
+enum StreamError {
+    STREAM_NO_PERMISSION = 0;
+}
+
+
+// the client uses this stream_id to send a message to the first destination_id
+message CreateStreamResult {
+    optional StreamError error = 1;
+    optional bytes stream_id = 2;
+}
+
+
+message CloseStream {
+    // ulid
+    bytes stream_id = 1;
+}
+
+
+// each hop on the stream receives this to configure its state
+message StreamOpen {
+    optional TransferPath source = 1;
+    optional TransferPath destination = 2;
+    // FIXME move this to PKE public key
+    // all contracts for this stream will be signed with this key
+    ProvideKey key = 3;
+}
+
+// each hop on the stream receives this to configure its state
+message StreamClose {
+    optional TransferPath source = 1;
+    optional TransferPath destination = 2;
+}
+
+
+// control message to create a contract
+// platform sends a CreateContractResult
+message CreateContract {
+    // ulid
+    bytes destination_id = 1;
+    uint64 transfer_byte_count = 2;
+}
+
+
+enum ContractError {
+    NoPermission = 0;
+    InsufficientBalance = 1;
+    Setup = 2;
+}
+
+
+message CreateContractResult {    
+    optional ContractError error = 1;
+    optional Contract contract = 2;
+}
+
+
+// append this message inline a pack to enable the connection
+message Contract {
+    // ulid
+    bytes stored_contract_bytes = 1;
+    // FIXME move this to PKE encrypted value
+    // `stored_contract_bytes` signed with the `provider_secret_key`
+    bytes stored_contract_hmac = 2;
+    // the client must always verify the provide mode by matching the `provider_secret_key` for that mode to the hmac
+    ProvideMode provide_mode = 3;
+}
+
+
+message StoredContract {
+    bytes contract_id = 1;
+    uint64 transfer_byte_count = 2;
+    // ulid, used only for non-stream provide modes
+    optional bytes source_id = 3;
+    // ulid, used only for non-stream provide modes
+    optional bytes destination_id = 4;
+}
+
+
+// control message
+message CloseContract {
+    bytes contract_id = 1;
+    uint64 acked_byte_count = 2;
+    uint64 unacked_byte_count = 3;
+}
+
+
+// peer auditing
+// the acl will block contracts between between two parties with bad audits of each other
+message PeerAudit {
+    // ulid
+    bytes peer_id = 1;
+    // number of seconds in the audit
+    uint64 duration = 2;
+    bool abuse = 3;
+    uint64 bad_contract_count = 4;
+    uint64 discarded_byte_count = 5;
+    uint64 discarded_count = 6;
+    uint64 bad_message_byte_count = 7;
+    uint64 bad_message_count = 8;
+    uint64 send_byte_count = 9;
+    uint64 send_count = 10;
+    uint64 resend_byte_count = 11;
+    uint64 resend_count = 12;
+}
+

@@ -1,0 +1,34 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+
+// frames are used at all levels
+// flatten all message types into this enum
+enum MessageType {
+    TransferPack = 0;
+    TransferAck = 1;
+    TransferContract = 2;
+    TransferProvide = 3;
+    TransferAuth = 4;
+    TransferCreateStream = 5;
+    TransferCreateStreamResult = 6;
+    TransferCloseStream = 7;
+    TransferStreamOpen = 8;
+    TransferStreamClose = 9;
+    TransferCreateContract = 10;
+    TransferCreateContractResult = 11;
+    TransferCloseContract = 12;
+    TransferPeerAudit = 13;
+    TestSimpleMessage = 14;
+    IpIpPacketToProvider = 15;
+    IpIpPacketFromProvider = 16;
+}
+
+
+message Frame {
+    MessageType message_type = 1;
+    bytes message_bytes = 2;
+}
+

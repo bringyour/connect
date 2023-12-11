@@ -1,0 +1,514 @@
+
+
+// FIXME auth on routes, basic using jwt
+
+// FIXME subscription routes
+
+
+openapi: "3.1.0"
+info:
+    version: 1.0.0
+    title: BringYour
+    description: |
+        BringYour is a web-standards VPN marketplace with an emphasis on 
+        fast, secure internet everwhere.
+
+        The API for BringYour bootstraps the `connect` protocol,
+        and is the source of JWTs and other match-making transactions.
+        
+        The JWT returned by /auth routes does not have a clientId.
+        The `connect` protocol requires a JWT with a clientId.
+        Use the /network routes to obtain a JWT with a clientId.
+
+        In the BringYour network:
+        - a network name is a globally unique subnet (xyz.bringyour.network)
+        - a clientId is a globally unique 16-byte address
+        - clientIds are equivalent to IPv6, but are expressed as UDID
+        - clients also have an IPv6 and IPv4 mapped to their clientId
+        
+        Outside of IP translation like taptun/utun, 
+        clients are typically addressed via their clientId.
+
+    termsOfService: https://bringyour.com/terms
+    contact:
+        name: BringYour
+        email: info@bringyour.com
+        url: https://bringyour.com
+    x-logo:
+        url: 'https://bringyour.com/res/images/bringyour-wordmark.webp'
+        altText: BringYour wordmark
+    license:
+        name: Apache 2.0
+        url: https://www.apache.org/licenses/LICENSE-2.0.html
+servers:
+    - url: https://api.bringyour.com
+paths:
+    /stats/last-90:
+        get:
+            description: |
+                Get network statistics for the last 90 days.
+                The statistics are updated approximately every 60s.
+            operationId: getStatsLast90
+            parameters: {}
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/StatsResult'
+
+    /auth/login:
+        post:
+            description: |
+                Start a login for a user authority.
+                The user authority may be:
+                - email
+                - phone number
+                - Apple JWT
+                - Google JWT
+            operationId: authLogin
+                 
+
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthLoginArgs"
+
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthLoginResult'
+    
+    /auth/login-with-password:
+        post:
+            description: |
+                Password login for email and phone number.
+            operationId: authLoginWithPassword
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthLoginWithPasswordArgs"
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthLoginWithPasswordResult'
+
+    /auth/verify:
+        post:
+            description: |
+                Verify ownership of email or phone number.
+            operationId: authVerify
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthVerifyResult'
+
+    /auth/verify-send:
+        post:
+            description: |
+                Send verification code to email or phone number.
+            operationId: authVerifySend
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthVerifySendResult'
+
+    /auth/password-reset:
+        post:
+            description: |
+                Send password reset code to email or phone number.
+            operationId: authPasswordReset
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthPasswordResetResult'
+
+    /auth/password-set:
+        post:
+            description: |
+                Change password.
+            operationId: authPasswordSet
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthPasswordSetResult'
+
+    /auth/network-check:
+        post:
+            description: |
+                Check if the network name is available.
+                A new network name must satisfy:
+                - at least 3 characters different from an existing network name
+                - at least 8 characters
+                - domain name compatible (see RFC 5890)
+                - not contain the dash (-) character (BringYour subdomains are reverse-flattened to a single level using dashes)
+            operationId: authNetworkCheck
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthNetworkCheckResult'
+
+    /auth/network-create:
+        post:
+            description: |
+                Create a new network.
+                A user authority can be associated with at most one network.
+            operationId: authNetworkCreate
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/AuthNetworkCreateResult'
+
+    /network/auth-client:
+        post:
+            description: |
+                Gain permission to use the `connect` protocol as the requested clientId,
+                or assign a new clientId.
+                Each network can have at most 128 clientIds.
+                Above that number, new clientId requests will error until one or more
+                existing clientIds are removed.
+            operationId: networkAuthClient
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/NetworkAuthClientResult'
+
+    /network/remove-client:
+        post:
+            description: |
+                Remove a client from the network.
+            operationId: networkRemoveClient
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/NetworkRemoveClientResult'
+
+    /network/clients:
+        get:
+            description: |
+                Get the latest status of all clients on this network.
+            operationId: networkClients
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/NetworkClientsResult'
+
+    /preferences/set-preferences:
+        post:
+            description: |
+                Set account preferences.
+                Note account preferences can also be managed through the read-write `store` section of the `connect` protocol.
+            operationId: preferencesSetPreferences
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/PreferencesSetResult'
+
+    /feedback/send-feedback:
+        post:
+            description: |
+                Feedback.
+            operationId: feedbackSendFeedback
+            parameters:
+                ...
+            responses:
+                '200':
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/FeedbackSendResult'
+
+components:
+  schemas:
+    StatsResult:
+        type: object
+        properties:
+            lookback:
+            createdTime:
+            allTransferData:
+            allTransferSummary:
+            allTransferSummaryRate:
+            allPacketsData:
+            allPacketsSummary:
+            allPacketsSummaryRate:
+            providersData:
+            providersSuperspeedData:
+            providersSummary:
+            providersSummarySuperspeed:
+            countriesData:
+            countriesSummary:
+            regionsData:
+            regionsSummary:
+            citiesData:
+            citiesSummary:
+            extenderTransferData:
+            extenderTransferSummary:
+            extenderTransferSummaryRate:
+            extendersData:
+            extendersSuperspeedData:
+            extendersSummary:
+            extendersSummarySuperspeed:
+            networksData:
+            networksSummary:
+            devicesData:
+            devicesSummary:
+
+    AuthLoginArgs:
+
+        UserAuth *string `json:"userAuth"`
+        AuthJwtType *string `json:"authJwtType"`
+        AuthJwt *string `json:"authJwt"`
+
+    AuthLoginResult:
+
+
+
+        type AuthLoginResult struct {
+            UserName *string `json:"userName,omitempty"`
+            UserAuth *string `json:"userAuth,omitempty"`
+            AuthAllowed *[]string `json:"authAllowed,omitempty"`
+            Error *AuthLoginResultError `json:"error,omitempty"`
+            Network *AuthLoginResultNetwork `json:"network,omitempty"`
+        }
+
+        type AuthLoginResultError struct {
+            SuggestedUserAuth *string `json:"suggestedUserAuth,omitempty"`
+            Message string `json:"message"`
+        }
+
+        type AuthLoginResultNetwork struct {
+            ByJwt string `json:"byJwt"`
+        }
+
+    AuthLoginWithPasswordArgs:
+
+        type AuthLoginWithPasswordArgs struct {
+            UserAuth string `json:"userAuth"`
+            Password string `json:"password"`
+        }
+
+
+    AuthLoginWithPasswordResult:
+
+        type AuthLoginWithPasswordResult struct {
+            VerificationRequired *AuthLoginWithPasswordResultVerification `json:"verificationRequired,omitempty"`
+            Network *AuthLoginWithPasswordResultNetwork `json:"network,omitempty"`
+            Error *AuthLoginWithPasswordResultError `json:"error,omitempty"`
+        }
+
+        type AuthLoginWithPasswordResultVerification struct {
+            UserAuth string `json:"userAuth"`
+        }
+
+        type AuthLoginWithPasswordResultNetwork struct {
+            ByJwt *string `json:"byJwt,omitempty"`
+            NetworkName *string `json:"name,omitempty"`
+        }
+
+        type AuthLoginWithPasswordResultError struct {
+            Message string `json:"message"`
+        }
+
+
+
+    AuthVerifyArgs:
+
+        type AuthVerifyArgs struct {
+            UserAuth string `json:"userAuth"`
+            VerifyCode string `json:"verifyCode"`
+        }
+
+    AuthVerifyResult:
+
+        type AuthVerifyResult struct {
+            Network *AuthVerifyResultNetwork `json:"network,omitempty"`
+            Error *AuthVerifyResultError `json:"error,omitempty"`
+        }
+
+        type AuthVerifyResultNetwork struct {
+            ByJwt string `json:"byJwt"`
+        }
+
+        type AuthVerifyResultError struct {
+            Message string `json:"message"`
+        }
+
+
+    AuthVerifySendArgs:
+
+        type AuthVerifySendArgs struct {
+            UserAuth string `json:"userAuth"`
+        }
+
+    AuthVerifySendResult:
+
+        type AuthVerifySendResult struct {
+            UserAuth string `json:"userAuth"`
+        }
+
+    AuthPasswordResetResult:
+    
+    AuthPasswordResetArgs:
+
+        type AuthPasswordResetArgs struct {
+            UserAuth string `json:"userAuth"`
+        }
+
+    AuthPasswordSetResult:
+
+        type AuthPasswordResetResult struct {
+            UserAuth string `json:"userAuth"`
+        }
+
+    AuthNetworkCheckArgs:
+
+        type NetworkCheckArgs struct {
+            NetworkName string  `json:"networkName"`
+        }
+
+
+    AuthNetworkCheckResult:
+
+        type NetworkCheckResult struct {
+            Available bool  `json:"available"`
+        }
+
+
+    AuthNetworkCreateArgs:
+
+        type NetworkCreateArgs struct {
+            UserName *string `json:"userName"`
+            UserAuth *string `json:"userAuth"`
+            AuthJwt *string `json:"authJwt"`
+            AuthJwtType *string `json:"authJwtType"`
+            Password string `json:"password"`
+            NetworkName string `json:"networkName"`
+            Terms bool `json:"terms"`
+        }
+
+
+    AuthNetworkCreateResult:
+
+        type NetworkCreateResult struct {
+            Network *NetworkCreateResultNetwork `json:"network,omitempty"`
+            VerificationRequired *NetworkCreateResultVerification `json:"verificationRequired,omitempty"`
+            Error *NetworkCreateResultError `json:"error,omitempty"`
+        }
+
+        type NetworkCreateResultNetwork struct {
+            ByJwt *string `json:"byJwt,omitempty"`
+            NetworkName *string `json:"networkName,omitempty"`
+        }
+
+        type NetworkCreateResultVerification struct {
+            UserAuth string `json:"userAuth"`
+        }
+
+        type NetworkCreateResultError struct {
+            Message string `json:"message"`
+        }
+
+
+    NetworkAuthClientResult:
+    NetworkRemoveClientResult:
+    NetworkClientsResult:
+
+
+    PreferencesSetArgs:
+
+        type PreferencesSetArgs struct {
+            AuthArgs
+            ProductUpdates bool `json:"productUpdates"`
+        }
+
+
+    PreferencesSetResult:
+
+        {}
+
+    
+    FeedbackSendArgs:
+
+        type FeedbackSendArgs struct {
+            AuthArgs
+            Uses FeedbackSendUses `json:"uses"`
+            Needs FeedbackSendNeeds `json:"needs"`
+        }
+        type FeedbackSendUses struct {
+            Personal bool `json:"personal"`
+            Business bool `json:"business"`
+        }
+        type FeedbackSendNeeds struct {
+            Private bool `json:"private"`
+            Safe bool `json:"safe"`
+            Global bool `json:"global"`
+            Collaborate bool `json:"collaborate"`
+            AppControl bool `json:"appControl"`
+            BlockDataBrokers bool `json:"blockDataBrokers"`
+            BlockAds bool `json:"blockAds"`
+            Focus bool `json:"focus"`
+            ConnectServers bool `json:"connectServers"`
+            RunServers bool `json:"runServers"`
+            PreventCyber bool `json:"preventCyber"`
+            Audit bool `json:"audit"`
+            ZeroTrust bool `json:"zeroTrust"`
+            Visualize bool `json:"visualize"`
+            Other *string `json:"other"`
+        }
+
+
+    FeedbackSendResult:
+        
+        {}
+
+
+
+

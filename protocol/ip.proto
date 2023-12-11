@@ -1,0 +1,22 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+
+// a raw packet
+// the provider is expected to do its own parsing to confirm the data verbatim
+message IpPacket {
+    bytes packet_bytes = 1;
+}
+
+
+message IpPacketToProvider {
+    IpPacket ip_packet = 1;
+}
+
+
+message IpPacketFromProvider {
+    IpPacket ip_packet = 1;
+}
+

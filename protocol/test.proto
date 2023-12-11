@@ -1,0 +1,13 @@
+syntax = "proto3";
+package bringyour;
+
+import "frame.proto";
+
+option go_package = "bringyour.com/protocol";
+
+
+message SimpleMessage {
+    uint32 message_index = 1;
+    uint32 message_count = 2;
+    string content = 3;
+}
