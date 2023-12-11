@@ -54,12 +54,12 @@ func ParseId(idStr string) (Id, error) {
 	return parseUuid(idStr) 
 }
 
-func (self *Id) Bytes() []byte {
+func (self Id) Bytes() []byte {
 	return self[0:16]
 }
 
-func (self *Id) String() string {
-	return encodeUuid(*self)
+func (self Id) String() string {
+	return encodeUuid(self)
 }
 
 
