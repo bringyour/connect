@@ -1,7 +1,7 @@
 
 openapi: "3.1.0"
 info:
-    version: 1.0.0
+    version: 2023.12.1
     title: BringYour
     description: |
         BringYour is a web-standards VPN marketplace with an emphasis on 
@@ -23,10 +23,13 @@ info:
         Outside of IP translation like taptun/utun, 
         clients are typically addressed via their clientId.
 
+        Unless otherwise specified, time/date strings will be formatted
+        in the Go default `2006-01-02 15:04:05.999999999 -0700 MST`.
+
     termsOfService: https://bringyour.com/terms
     contact:
         name: BringYour
-        email: info@bringyour.com
+        email: support@bringyour.com
         url: https://bringyour.com
     x-logo:
         url: https://bringyour.com/res/images/bringyour-wordmark.png
@@ -46,7 +49,8 @@ paths:
             description: |
                 Get network statistics for the last 90 days.
                 The statistics are updated approximately every 60s.
-            operationId: statsLast90
+            operationId: Stats Last 90
+            security: []
             responses:
                 "200":
                     content:
@@ -63,7 +67,8 @@ paths:
                 - phone number
                 - Apple JWT
                 - Google JWT
-            operationId: authLogin
+            operationId: Auth Login
+            security: []
             requestBody:
                 required: true
                 content:
@@ -81,7 +86,8 @@ paths:
         post:
             description: |
                 Password login for email and phone number.
-            operationId: authLoginWithPassword
+            operationId: Auth Login With Password
+            security: []
             requestBody:
                 required: true
                 content:
@@ -99,7 +105,8 @@ paths:
         post:
             description: |
                 Verify ownership of email or phone number.
-            operationId: authVerify
+            operationId: Auth Verify
+            security: []
             requestBody:
                 required: true
                 content:
@@ -117,7 +124,8 @@ paths:
         post:
             description: |
                 Send verification code to email or phone number.
-            operationId: authVerifySend
+            operationId: Auth Verify Send
+            security: []
             requestBody:
                 required: true
                 content:
@@ -135,7 +143,8 @@ paths:
         post:
             description: |
                 Send password reset code to email or phone number.
-            operationId: authPasswordReset
+            operationId: Auth Password Reset
+            security: []
             requestBody:
                 required: true
                 content:
@@ -153,7 +162,8 @@ paths:
         post:
             description: |
                 Change password.
-            operationId: authPasswordSet
+            operationId: Auth Password Set
+            security: []
             requestBody:
                 required: true
                 content:
@@ -176,38 +186,40 @@ paths:
                 - at least 8 characters
                 - domain name compatible (see RFC 5890)
                 - not contain the dash (-) character (BringYour subdomains are reverse-flattened to a single level using dashes)
-            operationId: authNetworkCheck
+            operationId: Auth Network Check
+            security: []
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/AuthNetworkCheckArgs"
+                            $ref: "#/components/schemas/NetworkCheckArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/AuthNetworkCheckResult"
+                                $ref: "#/components/schemas/NetworkCheckResult"
 
     /auth/network-create:
         post:
             description: |
                 Create a new network.
                 A user authority can be associated with at most one network.
-            operationId: authNetworkCreate
+            operationId: Auth Network Create
+            security: []
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/AuthNetworkCreateArgs"
+                            $ref: "#/components/schemas/NetworkCreateArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/AuthNetworkCreateResult"
+                                $ref: "#/components/schemas/NetworkCreateResult"
 
     /network/auth-client:
         post:
@@ -217,7 +229,7 @@ paths:
                 Each network can have at most 128 clientIds.
                 Above that number, new clientId requests will error until one or more
                 existing clientIds are removed.
-            operationId: networkAuthClient
+            operationId: Auth Network Client
             security:
                 - BearerAuth: []
             requestBody:
@@ -225,19 +237,19 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/NetworkAuthClientArgs"
+                            $ref: "#/components/schemas/AuthNetworkClientArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/NetworkAuthClientResult"
+                                $ref: "#/components/schemas/AuthNetworkClientResult"
 
     /network/remove-client:
         post:
             description: |
                 Remove a client from the network.
-            operationId: networkRemoveClient
+            operationId: Remove Network Client
             security:
                 - BearerAuth: []
             requestBody:
@@ -245,19 +257,27 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/NetworkRemoveClientArgs"
+                            $ref: "#/components/schemas/RemoveNetworkClientArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/NetworkRemoveClientResult"
+                                $ref: "#/components/schemas/RemoveNetworkClientResult"
 
     /network/clients:
         get:
             description: |
                 Get the latest status of all clients on this network.
-            operationId: networkClients
+
+                Includes:
+                
+                - Resident status, which is the platform counterpart
+                for the client that handles control commands.
+                - Connections, which are transports from the client to the platform.
+                Note there can be multiple active connections for a single client.
+                - Provide status
+            operationId: Network Clients
             security:
                 - BearerAuth: []
             responses:
@@ -271,7 +291,7 @@ paths:
         post:
             description: |
                 Set account preferences.
-            operationId: preferencesSetPreferences
+            operationId: Preferences Set
             security:
                 - BearerAuth: []
             requestBody:
@@ -291,7 +311,7 @@ paths:
         post:
             description: |
                 Feedback.
-            operationId: feedbackSendFeedback
+            operationId: Feedback Send
             security:
                 - BearerAuth: []
             requestBody:
@@ -314,7 +334,8 @@ paths:
                 in good health. 
                 Note that a location or group will need to be mapped to an actual provider
                 using `/network/find-providers`.
-            operationId: networkProviderLocations
+            operationId: Network Provider Locations
+            security: []
             responses:
                 "200":
                     content:
@@ -331,7 +352,8 @@ paths:
                 and the tolerance can be tuned in the input.
                 Note that a location or group will need to be mapped to an actual provider
                 using `/network/find-providers`.
-            operationId: networkFindProviderLocations
+            operationId: Network Find Provider Locations
+            security: []
             requestBody:
                 required: true
                 content:
@@ -350,7 +372,8 @@ paths:
             description: |
                 Search for locations and groups that match a query,
                 regardless of whether an providers are active.
-            operationId: networkFindLocations
+            operationId: Network Find Locations
+            security: []
             requestBody:
                 required: true
                 content:
@@ -371,19 +394,20 @@ paths:
                 which are active and in good health.
                 This allows random iteration by using the exclude input to mark
                 visited providers.
-            operationId: networkFindProviders
+            operationId: Network Find Providers
+            security: []
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/FindProvidersArgs"
+                            $ref: "#/components/schemas/FindActiveProvidersArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/FindProvidersResult"
+                                $ref: "#/components/schemas/FindActiveProvidersResult"
 
     /wallet/balance:
         get:
@@ -391,7 +415,7 @@ paths:
                 Get the balance for the USDC user custody wallet.
                 The user custody wallet allows BringYour to query the balance,
                 but the user must take actions against the wallet.
-            operationId: walletBalance
+            operationId: Wallet Balance
             security:
                 - BearerAuth: []
             responses:
@@ -408,7 +432,7 @@ paths:
                 This can be used to check whether an address can receive
                 a transfer out from the user custody wallet.
                 Please use this before initiating any transfer out to avoid lost funds.
-            operationId: walletValidateAddress
+            operationId: Wallet Validate Address
             security:
                 - BearerAuth: []
             requestBody:
@@ -429,15 +453,9 @@ paths:
             description: |
                 Initialize the Circle USDC user self custody wallet.
                 This starts a process that must be completed by the user.
-            operationId: walletCircleInit
+            operationId: Wallet Circle Init
             security:
                 - BearerAuth: []
-            requestBody:
-                required: true
-                content:
-                    application/json:
-                        schema:
-                            $ref: "#/components/schemas/WalletCircleInitArgs"
             responses:
                 "200":
                     content:
@@ -451,7 +469,7 @@ paths:
                 Set up a transfer from the Circle USDC user self custody wallet 
                 to an address.
                 This starts a process that must be completed by the user.
-            operationId: walletCircleInit
+            operationId: Wallet Circle Init
             security:
                 - BearerAuth: []
             requestBody:
@@ -471,15 +489,9 @@ paths:
         get:
             description: |
                 Get the current subscription status and transfer balance.
-            operationId: subscriptionBalance
+            operationId: Subscription Balance
             security:
                 - BearerAuth: []
-            requestBody:
-                required: true
-                content:
-                    application/json:
-                        schema:
-                            $ref: "#/components/schemas/SubscriptionBalanceArgs"
             responses:
                 "200":
                     content:
@@ -497,156 +509,685 @@ components:
     schemas:
         StatsResult:
             type: object
-            properties: {}
-                # lookback:
-                # createdTime:
-                # allTransferData:
-                # allTransferSummary:
-                # allTransferSummaryRate:
-                # allPacketsData:
-                # allPacketsSummary:
-                # allPacketsSummaryRate:
-                # providersData:
-                # providersSuperspeedData:
-                # providersSummary:
-                # providersSummarySuperspeed:
-                # countriesData:
-                # countriesSummary:
-                # regionsData:
-                # regionsSummary:
-                # citiesData:
-                # citiesSummary:
-                # extenderTransferData:
-                # extenderTransferSummary:
-                # extenderTransferSummaryRate:
-                # extendersData:
-                # extendersSuperspeedData:
-                # extendersSummary:
-                # extendersSummarySuperspeed:
-                # networksData:
-                # networksSummary:
-                # devicesData:
-                # devicesSummary:
+            properties:
+                lookback:
+                    type: integer
+                created_time:
+                    description: Unix epoch time UTC
+                    type: integer
+                all_transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                all_transfer_summary:
+                    type: integer
+                all_transfer_summary_rate:
+                    type: integer
+                all_packets_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                all_packets_summary:
+                    type: integer
+                all_packets_summary_rate:
+                    type: integer
+                providers_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                providers_superspeed_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                providers_summary:
+                    type: integer
+                providers_summary_superspeed:
+                    type: integer
+                countries_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                countries_summary:
+                    type: integer
+                regions_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                regions_summary:
+                    type: integer
+                cities_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                cities_summary:
+                    type: integer
+                extender_transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                extender_transfer_summary:
+                    type: integer
+                extender_transfer_summary_rate:
+                    type: integer
+                extenders_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                extenders_superspeed_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                extenders_summary:
+                    type: integer
+                extenders_summary_superspeed:
+                    type: integer
+                networks_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                networks_summary:
+                    type: integer
+                devices_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                devices_summary:
+                    type: integer
         AuthLoginArgs:
             type: object
-            properties: {}
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+                auth_jwt:
+                    type: string
+                auth_jwt_type:
+                    type: string
+                    enum:
+                        - apple
+                        - google
         AuthLoginResult:
             type: object
-            properties: {}
+            properties:
+                user_name:
+                    type: string
+                user_auth:
+                    description: email or phone number
+                    type: string
+                auth_allowed:
+                    type: array
+                    items:
+                        type: string
+                        enum:
+                            - password
+                            - apple
+                            - google
+                error:
+                    type: object
+                    properties:
+                        suggested_user_auth:
+                            type: string
+                            enum:
+                                - password
+                                - apple
+                                - google
+                        message:
+                            type: string
+                network:
+                    type: object
+                    properties:
+                        by_jwt:
+                            type: string
         AuthLoginWithPasswordArgs:
             type: object
-            properties: {}
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+                password:
+                    type: string
         AuthLoginWithPasswordResult:
             type: object
-            properties: {}
+            properties:
+                verification_required:
+                    type: object
+                    properties:
+                        user_auth:
+                            description: email or phone number
+                            type: string
+                network:
+                    type: object
+                    properties:
+                        by_jwt:
+                            type: string
+                        name:
+                            type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
         AuthVerifyArgs:
             type: object
-            properties: {}
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+                verify_code:
+                    type: string
         AuthVerifyResult:
             type: object
-            properties: {}
+            properties:
+                network:
+                    type: object
+                    by_jwt:
+                        type: string
+                error:
+                    type: object
+                    message:
+                        type: string
         AuthVerifySendArgs:
             type: object
-            properties: {}
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
         AuthVerifySendResult:
             type: object
-            properties: {}
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
         AuthPasswordResetArgs:
             type: object
-            properties: {}
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
         AuthPasswordResetResult:
             type: object
-            properties: {}
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
         AuthPasswordSetArgs:
             type: object
-            properties: {}
+            properties:
+                reset_code:
+                    type: string
+                password:
+                    type: string
         AuthPasswordSetResult:
             type: object
             properties: {}
-        AuthNetworkCheckArgs:
+        NetworkCheckArgs:
             type: object
-            properties: {}
-        AuthNetworkCheckResult:
+            properties:
+                network_name:
+                    type: string
+        NetworkCheckResult:
             type: object
-            properties: {}
-        AuthNetworkCreateArgs:
+            properties:
+                available:
+                    type: boolean
+        NetworkCreateArgs:
             type: object
-            properties: {}
-        AuthNetworkCreateResult:
+            properties:
+                user_name:
+                    type: string
+                user_auth:
+                    description: email or phone number
+                    type: string
+                auth_jwt:
+                    type: string
+                auth_jwt_type:
+                    type: string
+                    enum:
+                        - apple
+                        - google
+                password:
+                    type: string
+                network_name:
+                    type: string
+                terms:
+                    description: user consent to accept terms of service
+                    type: boolean
+        NetworkCreateResult:
             type: object
-            properties: {}
-        NetworkAuthClientArgs:
+            properties:
+                network:
+                    type: object
+                    properties:
+                        by_jwt:
+                            type: string
+                        network_name:
+                            type: string
+                verification_required:
+                    type: object
+                    properties:
+                        user_auth:
+                            description: email or phone number
+                            type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        AuthNetworkClientArgs:
             type: object
-            properties: {}
-        NetworkAuthClientResult:
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+                description:
+                    type: string
+                device_spec:
+                    type: string
+        AuthNetworkClientResult:
             type: object
-            properties: {}
-        NetworkRemoveClientArgs:
+            properties:
+                by_client_jwt:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        client_limit_exceeded:
+                            type: boolean
+                        message:
+                            type: string
+        RemoveNetworkClientArgs:
             type: object
-            properties: {}
-        NetworkRemoveClientResult:
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+        RemoveNetworkClientResult:
             type: object
-            properties: {}
+            properties:
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
         NetworkClientsResult:
             type: object
-            properties: {}
+            properties:
+                clients:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            network_id:
+                                description: udid
+                                type: string
+                            description:
+                                type: string
+                            device_spec:
+                                type: string
+                            create_time:
+                                type: string
+                            auth_time:
+                                type: string
+                            resident:
+                                type: object
+                                properties:
+                                    client_id:
+                                        description: udid
+                                        type: string
+                                    instance_id:
+                                        description: udid
+                                        type: string
+                                    resident_id:
+                                        description: udid
+                                        type: string
+                                    resident_host:
+                                        type: string
+                                    resident_service:
+                                        type: string
+                                    resident_block:
+                                        type: string
+                                    resident_internal_ports:
+                                        type: array
+                                        items:
+                                            type: integer
+                            provide_mode:
+                                type: integer
+                                oneOf:
+                                - title: ProvideModeNone
+                                  const: 0
+                                - title: ProvideModeNetwork
+                                  const: 1
+                                - title: ProvideModeFriendsAndFamily
+                                  const: 2
+                                - title: ProvideModePublic
+                                  const: 3
+                                - title: ProvideModeStream
+                                  const: 4
+                            connections:
+                                type: array
+                                items:
+                                    type: object
+                                    properties:
+                                        client_id:
+                                            description: udid
+                                            type: string
+                                        connection_id:
+                                            description: udid
+                                            type: string
+                                        connect_time:
+                                            type: string
+                                        disconnect_time:
+                                            type: string
+                                        connection_host:
+                                            type: string
+                                        connection_service:
+                                            type: string
+                                        connection_block:
+                                            type: string
         PreferencesSetArgs:
             type: object
-            properties: {}
+            properties:
+                product_updates:
+                    type: boolean
         PreferencesSetResult:
             type: object
             properties: {}
         FeedbackSendArgs:
             type: object
-            properties: {}
+            properties:
+                uses:
+                    type: object
+                    properties:
+                        personal:
+                            type: boolean
+                        business:
+                            type: boolean
+                needs:
+                    type: object
+                    properties:
+                        private:
+                            type: boolean
+                        safe:
+                            type: boolean
+                        global:
+                            type: boolean
+                        collaborate:
+                            type: boolean
+                        app_control:
+                            type: boolean
+                        block_data_brokers:
+                            type: boolean
+                        block_ads:
+                            type: boolean
+                        focus:
+                            type: boolean
+                        connect_servers:
+                            type: boolean
+                        run_servers:
+                            type: boolean
+                        prevent_cyber:
+                            type: boolean
+                        audit:
+                            type: boolean
+                        zero_trust:
+                            type: boolean
+                        visualize:
+                            type: boolean
+                        other:
+                            type: string
         FeedbackSendResult:
             type: object
             properties: {}
         FindLocationsArgs:
             type: object
-            properties: {}
+            properties:
+                query:
+                    type: string
+                max_distance_fraction:
+                    type: number
+                enable_max_distance_fraction:
+                    type: boolean
         FindLocationsResult:
             type: object
-            properties: {}
-        FindProvidersArgs:
+            properties:
+                groups:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            location_group_id:
+                                description: udid
+                                type: string
+                            name:
+                                type: string
+                            provider_count:
+                                type: integer
+                            promoted:
+                                type: boolean
+                            match_distance:
+                                type: integer
+                locations:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            location_id:
+                                description: udid
+                                type: string
+                            location_type:
+                                type: string
+                                enum:
+                                    - city
+                                    - region
+                                    - country
+                            name:
+                                type: string
+                            city:
+                                type: string
+                            city_location_id:
+                                description: udid
+                                type: string
+                            region:
+                                type: string
+                            region_location_id:
+                                description: udid
+                                type: string
+                            country:
+                                type: string
+                            country_location_id:
+                                description: udid
+                                type: string
+                            country_code:
+                                type: string
+                            provider_count:
+                                type: integer
+                            match_distance:
+                                type: integer
+        FindActiveProvidersArgs:
             type: object
-            properties: {}
-        FindProvidersResult:
+            properties:
+                location_id:
+                    description: udid
+                    type: string
+                location_group_id:
+                    description: udid
+                    type: string
+                count:
+                    type: integer
+                exclude_location_ids:
+                    type: array
+                    items:
+                        description: udid
+                        type: string
+        FindActiveProvidersResult:
             type: object
-            properties: {}
+            properties:
+                client_ids:
+                    type: array
+                    items:
+                        description: udid
+                        type: string
         WalletBalanceResult:
             type: object
-            properties: {}
+            properties:
+                wallet_info:
+                    type: object
+                    properties:
+                        wallet_id:
+                            type: string
+                        token_id:
+                            type: string
+                        blockchain:
+                            type: string
+                        blockchain_symbol:
+                            type: string
+                        create_date:
+                            type: string
+                        balance_usdc_nano_cents:
+                            type: integer
+                        address:
+                            type: string
         WalletValidateAddressArgs:
             type: object
-            properties: {}
+            properties:
+                address:
+                    type: string
         WalletValidateAddressResult:
             type: object
-            properties: {}
-        WalletCircleInitArgs:
-            type: object
-            properties: {}
+            properties:
+                valid:
+                    type: boolean
         WalletCircleInitResult:
             type: object
-            properties: {}
+            properties:
+                user_token:
+                    type: object
+                    properties:
+                        user_token:
+                            type: string
+                        encryption_key:
+                            type: string
+                challenge_id:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
         WalletCircleTransferOutArgs:
             type: object
-            properties: {}
+            properties:
+                to_address:
+                    type: string
+                amount_usdc_nano_cents:
+                    type: integer
+                terms:
+                    description: user consent to accept terms of transfer
+                    type: boolean
         WalletCircleTransferOutResult:
             type: object
-            properties: {}
-        SubscriptionBalanceArgs:
-            type: object
-            properties: {}
+            properties:
+                user_token:
+                    type: object
+                    properties:
+                        user_token:
+                            type: string
+                        encryption_key:
+                            type: string
+                challenge_id:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
         SubscriptionBalanceResult:
             type: object
-            properties: {}
-
-
-
-
-
-
-
-
-
+            properties:
+                balance_byte_count:
+                    type: integer
+                current_subscription:
+                    type: object
+                    properties:
+                        subscription_id:
+                            description: udid
+                            type: string
+                        store:
+                            type: string
+                        plan:
+                            type: string
+                active_transfer_balances:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            balance_id:
+                                description: udid
+                                type: string
+                            network_id:
+                                description: udid
+                                type: string
+                            start_time:
+                                type: string
+                            end_time:
+                                type: string
+                            start_balance_byte_count:
+                                type: integer
+                            net_revenue_nano_cents:
+                                type: integer
+                            balance_byte_count:
+                                type: integer
+                pending_payout_usd_nano_cents:
+                    type: integer
+                wallet_info:
+                    type: object
+                    properties:
+                        wallet_id:
+                            description: udid
+                            type: string
+                        token_id:
+                            description: udid
+                            type: string
+                        blockchain:
+                            type: string
+                            enum:
+                                - Polygon
+                        blockchain_symbol:
+                            type: string
+                            enum:
+                                - MATIC
+                        create_date:
+                            type: string
+                        balance_usdc_nano_cents:
+                            type: integer
+                        address:
+                            type: string
+                update_time:
+                    type: string
