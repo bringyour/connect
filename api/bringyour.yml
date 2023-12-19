@@ -1,10 +1,4 @@
 
-
-// FIXME auth on routes, basic using jwt
-
-// FIXME subscription routes
-
-
 openapi: "3.1.0"
 info:
     version: 1.0.0
@@ -35,27 +29,30 @@ info:
         email: info@bringyour.com
         url: https://bringyour.com
     x-logo:
-        url: 'https://bringyour.com/res/images/bringyour-wordmark.webp'
-        altText: BringYour wordmark
+        url: https://bringyour.com/res/images/bringyour-wordmark.png
+        altText: BringYour
     license:
-        name: Apache 2.0
-        url: https://www.apache.org/licenses/LICENSE-2.0.html
+        name: Mozilla Public License, v. 2.0
+        url: https://mozilla.org/MPL/2.0/
 servers:
     - url: https://api.bringyour.com
+
+security:
+  - BearerAuth: []
+
 paths:
     /stats/last-90:
         get:
             description: |
                 Get network statistics for the last 90 days.
                 The statistics are updated approximately every 60s.
-            operationId: getStatsLast90
-            parameters: {}
+            operationId: statsLast90
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/StatsResult'
+                                $ref: "#/components/schemas/StatsResult"
 
     /auth/login:
         post:
@@ -67,21 +64,18 @@ paths:
                 - Apple JWT
                 - Google JWT
             operationId: authLogin
-                 
-
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema:
                             $ref: "#/components/schemas/AuthLoginArgs"
-
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthLoginResult'
+                                $ref: "#/components/schemas/AuthLoginResult"
     
     /auth/login-with-password:
         post:
@@ -95,67 +89,83 @@ paths:
                         schema:
                             $ref: "#/components/schemas/AuthLoginWithPasswordArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthLoginWithPasswordResult'
+                                $ref: "#/components/schemas/AuthLoginWithPasswordResult"
 
     /auth/verify:
         post:
             description: |
                 Verify ownership of email or phone number.
             operationId: authVerify
-            parameters:
-                ...
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthVerifyArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthVerifyResult'
+                                $ref: "#/components/schemas/AuthVerifyResult"
 
     /auth/verify-send:
         post:
             description: |
                 Send verification code to email or phone number.
             operationId: authVerifySend
-            parameters:
-                ...
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthVerifySendArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthVerifySendResult'
+                                $ref: "#/components/schemas/AuthVerifySendResult"
 
     /auth/password-reset:
         post:
             description: |
                 Send password reset code to email or phone number.
             operationId: authPasswordReset
-            parameters:
-                ...
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthPasswordResetArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthPasswordResetResult'
+                                $ref: "#/components/schemas/AuthPasswordResetResult"
 
     /auth/password-set:
         post:
             description: |
                 Change password.
             operationId: authPasswordSet
-            parameters:
-                ...
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthPasswordSetArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthPasswordSetResult'
+                                $ref: "#/components/schemas/AuthPasswordSetResult"
 
     /auth/network-check:
         post:
@@ -167,14 +177,18 @@ paths:
                 - domain name compatible (see RFC 5890)
                 - not contain the dash (-) character (BringYour subdomains are reverse-flattened to a single level using dashes)
             operationId: authNetworkCheck
-            parameters:
-                ...
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthNetworkCheckArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthNetworkCheckResult'
+                                $ref: "#/components/schemas/AuthNetworkCheckResult"
 
     /auth/network-create:
         post:
@@ -182,14 +196,18 @@ paths:
                 Create a new network.
                 A user authority can be associated with at most one network.
             operationId: authNetworkCreate
-            parameters:
-                ...
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthNetworkCreateArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthNetworkCreateResult'
+                                $ref: "#/components/schemas/AuthNetworkCreateResult"
 
     /network/auth-client:
         post:
@@ -200,314 +218,434 @@ paths:
                 Above that number, new clientId requests will error until one or more
                 existing clientIds are removed.
             operationId: networkAuthClient
-            parameters:
-                ...
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/NetworkAuthClientArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/NetworkAuthClientResult'
+                                $ref: "#/components/schemas/NetworkAuthClientResult"
 
     /network/remove-client:
         post:
             description: |
                 Remove a client from the network.
             operationId: networkRemoveClient
-            parameters:
-                ...
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/NetworkRemoveClientArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/NetworkRemoveClientResult'
+                                $ref: "#/components/schemas/NetworkRemoveClientResult"
 
     /network/clients:
         get:
             description: |
                 Get the latest status of all clients on this network.
             operationId: networkClients
-            parameters:
-                ...
+            security:
+                - BearerAuth: []
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/NetworkClientsResult'
+                                $ref: "#/components/schemas/NetworkClientsResult"
 
     /preferences/set-preferences:
         post:
             description: |
                 Set account preferences.
-                Note account preferences can also be managed through the read-write `store` section of the `connect` protocol.
             operationId: preferencesSetPreferences
-            parameters:
-                ...
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/PreferencesSetArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/PreferencesSetResult'
+                                $ref: "#/components/schemas/PreferencesSetResult"
 
     /feedback/send-feedback:
         post:
             description: |
                 Feedback.
             operationId: feedbackSendFeedback
-            parameters:
-                ...
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FeedbackSendArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/FeedbackSendResult'
+                                $ref: "#/components/schemas/FeedbackSendResult"
+
+    /network/provider-locations:
+        get:
+            description: |
+                A list of locations and groups where there are at least one active provider
+                in good health. 
+                Note that a location or group will need to be mapped to an actual provider
+                using `/network/find-providers`.
+            operationId: networkProviderLocations
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindLocationsResult"
+
+    /network/find-provider-locations:
+        post:
+            description: |
+                Search for locations and groups that match a query,
+                where there are at least one active provider in good health. 
+                The match algorithm accounts for typos and misspelling,
+                and the tolerance can be tuned in the input.
+                Note that a location or group will need to be mapped to an actual provider
+                using `/network/find-providers`.
+            operationId: networkFindProviderLocations
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindLocationsArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindLocationsResult"
+
+    /network/find-locations:
+        post:
+            description: |
+                Search for locations and groups that match a query,
+                regardless of whether an providers are active.
+            operationId: networkFindLocations
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindLocationsArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindLocationsResult"
+
+    /network/find-providers:
+        post:
+            description: |
+                Randomly sample providers that for a location or group,
+                which are active and in good health.
+                This allows random iteration by using the exclude input to mark
+                visited providers.
+            operationId: networkFindProviders
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindProvidersArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindProvidersResult"
+
+    /wallet/balance:
+        get:
+            description: |
+                Get the balance for the USDC user custody wallet.
+                The user custody wallet allows BringYour to query the balance,
+                but the user must take actions against the wallet.
+            operationId: walletBalance
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletBalanceResult"
+
+    /wallet/validate-address:
+        post:
+            description: |
+                Validate a USDC wallet address on the user custody wallet chain.
+                This can be used to check whether an address can receive
+                a transfer out from the user custody wallet.
+                Please use this before initiating any transfer out to avoid lost funds.
+            operationId: walletValidateAddress
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/WalletValidateAddressArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletValidateAddressResult"
+
+    /wallet/circle-init:
+        post:
+            description: |
+                Initialize the Circle USDC user self custody wallet.
+                This starts a process that must be completed by the user.
+            operationId: walletCircleInit
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/WalletCircleInitArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletCircleInitResult"
+
+    /wallet/circle-transfer-out:
+        post:
+            description: |
+                Set up a transfer from the Circle USDC user self custody wallet 
+                to an address.
+                This starts a process that must be completed by the user.
+            operationId: walletCircleInit
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/WalletCircleTransferOutArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletCircleTransferOutResult"
+
+    /subscription/balance:
+        get:
+            description: |
+                Get the current subscription status and transfer balance.
+            operationId: subscriptionBalance
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/SubscriptionBalanceArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SubscriptionBalanceResult"
 
 components:
-  schemas:
-    StatsResult:
-        type: object
-        properties:
-            lookback:
-            createdTime:
-            allTransferData:
-            allTransferSummary:
-            allTransferSummaryRate:
-            allPacketsData:
-            allPacketsSummary:
-            allPacketsSummaryRate:
-            providersData:
-            providersSuperspeedData:
-            providersSummary:
-            providersSummarySuperspeed:
-            countriesData:
-            countriesSummary:
-            regionsData:
-            regionsSummary:
-            citiesData:
-            citiesSummary:
-            extenderTransferData:
-            extenderTransferSummary:
-            extenderTransferSummaryRate:
-            extendersData:
-            extendersSuperspeedData:
-            extendersSummary:
-            extendersSummarySuperspeed:
-            networksData:
-            networksSummary:
-            devicesData:
-            devicesSummary:
+    securitySchemes:
+        BearerAuth:
+            type: http
+            scheme: bearer
+            description: BringYour JWT
 
-    AuthLoginArgs:
-
-        UserAuth *string `json:"userAuth"`
-        AuthJwtType *string `json:"authJwtType"`
-        AuthJwt *string `json:"authJwt"`
-
-    AuthLoginResult:
-
-
-
-        type AuthLoginResult struct {
-            UserName *string `json:"userName,omitempty"`
-            UserAuth *string `json:"userAuth,omitempty"`
-            AuthAllowed *[]string `json:"authAllowed,omitempty"`
-            Error *AuthLoginResultError `json:"error,omitempty"`
-            Network *AuthLoginResultNetwork `json:"network,omitempty"`
-        }
-
-        type AuthLoginResultError struct {
-            SuggestedUserAuth *string `json:"suggestedUserAuth,omitempty"`
-            Message string `json:"message"`
-        }
-
-        type AuthLoginResultNetwork struct {
-            ByJwt string `json:"byJwt"`
-        }
-
-    AuthLoginWithPasswordArgs:
-
-        type AuthLoginWithPasswordArgs struct {
-            UserAuth string `json:"userAuth"`
-            Password string `json:"password"`
-        }
-
-
-    AuthLoginWithPasswordResult:
-
-        type AuthLoginWithPasswordResult struct {
-            VerificationRequired *AuthLoginWithPasswordResultVerification `json:"verificationRequired,omitempty"`
-            Network *AuthLoginWithPasswordResultNetwork `json:"network,omitempty"`
-            Error *AuthLoginWithPasswordResultError `json:"error,omitempty"`
-        }
-
-        type AuthLoginWithPasswordResultVerification struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-        type AuthLoginWithPasswordResultNetwork struct {
-            ByJwt *string `json:"byJwt,omitempty"`
-            NetworkName *string `json:"name,omitempty"`
-        }
-
-        type AuthLoginWithPasswordResultError struct {
-            Message string `json:"message"`
-        }
-
-
-
-    AuthVerifyArgs:
-
-        type AuthVerifyArgs struct {
-            UserAuth string `json:"userAuth"`
-            VerifyCode string `json:"verifyCode"`
-        }
-
-    AuthVerifyResult:
-
-        type AuthVerifyResult struct {
-            Network *AuthVerifyResultNetwork `json:"network,omitempty"`
-            Error *AuthVerifyResultError `json:"error,omitempty"`
-        }
-
-        type AuthVerifyResultNetwork struct {
-            ByJwt string `json:"byJwt"`
-        }
-
-        type AuthVerifyResultError struct {
-            Message string `json:"message"`
-        }
-
-
-    AuthVerifySendArgs:
-
-        type AuthVerifySendArgs struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthVerifySendResult:
-
-        type AuthVerifySendResult struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthPasswordResetResult:
-    
-    AuthPasswordResetArgs:
-
-        type AuthPasswordResetArgs struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthPasswordSetResult:
-
-        type AuthPasswordResetResult struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthNetworkCheckArgs:
-
-        type NetworkCheckArgs struct {
-            NetworkName string  `json:"networkName"`
-        }
-
-
-    AuthNetworkCheckResult:
-
-        type NetworkCheckResult struct {
-            Available bool  `json:"available"`
-        }
-
-
-    AuthNetworkCreateArgs:
-
-        type NetworkCreateArgs struct {
-            UserName *string `json:"userName"`
-            UserAuth *string `json:"userAuth"`
-            AuthJwt *string `json:"authJwt"`
-            AuthJwtType *string `json:"authJwtType"`
-            Password string `json:"password"`
-            NetworkName string `json:"networkName"`
-            Terms bool `json:"terms"`
-        }
+    schemas:
+        StatsResult:
+            type: object
+            properties: {}
+                # lookback:
+                # createdTime:
+                # allTransferData:
+                # allTransferSummary:
+                # allTransferSummaryRate:
+                # allPacketsData:
+                # allPacketsSummary:
+                # allPacketsSummaryRate:
+                # providersData:
+                # providersSuperspeedData:
+                # providersSummary:
+                # providersSummarySuperspeed:
+                # countriesData:
+                # countriesSummary:
+                # regionsData:
+                # regionsSummary:
+                # citiesData:
+                # citiesSummary:
+                # extenderTransferData:
+                # extenderTransferSummary:
+                # extenderTransferSummaryRate:
+                # extendersData:
+                # extendersSuperspeedData:
+                # extendersSummary:
+                # extendersSummarySuperspeed:
+                # networksData:
+                # networksSummary:
+                # devicesData:
+                # devicesSummary:
+        AuthLoginArgs:
+            type: object
+            properties: {}
+        AuthLoginResult:
+            type: object
+            properties: {}
+        AuthLoginWithPasswordArgs:
+            type: object
+            properties: {}
+        AuthLoginWithPasswordResult:
+            type: object
+            properties: {}
+        AuthVerifyArgs:
+            type: object
+            properties: {}
+        AuthVerifyResult:
+            type: object
+            properties: {}
+        AuthVerifySendArgs:
+            type: object
+            properties: {}
+        AuthVerifySendResult:
+            type: object
+            properties: {}
+        AuthPasswordResetArgs:
+            type: object
+            properties: {}
+        AuthPasswordResetResult:
+            type: object
+            properties: {}
+        AuthPasswordSetArgs:
+            type: object
+            properties: {}
+        AuthPasswordSetResult:
+            type: object
+            properties: {}
+        AuthNetworkCheckArgs:
+            type: object
+            properties: {}
+        AuthNetworkCheckResult:
+            type: object
+            properties: {}
+        AuthNetworkCreateArgs:
+            type: object
+            properties: {}
+        AuthNetworkCreateResult:
+            type: object
+            properties: {}
+        NetworkAuthClientArgs:
+            type: object
+            properties: {}
+        NetworkAuthClientResult:
+            type: object
+            properties: {}
+        NetworkRemoveClientArgs:
+            type: object
+            properties: {}
+        NetworkRemoveClientResult:
+            type: object
+            properties: {}
+        NetworkClientsResult:
+            type: object
+            properties: {}
+        PreferencesSetArgs:
+            type: object
+            properties: {}
+        PreferencesSetResult:
+            type: object
+            properties: {}
+        FeedbackSendArgs:
+            type: object
+            properties: {}
+        FeedbackSendResult:
+            type: object
+            properties: {}
+        FindLocationsArgs:
+            type: object
+            properties: {}
+        FindLocationsResult:
+            type: object
+            properties: {}
+        FindProvidersArgs:
+            type: object
+            properties: {}
+        FindProvidersResult:
+            type: object
+            properties: {}
+        WalletBalanceResult:
+            type: object
+            properties: {}
+        WalletValidateAddressArgs:
+            type: object
+            properties: {}
+        WalletValidateAddressResult:
+            type: object
+            properties: {}
+        WalletCircleInitArgs:
+            type: object
+            properties: {}
+        WalletCircleInitResult:
+            type: object
+            properties: {}
+        WalletCircleTransferOutArgs:
+            type: object
+            properties: {}
+        WalletCircleTransferOutResult:
+            type: object
+            properties: {}
+        SubscriptionBalanceArgs:
+            type: object
+            properties: {}
+        SubscriptionBalanceResult:
+            type: object
+            properties: {}
 
 
-    AuthNetworkCreateResult:
-
-        type NetworkCreateResult struct {
-            Network *NetworkCreateResultNetwork `json:"network,omitempty"`
-            VerificationRequired *NetworkCreateResultVerification `json:"verificationRequired,omitempty"`
-            Error *NetworkCreateResultError `json:"error,omitempty"`
-        }
-
-        type NetworkCreateResultNetwork struct {
-            ByJwt *string `json:"byJwt,omitempty"`
-            NetworkName *string `json:"networkName,omitempty"`
-        }
-
-        type NetworkCreateResultVerification struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-        type NetworkCreateResultError struct {
-            Message string `json:"message"`
-        }
 
 
-    NetworkAuthClientResult:
-    NetworkRemoveClientResult:
-    NetworkClientsResult:
 
-
-    PreferencesSetArgs:
-
-        type PreferencesSetArgs struct {
-            AuthArgs
-            ProductUpdates bool `json:"productUpdates"`
-        }
-
-
-    PreferencesSetResult:
-
-        {}
-
-    
-    FeedbackSendArgs:
-
-        type FeedbackSendArgs struct {
-            AuthArgs
-            Uses FeedbackSendUses `json:"uses"`
-            Needs FeedbackSendNeeds `json:"needs"`
-        }
-        type FeedbackSendUses struct {
-            Personal bool `json:"personal"`
-            Business bool `json:"business"`
-        }
-        type FeedbackSendNeeds struct {
-            Private bool `json:"private"`
-            Safe bool `json:"safe"`
-            Global bool `json:"global"`
-            Collaborate bool `json:"collaborate"`
-            AppControl bool `json:"appControl"`
-            BlockDataBrokers bool `json:"blockDataBrokers"`
-            BlockAds bool `json:"blockAds"`
-            Focus bool `json:"focus"`
-            ConnectServers bool `json:"connectServers"`
-            RunServers bool `json:"runServers"`
-            PreventCyber bool `json:"preventCyber"`
-            Audit bool `json:"audit"`
-            ZeroTrust bool `json:"zeroTrust"`
-            Visualize bool `json:"visualize"`
-            Other *string `json:"other"`
-        }
-
-
-    FeedbackSendResult:
-        
-        {}
 
 
 
