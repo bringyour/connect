@@ -1,0 +1,20 @@
+[Unit]
+Description=Warpctl community provider g3
+Requires=network.target
+After=network.target
+Requires=docker.service
+After=docker.service
+ReloadPropagatedFrom=network.target docker.service
+
+[Service]
+Type=simple
+Environment="WARP_HOME=/srv/warp/community"
+ExecStart=/usr/local/sbin/warpctl service run community provider g3 --portblocks=80:7003:7351-7380 --services_dockernet=warpservices --mount_vault=no --mount_config=no --mount_site=no --status=standard --domain=vpn.dev
+ExecStop=/bin/kill -s TERM $MAINPID
+TimeoutStopSec=60
+Restart=always
+StandardOutput=append:/var/log/warp/community-provider-g3.out
+StandardError=append:/var/log/warp/community-provider-g3.err
+
+[Install]
+WantedBy=multi-user.target

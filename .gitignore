@@ -1,5 +1,7 @@
 **/build
 **/.DS_Store
 
+provider/provider
 connectctl/connectctl
 test-ip-local/test-ip-local
+api/redoc-static.html
