@@ -1,7 +1,7 @@
 
 openapi: "3.1.0"
 info:
-    version: 2023.12.1
+    version: 2023.12.19
     title: BringYour
     description: |
         BringYour is a web-standards VPN marketplace with an emphasis on 
@@ -32,7 +32,7 @@ info:
         email: support@bringyour.com
         url: https://bringyour.com
     x-logo:
-        url: https://bringyour.com/res/images/bringyour-wordmark.png
+        url: https://bringyour.com/res/images/bringyour-wordmark-260.svg
         altText: BringYour
     license:
         name: Mozilla Public License, v. 2.0
