@@ -1,13 +1,7 @@
 
-
-// FIXME auth on routes, basic using jwt
-
-// FIXME subscription routes
-
-
 openapi: "3.1.0"
 info:
-    version: 1.0.0
+    version: 2023.12.19
     title: BringYour
     description: |
         BringYour is a web-standards VPN marketplace with an emphasis on 
@@ -29,33 +23,40 @@ info:
         Outside of IP translation like taptun/utun, 
         clients are typically addressed via their clientId.
 
+        Unless otherwise specified, time/date strings will be formatted
+        in the Go default `2006-01-02 15:04:05.999999999 -0700 MST`.
+
     termsOfService: https://bringyour.com/terms
     contact:
         name: BringYour
-        email: info@bringyour.com
+        email: support@bringyour.com
         url: https://bringyour.com
     x-logo:
-        url: 'https://bringyour.com/res/images/bringyour-wordmark.webp'
-        altText: BringYour wordmark
+        url: https://bringyour.com/res/images/bringyour-wordmark-260.svg
+        altText: BringYour
     license:
-        name: Apache 2.0
-        url: https://www.apache.org/licenses/LICENSE-2.0.html
+        name: Mozilla Public License, v. 2.0
+        url: https://mozilla.org/MPL/2.0/
 servers:
     - url: https://api.bringyour.com
+
+security:
+  - BearerAuth: []
+
 paths:
     /stats/last-90:
         get:
             description: |
                 Get network statistics for the last 90 days.
                 The statistics are updated approximately every 60s.
-            operationId: getStatsLast90
-            parameters: {}
+            operationId: Stats Last 90
+            security: []
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/StatsResult'
+                                $ref: "#/components/schemas/StatsResult"
 
     /auth/login:
         post:
@@ -66,28 +67,27 @@ paths:
                 - phone number
                 - Apple JWT
                 - Google JWT
-            operationId: authLogin
-                 
-
+            operationId: Auth Login
+            security: []
             requestBody:
                 required: true
                 content:
                     application/json:
                         schema:
                             $ref: "#/components/schemas/AuthLoginArgs"
-
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthLoginResult'
+                                $ref: "#/components/schemas/AuthLoginResult"
     
     /auth/login-with-password:
         post:
             description: |
                 Password login for email and phone number.
-            operationId: authLoginWithPassword
+            operationId: Auth Login With Password
+            security: []
             requestBody:
                 required: true
                 content:
@@ -95,67 +95,87 @@ paths:
                         schema:
                             $ref: "#/components/schemas/AuthLoginWithPasswordArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthLoginWithPasswordResult'
+                                $ref: "#/components/schemas/AuthLoginWithPasswordResult"
 
     /auth/verify:
         post:
             description: |
                 Verify ownership of email or phone number.
-            operationId: authVerify
-            parameters:
-                ...
+            operationId: Auth Verify
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthVerifyArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthVerifyResult'
+                                $ref: "#/components/schemas/AuthVerifyResult"
 
     /auth/verify-send:
         post:
             description: |
                 Send verification code to email or phone number.
-            operationId: authVerifySend
-            parameters:
-                ...
+            operationId: Auth Verify Send
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthVerifySendArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthVerifySendResult'
+                                $ref: "#/components/schemas/AuthVerifySendResult"
 
     /auth/password-reset:
         post:
             description: |
                 Send password reset code to email or phone number.
-            operationId: authPasswordReset
-            parameters:
-                ...
+            operationId: Auth Password Reset
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthPasswordResetArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthPasswordResetResult'
+                                $ref: "#/components/schemas/AuthPasswordResetResult"
 
     /auth/password-set:
         post:
             description: |
                 Change password.
-            operationId: authPasswordSet
-            parameters:
-                ...
+            operationId: Auth Password Set
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthPasswordSetArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthPasswordSetResult'
+                                $ref: "#/components/schemas/AuthPasswordSetResult"
 
     /auth/network-check:
         post:
@@ -166,30 +186,40 @@ paths:
                 - at least 8 characters
                 - domain name compatible (see RFC 5890)
                 - not contain the dash (-) character (BringYour subdomains are reverse-flattened to a single level using dashes)
-            operationId: authNetworkCheck
-            parameters:
-                ...
+            operationId: Auth Network Check
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/NetworkCheckArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthNetworkCheckResult'
+                                $ref: "#/components/schemas/NetworkCheckResult"
 
     /auth/network-create:
         post:
             description: |
                 Create a new network.
                 A user authority can be associated with at most one network.
-            operationId: authNetworkCreate
-            parameters:
-                ...
+            operationId: Auth Network Create
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/NetworkCreateArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/AuthNetworkCreateResult'
+                                $ref: "#/components/schemas/NetworkCreateResult"
 
     /network/auth-client:
         post:
@@ -199,316 +229,965 @@ paths:
                 Each network can have at most 128 clientIds.
                 Above that number, new clientId requests will error until one or more
                 existing clientIds are removed.
-            operationId: networkAuthClient
-            parameters:
-                ...
+            operationId: Auth Network Client
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthNetworkClientArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/NetworkAuthClientResult'
+                                $ref: "#/components/schemas/AuthNetworkClientResult"
 
     /network/remove-client:
         post:
             description: |
                 Remove a client from the network.
-            operationId: networkRemoveClient
-            parameters:
-                ...
+            operationId: Remove Network Client
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/RemoveNetworkClientArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/NetworkRemoveClientResult'
+                                $ref: "#/components/schemas/RemoveNetworkClientResult"
 
     /network/clients:
         get:
             description: |
                 Get the latest status of all clients on this network.
-            operationId: networkClients
-            parameters:
-                ...
+
+                Includes:
+                
+                - Resident status, which is the platform counterpart
+                for the client that handles control commands.
+                - Connections, which are transports from the client to the platform.
+                Note there can be multiple active connections for a single client.
+                - Provide status
+            operationId: Network Clients
+            security:
+                - BearerAuth: []
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/NetworkClientsResult'
+                                $ref: "#/components/schemas/NetworkClientsResult"
 
     /preferences/set-preferences:
         post:
             description: |
                 Set account preferences.
-                Note account preferences can also be managed through the read-write `store` section of the `connect` protocol.
-            operationId: preferencesSetPreferences
-            parameters:
-                ...
+            operationId: Preferences Set
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/PreferencesSetArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/PreferencesSetResult'
+                                $ref: "#/components/schemas/PreferencesSetResult"
 
     /feedback/send-feedback:
         post:
             description: |
                 Feedback.
-            operationId: feedbackSendFeedback
-            parameters:
-                ...
+            operationId: Feedback Send
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FeedbackSendArgs"
             responses:
-                '200':
+                "200":
                     content:
                         application/json:
                             schema:
-                                $ref: '#/components/schemas/FeedbackSendResult'
+                                $ref: "#/components/schemas/FeedbackSendResult"
+
+    /network/provider-locations:
+        get:
+            description: |
+                A list of locations and groups where there are at least one active provider
+                in good health. 
+                Note that a location or group will need to be mapped to an actual provider
+                using `/network/find-providers`.
+            operationId: Network Provider Locations
+            security: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindLocationsResult"
+
+    /network/find-provider-locations:
+        post:
+            description: |
+                Search for locations and groups that match a query,
+                where there are at least one active provider in good health. 
+                The match algorithm accounts for typos and misspelling,
+                and the tolerance can be tuned in the input.
+                Note that a location or group will need to be mapped to an actual provider
+                using `/network/find-providers`.
+            operationId: Network Find Provider Locations
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindLocationsArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindLocationsResult"
+
+    /network/find-locations:
+        post:
+            description: |
+                Search for locations and groups that match a query,
+                regardless of whether an providers are active.
+            operationId: Network Find Locations
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindLocationsArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindLocationsResult"
+
+    /network/find-providers:
+        post:
+            description: |
+                Randomly sample providers that for a location or group,
+                which are active and in good health.
+                This allows random iteration by using the exclude input to mark
+                visited providers.
+            operationId: Network Find Providers
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindActiveProvidersArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindActiveProvidersResult"
+
+    /wallet/balance:
+        get:
+            description: |
+                Get the balance for the USDC user custody wallet.
+                The user custody wallet allows BringYour to query the balance,
+                but the user must take actions against the wallet.
+            operationId: Wallet Balance
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletBalanceResult"
+
+    /wallet/validate-address:
+        post:
+            description: |
+                Validate a USDC wallet address on the user custody wallet chain.
+                This can be used to check whether an address can receive
+                a transfer out from the user custody wallet.
+                Please use this before initiating any transfer out to avoid lost funds.
+            operationId: Wallet Validate Address
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/WalletValidateAddressArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletValidateAddressResult"
+
+    /wallet/circle-init:
+        post:
+            description: |
+                Initialize the Circle USDC user self custody wallet.
+                This starts a process that must be completed by the user.
+            operationId: Wallet Circle Init
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletCircleInitResult"
+
+    /wallet/circle-transfer-out:
+        post:
+            description: |
+                Set up a transfer from the Circle USDC user self custody wallet 
+                to an address.
+                This starts a process that must be completed by the user.
+            operationId: Wallet Circle Init
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/WalletCircleTransferOutArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WalletCircleTransferOutResult"
+
+    /subscription/balance:
+        get:
+            description: |
+                Get the current subscription status and transfer balance.
+            operationId: Subscription Balance
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SubscriptionBalanceResult"
 
 components:
-  schemas:
-    StatsResult:
-        type: object
-        properties:
-            lookback:
-            createdTime:
-            allTransferData:
-            allTransferSummary:
-            allTransferSummaryRate:
-            allPacketsData:
-            allPacketsSummary:
-            allPacketsSummaryRate:
-            providersData:
-            providersSuperspeedData:
-            providersSummary:
-            providersSummarySuperspeed:
-            countriesData:
-            countriesSummary:
-            regionsData:
-            regionsSummary:
-            citiesData:
-            citiesSummary:
-            extenderTransferData:
-            extenderTransferSummary:
-            extenderTransferSummaryRate:
-            extendersData:
-            extendersSuperspeedData:
-            extendersSummary:
-            extendersSummarySuperspeed:
-            networksData:
-            networksSummary:
-            devicesData:
-            devicesSummary:
+    securitySchemes:
+        BearerAuth:
+            type: http
+            scheme: bearer
+            description: BringYour JWT
 
-    AuthLoginArgs:
-
-        UserAuth *string `json:"userAuth"`
-        AuthJwtType *string `json:"authJwtType"`
-        AuthJwt *string `json:"authJwt"`
-
-    AuthLoginResult:
-
-
-
-        type AuthLoginResult struct {
-            UserName *string `json:"userName,omitempty"`
-            UserAuth *string `json:"userAuth,omitempty"`
-            AuthAllowed *[]string `json:"authAllowed,omitempty"`
-            Error *AuthLoginResultError `json:"error,omitempty"`
-            Network *AuthLoginResultNetwork `json:"network,omitempty"`
-        }
-
-        type AuthLoginResultError struct {
-            SuggestedUserAuth *string `json:"suggestedUserAuth,omitempty"`
-            Message string `json:"message"`
-        }
-
-        type AuthLoginResultNetwork struct {
-            ByJwt string `json:"byJwt"`
-        }
-
-    AuthLoginWithPasswordArgs:
-
-        type AuthLoginWithPasswordArgs struct {
-            UserAuth string `json:"userAuth"`
-            Password string `json:"password"`
-        }
-
-
-    AuthLoginWithPasswordResult:
-
-        type AuthLoginWithPasswordResult struct {
-            VerificationRequired *AuthLoginWithPasswordResultVerification `json:"verificationRequired,omitempty"`
-            Network *AuthLoginWithPasswordResultNetwork `json:"network,omitempty"`
-            Error *AuthLoginWithPasswordResultError `json:"error,omitempty"`
-        }
-
-        type AuthLoginWithPasswordResultVerification struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-        type AuthLoginWithPasswordResultNetwork struct {
-            ByJwt *string `json:"byJwt,omitempty"`
-            NetworkName *string `json:"name,omitempty"`
-        }
-
-        type AuthLoginWithPasswordResultError struct {
-            Message string `json:"message"`
-        }
-
-
-
-    AuthVerifyArgs:
-
-        type AuthVerifyArgs struct {
-            UserAuth string `json:"userAuth"`
-            VerifyCode string `json:"verifyCode"`
-        }
-
-    AuthVerifyResult:
-
-        type AuthVerifyResult struct {
-            Network *AuthVerifyResultNetwork `json:"network,omitempty"`
-            Error *AuthVerifyResultError `json:"error,omitempty"`
-        }
-
-        type AuthVerifyResultNetwork struct {
-            ByJwt string `json:"byJwt"`
-        }
-
-        type AuthVerifyResultError struct {
-            Message string `json:"message"`
-        }
-
-
-    AuthVerifySendArgs:
-
-        type AuthVerifySendArgs struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthVerifySendResult:
-
-        type AuthVerifySendResult struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthPasswordResetResult:
-    
-    AuthPasswordResetArgs:
-
-        type AuthPasswordResetArgs struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthPasswordSetResult:
-
-        type AuthPasswordResetResult struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-    AuthNetworkCheckArgs:
-
-        type NetworkCheckArgs struct {
-            NetworkName string  `json:"networkName"`
-        }
-
-
-    AuthNetworkCheckResult:
-
-        type NetworkCheckResult struct {
-            Available bool  `json:"available"`
-        }
-
-
-    AuthNetworkCreateArgs:
-
-        type NetworkCreateArgs struct {
-            UserName *string `json:"userName"`
-            UserAuth *string `json:"userAuth"`
-            AuthJwt *string `json:"authJwt"`
-            AuthJwtType *string `json:"authJwtType"`
-            Password string `json:"password"`
-            NetworkName string `json:"networkName"`
-            Terms bool `json:"terms"`
-        }
-
-
-    AuthNetworkCreateResult:
-
-        type NetworkCreateResult struct {
-            Network *NetworkCreateResultNetwork `json:"network,omitempty"`
-            VerificationRequired *NetworkCreateResultVerification `json:"verificationRequired,omitempty"`
-            Error *NetworkCreateResultError `json:"error,omitempty"`
-        }
-
-        type NetworkCreateResultNetwork struct {
-            ByJwt *string `json:"byJwt,omitempty"`
-            NetworkName *string `json:"networkName,omitempty"`
-        }
-
-        type NetworkCreateResultVerification struct {
-            UserAuth string `json:"userAuth"`
-        }
-
-        type NetworkCreateResultError struct {
-            Message string `json:"message"`
-        }
-
-
-    NetworkAuthClientResult:
-    NetworkRemoveClientResult:
-    NetworkClientsResult:
-
-
-    PreferencesSetArgs:
-
-        type PreferencesSetArgs struct {
-            AuthArgs
-            ProductUpdates bool `json:"productUpdates"`
-        }
-
-
-    PreferencesSetResult:
-
-        {}
-
-    
-    FeedbackSendArgs:
-
-        type FeedbackSendArgs struct {
-            AuthArgs
-            Uses FeedbackSendUses `json:"uses"`
-            Needs FeedbackSendNeeds `json:"needs"`
-        }
-        type FeedbackSendUses struct {
-            Personal bool `json:"personal"`
-            Business bool `json:"business"`
-        }
-        type FeedbackSendNeeds struct {
-            Private bool `json:"private"`
-            Safe bool `json:"safe"`
-            Global bool `json:"global"`
-            Collaborate bool `json:"collaborate"`
-            AppControl bool `json:"appControl"`
-            BlockDataBrokers bool `json:"blockDataBrokers"`
-            BlockAds bool `json:"blockAds"`
-            Focus bool `json:"focus"`
-            ConnectServers bool `json:"connectServers"`
-            RunServers bool `json:"runServers"`
-            PreventCyber bool `json:"preventCyber"`
-            Audit bool `json:"audit"`
-            ZeroTrust bool `json:"zeroTrust"`
-            Visualize bool `json:"visualize"`
-            Other *string `json:"other"`
-        }
-
-
-    FeedbackSendResult:
-        
-        {}
-
-
-
-
+    schemas:
+        StatsResult:
+            type: object
+            properties:
+                lookback:
+                    type: integer
+                created_time:
+                    description: Unix epoch time UTC
+                    type: integer
+                all_transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                all_transfer_summary:
+                    type: integer
+                all_transfer_summary_rate:
+                    type: integer
+                all_packets_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                all_packets_summary:
+                    type: integer
+                all_packets_summary_rate:
+                    type: integer
+                providers_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                providers_superspeed_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                providers_summary:
+                    type: integer
+                providers_summary_superspeed:
+                    type: integer
+                countries_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                countries_summary:
+                    type: integer
+                regions_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                regions_summary:
+                    type: integer
+                cities_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                cities_summary:
+                    type: integer
+                extender_transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                extender_transfer_summary:
+                    type: integer
+                extender_transfer_summary_rate:
+                    type: integer
+                extenders_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                extenders_superspeed_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                extenders_summary:
+                    type: integer
+                extenders_summary_superspeed:
+                    type: integer
+                networks_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                networks_summary:
+                    type: integer
+                devices_data:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                devices_summary:
+                    type: integer
+        AuthLoginArgs:
+            type: object
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+                auth_jwt:
+                    type: string
+                auth_jwt_type:
+                    type: string
+                    enum:
+                        - apple
+                        - google
+        AuthLoginResult:
+            type: object
+            properties:
+                user_name:
+                    type: string
+                user_auth:
+                    description: email or phone number
+                    type: string
+                auth_allowed:
+                    type: array
+                    items:
+                        type: string
+                        enum:
+                            - password
+                            - apple
+                            - google
+                error:
+                    type: object
+                    properties:
+                        suggested_user_auth:
+                            type: string
+                            enum:
+                                - password
+                                - apple
+                                - google
+                        message:
+                            type: string
+                network:
+                    type: object
+                    properties:
+                        by_jwt:
+                            type: string
+        AuthLoginWithPasswordArgs:
+            type: object
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+                password:
+                    type: string
+        AuthLoginWithPasswordResult:
+            type: object
+            properties:
+                verification_required:
+                    type: object
+                    properties:
+                        user_auth:
+                            description: email or phone number
+                            type: string
+                network:
+                    type: object
+                    properties:
+                        by_jwt:
+                            type: string
+                        name:
+                            type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        AuthVerifyArgs:
+            type: object
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+                verify_code:
+                    type: string
+        AuthVerifyResult:
+            type: object
+            properties:
+                network:
+                    type: object
+                    by_jwt:
+                        type: string
+                error:
+                    type: object
+                    message:
+                        type: string
+        AuthVerifySendArgs:
+            type: object
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+        AuthVerifySendResult:
+            type: object
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+        AuthPasswordResetArgs:
+            type: object
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+        AuthPasswordResetResult:
+            type: object
+            properties:
+                user_auth:
+                    description: email or phone number
+                    type: string
+        AuthPasswordSetArgs:
+            type: object
+            properties:
+                reset_code:
+                    type: string
+                password:
+                    type: string
+        AuthPasswordSetResult:
+            type: object
+            properties: {}
+        NetworkCheckArgs:
+            type: object
+            properties:
+                network_name:
+                    type: string
+        NetworkCheckResult:
+            type: object
+            properties:
+                available:
+                    type: boolean
+        NetworkCreateArgs:
+            type: object
+            properties:
+                user_name:
+                    type: string
+                user_auth:
+                    description: email or phone number
+                    type: string
+                auth_jwt:
+                    type: string
+                auth_jwt_type:
+                    type: string
+                    enum:
+                        - apple
+                        - google
+                password:
+                    type: string
+                network_name:
+                    type: string
+                terms:
+                    description: user consent to accept terms of service
+                    type: boolean
+        NetworkCreateResult:
+            type: object
+            properties:
+                network:
+                    type: object
+                    properties:
+                        by_jwt:
+                            type: string
+                        network_name:
+                            type: string
+                verification_required:
+                    type: object
+                    properties:
+                        user_auth:
+                            description: email or phone number
+                            type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        AuthNetworkClientArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+                description:
+                    type: string
+                device_spec:
+                    type: string
+        AuthNetworkClientResult:
+            type: object
+            properties:
+                by_client_jwt:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        client_limit_exceeded:
+                            type: boolean
+                        message:
+                            type: string
+        RemoveNetworkClientArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+        RemoveNetworkClientResult:
+            type: object
+            properties:
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        NetworkClientsResult:
+            type: object
+            properties:
+                clients:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            network_id:
+                                description: udid
+                                type: string
+                            description:
+                                type: string
+                            device_spec:
+                                type: string
+                            create_time:
+                                type: string
+                            auth_time:
+                                type: string
+                            resident:
+                                type: object
+                                properties:
+                                    client_id:
+                                        description: udid
+                                        type: string
+                                    instance_id:
+                                        description: udid
+                                        type: string
+                                    resident_id:
+                                        description: udid
+                                        type: string
+                                    resident_host:
+                                        type: string
+                                    resident_service:
+                                        type: string
+                                    resident_block:
+                                        type: string
+                                    resident_internal_ports:
+                                        type: array
+                                        items:
+                                            type: integer
+                            provide_mode:
+                                type: integer
+                                oneOf:
+                                - title: ProvideModeNone
+                                  const: 0
+                                - title: ProvideModeNetwork
+                                  const: 1
+                                - title: ProvideModeFriendsAndFamily
+                                  const: 2
+                                - title: ProvideModePublic
+                                  const: 3
+                                - title: ProvideModeStream
+                                  const: 4
+                            connections:
+                                type: array
+                                items:
+                                    type: object
+                                    properties:
+                                        client_id:
+                                            description: udid
+                                            type: string
+                                        connection_id:
+                                            description: udid
+                                            type: string
+                                        connect_time:
+                                            type: string
+                                        disconnect_time:
+                                            type: string
+                                        connection_host:
+                                            type: string
+                                        connection_service:
+                                            type: string
+                                        connection_block:
+                                            type: string
+        PreferencesSetArgs:
+            type: object
+            properties:
+                product_updates:
+                    type: boolean
+        PreferencesSetResult:
+            type: object
+            properties: {}
+        FeedbackSendArgs:
+            type: object
+            properties:
+                uses:
+                    type: object
+                    properties:
+                        personal:
+                            type: boolean
+                        business:
+                            type: boolean
+                needs:
+                    type: object
+                    properties:
+                        private:
+                            type: boolean
+                        safe:
+                            type: boolean
+                        global:
+                            type: boolean
+                        collaborate:
+                            type: boolean
+                        app_control:
+                            type: boolean
+                        block_data_brokers:
+                            type: boolean
+                        block_ads:
+                            type: boolean
+                        focus:
+                            type: boolean
+                        connect_servers:
+                            type: boolean
+                        run_servers:
+                            type: boolean
+                        prevent_cyber:
+                            type: boolean
+                        audit:
+                            type: boolean
+                        zero_trust:
+                            type: boolean
+                        visualize:
+                            type: boolean
+                        other:
+                            type: string
+        FeedbackSendResult:
+            type: object
+            properties: {}
+        FindLocationsArgs:
+            type: object
+            properties:
+                query:
+                    type: string
+                max_distance_fraction:
+                    type: number
+                enable_max_distance_fraction:
+                    type: boolean
+        FindLocationsResult:
+            type: object
+            properties:
+                groups:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            location_group_id:
+                                description: udid
+                                type: string
+                            name:
+                                type: string
+                            provider_count:
+                                type: integer
+                            promoted:
+                                type: boolean
+                            match_distance:
+                                type: integer
+                locations:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            location_id:
+                                description: udid
+                                type: string
+                            location_type:
+                                type: string
+                                enum:
+                                    - city
+                                    - region
+                                    - country
+                            name:
+                                type: string
+                            city:
+                                type: string
+                            city_location_id:
+                                description: udid
+                                type: string
+                            region:
+                                type: string
+                            region_location_id:
+                                description: udid
+                                type: string
+                            country:
+                                type: string
+                            country_location_id:
+                                description: udid
+                                type: string
+                            country_code:
+                                type: string
+                            provider_count:
+                                type: integer
+                            match_distance:
+                                type: integer
+        FindActiveProvidersArgs:
+            type: object
+            properties:
+                location_id:
+                    description: udid
+                    type: string
+                location_group_id:
+                    description: udid
+                    type: string
+                count:
+                    type: integer
+                exclude_location_ids:
+                    type: array
+                    items:
+                        description: udid
+                        type: string
+        FindActiveProvidersResult:
+            type: object
+            properties:
+                client_ids:
+                    type: array
+                    items:
+                        description: udid
+                        type: string
+        WalletBalanceResult:
+            type: object
+            properties:
+                wallet_info:
+                    type: object
+                    properties:
+                        wallet_id:
+                            type: string
+                        token_id:
+                            type: string
+                        blockchain:
+                            type: string
+                        blockchain_symbol:
+                            type: string
+                        create_date:
+                            type: string
+                        balance_usdc_nano_cents:
+                            type: integer
+                        address:
+                            type: string
+        WalletValidateAddressArgs:
+            type: object
+            properties:
+                address:
+                    type: string
+        WalletValidateAddressResult:
+            type: object
+            properties:
+                valid:
+                    type: boolean
+        WalletCircleInitResult:
+            type: object
+            properties:
+                user_token:
+                    type: object
+                    properties:
+                        user_token:
+                            type: string
+                        encryption_key:
+                            type: string
+                challenge_id:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        WalletCircleTransferOutArgs:
+            type: object
+            properties:
+                to_address:
+                    type: string
+                amount_usdc_nano_cents:
+                    type: integer
+                terms:
+                    description: user consent to accept terms of transfer
+                    type: boolean
+        WalletCircleTransferOutResult:
+            type: object
+            properties:
+                user_token:
+                    type: object
+                    properties:
+                        user_token:
+                            type: string
+                        encryption_key:
+                            type: string
+                challenge_id:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        SubscriptionBalanceResult:
+            type: object
+            properties:
+                balance_byte_count:
+                    type: integer
+                current_subscription:
+                    type: object
+                    properties:
+                        subscription_id:
+                            description: udid
+                            type: string
+                        store:
+                            type: string
+                        plan:
+                            type: string
+                active_transfer_balances:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            balance_id:
+                                description: udid
+                                type: string
+                            network_id:
+                                description: udid
+                                type: string
+                            start_time:
+                                type: string
+                            end_time:
+                                type: string
+                            start_balance_byte_count:
+                                type: integer
+                            net_revenue_nano_cents:
+                                type: integer
+                            balance_byte_count:
+                                type: integer
+                pending_payout_usd_nano_cents:
+                    type: integer
+                wallet_info:
+                    type: object
+                    properties:
+                        wallet_id:
+                            description: udid
+                            type: string
+                        token_id:
+                            description: udid
+                            type: string
+                        blockchain:
+                            type: string
+                            enum:
+                                - Polygon
+                        blockchain_symbol:
+                            type: string
+                            enum:
+                                - MATIC
+                        create_date:
+                            type: string
+                        balance_usdc_nano_cents:
+                            type: integer
+                        address:
+                            type: string
+                update_time:
+                    type: string
