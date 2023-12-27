@@ -221,6 +221,51 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/NetworkCreateResult"
 
+    /auth/code-create:
+        post:
+            description: |
+                Create a limited use code (auth code) to share authentication 
+                with connected apps and tools.
+                The code is tied to the caller session, 
+                and will be expired with any of the caller's sessions.
+                This is a subset of an OAuth flow.
+            operationId: Auth Code Create
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthCodeCreateArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/AuthCodeCreateResult"
+
+    /auth/code-login:
+        post:
+            description: |
+                Authenticate with an auth code.
+                The returned session is tied to the session that created the auth code,
+                and will be expired with any of the creator's sessions.
+                This is a subset of an OAuth flow.
+            operationId: Auth Code Login
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AuthCodeLoginArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/AuthCodeLoginResult"
+
     /network/auth-client:
         post:
             description: |
@@ -792,6 +837,40 @@ components:
                         user_auth:
                             description: email or phone number
                             type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        AuthCodeCreateArgs:
+            type: object
+            properties:
+                duration_minutes:
+                    type: number
+                uses:
+                    type: integer
+        AuthCodeCreateResult:
+            type: object
+            properties:
+                auth_code:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        auth_code_limit_exceeded:
+                            type: boolean
+                        message:
+                            type: string
+        AuthCodeLoginArgs:
+            type: object
+            properties:
+                auth_code:
+                    type: string
+        AuthCodeLoginResult:
+            type: object
+            properties:
+                by_jwt:
+                    type: string
                 error:
                     type: object
                     properties:
