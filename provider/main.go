@@ -36,7 +36,7 @@ import (
     gojwt "github.com/golang-jwt/jwt/v5"
 
     "bringyour.com/connect"
-    // "bringyour.com/protocol"
+    "bringyour.com/protocol"
 )
 
 const DefaultApiUrl = "https://api.bringyour.com"
@@ -129,6 +129,12 @@ func provide(opts docopt.Opts) {
 
     localUserNat := connect.NewLocalUserNatWithDefaults(ctx)
     remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat)
+
+    provideModes := map[protocol.ProvideMode]bool{
+        protocol.ProvideMode_Public: true,
+        protocol.ProvideMode_Network: true,
+    }
+    contractManager.SetProvideModes(provideModes)
 
 
     fmt.Printf(

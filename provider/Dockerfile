@@ -16,4 +16,4 @@ COPY build/$TARGETPLATFORM/provider /usr/local/sbin/bringyour-provider
 EXPOSE 80
 STOPSIGNAL SIGTERM
 # additional arguments can be appended to the end
-ENTRYPOINT ["/usr/local/sbin/bringyour-provider", "-p", "80"]
+ENTRYPOINT ["/usr/local/sbin/bringyour-provider", "provide", "-p", "80"]
