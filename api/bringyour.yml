@@ -58,6 +58,59 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/StatsResult"
 
+    /stats/providers-overview-last-90:
+        get:
+            description: |
+                Get statistics for all providers in the caller network
+                for the last 90 days.
+                This is meant to answer the top level question of how
+                the providers in a network are performing.
+            operationId: Stats Providers Overview Last 90
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/StatsProvidersOverviewResult"
+
+    /stats/providers:
+        get:
+            description: |
+                Get all providers in the caller network.
+                Each provider includes stats from the last 24 hours.
+            operationId: Stats Providers
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/StatsProvidersResult"
+
+    /stats/provider-last-90:
+        post:
+            description: |
+                Get detailed stats on a single provider in the caller network.
+                This is meant to give the user complete visibility over usage.
+            operationId: Stats Provider Last 90
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/StatsProviderArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/StatsProviderResult"
+
     /auth/login:
         post:
             description: |
@@ -228,6 +281,8 @@ paths:
                 with connected apps and tools.
                 The code is tied to the caller session, 
                 and will be expired with any of the caller's sessions.
+                Currently a code cannot be created for a client JWT
+                (from `/network/auth-client`).
                 This is a subset of an OAuth flow.
             operationId: Auth Code Create
             security: []
@@ -662,6 +717,7 @@ components:
                         type: integer
                 devices_summary:
                     type: integer
+
         AuthLoginArgs:
             type: object
             properties:
@@ -675,6 +731,7 @@ components:
                     enum:
                         - apple
                         - google
+
         AuthLoginResult:
             type: object
             properties:
@@ -707,6 +764,7 @@ components:
                     properties:
                         by_jwt:
                             type: string
+
         AuthLoginWithPasswordArgs:
             type: object
             properties:
@@ -715,6 +773,7 @@ components:
                     type: string
                 password:
                     type: string
+
         AuthLoginWithPasswordResult:
             type: object
             properties:
@@ -736,6 +795,7 @@ components:
                     properties:
                         message:
                             type: string
+
         AuthVerifyArgs:
             type: object
             properties:
@@ -744,6 +804,7 @@ components:
                     type: string
                 verify_code:
                     type: string
+
         AuthVerifyResult:
             type: object
             properties:
@@ -755,30 +816,35 @@ components:
                     type: object
                     message:
                         type: string
+
         AuthVerifySendArgs:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthVerifySendResult:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthPasswordResetArgs:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthPasswordResetResult:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthPasswordSetArgs:
             type: object
             properties:
@@ -786,19 +852,23 @@ components:
                     type: string
                 password:
                     type: string
+
         AuthPasswordSetResult:
             type: object
             properties: {}
+
         NetworkCheckArgs:
             type: object
             properties:
                 network_name:
                     type: string
+
         NetworkCheckResult:
             type: object
             properties:
                 available:
                     type: boolean
+
         NetworkCreateArgs:
             type: object
             properties:
@@ -821,6 +891,7 @@ components:
                 terms:
                     description: user consent to accept terms of service
                     type: boolean
+
         NetworkCreateResult:
             type: object
             properties:
@@ -842,6 +913,7 @@ components:
                     properties:
                         message:
                             type: string
+
         AuthCodeCreateArgs:
             type: object
             properties:
@@ -849,11 +921,16 @@ components:
                     type: number
                 uses:
                     type: integer
+
         AuthCodeCreateResult:
             type: object
             properties:
                 auth_code:
                     type: string
+                duration_minutes:
+                    type: number
+                uses:
+                    type: integer
                 error:
                     type: object
                     properties:
@@ -861,11 +938,13 @@ components:
                             type: boolean
                         message:
                             type: string
+
         AuthCodeLoginArgs:
             type: object
             properties:
                 auth_code:
                     type: string
+
         AuthCodeLoginResult:
             type: object
             properties:
@@ -876,6 +955,7 @@ components:
                     properties:
                         message:
                             type: string
+
         AuthNetworkClientArgs:
             type: object
             properties:
@@ -886,6 +966,7 @@ components:
                     type: string
                 device_spec:
                     type: string
+
         AuthNetworkClientResult:
             type: object
             properties:
@@ -898,12 +979,14 @@ components:
                             type: boolean
                         message:
                             type: string
+
         RemoveNetworkClientArgs:
             type: object
             properties:
                 client_id:
                     description: udid
                     type: string
+
         RemoveNetworkClientResult:
             type: object
             properties:
@@ -912,6 +995,7 @@ components:
                     properties:
                         message:
                             type: string
+
         NetworkClientsResult:
             type: object
             properties:
@@ -990,14 +1074,17 @@ components:
                                             type: string
                                         connection_block:
                                             type: string
+
         PreferencesSetArgs:
             type: object
             properties:
                 product_updates:
                     type: boolean
+
         PreferencesSetResult:
             type: object
             properties: {}
+
         FeedbackSendArgs:
             type: object
             properties:
@@ -1041,9 +1128,11 @@ components:
                             type: boolean
                         other:
                             type: string
+
         FeedbackSendResult:
             type: object
             properties: {}
+
         FindLocationsArgs:
             type: object
             properties:
@@ -1053,6 +1142,7 @@ components:
                     type: number
                 enable_max_distance_fraction:
                     type: boolean
+
         FindLocationsResult:
             type: object
             properties:
@@ -1109,6 +1199,7 @@ components:
                                 type: integer
                             match_distance:
                                 type: integer
+
         FindActiveProvidersArgs:
             type: object
             properties:
@@ -1125,6 +1216,7 @@ components:
                     items:
                         description: udid
                         type: string
+
         FindActiveProvidersResult:
             type: object
             properties:
@@ -1133,6 +1225,7 @@ components:
                     items:
                         description: udid
                         type: string
+
         WalletBalanceResult:
             type: object
             properties:
@@ -1153,16 +1246,19 @@ components:
                             type: integer
                         address:
                             type: string
+
         WalletValidateAddressArgs:
             type: object
             properties:
                 address:
                     type: string
+
         WalletValidateAddressResult:
             type: object
             properties:
                 valid:
                     type: boolean
+
         WalletCircleInitResult:
             type: object
             properties:
@@ -1180,6 +1276,7 @@ components:
                     properties:
                         message:
                             type: string
+
         WalletCircleTransferOutArgs:
             type: object
             properties:
@@ -1190,6 +1287,7 @@ components:
                 terms:
                     description: user consent to accept terms of transfer
                     type: boolean
+
         WalletCircleTransferOutResult:
             type: object
             properties:
@@ -1207,6 +1305,7 @@ components:
                     properties:
                         message:
                             type: string
+
         SubscriptionBalanceResult:
             type: object
             properties:
@@ -1270,3 +1369,158 @@ components:
                             type: string
                 update_time:
                     type: string
+
+        StatsProvidersOverviewResult:
+            type: object
+            properties:
+                lookback:
+                    type: integer
+                created_time:
+                    description: datetime
+                    type: string
+                uptime:
+                    type: object
+                    description: yyyy-mm-dd to hours
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to gib
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                payout:
+                    type: object
+                    description: yyyy-mm-dd to payout USDC
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                search_interest:
+                    type: object
+                    description: yyyy-mm-dd to matching search count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                contracts:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                clients:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+
+        StatsProvidersResult:
+            type: object
+            properties:
+                created_time:
+                    description: datetime
+                    type: string
+                providers:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            connected:
+                                type: boolean
+                            uptime_last_24h:
+                                description: hours up
+                                type: number
+                            tramsfer_data_last_24h:
+                                description: gib
+                                type: integer
+                            payout_last_24h:
+                                description: usdc
+                                type: number
+                            search_interest_last_24h:
+                                description: matching search count
+                                type: integer
+                            contracts_last_24h:
+                                type: integer
+                            clients_last_24h:
+                                type: integer
+
+        StatsProviderArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+
+        StatsProviderResult:
+            type: object
+            properties:
+                lookback:
+                    type: integer
+                created_time:
+                    description: datetime
+                    type: string
+                connected_events_last_24h:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            event_time:
+                                description: datetime
+                                type: string
+                            connected:
+                                type: boolean
+                uptime:
+                    type: object
+                    description: yyyy-mm-dd to hours
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to gib
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                payout:
+                    type: object
+                    description: yyyy-mm-dd to payout USDC
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                search_interest:
+                    type: object
+                    description: yyyy-mm-dd to matching search count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                contracts:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                clients:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                client_details:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            transfer_data:
+                                type: object
+                                description: yyyy-mm-dd to gib
+                                additionalProperties:
+                                    x-additionalPropertiesName: yyyy-mm-dd
+                                    type: integer
+
