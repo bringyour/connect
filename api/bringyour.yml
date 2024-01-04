@@ -599,6 +599,275 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/SubscriptionBalanceResult"
 
+    /subscription/check-balance-code:
+        get:
+            description: |
+                Check if the balance code is valid.
+            operationId: Subscription Check Balance Code
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/SubscriptionCheckBalanceCodeArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SubscriptionCheckBalanceCodeResult"
+
+    /subscription/redeem-balance-code:
+        get:
+            description: |
+                Redeem the balance code and add the transfer balance to the caller network.
+            operationId: Subscription Redeem Balance Code
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/SubscriptionRedeemBalanceCodeArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SubscriptionRedeemBalanceCodeResults"
+
+    /device/add:
+        post:
+            description: |
+                Add a device, which can either be owned by the network or shared with the network.
+                The code provided can be either adoption code or a share code.
+                Once a code is added, the device becomes an associated device until confirmation.
+                If the device is a shared device, it will remain an associated device after confirmation.
+            operationId: Device Add
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceAddArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceAddResults"
+
+    /device/create-share-code:
+        post:
+            description: |
+                Creates a code to share a device.
+            operationId: Device Create Share Code
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceCreateShareCodeArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceCreateShareCodeResults"
+
+    /device/share-code/{code}/qr.png:
+        get:
+            description: |
+                A QR code that maps to a URL to add the shared device.
+                Send it to someone to scan to add the device.
+            operationId: Device Share Code QR
+            security:
+                - BearerAuth: []
+            parameters:
+                - in: path
+                  name: code
+                  schema:
+                    type: string
+                  required: true
+                  description: Share code
+            responses:
+                "200":
+                    content:
+                        image/png:
+                            schema:
+                                type: string
+                                format: binary
+
+    /device/share-status:
+        post:
+            description: |
+                The status of the shared device.
+                The status can be one of:
+                - unassociated
+                - associated pending confirmation
+                - associated
+            operationId: Device Share Status
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceShareStatusArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceShareStatusResults"
+
+    /device/confirm-share:
+        post:
+            description: |
+                Confirm the share of a device.
+                This must be called from the side that initiates the share.
+            operationId: Device Confirm Share
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceConfirmShareArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceConfirmShareResults"
+
+    /device/create-adopt-code:
+        post:
+            description: |
+                Creates a code to adopt a device.
+            operationId: Device Create Adopt Code
+            security: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceCreateAdoptCodeResults"
+
+    /device/adopt-code/{code}/qr.png:
+        get:
+            description: |
+                A QR code that maps to a URL to adopt the device.
+                Send it to someone to scan to adopt the device.
+            operationId: Device Adopt Code QR
+            security: []
+            parameters:
+                - in: path
+                  name: code
+                  schema:
+                    type: string
+                  required: true
+                  description: Adopt code
+            responses:
+                "200":
+                    content:
+                        image/png:
+                            schema:
+                                type: string
+                                format: binary
+
+    /device/adopt-status:
+        post:
+            description: |
+                The status of the adopt-code device.
+                The status can be one of:
+                - unassociated
+                - associated pending confirmation
+                - associated
+            operationId: Device Adopt Status
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceAdoptStatusArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceAdoptStatusResults"
+
+    /device/confirm-adopt:
+        post:
+            description: |
+                Confirm the adoption of a device.
+                This must be called from the side that initiates the adoption.
+            operationId: Device Confirm Adopt
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceConfirmAdoptArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceConfirmAdoptResults"
+
+    /device/associations:
+        get:
+            description: |
+                The devices associated with the caller network.
+                Associated devices are:
+                - pending adoption devices
+                - incoming shared devices (not owned by the caller network)
+                - outgoing shared devices (owned by the caller network)
+            operationId: Device Associations
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceAssociationsResults"
+
+    /device/remove-association:
+        post:
+            description: |
+                Remove a device association.
+                The association can be any of:
+                - pending adoption device
+                - incoming shared device (not owned by the caller network)
+                - outgoing shared device (owned by the caller network)
+            operationId: Device Remove Association
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceRemoveAssociationArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceRemoveAssociationResults"
+
 components:
     securitySchemes:
         BearerAuth:
@@ -1431,6 +1700,16 @@ components:
                                 type: string
                             connected:
                                 type: boolean
+                            connected_events_last_24h:
+                                type: array
+                                items:
+                                    type: object
+                                    properties:
+                                        event_time:
+                                            description: datetime
+                                            type: string
+                                        connected:
+                                            type: boolean
                             uptime_last_24h:
                                 description: hours up
                                 type: number
@@ -1463,16 +1742,6 @@ components:
                 created_time:
                     description: datetime
                     type: string
-                connected_events_last_24h:
-                    type: array
-                    items:
-                        type: object
-                        properties:
-                            event_time:
-                                description: datetime
-                                type: string
-                            connected:
-                                type: boolean
                 uptime:
                     type: object
                     description: yyyy-mm-dd to hours
@@ -1524,3 +1793,235 @@ components:
                                     x-additionalPropertiesName: yyyy-mm-dd
                                     type: integer
 
+        SubscriptionCheckBalanceCodeArgs:
+            type: object
+            properties:
+                balance_code:
+                    type: string
+
+        SubscriptionCheckBalanceCodeResult:
+            type: object
+            properties:
+                valid:
+                    type: boolean
+                transfer_data:
+                    description: gib
+                    type: integer
+
+        SubscriptionRedeemBalanceCodeArgs:
+            type: object
+            properties:
+                balance_code:
+                    type: string
+
+        SubscriptionRedeemBalanceCodeResults:
+            type: object
+            properties:
+                valid:
+                    type: boolean
+                transfer_data:
+                    description: gib
+                    type: integer
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceAddArgs:
+            type: object
+            properties:
+                code:
+                    description: share code or adopt code
+                    type: string
+
+        DeviceAddResults:
+            type: object
+            properties:
+                code_type:
+                    type: string
+                    enum:
+                        - share
+                        - adopt
+                code:
+                    type: string
+                network_name:
+                    type: string
+                client_id:
+                    description: udid
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceCreateShareCodeArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+
+        DeviceCreateShareCodeResults:
+            type: object
+            properties:
+                share_code:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceShareStatusArgs:
+            type: object
+            properties:
+                share_code:
+                    type: string
+
+        DeviceShareStatusResults:
+            type: object
+            properties:
+                pending:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceConfirmShareArgs:
+            type: object
+            properties:
+                share_code:
+                    type: string
+                confirm:
+                    type: boolean
+
+        DeviceConfirmShareResults:
+            type: object
+            properties:
+                complete:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceCreateAdoptCodeResults:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+
+        DeviceAdoptStatusArgs:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+
+        DeviceAdoptStatusResults:
+            type: object
+            properties:
+                pending:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceConfirmAdoptArgs:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceConfirmAdoptResults:
+            type: object
+            properties:
+                complete:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                by_client_jwt:
+                    description: client auth
+                    type: string
+
+        DeviceAssociationsResults:
+            type: object
+            properties:
+                pending_adoption_devices:
+                    description: devices pending adoption that need to be confirmed by the offerer
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            code:
+                                type: string
+                            client_id:
+                                description: udid
+                                type: string
+                incoming_shared_devices:
+                    description: devices owned by another network shared to the caller network
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            pending:
+                                type: boolean
+                            code:
+                                type: string
+                            client_id:
+                                description: udid
+                                type: string
+                            network_name:
+                                type: string
+                outgoing_shared_devices:
+                    description: devices owned by the caller network shared to another network
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            pending:
+                                type: boolean
+                            code:
+                                type: string
+                            client_id:
+                                description: udid
+                                type: string
+                            network_name:
+                                type: string
+
+        DeviceRemoveAssociationArgs:
+            type: object
+            properties:
+                code:
+                    type: string
+
+        DeviceRemoveAssociationResults:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+                network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
