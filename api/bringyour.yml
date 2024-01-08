@@ -1925,6 +1925,9 @@ components:
             properties:
                 adopt_code:
                     type: string
+                adopt_secret:
+                    description: keep this secret locally to use with confirm
+                    type: string
 
         DeviceAdoptStatusResults:
             type: object
@@ -1943,6 +1946,8 @@ components:
             type: object
             properties:
                 adopt_code:
+                    type: string
+                adopt_secret:
                     type: string
                 error:
                     type: object
