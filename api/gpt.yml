@@ -1,0 +1,201 @@
+
+openapi: "3.1.0"
+info:
+    version: 2024.01.04
+    title: BringYour
+    description: |
+        BringYour Privacy Agent acts as an agent to exercise privacy
+        rights granted by a service privacy policy to a consumer.
+        
+        This API is offered pending consent by the user to allow
+        BringYour Privacy Agent to act on their behalf to delete their personal data.
+        
+        This includes:
+        
+        - IP and location data
+        - Opt out of all data sharing and marketing
+        - Exercises your privacy rights to know where your data has been shared
+
+        Privacy Agent depends on your country and region of residence, email, 
+        and username or email or phone number or account number of the service. 
+        You authorize BringYour Privacy Advocate AI to send emails as your agent,
+        and bcc all correspondence confidentially to your email.
+        Privacy Agent will report any services that fail to comply to the 
+        appropriate government authority for enforcement.
+        
+        If Privacy Agent cannot act as your agent due to location of residence, 
+        it will return a ready to send email that you can send yourself.
+
+        Unless otherwise specified, time/date strings will be formatted
+        in the Go default `2006-01-02 15:04:05.999999999 -0700 MST`.
+
+    termsOfService: https://bringyour.com/terms
+    contact:
+        name: BringYour
+        email: support@bringyour.com
+        url: https://bringyour.com
+    x-logo:
+        url: https://bringyour.com/res/images/bringyour-wordmark-260.svg
+        altText: BringYour
+    license:
+        name: Mozilla Public License, v. 2.0
+        url: https://mozilla.org/MPL/2.0/
+servers:
+    - url: https://api.bringyour.com
+
+security:
+  - BearerAuth: []
+
+paths:
+    /gpt/privacypolicy:
+        post:
+            description: |
+                Returns a complete privacy policy text that best represents the official service URLs provided.
+                This follows the privacy policy text guidelines at https://privacytxt.dev .
+            operationId: GPT Privacy Policy
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/GptPrivacyPolicyArgs"
+            responses:
+                "200":
+                    description: |
+                        A complete privacy policy text that best represents the official service URLs given.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/GptPrivacyPolicyResult"
+
+    /gpt/bemyprivacyagent:
+        post:
+            description: |
+                Ask the Privacy Agent to act on the user's behalf to send
+                the email provided, derived from the privacy policy,
+                and handle all following correspondence.
+                If the Privacy Agent cannot send the email, due to location of residence,
+                then the user should send an email themselves.
+            operationId: GPT Be My Privacy Agent
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/GptBeMyPrivacyAgentArgs"
+            responses:
+                "200":
+                    description: |
+                        Whether the Privacy Agent can accept the consumer as their agent 
+                        and run the process on their behalf. 
+                        If true there is nothing else to do, 
+                        the agent is already handling this request.
+                        If false, the user should send an email on their own behalf.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/GptBeMyPrivacyAgentResult"
+
+components:
+    securitySchemes:
+        BearerAuth:
+            type: http
+            scheme: bearer
+            description: BringYour JWT
+
+    schemas:
+        GptPrivacyPolicyArgs:
+            type: object
+            properties:
+                service_name:
+                    description: The name of the service
+                    type: string
+                service_urls:
+                    description: |
+                        Official URLs of the service to search for a complete privacy policy text
+                    type: array
+                    items:
+                        type: string
+
+        GptPrivacyPolicyResult:
+            type: object
+            properties:
+                found:
+                    description: |
+                        Whether a complete privacy policy text was found for the URLs given
+                    type: boolean
+                privacy_policy:
+                    description: a complete privacy policy text
+                    type: string
+
+        GptBeMyPrivacyAgentArgs:
+            type: object
+            properties:
+                country_of_residence:
+                    description: Consumer's country of residence
+                    type: string
+                region_of_residence:
+                    description: Consumer's region of residence, e.g. state or province
+                    type: string
+                correspondence_email:
+                    description: |
+                        Consumer's email that will be used by Privacy Agent 
+                        to confidentially bcc correspondence and forward results
+                    type: string
+                consent:
+                    description: |
+                        Consent by the consumer to allow BringYour Privacy Agent 
+                        to act on their behalf to delete their personal data.
+                    type: boolean
+                email_text:
+                    description: |
+                        A complete ready to send email that Privacy Agent 
+                        will send to start the deletion process. The email text must contain:
+                        - to email address for the service
+                        - subject
+                        - body text
+
+                        The email should make it clear that BringYour 
+                        has been authorized by the consumer to act on their behalf.
+                        
+                        The mailing address of BringYour is:
+
+                        2261 Market Street #5245
+                        San Francisco, CA 94114
+                    type: object
+                    properties:
+                        to:
+                            description: Email to the service privacy team from the policy
+                            type: string
+                        subject:
+                            description: Email subject
+                            type: string
+                        body:
+                            description: Email body text
+                            type: string
+                service_name:
+                    description: The name of the service
+                    type: string
+                service_user:
+                    description: |
+                        The user name, email, phone number, or account number
+                        used with the service
+                    type: string
+
+        GptBeMyPrivacyAgentResult:
+            type: object
+            properties:
+                accepted:
+                    description: |
+                        Whether the Privacy Agent can accept the consumer as their agent 
+                        and run the process on their behalf. 
+                        If true there is nothing else to do, 
+                        the agent is already handling this request.
+
+                        If false, the user should send an email on their own behalf.
+                        In this case the email should not mention that BringYour Privacy Agent 
+                        is acting on their behalf.
+                    type: boolean
+
