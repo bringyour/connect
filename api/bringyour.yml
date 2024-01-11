@@ -58,6 +58,59 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/StatsResult"
 
+    /stats/providers-overview-last-90:
+        get:
+            description: |
+                Get statistics for all providers in the caller network
+                for the last 90 days.
+                This is meant to answer the top level question of how
+                the providers in a network are performing.
+            operationId: Stats Providers Overview Last 90
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/StatsProvidersOverviewResult"
+
+    /stats/providers:
+        get:
+            description: |
+                Get all providers in the caller network.
+                Each provider includes stats from the last 24 hours.
+            operationId: Stats Providers
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/StatsProvidersResult"
+
+    /stats/provider-last-90:
+        post:
+            description: |
+                Get detailed stats on a single provider in the caller network.
+                This is meant to give the user complete visibility over usage.
+            operationId: Stats Provider Last 90
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/StatsProviderArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/StatsProviderResult"
+
     /auth/login:
         post:
             description: |
@@ -228,6 +281,8 @@ paths:
                 with connected apps and tools.
                 The code is tied to the caller session, 
                 and will be expired with any of the caller's sessions.
+                Currently a code cannot be created for a client JWT
+                (from `/network/auth-client`).
                 This is a subset of an OAuth flow.
             operationId: Auth Code Create
             security: []
@@ -544,6 +599,295 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/SubscriptionBalanceResult"
 
+    /subscription/check-balance-code:
+        get:
+            description: |
+                Check if the balance code is valid.
+            operationId: Subscription Check Balance Code
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/SubscriptionCheckBalanceCodeArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SubscriptionCheckBalanceCodeResult"
+
+    /subscription/redeem-balance-code:
+        get:
+            description: |
+                Redeem the balance code and add the transfer balance to the caller network.
+            operationId: Subscription Redeem Balance Code
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/SubscriptionRedeemBalanceCodeArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SubscriptionRedeemBalanceCodeResults"
+
+    /device/add:
+        post:
+            description: |
+                Add a device, which can either be owned by the network or shared with the network.
+                The code provided can be either adoption code or a share code.
+                Once a code is added, the device becomes an associated device until confirmation.
+                If the device is a shared device, it will remain an associated device after confirmation.
+            operationId: Device Add
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceAddArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceAddResults"
+
+    /device/create-share-code:
+        post:
+            description: |
+                Creates a code to share a device.
+            operationId: Device Create Share Code
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceCreateShareCodeArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceCreateShareCodeResults"
+
+    /device/share-code/{code}/qr.png:
+        get:
+            description: |
+                A QR code that maps to a URL to add the shared device.
+                Send it to someone to scan to add the device.
+            operationId: Device Share Code QR
+            security:
+                - BearerAuth: []
+            parameters:
+                - in: path
+                  name: code
+                  schema:
+                    type: string
+                  required: true
+                  description: Share code
+            responses:
+                "200":
+                    content:
+                        image/png:
+                            schema:
+                                type: string
+                                format: binary
+
+    /device/share-status:
+        post:
+            description: |
+                The status of the shared device.
+                The status can be one of:
+                - unassociated
+                - associated pending confirmation
+                - associated
+            operationId: Device Share Status
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceShareStatusArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceShareStatusResults"
+
+    /device/confirm-share:
+        post:
+            description: |
+                Confirm the share of a device.
+                This must be called from the side that initiates the share.
+            operationId: Device Confirm Share
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceConfirmShareArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceConfirmShareResults"
+
+    /device/create-adopt-code:
+        post:
+            description: |
+                Creates a code to adopt a device.
+            operationId: Device Create Adopt Code
+            security: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceCreateAdoptCodeResults"
+
+    /device/adopt-code/{code}/qr.png:
+        get:
+            description: |
+                A QR code that maps to a URL to adopt the device.
+                Send it to someone to scan to adopt the device.
+            operationId: Device Adopt Code QR
+            security: []
+            parameters:
+                - in: path
+                  name: code
+                  schema:
+                    type: string
+                  required: true
+                  description: Adopt code
+            responses:
+                "200":
+                    content:
+                        image/png:
+                            schema:
+                                type: string
+                                format: binary
+
+    /device/adopt-status:
+        post:
+            description: |
+                The status of the adopt-code device.
+                The status can be one of:
+                - unassociated
+                - associated pending confirmation
+                - associated
+            operationId: Device Adopt Status
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceAdoptStatusArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceAdoptStatusResults"
+
+    /device/confirm-adopt:
+        post:
+            description: |
+                Confirm the adoption of a device.
+                This must be called from the side that initiates the adoption.
+            operationId: Device Confirm Adopt
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceConfirmAdoptArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceConfirmAdoptResults"
+
+    /device/associations:
+        get:
+            description: |
+                The devices associated with the caller network.
+                Associated devices are:
+                - pending adoption devices
+                - incoming shared devices (not owned by the caller network)
+                - outgoing shared devices (owned by the caller network)
+            operationId: Device Associations
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceAssociationsResults"
+
+    /device/remove-association:
+        post:
+            description: |
+                Remove a device association.
+                The association can be any of:
+                - pending adoption device
+                - incoming shared device (not owned by the caller network)
+                - outgoing shared device (owned by the caller network)
+            operationId: Device Remove Association
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceRemoveAssociationArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceRemoveAssociationResults"
+
+    /device/set-provide:
+        post:
+            description: |
+                Set the provide mode for a device.
+            operationId: Device Set Provide
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceSetProvideArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceSetProvideResults"
+
 components:
     securitySchemes:
         BearerAuth:
@@ -662,6 +1006,7 @@ components:
                         type: integer
                 devices_summary:
                     type: integer
+
         AuthLoginArgs:
             type: object
             properties:
@@ -675,6 +1020,7 @@ components:
                     enum:
                         - apple
                         - google
+
         AuthLoginResult:
             type: object
             properties:
@@ -707,6 +1053,7 @@ components:
                     properties:
                         by_jwt:
                             type: string
+
         AuthLoginWithPasswordArgs:
             type: object
             properties:
@@ -715,6 +1062,7 @@ components:
                     type: string
                 password:
                     type: string
+
         AuthLoginWithPasswordResult:
             type: object
             properties:
@@ -736,6 +1084,7 @@ components:
                     properties:
                         message:
                             type: string
+
         AuthVerifyArgs:
             type: object
             properties:
@@ -744,6 +1093,7 @@ components:
                     type: string
                 verify_code:
                     type: string
+
         AuthVerifyResult:
             type: object
             properties:
@@ -755,30 +1105,35 @@ components:
                     type: object
                     message:
                         type: string
+
         AuthVerifySendArgs:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthVerifySendResult:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthPasswordResetArgs:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthPasswordResetResult:
             type: object
             properties:
                 user_auth:
                     description: email or phone number
                     type: string
+
         AuthPasswordSetArgs:
             type: object
             properties:
@@ -786,19 +1141,23 @@ components:
                     type: string
                 password:
                     type: string
+
         AuthPasswordSetResult:
             type: object
             properties: {}
+
         NetworkCheckArgs:
             type: object
             properties:
                 network_name:
                     type: string
+
         NetworkCheckResult:
             type: object
             properties:
                 available:
                     type: boolean
+
         NetworkCreateArgs:
             type: object
             properties:
@@ -821,6 +1180,7 @@ components:
                 terms:
                     description: user consent to accept terms of service
                     type: boolean
+
         NetworkCreateResult:
             type: object
             properties:
@@ -842,6 +1202,7 @@ components:
                     properties:
                         message:
                             type: string
+
         AuthCodeCreateArgs:
             type: object
             properties:
@@ -849,11 +1210,16 @@ components:
                     type: number
                 uses:
                     type: integer
+
         AuthCodeCreateResult:
             type: object
             properties:
                 auth_code:
                     type: string
+                duration_minutes:
+                    type: number
+                uses:
+                    type: integer
                 error:
                     type: object
                     properties:
@@ -861,11 +1227,13 @@ components:
                             type: boolean
                         message:
                             type: string
+
         AuthCodeLoginArgs:
             type: object
             properties:
                 auth_code:
                     type: string
+
         AuthCodeLoginResult:
             type: object
             properties:
@@ -876,6 +1244,7 @@ components:
                     properties:
                         message:
                             type: string
+
         AuthNetworkClientArgs:
             type: object
             properties:
@@ -886,6 +1255,7 @@ components:
                     type: string
                 device_spec:
                     type: string
+
         AuthNetworkClientResult:
             type: object
             properties:
@@ -898,12 +1268,14 @@ components:
                             type: boolean
                         message:
                             type: string
+
         RemoveNetworkClientArgs:
             type: object
             properties:
                 client_id:
                     description: udid
                     type: string
+
         RemoveNetworkClientResult:
             type: object
             properties:
@@ -912,6 +1284,7 @@ components:
                     properties:
                         message:
                             type: string
+
         NetworkClientsResult:
             type: object
             properties:
@@ -990,14 +1363,17 @@ components:
                                             type: string
                                         connection_block:
                                             type: string
+
         PreferencesSetArgs:
             type: object
             properties:
                 product_updates:
                     type: boolean
+
         PreferencesSetResult:
             type: object
             properties: {}
+
         FeedbackSendArgs:
             type: object
             properties:
@@ -1041,9 +1417,11 @@ components:
                             type: boolean
                         other:
                             type: string
+
         FeedbackSendResult:
             type: object
             properties: {}
+
         FindLocationsArgs:
             type: object
             properties:
@@ -1053,6 +1431,7 @@ components:
                     type: number
                 enable_max_distance_fraction:
                     type: boolean
+
         FindLocationsResult:
             type: object
             properties:
@@ -1109,6 +1488,7 @@ components:
                                 type: integer
                             match_distance:
                                 type: integer
+
         FindActiveProvidersArgs:
             type: object
             properties:
@@ -1125,6 +1505,7 @@ components:
                     items:
                         description: udid
                         type: string
+
         FindActiveProvidersResult:
             type: object
             properties:
@@ -1133,6 +1514,7 @@ components:
                     items:
                         description: udid
                         type: string
+
         WalletBalanceResult:
             type: object
             properties:
@@ -1153,16 +1535,19 @@ components:
                             type: integer
                         address:
                             type: string
+
         WalletValidateAddressArgs:
             type: object
             properties:
                 address:
                     type: string
+
         WalletValidateAddressResult:
             type: object
             properties:
                 valid:
                     type: boolean
+
         WalletCircleInitResult:
             type: object
             properties:
@@ -1180,6 +1565,7 @@ components:
                     properties:
                         message:
                             type: string
+
         WalletCircleTransferOutArgs:
             type: object
             properties:
@@ -1190,6 +1576,7 @@ components:
                 terms:
                     description: user consent to accept terms of transfer
                     type: boolean
+
         WalletCircleTransferOutResult:
             type: object
             properties:
@@ -1207,6 +1594,7 @@ components:
                     properties:
                         message:
                             type: string
+
         SubscriptionBalanceResult:
             type: object
             properties:
@@ -1270,3 +1658,438 @@ components:
                             type: string
                 update_time:
                     type: string
+
+        StatsProvidersOverviewResult:
+            type: object
+            properties:
+                lookback:
+                    type: integer
+                created_time:
+                    description: datetime
+                    type: string
+                uptime:
+                    type: object
+                    description: yyyy-mm-dd to hours
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to gib
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                payout:
+                    type: object
+                    description: yyyy-mm-dd to payout USDC
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                search_interest:
+                    type: object
+                    description: yyyy-mm-dd to matching search count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                contracts:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                clients:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+
+        StatsProvidersResult:
+            type: object
+            properties:
+                created_time:
+                    description: datetime
+                    type: string
+                providers:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            connected:
+                                type: boolean
+                            connected_events_last_24h:
+                                type: array
+                                items:
+                                    type: object
+                                    properties:
+                                        event_time:
+                                            description: datetime
+                                            type: string
+                                        connected:
+                                            type: boolean
+                            uptime_last_24h:
+                                description: hours up
+                                type: number
+                            tramsfer_data_last_24h:
+                                description: gib
+                                type: integer
+                            payout_last_24h:
+                                description: usdc
+                                type: number
+                            search_interest_last_24h:
+                                description: matching search count
+                                type: integer
+                            contracts_last_24h:
+                                type: integer
+                            clients_last_24h:
+                                type: integer
+
+        StatsProviderArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+
+        StatsProviderResult:
+            type: object
+            properties:
+                lookback:
+                    type: integer
+                created_time:
+                    description: datetime
+                    type: string
+                uptime:
+                    type: object
+                    description: yyyy-mm-dd to hours
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                transfer_data:
+                    type: object
+                    description: yyyy-mm-dd to gib
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                payout:
+                    type: object
+                    description: yyyy-mm-dd to payout USDC
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: number
+                search_interest:
+                    type: object
+                    description: yyyy-mm-dd to matching search count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                contracts:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                clients:
+                    type: object
+                    description: yyyy-mm-dd to count
+                    additionalProperties:
+                        x-additionalPropertiesName: yyyy-mm-dd
+                        type: integer
+                client_details:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            transfer_data:
+                                type: object
+                                description: yyyy-mm-dd to gib
+                                additionalProperties:
+                                    x-additionalPropertiesName: yyyy-mm-dd
+                                    type: integer
+
+        SubscriptionCheckBalanceCodeArgs:
+            type: object
+            properties:
+                balance_code:
+                    type: string
+
+        SubscriptionCheckBalanceCodeResult:
+            type: object
+            properties:
+                valid:
+                    type: boolean
+                transfer_data:
+                    description: gib
+                    type: integer
+
+        SubscriptionRedeemBalanceCodeArgs:
+            type: object
+            properties:
+                balance_code:
+                    type: string
+
+        SubscriptionRedeemBalanceCodeResults:
+            type: object
+            properties:
+                valid:
+                    type: boolean
+                transfer_data:
+                    description: gib
+                    type: integer
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceAddArgs:
+            type: object
+            properties:
+                code:
+                    description: share code or adopt code
+                    type: string
+
+        DeviceAddResults:
+            type: object
+            properties:
+                code_type:
+                    type: string
+                    enum:
+                        - share
+                        - adopt
+                code:
+                    type: string
+                network_name:
+                    type: string
+                client_id:
+                    description: udid
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceCreateShareCodeArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+
+        DeviceCreateShareCodeResults:
+            type: object
+            properties:
+                share_code:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceShareStatusArgs:
+            type: object
+            properties:
+                share_code:
+                    type: string
+
+        DeviceShareStatusResults:
+            type: object
+            properties:
+                pending:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceConfirmShareArgs:
+            type: object
+            properties:
+                share_code:
+                    type: string
+                confirm:
+                    type: boolean
+
+        DeviceConfirmShareResults:
+            type: object
+            properties:
+                complete:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceCreateAdoptCodeResults:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+
+        DeviceAdoptStatusArgs:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+                adopt_secret:
+                    description: keep this secret locally to use with confirm
+                    type: string
+
+        DeviceAdoptStatusResults:
+            type: object
+            properties:
+                pending:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceConfirmAdoptArgs:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+                adopt_secret:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceConfirmAdoptResults:
+            type: object
+            properties:
+                complete:
+                    type: boolean
+                associated_network_name:
+                    type: string
+                by_client_jwt:
+                    description: client auth
+                    type: string
+
+        DeviceAssociationsResults:
+            type: object
+            properties:
+                pending_adoption_devices:
+                    description: devices pending adoption that need to be confirmed by the offerer
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            code:
+                                type: string
+                            client_id:
+                                description: udid
+                                type: string
+                incoming_shared_devices:
+                    description: devices owned by another network shared to the caller network
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            pending:
+                                type: boolean
+                            code:
+                                type: string
+                            client_id:
+                                description: udid
+                                type: string
+                            network_name:
+                                type: string
+                outgoing_shared_devices:
+                    description: devices owned by the caller network shared to another network
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            pending:
+                                type: boolean
+                            code:
+                                type: string
+                            client_id:
+                                description: udid
+                                type: string
+                            network_name:
+                                type: string
+
+        DeviceRemoveAssociationArgs:
+            type: object
+            properties:
+                code:
+                    type: string
+
+        DeviceRemoveAssociationResults:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+                network_name:
+                    type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceSetProvideArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+                provide_mode:
+                    type: integer
+                    oneOf:
+                    - title: ProvideModeNone
+                      const: 0
+                    - title: ProvideModeNetwork
+                      const: 1
+                    - title: ProvideModeFriendsAndFamily
+                      const: 2
+                    - title: ProvideModePublic
+                      const: 3
+                    - title: ProvideModeStream
+                      const: 4
+
+        DeviceSetProvideResults:
+            type: object
+            properties:
+                provide_mode:
+                    type: integer
+                    oneOf:
+                    - title: ProvideModeNone
+                      const: 0
+                    - title: ProvideModeNetwork
+                      const: 1
+                    - title: ProvideModeFriendsAndFamily
+                      const: 2
+                    - title: ProvideModePublic
+                      const: 3
+                    - title: ProvideModeStream
+                      const: 4
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
