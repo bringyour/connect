@@ -41,7 +41,7 @@ info:
         name: Mozilla Public License, v. 2.0
         url: https://mozilla.org/MPL/2.0/
 servers:
-    - url: https://api.bringyour.com
+    - url: https://gpt.bringyour.com
 
 security:
   - BearerAuth: []
