@@ -868,6 +868,26 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/DeviceRemoveAssociationResults"
 
+    /device/set-provide:
+        post:
+            description: |
+                Set the provide mode for a device.
+            operationId: Device Set Provide
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceSetProvideArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceSetProvideResults"
+
 components:
     securitySchemes:
         BearerAuth:
@@ -2030,3 +2050,46 @@ components:
                     properties:
                         message:
                             type: string
+
+        DeviceSetProvideArgs:
+            type: object
+            properties:
+                client_id:
+                    description: udid
+                    type: string
+                provide_mode:
+                    type: integer
+                    oneOf:
+                    - title: ProvideModeNone
+                      const: 0
+                    - title: ProvideModeNetwork
+                      const: 1
+                    - title: ProvideModeFriendsAndFamily
+                      const: 2
+                    - title: ProvideModePublic
+                      const: 3
+                    - title: ProvideModeStream
+                      const: 4
+
+        DeviceSetProvideResults:
+            type: object
+            properties:
+                provide_mode:
+                    type: integer
+                    oneOf:
+                    - title: ProvideModeNone
+                      const: 0
+                    - title: ProvideModeNetwork
+                      const: 1
+                    - title: ProvideModeFriendsAndFamily
+                      const: 2
+                    - title: ProvideModePublic
+                      const: 3
+                    - title: ProvideModeStream
+                      const: 4
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
