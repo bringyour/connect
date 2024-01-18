@@ -13,6 +13,8 @@ import (
 	mathrand "math/rand"
 	"fmt"
 	"runtime"
+	"encoding/json"
+	"os"
 
 
 	"golang.org/x/exp/maps"
@@ -29,7 +31,7 @@ func main() {
 	ctx := context.Background()
 
 	timeout := 300 * time.Second
-	// this is a tradeoff between memory and stats accuracy
+	// this is a tradeoff between performance and stats accuracy
 	packetInterval := 50 * time.Millisecond
 	senderCount := 100
 	sendSize := 1000
@@ -39,10 +41,10 @@ func main() {
 	runtime.GOMAXPROCS(4 * senderCount)
 
 
-	egressStatsWindow := 10 * time.Second
-	egressStatsReconnectWindow := timeout
-	dropProbabilityPerSend := 0.1
-	blockProbabilityPerDst := 0.25
+	egressStatsWindow := 15 * time.Second
+	egressStatsReconnectWindow := 120 * time.Second
+	dropProbabilityPerSend := 0.2
+	blockProbabilityPerDst := 0.75
 	egressInitialCapacityWeight := 0.1
 	egressInitialCapacityToDstWeight := 0.1
 
@@ -58,17 +60,20 @@ func main() {
 		sendDuration: sendDuration,
 
 		egressWindowSize: 5,
+		// TODO have a sweep of this that looks for no activity in past N time and removes down to initial size
+		egressWindowMaxSize: 10,
 		egressStatsWindow: egressStatsWindow,
 		egressStatsReconnectWindow: egressStatsReconnectWindow,
 		// expressed as a fraction of maximum transfer
 		egressStatsWindowEstimateNetTransfer: int64(egressInitialCapacityWeight * float64(sendSize) * float64(egressStatsWindow) / float64(sendDuration)),
 		// expressed as a fraction of maximum transfer
 		egressStatsWindowEstimateNetTransferToDst: int64(egressInitialCapacityToDstWeight * float64(sendSize) * float64(egressStatsWindow) / float64(sendDuration)),
-		dstWeight: 0.5,
+		dstWeight: 0.75,
 
 		egressWindowContractTimeout: 1 * time.Second,
+		egressWindowContractGracePeriod: 5 * time.Second,
 		egressWindowExpandReconnectCount: 3,
-		egressWindowExpandStep: 5,
+		egressWindowExpandStep: 2,
 
 		rand: &EgressRandomSettings{
 			// p = 1 - pow(1 - K, sendDuration / time.Second)
@@ -81,7 +86,7 @@ func main() {
 			dropMax: 3600 * time.Second,
 
 			blockProbabilityPerDst: blockProbabilityPerDst,
-			blockDelay: 15 * time.Second,
+			blockDelay: 3 * time.Second,
 			blockMin: 60 * time.Second,
 			blockMax: 3600 * time.Second,
 		},
@@ -125,10 +130,10 @@ func NewPacket(index int) *Packet {
 
 
 type ConnectionTuple struct {
-	SrcIp Id
-	SrcPort int
-	DstIp Id
-	DstPort int
+	SrcIp Id `json:"src,omitempty"`
+	SrcPort int `json:"src_port,omitempty"`
+	DstIp Id `json:"dst,omitempty"`
+	DstPort int `json:"dst_port,omitempty"`
 }
 
 func NewConnectionTuple(srcIp Id, srcPort int, dstIp Id, dstPort int) ConnectionTuple {
@@ -172,7 +177,9 @@ type Sender struct {
 	delay time.Duration
 
 	readTimeout time.Duration
-	resendTimeout time.Duration
+
+	// no resend needed. the connection is perfect.
+	// resendTimeout time.Duration
 }
 
 func NewSender(
@@ -181,27 +188,32 @@ func NewSender(
 	size int,
 	sendDuration time.Duration,
 ) *Sender {
-	delay := sendDuration / time.Duration(size)
+	// delay := sendDuration / time.Duration(size)
 	return &Sender{
 		ctx: ctx,
 		stats: stats,
 		size: size,
 		delay: sendDuration / time.Duration(size),
 		readTimeout: time.Second,
-		resendTimeout: delay / 2,
+		// resendTimeout: delay / 2,
 	}
 }
 
 func (self *Sender) Run(connectEgress EgressFunction) {
 	// ip tuple of where the data is being sent
+	clientId := NewId()
+
 	connectionTuple := NewConnectionTuple(
 		NewId(), 1,
 		NewId(), 1,
 	)
 
-	// routing hops
-	clientId := NewId()
-	
+	self.stats.AddEvent(&EventMeta{
+		eventTime: time.Now(),
+		eventType: EventTypeSenderStart,
+		clientId: clientId,
+		dst: connectionTuple.Dst(),
+	})
 
 	connect := func()(out chan *Packet, in chan *Packet, egressId Id) {
 		connectionTuple.SrcPort += 1
@@ -239,7 +251,16 @@ func (self *Sender) Run(connectEgress EgressFunction) {
 			send := func() {
 				packet := NewPacket(i)
 				sendTime = time.Now()
-				self.stats.AddPacket(sendTime, clientId, egressId, connectionTuple, 1)
+				self.stats.AddPacket(&PacketMeta{
+					eventTime: sendTime,
+					srcClientId: clientId,
+					dstClientId: egressId,
+					connectionTuple: connectionTuple,
+					dst: connectionTuple.Dst(),
+					size: 1,
+					index: i,
+					seqSize: self.size,
+				})
 				select {
 				case <- self.ctx.Done():
 				case <- time.After(readTimeoutTime.Sub(time.Now())):
@@ -252,7 +273,7 @@ func (self *Sender) Run(connectEgress EgressFunction) {
 
 			ack := false
 			for !ack {
-				resendTime := sendTime.Add(self.resendTimeout)
+				// resendTime := sendTime.Add(self.resendTimeout)
 				select {
 				case <- self.ctx.Done():
 					return
@@ -273,12 +294,22 @@ func (self *Sender) Run(connectEgress EgressFunction) {
 						} else if maxRtt < rtt {
 							rtt = maxRtt
 						}
-						self.resendTimeout = rtt
+						// self.resendTimeout = rtt
 						self.readTimeout = 2 * rtt
-						self.stats.AddPacket(ackTime, egressId, clientId, connectionTuple.Reverse(), 1)
+						reverseConnectionTuple := connectionTuple.Reverse()
+						self.stats.AddPacket(&PacketMeta{
+							eventTime: ackTime,
+							srcClientId: egressId,
+							dstClientId: clientId,
+							connectionTuple: reverseConnectionTuple,
+							dst: reverseConnectionTuple.Dst(),
+							size: 1,
+							index: i,
+							seqSize: self.size,
+						})
 					}
-				case <- time.After(resendTime.Sub(time.Now())):
-					send()
+				// case <- time.After(resendTime.Sub(time.Now())):
+				// 	send()
 				case <- time.After(readTimeoutTime.Sub(time.Now())):
 					// reconnect
 					fmt.Printf("Reconnect 2\n")
@@ -304,6 +335,12 @@ func (self *Sender) Run(connectEgress EgressFunction) {
 
 	sendSeq()
 
+	self.stats.AddEvent(&EventMeta{
+		eventTime: time.Now(),
+		eventType: EventTypeSenderEnd,
+		clientId: clientId,
+		dst: connectionTuple.Dst(),
+	})
 
 }
 
@@ -329,12 +366,16 @@ type EgressRandomSettings struct {
 
 type Egress struct {
 	ctx context.Context
+	cancel context.CancelFunc
 
 	EgressId Id
 
 	forever time.Duration
 
 	rand *EgressRandomSettings
+	stats *PacketIntervalWindow
+
+	CreateTime time.Time
 
 	stateLock sync.Mutex
 	drop BlackholeState
@@ -346,14 +387,21 @@ func NewEgress(
 	egressId Id,
 	forever time.Duration,
 	rand *EgressRandomSettings,
+	stats *PacketIntervalWindow,
 ) *Egress {
+	cancelCtx, cancel := context.WithCancel(ctx)
+
 	egress := &Egress{
-		ctx: ctx,
+		ctx: cancelCtx,
+		cancel: cancel,
 		EgressId: egressId,
 
 		forever: forever,
 
 		rand: rand,
+		stats: stats,
+
+		CreateTime: time.Now(),
 
 		stateLock: sync.Mutex{},
 		drop: BlackholeState{},
@@ -412,7 +460,20 @@ func (self *Egress) maybeDrop(elapsed time.Duration) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	if !self.drop.Active {
-		self.drop = self.testDrop(elapsed)
+		drop := self.testDrop(elapsed)
+		self.drop = drop
+		if drop.Active {
+			self.stats.AddEvent(&EventMeta{
+				eventTime: drop.StartTime,
+				eventType: EventTypeEgressDropStart,
+				clientId: self.EgressId,
+			})
+			self.stats.AddEvent(&EventMeta{
+				eventTime: drop.EndTime,
+				eventType: EventTypeEgressDropEnd,
+				clientId: self.EgressId,
+			})
+		}
 	}		
 }
 
@@ -421,7 +482,22 @@ func (self *Egress) maybeBlockPerDst(dst ConnectionTuple) {
 	defer self.stateLock.Unlock()
 	block := self.blockDst[dst]
 	if !block.Active {
-		self.blockDst[dst] = self.testBlockPerDst()
+		block := self.testBlockPerDst()
+		self.blockDst[dst] = block
+		if block.Active {
+			self.stats.AddEvent(&EventMeta{
+				eventTime: block.StartTime,
+				eventType: EventTypeEgressBlockStart,
+				clientId: self.EgressId,
+				dst: dst,
+			})
+			self.stats.AddEvent(&EventMeta{
+				eventTime: block.EndTime,
+				eventType: EventTypeEgressBlockEnd,
+				clientId: self.EgressId,
+				dst: dst,
+			})
+		}
 	}
 }
 
@@ -516,6 +592,10 @@ func (self *Egress) Connect(
 	}()
 }
 
+func (self *Egress) Close() {
+	self.cancel()
+}
+
 
 
 type StatisticalHopWindow struct {
@@ -530,6 +610,7 @@ type StatisticalHopWindow struct {
 	sendDuration time.Duration
 
 	egressWindowSize int
+	egressWindowMaxSize int
 	egressStatsWindow time.Duration
 	egressStatsReconnectWindow time.Duration
 	egressStatsWindowEstimateNetTransfer int64
@@ -537,6 +618,7 @@ type StatisticalHopWindow struct {
 	dstWeight float64
 
 	egressWindowContractTimeout time.Duration
+	egressWindowContractGracePeriod time.Duration
 	egressWindowExpandReconnectCount int
 	egressWindowExpandStep int
 
@@ -551,6 +633,10 @@ func (self *StatisticalHopWindow) Run() error {
 	cancelCtx, cancel := context.WithCancel(self.ctx)
 	defer cancel()
 
+
+	stats := NewPacketIntervalWindow(self.packetInterval, self.timeout)
+
+
 	newEgress := func()(*Egress) {
 		return NewEgress(
 			cancelCtx,
@@ -559,6 +645,7 @@ func (self *StatisticalHopWindow) Run() error {
 			self.timeout,
 
 			self.rand,
+			stats,
 		)
 	}
 
@@ -571,50 +658,76 @@ func (self *StatisticalHopWindow) Run() error {
 	}
 
 
-	stats := NewPacketIntervalWindow(self.packetInterval, self.timeout)
-
 	stateLock := sync.Mutex{}
 	egressWindow := []*Egress{}
-	egressWindowExpandTime := time.Now()
+
+	// FIXME
+	// egressAddedTime := map[Id]time.Time{}
+	// egressWindowExpandTime := time.Now()
 
 	contractEgressWindow := func() {
 		stateLock.Lock()
 		defer stateLock.Unlock()
 
-		if len(egressWindow) <= self.egressWindowSize {
+		if len(egressWindow) <= self.egressWindowMaxSize {
 			return
 		}
 
-		if time.Now().Before(egressWindowExpandTime.Add(self.egressWindowContractTimeout)) {
-			return
-		}
+		// if time.Now().Before(egressWindowExpandTime.Add(self.egressWindowContractTimeout)) {
+		// 	return
+		// }
 
 		fmt.Printf("Contract window size\n")
 
+		now := time.Now()
+
 		newEgressWindow := map[*Egress]bool{}
 		netTransfer := map[*Egress]int64{}
+		egressEligibleToContract := []*Egress{}
 		for _, egress := range egressWindow {
 			newEgressWindow[egress] = true
-			t := stats.NetTransfer(egress.EgressId, self.egressStatsWindow)
-			if t == 0 {
-				t = netTransferEstimate(egress.EgressId)
+
+			if egress.CreateTime.Add(self.egressWindowContractGracePeriod).Before(now) {
+				egressEligibleToContract = append(egressEligibleToContract, egress)
+				t := stats.NetTransfer(egress.EgressId, self.egressStatsWindow)
+				// for clean up, use the actual transfer data
+				// if t == 0 {
+				// 	t = netTransferEstimate(egress.EgressId)
+				// }
+				netTransfer[egress] = t
 			}
-			netTransfer[egress] = t
 		}
 
-		minEgress := slices.MinFunc(maps.Keys(newEgressWindow), func(a *Egress, b *Egress)(int) {
-			c := netTransfer[a] - netTransfer[b]
-			if c < 0 {
-				return -1
-			} else if 0 < c {
-				return 1
-			} else {
-				return 0
-			}
-		})
-		delete(newEgressWindow, minEgress)
+		if 0 < len(egressEligibleToContract) {
+			minEgress := slices.MinFunc(egressEligibleToContract, func(a *Egress, b *Egress)(int) {
+				c := netTransfer[a] - netTransfer[b]
+				if c < 0 {
+					return -1
+				} else if 0 < c {
+					return 1
+				}
 
-		egressWindow = maps.Keys(newEgressWindow)
+				d := a.CreateTime.Sub(b.CreateTime)
+				if d < 0 {
+					return -1
+				} else if 0 < d {
+					return 1
+				}
+
+				return 0
+			})
+			delete(newEgressWindow, minEgress)
+
+			egressWindow = maps.Keys(newEgressWindow)
+
+			minEgress.Close()
+
+			stats.AddEvent(&EventMeta{
+				eventTime: time.Now(),
+				eventType: EventTypeWindowContract,
+				clientId: minEgress.EgressId,
+			})
+		}
 	}
 
 	chooseEgress := func(connectionTuple ConnectionTuple)(*Egress) {
@@ -625,7 +738,12 @@ func (self *StatisticalHopWindow) Run() error {
 
 		// fmt.Printf("CHOOSE EGRESS\n")
 
-		statsConnectionTuples := stats.GetConnectionTuplesForDst(dst, self.egressStatsReconnectWindow)
+		egressIds := map[Id]bool{}
+		for _, egress := range egressWindow {
+			egressIds[egress.EgressId] = true
+		}
+
+		statsConnectionTuples := stats.GetConnectionTuplesForDst(dst, egressIds, self.egressStatsReconnectWindow)
 
 		targetWindowSize := self.egressWindowSize + (len(statsConnectionTuples) / self.egressWindowExpandReconnectCount) * self.egressWindowExpandStep
 
@@ -633,8 +751,15 @@ func (self *StatisticalHopWindow) Run() error {
 
 		for len(egressWindow) < targetWindowSize {
 			fmt.Printf("Expand window size\n")
-			egressWindow = append(egressWindow, newEgress())
-			egressWindowExpandTime = time.Now()
+			egress := newEgress()
+			egressWindow = append(egressWindow, egress)
+			// egressWindowExpandTime = time.Now()
+			// egressAddedTime[egress.EgressId] = time.Now()
+			stats.AddEvent(&EventMeta{
+				eventTime: time.Now(),
+				eventType: EventTypeWindowExpand,
+				clientId: egress.EgressId,
+			})
 		}
 
 		netTransfer := map[Id]int64{}
@@ -658,9 +783,18 @@ func (self *StatisticalHopWindow) Run() error {
 		}
 
 		ps := []float64{}
-		for _, egress := range egressWindow {
-			p := (1.0 - self.dstWeight) * float64(netTransfer[egress.EgressId]) / float64(net) + self.dstWeight * float64(netTransferToDst[egress.EgressId]) / float64(netToDst)	
-			ps = append(ps, p)
+		if 0 < net && 0 < netToDst {
+			for _, egress := range egressWindow {
+				pNet := float64(netTransfer[egress.EgressId]) / float64(net)
+				pNetTpDst := float64(netTransferToDst[egress.EgressId]) / float64(netToDst)
+				p := (1 - self.dstWeight) * pNet + self.dstWeight * pNetTpDst
+				ps = append(ps, p)
+			}
+		} else {
+			for i := 0; i < len(egressWindow); i += 1 {
+				p := 1 / float64(len(egressWindow))
+				ps = append(ps, p)
+			}
 		}
 		fmt.Printf("ps = %s\n", ps)
 		r := mathrand.Float64()
@@ -711,7 +845,21 @@ func (self *StatisticalHopWindow) Run() error {
 		}
 	}
 
+	stats.AddEvent(&EventMeta{
+		eventTime: time.Now(),
+		eventType: EventTypeSimEnd,
+	})
+
 	stats.PrintSummary()
+
+	export := stats.Export()
+	fmt.Printf("Exported %d packets, %d events.\n", len(export.Packets), len(export.Events))
+	if exportBytes, err := json.Marshal(export); err == nil {
+		if err := os.WriteFile("export.json", exportBytes, 0777); err != nil {
+			panic(err)
+		}
+	}
+
 	return nil
 }
 
@@ -719,46 +867,90 @@ func (self *StatisticalHopWindow) Run() error {
 
 type PacketMeta struct {
 	eventTime time.Time
-	srcId Id
-	dstId Id
+	srcClientId Id
+	dstClientId Id
 	connectionTuple ConnectionTuple
 	dst ConnectionTuple
+	index int
 	size int64
+	seqSize int
+}
+
+const (
+	EventTypeSenderStart string = "sender-start"
+	EventTypeSenderEnd string = "sender-end"
+	EventTypeWindowExpand string = "expand"
+	EventTypeWindowContract string = "contract"
+	EventTypeEgressDropStart string = "drop-start"
+	EventTypeEgressDropEnd string = "drop-end"
+	EventTypeEgressBlockStart string = "block-start"
+	EventTypeEgressBlockEnd string = "block-end"
+	EventTypeSimEnd string = "sim-end"
+)
+
+type EventMeta struct {
+	eventTime time.Time
+	// eventEndTime time.Time
+	eventType string
+	clientId Id
+	dst ConnectionTuple
 }
 
 
+type PacketMetaExport struct {
+	EventTimeOffsetMillis int64 `json:"event_time_offset_millis"`
+	SrcClientId Id `json:"src_client_id,omitempty"`
+	DstClientId Id `json:"dst_client_id,omitempty"`
+	ConnectionTuple ConnectionTuple `json:"connection_tuple,omitempty"`
+	Index int `json:"index"` 
+	Size int64 `json:"size"`
+	SeqSize int `json:"seq_size"`
+}
 
-// TODO track drop events
-// TODO track block dst events
+type EventMetaExport struct {
+	EventTimeOffsetMillis int64 `json:"event_time_offset_millis"`
+	// EventDuration time.Duration `json:"event_duration,omitempty"`
+	EventType string `json:"event_type,omitempty"`
+	ClientId Id `json:"client_id,omitempty"`
+	Dst ConnectionTuple `json:"dst,omitempty"`
+}
+
+type PacketIntervalWindowExport struct {
+	Packets []*PacketMetaExport `json:"packets,omitempty"`
+	Events []*EventMetaExport `json:"events,omitempty"`
+}
+
 type PacketIntervalWindow struct {
+	startTime time.Time
 	interval time.Duration
 	duration time.Duration
 
 	stateLock sync.Mutex
 	packetMetas []*PacketMeta
+	eventMetas []*EventMeta
 }
 
 func NewPacketIntervalWindow(interval time.Duration, duration time.Duration) *PacketIntervalWindow {
 	return &PacketIntervalWindow{
+		startTime: time.Now(),
 		interval: interval,
 		duration: duration,
 	}
 }
 
-func (self *PacketIntervalWindow) AddPacket(eventTime time.Time, srcId Id, dstId Id, connectionTuple ConnectionTuple, size int64) {
+func (self *PacketIntervalWindow) AddPacket(packetMeta *PacketMeta) {
 	// fmt.Printf("Packet\n")
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
-	self.packetMetas = append(self.packetMetas, &PacketMeta{
-		eventTime: eventTime,
-		srcId: srcId,
-		dstId: dstId,
-		connectionTuple: connectionTuple,
-		dst: connectionTuple.Dst(),
-		size: size,
-	})
-	
+	self.packetMetas = append(self.packetMetas, packetMeta)
+}
+
+func (self *PacketIntervalWindow) AddEvent(eventMeta *EventMeta) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	self.eventMetas = append(self.eventMetas, eventMeta)
 }
 
 func (self *PacketIntervalWindow) NetTransfer(egressId Id, egressStatsWindow time.Duration) int64 {
@@ -770,7 +962,7 @@ func (self *PacketIntervalWindow) NetTransfer(egressId Id, egressStatsWindow tim
 
 	net := int64(0)
 	for _, packetMeta := range self.packetMetas {
-		if packetMeta.dstId == egressId && !startTime.After(packetMeta.eventTime) && packetMeta.eventTime.Before(endTime) {
+		if packetMeta.dstClientId == egressId && !startTime.After(packetMeta.eventTime) && packetMeta.eventTime.Before(endTime) {
 			net += packetMeta.size
 		}
 	}
@@ -787,7 +979,7 @@ func (self *PacketIntervalWindow) NetTransferToDst(egressId Id, egressStatsWindo
 
 	netToDst := int64(0)
 	for _, packetMeta := range self.packetMetas {
-		if packetMeta.dstId == egressId && dst == packetMeta.dst && !startTime.After(packetMeta.eventTime) && packetMeta.eventTime.Before(endTime) {
+		if packetMeta.dstClientId == egressId && dst == packetMeta.dst && !startTime.After(packetMeta.eventTime) && packetMeta.eventTime.Before(endTime) {
 			netToDst += packetMeta.size
 		}
 	}
@@ -795,7 +987,7 @@ func (self *PacketIntervalWindow) NetTransferToDst(egressId Id, egressStatsWindo
 	return netToDst
 }
 
-func (self *PacketIntervalWindow) GetConnectionTuplesForDst(dst ConnectionTuple, egressStatsWindow time.Duration) []ConnectionTuple {
+func (self *PacketIntervalWindow) GetConnectionTuplesForDst(dst ConnectionTuple, egressIds map[Id]bool, egressStatsWindow time.Duration) []ConnectionTuple {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
@@ -804,7 +996,7 @@ func (self *PacketIntervalWindow) GetConnectionTuplesForDst(dst ConnectionTuple,
 
 	connectionTuples := map[ConnectionTuple]bool{}
 	for _, packetMeta := range self.packetMetas {
-		if !startTime.After(packetMeta.eventTime) && packetMeta.eventTime.Before(endTime) && dst == packetMeta.dst {
+		if !startTime.After(packetMeta.eventTime) && packetMeta.eventTime.Before(endTime) && dst == packetMeta.dst && egressIds[packetMeta.dstClientId] {
 			connectionTuples[packetMeta.connectionTuple] = true
 		}
 	}
@@ -813,7 +1005,70 @@ func (self *PacketIntervalWindow) GetConnectionTuplesForDst(dst ConnectionTuple,
 }
 
 func (self *PacketIntervalWindow) PrintSummary() {
-	fmt.Printf("Done\n")
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	fmt.Printf(
+		"Done. %d packets. %d events.\n",
+		len(self.packetMetas),
+		len(self.eventMetas),
+	)
+}
+
+func (self *PacketIntervalWindow) Export() *PacketIntervalWindowExport {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	packets := []*PacketMetaExport{}
+	for _, packetMeta := range self.packetMetas {
+		packet := &PacketMetaExport{
+			EventTimeOffsetMillis: int64(packetMeta.eventTime.Sub(self.startTime) / time.Millisecond),
+			SrcClientId: packetMeta.srcClientId,
+			DstClientId: packetMeta.dstClientId,
+			ConnectionTuple: packetMeta.connectionTuple,
+			Index: packetMeta.index,
+			Size: packetMeta.size,
+			SeqSize: packetMeta.seqSize,
+		}
+		packets = append(packets, packet)
+	}
+	slices.SortStableFunc(packets, func(a *PacketMetaExport, b *PacketMetaExport)(int) {
+		c := a.EventTimeOffsetMillis - b.EventTimeOffsetMillis
+		if c < 0 {
+			return -1
+		} else if 0 < c {
+			return 1
+		} else {
+			return 0
+		}
+	})
+
+	events := []*EventMetaExport{}
+	for _, eventMeta := range self.eventMetas {
+		event := &EventMetaExport{
+			EventTimeOffsetMillis: int64(eventMeta.eventTime.Sub(self.startTime) / time.Millisecond),
+			// EventDuration: eventMeta.eventEndTime.Sub(eventMeta.eventTime),
+			EventType: eventMeta.eventType,
+			ClientId: eventMeta.clientId,
+			Dst: eventMeta.dst,
+		}
+		events = append(events, event)
+	}
+	slices.SortStableFunc(events, func(a *EventMetaExport, b *EventMetaExport)(int) {
+		c := a.EventTimeOffsetMillis - b.EventTimeOffsetMillis
+		if c < 0 {
+			return -1
+		} else if 0 < c {
+			return 1
+		} else {
+			return 0
+		}
+	})
+
+	return &PacketIntervalWindowExport{
+		Packets: packets,
+		Events: events,
+	}
 }
 
 
