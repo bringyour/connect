@@ -40,7 +40,7 @@ function setup() {
   // high loss
   //loadJSON("export-high.json", dataLoaded);
   //loadJSON("export-med.json", dataLoaded);
-  loadJSON("export.json", dataLoaded);
+  loadJSON("export-low.json", dataLoaded);
   
   
   
