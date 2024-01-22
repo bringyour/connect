@@ -1,50 +1,45 @@
-var packets;
-var events;
+let CLIENT2VIS_EXPORT = "export-low.json";
 
-var packetHeadIndex;
-var eventHeadIndex;
+let packets;
+let events;
 
-var egressEndTimeOffsets;
-var senderStartTimeOffsets;
-var senderEndTimeOffsets;
+let packetHeadIndex;
+let eventHeadIndex;
 
-var egressIds;
-var senderIds;
+let egressEndTimeOffsets;
+let senderStartTimeOffsets;
+let senderEndTimeOffsets;
+
+let egressIds;
+let senderIds;
 // egressId -> dst -> bool
-var egressBlocks;
+let egressBlocks;
 // egressId -> bool
-var egressDrops;
+let egressDrops;
 
 // sequenceId -> progress
-var seqMaxProgress;
+let seqMaxProgress;
 
-var minPacketWindowMillis = 200;
-var transitionOutMillis = 2000;
-var maxRadius = 12;
-var textPadding = 4;
-var sketchPadding = 24;
-var marginLeft = 30;
-var marginRight = 100;
-var marginTop = 30;
-var headerTextSize = 14;
+let minPacketWindowMillis = 200;
+let transitionOutMillis = 2000;
+let maxRadius = 12;
+let textPadding = 4;
+let sketchPadding = 24;
+let marginLeft = 30;
+let marginRight = 100;
+let marginTop = 30;
+let headerTextSize = 14;
 
 
-var resetTimeOffsetMillis = 0;
+let resetTimeOffsetMillis = 0;
 
 
 
 
 function setup() {
   createCanvas(768, 2048);
-    
-  // high loss
-  //loadJSON("export-high.json", dataLoaded);
-  //loadJSON("export-med.json", dataLoaded);
-  loadJSON("export-low.json", dataLoaded);
   
-  
-  
-  
+  loadJSON(CLIENT2VIS_EXPORT, dataLoaded);
 }
 
 
@@ -499,7 +494,7 @@ function reset() {
   
 }
 
-function mouseClicked() {
+function mousePressed() {
   
   
   reset();
