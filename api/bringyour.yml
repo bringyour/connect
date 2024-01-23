@@ -845,13 +845,13 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/RemoveAdoptCodeArgs"
+                            $ref: "#/components/schemas/DeviceRemoveAdoptCodeArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/RemoveAdoptCodeArgsResult"
+                                $ref: "#/components/schemas/DeviceRemoveAdoptCodeResult"
 
     /device/associations:
         get:
@@ -2060,7 +2060,7 @@ components:
                         message:
                             type: string
 
-        RemoveAdoptCodeArgs:
+        DeviceRemoveAdoptCodeArgs:
             type: object
             properties:
                 adopt_code:
@@ -2068,7 +2068,7 @@ components:
                 adopt_secret:
                     type: string
 
-        RemoveAdoptCodeResult:
+        DeviceRemoveAdoptCodeResult:
             type: object
             properties:
                 error:
