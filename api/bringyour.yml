@@ -2010,7 +2010,7 @@ components:
                     description: keep this secret locally to use with confirm
                     type: string
                 duration_minutes:
-                    type: number
+                    type: integer
                 error:
                     type: object
                     properties:
@@ -2043,6 +2043,8 @@ components:
                     type: string
                 adopt_secret:
                     type: string
+                confirm:
+                    type: boolean
 
         DeviceConfirmAdoptResult:
             type: object
@@ -2131,24 +2133,6 @@ components:
                             network_name:
                                 type: string
 
-        DeviceSetAssociationNameArgs:
-            type: object
-            properties:
-                code:
-                    type: string
-                device_name:
-                    description: Name of the device
-                    type: string
-
-        DeviceSetAssociationNameResult:
-            type: object
-            properties:
-                error:
-                    type: object
-                    properties:
-                        message:
-                            type: string
-
         DeviceRemoveAssociationArgs:
             type: object
             properties:
@@ -2161,8 +2145,29 @@ components:
                 client_id:
                     description: udid
                     type: string
+                device_name:
+                    description: Name of the device
+                    type: string
                 network_name:
                     type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceSetAssociationNameArgs:
+            type: object
+            properties:
+                code:
+                    type: string
+                device_name:
+                    description: Name of the device
+                    type: string
+
+        DeviceSetAssociationNameResult:
+            type: object
+            properties:
                 error:
                     type: object
                     properties:
