@@ -636,7 +636,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/SubscriptionRedeemBalanceCodeResults"
+                                $ref: "#/components/schemas/SubscriptionRedeemBalanceCodeResult"
 
     /device/add:
         post:
@@ -659,7 +659,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceAddResults"
+                                $ref: "#/components/schemas/DeviceAddResult"
 
     /device/create-share-code:
         post:
@@ -679,7 +679,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceCreateShareCodeResults"
+                                $ref: "#/components/schemas/DeviceCreateShareCodeResult"
 
     /device/share-code/{code}/qr.png:
         get:
@@ -726,7 +726,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceShareStatusResults"
+                                $ref: "#/components/schemas/DeviceShareStatusResult"
 
     /device/confirm-share:
         post:
@@ -746,20 +746,27 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceConfirmShareResults"
+                                $ref: "#/components/schemas/DeviceConfirmShareResult"
 
     /device/create-adopt-code:
         post:
             description: |
                 Creates a code to adopt a device.
+                The adopt code is valid for a limited time.
             operationId: Device Create Adopt Code
             security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceCreateAdoptCodeArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceCreateAdoptCodeResults"
+                                $ref: "#/components/schemas/DeviceCreateAdoptCodeResult"
 
     /device/adopt-code/{code}/qr.png:
         get:
@@ -804,7 +811,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceAdoptStatusResults"
+                                $ref: "#/components/schemas/DeviceAdoptStatusResult"
 
     /device/confirm-adopt:
         post:
@@ -824,7 +831,27 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceConfirmAdoptResults"
+                                $ref: "#/components/schemas/DeviceConfirmAdoptResult"
+
+    /device/remove-adopt-code:
+        post:
+            description: |
+                Remove an adopt code.
+                This must be called from the side that initiates the adoption.
+            operationId: Remove Adopt Code
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceRemoveAdoptCodeArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceRemoveAdoptCodeResult"
 
     /device/associations:
         get:
@@ -842,7 +869,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceAssociationsResults"
+                                $ref: "#/components/schemas/DeviceAssociationsResult"
 
     /device/remove-association:
         post:
@@ -866,7 +893,27 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceRemoveAssociationResults"
+                                $ref: "#/components/schemas/DeviceRemoveAssociationResult"
+
+    /device/set-association-name:
+        post:
+            description: |
+                Set the name of the association.
+            operationId: Device Set Association Name
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceSetAssociationNameArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceSetAssociationNameResult"
 
     /device/set-provide:
         post:
@@ -886,7 +933,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/DeviceSetProvideResults"
+                                $ref: "#/components/schemas/DeviceSetProvideResult"
 
 components:
     securitySchemes:
@@ -896,6 +943,22 @@ components:
             description: BringYour JWT
 
     schemas:
+        ProvideMode:
+            type: integer
+            oneOf:
+            - title: ProvideModeDefault
+              const: -1
+            - title: ProvideModeNone
+              const: 0
+            - title: ProvideModeNetwork
+              const: 1
+            - title: ProvideModeFriendsAndFamily
+              const: 2
+            - title: ProvideModePublic
+              const: 3
+            - title: ProvideModeStream
+              const: 4
+
         StatsResult:
             type: object
             properties:
@@ -1330,18 +1393,7 @@ components:
                                         items:
                                             type: integer
                             provide_mode:
-                                type: integer
-                                oneOf:
-                                - title: ProvideModeNone
-                                  const: 0
-                                - title: ProvideModeNetwork
-                                  const: 1
-                                - title: ProvideModeFriendsAndFamily
-                                  const: 2
-                                - title: ProvideModePublic
-                                  const: 3
-                                - title: ProvideModeStream
-                                  const: 4
+                                $ref: "#/components/schemas/ProvideMode"
                             connections:
                                 type: array
                                 items:
@@ -1678,7 +1730,7 @@ components:
                     description: yyyy-mm-dd to gib
                     additionalProperties:
                         x-additionalPropertiesName: yyyy-mm-dd
-                        type: integer
+                        type: number
                 payout:
                     type: object
                     description: yyyy-mm-dd to payout USDC
@@ -1733,9 +1785,9 @@ components:
                             uptime_last_24h:
                                 description: hours up
                                 type: number
-                            tramsfer_data_last_24h:
+                            transfer_data_last_24h:
                                 description: gib
-                                type: integer
+                                type: number
                             payout_last_24h:
                                 description: usdc
                                 type: number
@@ -1746,6 +1798,8 @@ components:
                                 type: integer
                             clients_last_24h:
                                 type: integer
+                            provide_mode:
+                                $ref: "#/components/schemas/ProvideMode"
 
         StatsProviderArgs:
             type: object
@@ -1773,7 +1827,7 @@ components:
                     description: yyyy-mm-dd to gib
                     additionalProperties:
                         x-additionalPropertiesName: yyyy-mm-dd
-                        type: integer
+                        type: number
                 payout:
                     type: object
                     description: yyyy-mm-dd to payout USDC
@@ -1811,7 +1865,7 @@ components:
                                 description: yyyy-mm-dd to gib
                                 additionalProperties:
                                     x-additionalPropertiesName: yyyy-mm-dd
-                                    type: integer
+                                    type: number
 
         SubscriptionCheckBalanceCodeArgs:
             type: object
@@ -1834,7 +1888,7 @@ components:
                 balance_code:
                     type: string
 
-        SubscriptionRedeemBalanceCodeResults:
+        SubscriptionRedeemBalanceCodeResult:
             type: object
             properties:
                 valid:
@@ -1855,7 +1909,7 @@ components:
                     description: share code or adopt code
                     type: string
 
-        DeviceAddResults:
+        DeviceAddResult:
             type: object
             properties:
                 code_type:
@@ -1864,6 +1918,9 @@ components:
                         - share
                         - adopt
                 code:
+                    type: string
+                device_name:
+                    description: Name of the device shared by the owner
                     type: string
                 network_name:
                     type: string
@@ -1882,8 +1939,11 @@ components:
                 client_id:
                     description: udid
                     type: string
+                device_name:
+                    description: Name of the device that will be shared to the guest
+                    type: string
 
-        DeviceCreateShareCodeResults:
+        DeviceCreateShareCodeResult:
             type: object
             properties:
                 share_code:
@@ -1900,7 +1960,7 @@ components:
                 share_code:
                     type: string
 
-        DeviceShareStatusResults:
+        DeviceShareStatusResult:
             type: object
             properties:
                 pending:
@@ -1921,7 +1981,7 @@ components:
                 confirm:
                     type: boolean
 
-        DeviceConfirmShareResults:
+        DeviceConfirmShareResult:
             type: object
             properties:
                 complete:
@@ -1934,13 +1994,14 @@ components:
                         message:
                             type: string
 
-        DeviceCreateAdoptCodeResults:
+        DeviceCreateAdoptCodeArgs:
             type: object
             properties:
-                adopt_code:
+                device_name:
+                    description: Name of the device that will be shared to the adopter
                     type: string
 
-        DeviceAdoptStatusArgs:
+        DeviceCreateAdoptCodeResult:
             type: object
             properties:
                 adopt_code:
@@ -1948,8 +2009,21 @@ components:
                 adopt_secret:
                     description: keep this secret locally to use with confirm
                     type: string
+                duration_minutes:
+                    type: integer
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
 
-        DeviceAdoptStatusResults:
+        DeviceAdoptStatusArgs:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+
+        DeviceAdoptStatusResult:
             type: object
             properties:
                 pending:
@@ -1969,13 +2043,10 @@ components:
                     type: string
                 adopt_secret:
                     type: string
-                error:
-                    type: object
-                    properties:
-                        message:
-                            type: string
+                confirm:
+                    type: boolean
 
-        DeviceConfirmAdoptResults:
+        DeviceConfirmAdoptResult:
             type: object
             properties:
                 complete:
@@ -1985,8 +2056,30 @@ components:
                 by_client_jwt:
                     description: client auth
                     type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
 
-        DeviceAssociationsResults:
+        DeviceRemoveAdoptCodeArgs:
+            type: object
+            properties:
+                adopt_code:
+                    type: string
+                adopt_secret:
+                    type: string
+
+        DeviceRemoveAdoptCodeResult:
+            type: object
+            properties:
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceAssociationsResult:
             type: object
             properties:
                 pending_adoption_devices:
@@ -1996,6 +2089,9 @@ components:
                         type: object
                         properties:
                             code:
+                                type: string
+                            device_name:
+                                description: Name of the device
                                 type: string
                             client_id:
                                 description: udid
@@ -2009,6 +2105,9 @@ components:
                             pending:
                                 type: boolean
                             code:
+                                type: string
+                            device_name:
+                                description: Name of the device
                                 type: string
                             client_id:
                                 description: udid
@@ -2025,6 +2124,9 @@ components:
                                 type: boolean
                             code:
                                 type: string
+                            device_name:
+                                description: Name of the device
+                                type: string
                             client_id:
                                 description: udid
                                 type: string
@@ -2037,14 +2139,35 @@ components:
                 code:
                     type: string
 
-        DeviceRemoveAssociationResults:
+        DeviceRemoveAssociationResult:
             type: object
             properties:
                 client_id:
                     description: udid
                     type: string
+                device_name:
+                    description: Name of the device
+                    type: string
                 network_name:
                     type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceSetAssociationNameArgs:
+            type: object
+            properties:
+                code:
+                    type: string
+                device_name:
+                    description: Name of the device
+                    type: string
+
+        DeviceSetAssociationNameResult:
+            type: object
+            properties:
                 error:
                     type: object
                     properties:
@@ -2058,35 +2181,13 @@ components:
                     description: udid
                     type: string
                 provide_mode:
-                    type: integer
-                    oneOf:
-                    - title: ProvideModeNone
-                      const: 0
-                    - title: ProvideModeNetwork
-                      const: 1
-                    - title: ProvideModeFriendsAndFamily
-                      const: 2
-                    - title: ProvideModePublic
-                      const: 3
-                    - title: ProvideModeStream
-                      const: 4
+                    $ref: "#/components/schemas/ProvideMode"
 
-        DeviceSetProvideResults:
+        DeviceSetProvideResult:
             type: object
             properties:
                 provide_mode:
-                    type: integer
-                    oneOf:
-                    - title: ProvideModeNone
-                      const: 0
-                    - title: ProvideModeNetwork
-                      const: 1
-                    - title: ProvideModeFriendsAndFamily
-                      const: 2
-                    - title: ProvideModePublic
-                      const: 3
-                    - title: ProvideModeStream
-                      const: 4
+                    $ref: "#/components/schemas/ProvideMode"
                 error:
                     type: object
                     properties:
