@@ -1952,11 +1952,14 @@ components:
                 device_name:
                     description: Name of the device shared by the owner
                     type: string
-                network_name:
+                associated_network_name:
+                    description: The name of the source network. Only for share codes.
                     type: string
                 client_id:
-                    description: udid
+                    description: udid. Only for share codes.
                     type: string
+                duration_minutes:
+                    type: number
                 error:
                     type: object
                     properties:
@@ -2010,8 +2013,6 @@ components:
                     type: string
                 associated_network_name:
                     type: string
-                confirm:
-                    type: boolean
 
         DeviceConfirmShareResult:
             type: object
@@ -2031,6 +2032,8 @@ components:
             properties:
                 device_name:
                     description: Name of the device that will be shared to the adopter
+                    type: string
+                device_spec:
                     type: string
 
         DeviceCreateAdoptCodeResult:
@@ -2077,8 +2080,6 @@ components:
                     type: string
                 associated_network_name:
                     type: string
-                confirm:
-                    type: boolean
 
         DeviceConfirmAdoptResult:
             type: object
@@ -2127,9 +2128,8 @@ components:
                             device_name:
                                 description: Name of the device
                                 type: string
-                            client_id:
-                                description: udid
-                                type: string
+                            duration_minutes:
+                                type: number
                 incoming_shared_devices:
                     description: devices owned by another network shared to the caller network
                     type: array
@@ -2175,15 +2175,6 @@ components:
 
         DeviceRemoveAssociationResult:
             type: object
-            properties:
-                client_id:
-                    description: udid
-                    type: string
-                device_name:
-                    description: Name of the device
-                    type: string
-                network_name:
-                    type: string
                 error:
                     type: object
                     properties:
