@@ -619,7 +619,7 @@ paths:
                                 $ref: "#/components/schemas/SubscriptionCheckBalanceCodeResult"
 
     /subscription/redeem-balance-code:
-        get:
+        post:
             description: |
                 Redeem the balance code and add the transfer balance to the caller network.
             operationId: Subscription Redeem Balance Code
@@ -734,7 +734,8 @@ paths:
                 Confirm the share of a device.
                 This must be called from the side that initiates the share.
             operationId: Device Confirm Share
-            security: []
+            security:
+                - BearerAuth: []
             requestBody:
                 required: true
                 content:
@@ -899,6 +900,7 @@ paths:
         post:
             description: |
                 Set the name of the association.
+                To set the name of devices owned by the network, use `/device/set-name`.
             operationId: Device Set Association Name
             security:
                 - BearerAuth: []
@@ -914,6 +916,27 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/DeviceSetAssociationNameResult"
+
+    /device/set-name:
+        post:
+            description: |
+                Sets the name of a device owned by the network.
+                To set the name of devices shared with the network, use `/device/set-association-name`.
+            operationId: Network Set Device Name
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/DeviceSetNameArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceSetNameResult"
 
     /device/set-provide:
         post:
@@ -1312,11 +1335,13 @@ components:
             type: object
             properties:
                 client_id:
-                    description: udid
+                    description: udid. Optional. If this is given, it must currently exist in the network. Omit this to assign a new client id.
                     type: string
                 description:
+                    description: If this is a new device, sets the device name to the description of the device.
                     type: string
                 device_spec:
+                    description: If this is a new device, sets the device spec.
                     type: string
 
         AuthNetworkClientResult:
@@ -1359,10 +1384,15 @@ components:
                             client_id:
                                 description: udid
                                 type: string
+                            device_id:
+                                description: udid
+                                type: string
                             network_id:
                                 description: udid
                                 type: string
                             description:
+                                type: string
+                            device_name:
                                 type: string
                             device_spec:
                                 type: string
@@ -1414,7 +1444,7 @@ components:
                                         connection_service:
                                             type: string
                                         connection_block:
-                                            type: string
+                                            type: string'
 
         PreferencesSetArgs:
             type: object
@@ -1922,11 +1952,14 @@ components:
                 device_name:
                     description: Name of the device shared by the owner
                     type: string
-                network_name:
+                associated_network_name:
+                    description: The name of the source network. Only for share codes.
                     type: string
                 client_id:
-                    description: udid
+                    description: udid. Only for share codes.
                     type: string
+                duration_minutes:
+                    type: number
                 error:
                     type: object
                     properties:
@@ -1978,14 +2011,12 @@ components:
             properties:
                 share_code:
                     type: string
-                confirm:
-                    type: boolean
+                associated_network_name:
+                    type: string
 
         DeviceConfirmShareResult:
             type: object
             properties:
-                complete:
-                    type: boolean
                 associated_network_name:
                     type: string
                 error:
@@ -1999,6 +2030,8 @@ components:
             properties:
                 device_name:
                     description: Name of the device that will be shared to the adopter
+                    type: string
+                device_spec:
                     type: string
 
         DeviceCreateAdoptCodeResult:
@@ -2043,16 +2076,12 @@ components:
                     type: string
                 adopt_secret:
                     type: string
-                confirm:
-                    type: boolean
+                associated_network_name:
+                    type: string
 
         DeviceConfirmAdoptResult:
             type: object
             properties:
-                complete:
-                    type: boolean
-                associated_network_name:
-                    type: string
                 by_client_jwt:
                     description: client auth
                     type: string
@@ -2093,9 +2122,8 @@ components:
                             device_name:
                                 description: Name of the device
                                 type: string
-                            client_id:
-                                description: udid
-                                type: string
+                            duration_minutes:
+                                type: number
                 incoming_shared_devices:
                     description: devices owned by another network shared to the caller network
                     type: array
@@ -2141,15 +2169,6 @@ components:
 
         DeviceRemoveAssociationResult:
             type: object
-            properties:
-                client_id:
-                    description: udid
-                    type: string
-                device_name:
-                    description: Name of the device
-                    type: string
-                network_name:
-                    type: string
                 error:
                     type: object
                     properties:
@@ -2166,6 +2185,24 @@ components:
                     type: string
 
         DeviceSetAssociationNameResult:
+            type: object
+            properties:
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        DeviceSetNameArgs:
+            type: object
+            properties:
+                device_id:
+                    description: udid
+                    type: string
+                device_name:
+                    type: string
+        
+        DeviceSetNameResult:
             type: object
             properties:
                 error:
