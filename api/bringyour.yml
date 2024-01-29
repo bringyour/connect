@@ -619,7 +619,7 @@ paths:
                                 $ref: "#/components/schemas/SubscriptionCheckBalanceCodeResult"
 
     /subscription/redeem-balance-code:
-        get:
+        post:
             description: |
                 Redeem the balance code and add the transfer balance to the caller network.
             operationId: Subscription Redeem Balance Code
@@ -2017,8 +2017,6 @@ components:
         DeviceConfirmShareResult:
             type: object
             properties:
-                complete:
-                    type: boolean
                 associated_network_name:
                     type: string
                 error:
@@ -2084,10 +2082,6 @@ components:
         DeviceConfirmAdoptResult:
             type: object
             properties:
-                complete:
-                    type: boolean
-                associated_network_name:
-                    type: string
                 by_client_jwt:
                     description: client auth
                     type: string
