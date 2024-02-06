@@ -600,11 +600,12 @@ paths:
                                 $ref: "#/components/schemas/SubscriptionBalanceResult"
 
     /subscription/check-balance-code:
-        get:
+        post:
             description: |
                 Check if the balance code is valid.
             operationId: Subscription Check Balance Code
-            security: []
+            security:
+                - BearerAuth: []
             requestBody:
                 required: true
                 content:
@@ -2169,6 +2170,7 @@ components:
 
         DeviceRemoveAssociationResult:
             type: object
+            properties:
                 error:
                     type: object
                     properties:
