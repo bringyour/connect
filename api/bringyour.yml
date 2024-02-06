@@ -1901,32 +1901,48 @@ components:
         SubscriptionCheckBalanceCodeArgs:
             type: object
             properties:
-                balance_code:
+                secret:
                     type: string
 
         SubscriptionCheckBalanceCodeResult:
             type: object
             properties:
-                valid:
-                    type: boolean
-                transfer_data:
-                    description: gib
-                    type: integer
+                balance:
+                    type: object
+                    properties:
+                        start_time:
+                            type: string
+                        end_time:
+                            type: string
+                        balance_byte_count:
+                            type: integer
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
 
         SubscriptionRedeemBalanceCodeArgs:
             type: object
             properties:
-                balance_code:
+                secret:
                     type: string
 
         SubscriptionRedeemBalanceCodeResult:
             type: object
             properties:
-                valid:
-                    type: boolean
-                transfer_data:
-                    description: gib
-                    type: integer
+                transfer_balance:
+                    type: object
+                    properties:
+                        transfer_balance_id:
+                            description: udid
+                            type: string
+                        start_time:
+                            type: string
+                        end_time:
+                            type: string
+                        balance_byte_count:
+                            type: integer
                 error:
                     type: object
                     properties:
