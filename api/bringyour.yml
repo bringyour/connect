@@ -639,6 +639,28 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/SubscriptionRedeemBalanceCodeResult"
 
+    /subscription/create-payment-id:
+        post:
+            description: |
+                Creates an anonymous payment identifier to be used with purchases.
+                This keeps network information out of the payment processor system.
+                For example in Google Play this is called the "obfuscated account id".
+            operationId: Subscription Create Payment Id
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/SubscriptionCreatePaymentIdArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SubscriptionCreatePaymentIdResult"
+
     /device/add:
         post:
             description: |
@@ -1943,6 +1965,22 @@ components:
                             type: string
                         balance_byte_count:
                             type: integer
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+
+        SubscriptionCreatePaymentIdArgs:
+            type: object
+            properties: {}
+
+        SubscriptionCreatePaymentIdResult:
+            type: object
+            properties:
+                subscription_payment_id:
+                    description: udid
+                    type: string
                 error:
                     type: object
                     properties:
