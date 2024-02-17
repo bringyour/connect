@@ -102,6 +102,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		AckBufferSize: 8 * 1024,
 		MinMessageByteCount: ByteCount(1),
 		WriteTimeout: 1 * time.Second,
+		ResendQueueMaxByteCount: mib(1),
 	}
 }
 
@@ -112,12 +113,13 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		IdleTimeout: 300 * time.Second,
 		SequenceBufferSize: 32,
 		AckBufferSize: 256,
-		AckCompressTimeout: 500 * time.Millisecond,
+		AckCompressTimeout: 0 * time.Millisecond,
 		MinMessageByteCount: ByteCount(1),
 		ResendAbuseThreshold: 4,
 		ResendAbuseMultiple: 0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
 		WriteTimeout: 1 * time.Second,
+		ReceiveQueueMaxByteCount: mib(2),
 	}
 }
 
@@ -229,6 +231,12 @@ type Client struct {
 
 	receiveCallbacks *CallbackList[ReceiveFunction]
 	forwardCallbacks *CallbackList[ForwardFunction]
+
+
+	stateLock sync.Mutex
+	sendBuffer *SendBuffer
+	receiveBuffer *ReceiveBuffer
+	forwardBuffer *ForwardBuffer
 }
 
 func NewClientWithDefaults(ctx context.Context, clientId Id) *Client {
@@ -442,6 +450,14 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 	defer receiveBuffer.Close()
 	forwardBuffer := NewForwardBuffer(self.ctx, self, routeManager, contractManager, self.forwardBufferSettings)
 	defer forwardBuffer.Close()
+
+
+	// export the buffers for inspection
+	self.stateLock.Lock()
+	self.sendBuffer = sendBuffer
+	self.receiveBuffer = receiveBuffer
+	self.forwardBuffer = forwardBuffer
+	self.stateLock.Unlock()
 
 
 	// forward
@@ -665,6 +681,30 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 	}
 }
 
+func (self *Client) ResendQueueSize(destinationId Id) (int, ByteCount, Id) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	if self.sendBuffer == nil {
+		return 0, 0, Id{}
+	} else {
+		return self.sendBuffer.ResendQueueSize(destinationId)
+	}
+}
+
+func (self *Client) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, ByteCount) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	
+	if self.receiveBuffer == nil {
+		return 0, 0
+	} else {
+		return self.receiveBuffer.ReceiveQueueSize(sourceId, sequenceId)
+	}
+}
+
+// FIXME receive queue size
+
 func (self *Client) Close() {
 	self.cancel()
 
@@ -711,6 +751,8 @@ type SendBufferSettings struct {
 	MinMessageByteCount ByteCount
 
 	WriteTimeout time.Duration
+
+	ResendQueueMaxByteCount ByteCount
 }
 
 
@@ -743,10 +785,10 @@ func NewSendBuffer(ctx context.Context,
 }
 
 func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
 	initSendSequence := func()(*SendSequence) {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
 		sendSequence, ok := self.sendSequences[sendPack.DestinationId]
 		if ok {
 			return sendSequence
@@ -774,9 +816,15 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
 		return sendSequence
 	}
 
+	resetSendSequence := func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+		delete(self.sendSequences, sendPack.DestinationId)
+	}
+
 	if open, err := initSendSequence().Pack(sendPack, timeout); !open {
 		// sequence closed
-		delete(self.sendSequences, sendPack.DestinationId)
+		resetSendSequence()
 		_, err := initSendSequence().Pack(sendPack, timeout)
 		return err
 	} else {
@@ -786,15 +834,24 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
 
 func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duration) error {
 	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
 	sendSequence, ok := self.sendSequences[sourceId]
 	if !ok {
 		// sequence gone, ignore
 		return nil
 	}
+	self.mutex.Unlock()
 
 	return sendSequence.Ack(ack, timeout)
+}
+
+func (self *SendBuffer) ResendQueueSize(destinationId Id) (int, ByteCount, Id) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if sendSequence, ok := self.sendSequences[destinationId]; ok {
+		return sendSequence.ResendQueueSize()
+	}
+	return 0, 0, Id{}
 }
 
 func (self *SendBuffer) Close() {
@@ -865,6 +922,11 @@ func NewSendSequence(
 		nextSequenceNumber: 0,
 		idleCondition: NewIdleCondition(),
 	}
+}
+
+func (self *SendSequence) ResendQueueSize() (int, ByteCount, Id) {
+	count, byteSize := self.resendQueue.resendQueueSize()
+	return count, byteSize, self.sequenceId
 }
 
 func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
@@ -1013,43 +1075,71 @@ func (self *SendSequence) Run() {
 		}
 
 		checkpointId := self.idleCondition.Checkpoint()
-		select {
-		case <- self.ctx.Done():
-			return
-		case ack, ok := <- self.acks:
-			if !ok {
-				return
-			}
-			if messageId, err := IdFromBytes(ack.MessageId); err == nil {
-				self.receiveAck(messageId, ack.Selective)
-			}
-		case sendPack, ok := <- self.packs:
-			if !ok {
-				return
-			}
-			// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
-			if self.updateContract(sendPack.MessageByteCount) {
-				transferLog("[%s] Have contract, sending -> %s: %s", self.clientId.String(), self.destinationId.String(), sendPack.Frame)
-				item := self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack)
-				if err := self.multiRouteWriter.Write(self.ctx, item.transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
-					fmt.Printf("!! WRITE TIMEOUT B\n")
-				} else {
-					fmt.Printf("WROTE FRAME\n")
-				}
-			} else {
-				// no contract
-				// close the sequence
-				sendPack.AckCallback(errors.New("No contract"))
-				return
-			}
-		case <- time.After(timeout):
-			if 0 == self.resendQueue.Len() {
-				// idle timeout
-				if self.idleCondition.Close(checkpointId) {
-					// close the sequence
+		if self.sendBufferSettings.ResendQueueMaxByteCount < self.resendQueue.byteCount {
+			fmt.Printf("AT SEND LIMIT %d %d bytes\n", len(self.resendQueue.orderedItems), self.resendQueue.byteCount)
+			
+			// wait for acks
+			select {
+			case <- self.ctx.Done():
+			    return
+			case ack, ok := <- self.acks:
+				if !ok {
 					return
 				}
-				// else there are pending updates
+				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
+					self.receiveAck(messageId, ack.Selective)
+				}
+			case <- time.After(timeout):
+				if 0 == self.resendQueue.Len() {
+					// idle timeout
+					if self.idleCondition.Close(checkpointId) {
+						// close the sequence
+					    return
+					}
+					// else there are pending updates
+				}
+			}
+		} else {
+			fmt.Printf("NO SEND LIMIT\n")
+
+			select {
+			case <- self.ctx.Done():
+				return
+			case ack, ok := <- self.acks:
+				if !ok {
+					return
+				}
+				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
+					self.receiveAck(messageId, ack.Selective)
+				}
+			case sendPack, ok := <- self.packs:
+				if !ok {
+					return
+				}
+				// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
+				if self.updateContract(sendPack.MessageByteCount) {
+					transferLog("[%s] Have contract, sending -> %s: %s", self.clientId.String(), self.destinationId.String(), sendPack.Frame)
+					item := self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack)
+					if err := self.multiRouteWriter.Write(self.ctx, item.transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
+						fmt.Printf("!! WRITE TIMEOUT B\n")
+					} else {
+						fmt.Printf("WROTE FRAME\n")
+					}
+				} else {
+					// no contract
+					// close the sequence
+					sendPack.AckCallback(errors.New("No contract"))
+					return
+				}
+			case <- time.After(timeout):
+				if 0 == self.resendQueue.Len() {
+					// idle timeout
+					if self.idleCondition.Close(checkpointId) {
+						// close the sequence
+						return
+					}
+					// else there are pending updates
+				}
 			}
 		}
 	}
@@ -1351,6 +1441,7 @@ type resendQueue struct {
 	// message_id -> item
 	messageItems map[Id]*sendItem
 	byteCount ByteCount
+	stateLock sync.Mutex
 }
 
 func newResendQueue() *resendQueue {
@@ -1363,13 +1454,26 @@ func newResendQueue() *resendQueue {
 	return resendQueue
 }
 
+func (self *resendQueue) resendQueueSize() (int, ByteCount) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	return len(self.orderedItems), self.byteCount
+}
+
 func (self *resendQueue) add(item *sendItem) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	self.messageItems[item.messageId] = item
 	heap.Push(self, item)
 	self.byteCount += ByteCount(len(item.transferFrameBytes))
 }
 
 func (self *resendQueue) remove(messageId Id) *sendItem {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	item, ok := self.messageItems[messageId]
 	if !ok {
 		return nil
@@ -1384,6 +1488,9 @@ func (self *resendQueue) remove(messageId Id) *sendItem {
 }
 
 func (self *resendQueue) removeFirst() *sendItem {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	first := heap.Pop(self)
 	if first == nil {
 		return nil
@@ -1403,11 +1510,10 @@ func (self *resendQueue) Push(x any) {
 }
 
 func (self *resendQueue) Pop() any {
-	n := len(self.orderedItems)
-	i := n - 1
+	i := len(self.orderedItems) - 1
 	item := self.orderedItems[i]
 	self.orderedItems[i] = nil
-	self.orderedItems = self.orderedItems[:n-1]
+	self.orderedItems = self.orderedItems[:i]
 	return item
 }
 
@@ -1450,6 +1556,8 @@ type ReceiveBufferSettings struct {
 	MaxPeerAuditDuration time.Duration
 
 	WriteTimeout time.Duration
+
+	ReceiveQueueMaxByteCount ByteCount
 }
 
 
@@ -1488,15 +1596,15 @@ func NewReceiveBuffer(ctx context.Context,
 }
 
 func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration) error {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
 	receiveSequenceId := receiveSequenceId{
 		SourceId: receivePack.SourceId,
 		SequenceId: receivePack.SequenceId,
 	}
 
 	initReceiveSequence := func()(*ReceiveSequence) {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
 		receiveSequence, ok := self.receiveSequences[receiveSequenceId]
 		if ok {
 			return receiveSequence
@@ -1525,13 +1633,33 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 		return receiveSequence
 	}
 
-	if open, err := initReceiveSequence().Pack(receivePack, timeout); !open {
+	resetReceiveSequence := func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
 		delete(self.receiveSequences, receiveSequenceId)
+	}
+
+	if open, err := initReceiveSequence().Pack(receivePack, timeout); !open {
+		resetReceiveSequence()
 		_, err := initReceiveSequence().Pack(receivePack, timeout)
 		return err
 	} else {
 		return err
 	}
+}
+
+func (self *ReceiveBuffer) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, ByteCount) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	receiveSequenceId := receiveSequenceId{
+		SourceId: sourceId,
+		SequenceId: sequenceId,
+	}
+	if receiveSequence, ok := self.receiveSequences[receiveSequenceId]; ok {
+		return receiveSequence.ReceiveQueueSize()
+	}
+	return 0, 0
 }
 
 func (self *ReceiveBuffer) Close() {
@@ -1599,6 +1727,10 @@ func NewReceiveSequence(
 		idleCondition: NewIdleCondition(),
 		sendAcks: make(chan *sendAck, receiveBufferSettings.AckBufferSize),
 	}
+}
+
+func (self *ReceiveSequence) ReceiveQueueSize() (int, ByteCount) {
+	return self.receiveQueue.receiveQueueSize()
 }
 
 func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
@@ -1735,24 +1867,51 @@ func (self *ReceiveSequence) Run() {
 
 			// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
 			if deliver {
-				
-				received, err := self.receive(receivePack)
-				if err != nil {
-					// bad message
-					// close the sequence
-					self.peerAudit.Update(func(a *PeerAudit) {
-						a.badMessage(receivePack.MessageByteCount)
-					})
-					transferLog("!! EXIT D")
-					return	
-				} else if !received {
-					transferLog("!!!! 5")
+				// store only up to a max size in the receive queue
+				canBuffer := func(byteCount ByteCount)(bool) {
+			        // always allow at least one item in the receive queue
+			        if 0 == self.receiveQueue.Len() {
+			            return true
+			        }
+			        return self.receiveQueue.byteCount + byteCount < self.receiveBufferSettings.ReceiveQueueMaxByteCount
+				}
+
+				// remove later items to fit
+				for !canBuffer(receivePack.MessageByteCount) {
+			        transferLog("!!!! 3")
+			        lastItem := self.receiveQueue.peekLast()
+			        if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
+			                self.receiveQueue.remove(lastItem.messageId)
+			        }
+				}
+
+				if canBuffer(receivePack.MessageByteCount) {
+					received, err := self.receive(receivePack)
+					if err != nil {
+						// bad message
+						// close the sequence
+						self.peerAudit.Update(func(a *PeerAudit) {
+							a.badMessage(receivePack.MessageByteCount)
+						})
+						transferLog("!! EXIT D")
+						return	
+					} else if !received {
+						transferLog("!!!! 5")
+						// drop the message
+						self.peerAudit.Update(func(a *PeerAudit) {
+							a.discard(receivePack.MessageByteCount)
+						})
+
+						fmt.Printf("RECEIVE DROPPED A MESSAGE\n")
+					}
+				} else {
+					transferLog("!!!! 5b")
 					// drop the message
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.discard(receivePack.MessageByteCount)
 					})
 
-					fmt.Printf("DROPPED A MESSAGE\n")
+					fmt.Printf("DROPPED A MESSAGE LIMIT\n")
 				}
 			} else {
 				transferLog("!!!! 6")
@@ -1862,16 +2021,21 @@ func (self *ReceiveSequence) compressAndSendAcks() {
 			}
 		}
 
+		CollapseLoop:
+		for {
+			select {
+			case <- self.ctx.Done():
+				return
+			case sendAck := <- self.sendAcks:
+				addAck(sendAck)
+			default:
+				break CollapseLoop
+			}
+		}
+
 		for {
 			timeout := self.receiveBufferSettings.AckCompressTimeout - time.Now().Sub(compressStartTime)
 			if timeout <= 0 {
-				select {
-				case <- self.ctx.Done():
-					return
-				case sendAck := <- self.sendAcks:
-					addAck(sendAck)
-				default:
-				}
 				break
 			} else {
 				select {
@@ -2144,6 +2308,7 @@ type receiveQueue struct {
 	// message_id -> item
 	messageItems map[Id]*receiveItem
 	byteCount ByteCount
+	stateLock sync.Mutex
 }
 
 func newReceiveQueue() *receiveQueue {
@@ -2156,7 +2321,17 @@ func newReceiveQueue() *receiveQueue {
 	return receiveQueue
 }
 
+func (self *receiveQueue) receiveQueueSize() (int, ByteCount) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	return len(self.orderedItems), self.byteCount
+}
+
 func (self *receiveQueue) add(item *receiveItem) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	self.messageItems[item.messageId] = item
 	heap.Push(self, item)
 	transferLog("!!!! P %d %d", item.sequenceNumber, item.heapIndex)
@@ -2164,6 +2339,9 @@ func (self *receiveQueue) add(item *receiveItem) {
 }
 
 func (self *receiveQueue) remove(messageId Id) *receiveItem {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	item, ok := self.messageItems[messageId]
 	if !ok {
 		return nil
@@ -2183,6 +2361,9 @@ func (self *receiveQueue) remove(messageId Id) *receiveItem {
 }
 
 func (self *receiveQueue) removeBySequenceNumber(sequenceNumber uint64) *receiveItem {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	i, found := sort.Find(len(self.orderedItems), func(i int)(int) {
 		d := sequenceNumber - self.orderedItems[i].sequenceNumber
 		if d < 0 {
@@ -2200,6 +2381,9 @@ func (self *receiveQueue) removeBySequenceNumber(sequenceNumber uint64) *receive
 }
 
 func (self *receiveQueue) removeFirst() *receiveItem {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	first := heap.Pop(self)
 	if first == nil {
 		return nil
@@ -2212,6 +2396,9 @@ func (self *receiveQueue) removeFirst() *receiveItem {
 }
 
 func (self *receiveQueue) peekLast() *receiveItem {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
 	if len(self.orderedItems) == 0 {
 		return nil
 	}
