@@ -199,7 +199,7 @@ func DefaultTransferOpts() TransferOptions {
 func NoAck() TransferOptions {
 	return TransferOptions{
 		Ack: false,
-	} 
+	}
 }
 
 
@@ -785,13 +785,18 @@ func NewSendBuffer(ctx context.Context,
 }
 
 func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
-	initSendSequence := func()(*SendSequence) {
+	initSendSequence := func(skip *SendSequence)(*SendSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
 		sendSequence, ok := self.sendSequences[sendPack.DestinationId]
 		if ok {
-			return sendSequence
+			if skip == nil || skip != sendSequence {
+				return sendSequence
+			} else {
+				sendSequence.Close()
+				delete(self.sendSequences, sendPack.DestinationId)
+			}
 		}
 		sendSequence = NewSendSequence(
 			self.ctx,
@@ -816,16 +821,10 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
 		return sendSequence
 	}
 
-	resetSendSequence := func() {
-		self.mutex.Lock()
-		defer self.mutex.Unlock()
-		delete(self.sendSequences, sendPack.DestinationId)
-	}
-
-	if open, err := initSendSequence().Pack(sendPack, timeout); !open {
+	sendSequence := initSendSequence(nil)
+	if open, err := sendSequence.Pack(sendPack, timeout); !open {
 		// sequence closed
-		resetSendSequence()
-		_, err := initSendSequence().Pack(sendPack, timeout)
+		_, err := initSendSequence(sendSequence).Pack(sendPack, timeout)
 		return err
 	} else {
 		return err
@@ -964,8 +963,9 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) error {
 }
 
 func (self *SendSequence) Run() {
-	defer transferLog("[%s] Send sequence exit -> %s", self.clientId.String(), self.destinationId.String())
 	defer func() {
+		fmt.Printf("[%s] Send sequence exit -> %s\n", self.clientId.String(), self.destinationId.String())
+
 		self.cancel()
 
 		// close contract
@@ -1064,7 +1064,8 @@ func (self *SendSequence) Run() {
 
 				item.sendCount += 1
 				// linear backoff
-				itemResendTimeout := self.sendBufferSettings.ResendInterval * time.Duration(item.sendCount)
+				// FIXME use constant backoff
+				itemResendTimeout := self.sendBufferSettings.ResendInterval //* time.Duration(item.sendCount)
 				if itemResendTimeout < itemAckTimeout {
 					item.resendTime = sendTime.Add(itemResendTimeout)
 				} else {
@@ -1245,14 +1246,22 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, ack bool) *sendItem {
 	sendTime := time.Now()
 	messageId := NewId()
-	sequenceNumber := self.nextSequenceNumber
+	
 	var contractId *Id
 	if self.sendContract != nil {
 		contractId = &self.sendContract.contractId
 	}
-	head := (0 == len(self.sendItems))
 
-	self.nextSequenceNumber += 1
+	var head bool
+	var sequenceNumber uint64
+	if ack {
+		head = (0 == len(self.sendItems))
+		sequenceNumber = self.nextSequenceNumber
+		self.nextSequenceNumber += 1
+	} else {
+		head = false
+		sequenceNumber = 0
+	}
 
 	pack := &protocol.Pack{
 		MessageId: messageId.Bytes(),
@@ -1601,13 +1610,18 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 		SequenceId: receivePack.SequenceId,
 	}
 
-	initReceiveSequence := func()(*ReceiveSequence) {
+	initReceiveSequence := func(skip *ReceiveSequence)(*ReceiveSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
 		receiveSequence, ok := self.receiveSequences[receiveSequenceId]
 		if ok {
-			return receiveSequence
+			if skip == nil || skip != receiveSequence {
+				return receiveSequence
+			} else {
+				receiveSequence.Close()
+				delete(self.receiveSequences, receiveSequenceId)
+			}
 		}
 		receiveSequence = NewReceiveSequence(
 			self.ctx,
@@ -1633,15 +1647,9 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 		return receiveSequence
 	}
 
-	resetReceiveSequence := func() {
-		self.mutex.Lock()
-		defer self.mutex.Unlock()
-		delete(self.receiveSequences, receiveSequenceId)
-	}
-
-	if open, err := initReceiveSequence().Pack(receivePack, timeout); !open {
-		resetReceiveSequence()
-		_, err := initReceiveSequence().Pack(receivePack, timeout)
+	receiveSequence := initReceiveSequence(nil)
+	if open, err := receiveSequence.Pack(receivePack, timeout); !open {
+		_, err := initReceiveSequence(receiveSequence).Pack(receivePack, timeout)
 		return err
 	} else {
 		return err
@@ -1749,8 +1757,9 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 }
 
 func (self *ReceiveSequence) Run() {
-	transferLog("[%s] Receive sequence exit %s ->", self.clientId.String(), self.sourceId.String())
 	defer func() {
+		fmt.Printf("[%s] Receive sequence exit %s ->\n", self.clientId.String(), self.sourceId.String())
+
 		self.cancel()
 
 		// close contract
@@ -1811,28 +1820,32 @@ func (self *ReceiveSequence) Run() {
 				}
 				// item.sequenceNumber <= self.nextSequenceNumber
 
-				transferLog("[%s] Receive next in sequence %d: %s", self.clientId.String(), item.sequenceNumber, item.frames)
-
-				// this item is the head of sequence
-				if self.nextSequenceNumber == item.sequenceNumber {
-					self.nextSequenceNumber = item.sequenceNumber + 1	
-				}
 				
-				if err := self.registerContracts(item); err != nil {
-					return
+				
+				if self.nextSequenceNumber == item.sequenceNumber {
+					// this item is the head of sequence
+					transferLog("[%s] Receive next in sequence %d: %s", self.clientId.String(), item.sequenceNumber, item.frames)
+
+					self.nextSequenceNumber = item.sequenceNumber + 1	
+				
+				
+					if err := self.registerContracts(item); err != nil {
+						return
+					}
+					transferLog("[%s] Receive head of sequence %d.", self.clientId.String(), item.sequenceNumber)
+					if self.updateContract(item) {
+						self.receiveHead(item)
+					} else {
+						transferLog("!! EXIT M")
+						// no contract
+						// close the sequence
+						self.peerAudit.Update(func(a *PeerAudit) {
+							a.discard(item.messageByteCount)
+						})
+						return
+					}
 				}
-				transferLog("[%s] Receive head of sequence %d.", self.clientId.String(), item.sequenceNumber)
-				if self.updateContract(item) {
-					self.receiveHead(item)
-				} else {
-					transferLog("!! EXIT M")
-					// no contract
-					// close the sequence
-					self.peerAudit.Update(func(a *PeerAudit) {
-						a.discard(item.messageByteCount)
-					})
-					return
-				}
+				// else this item is a resend of a previous item
 			}
 		}
 
@@ -1857,16 +1870,28 @@ func (self *ReceiveSequence) Run() {
 				return
 			}
 
-			var deliver bool
 			if receivePack.Pack.Nack {
-				// can deliver out of order
-				deliver = true
-			} else {
-				deliver = (self.nextSequenceNumber <= receivePack.Pack.SequenceNumber)
-			}
+				received, err := self.receiveNack(receivePack)
+				if err != nil {
+					// bad message
+					// close the sequence
+					self.peerAudit.Update(func(a *PeerAudit) {
+						a.badMessage(receivePack.MessageByteCount)
+					})
+					transferLog("!! EXIT D")
+					return	
+				} else if !received {
+					transferLog("!!!! 5")
+					// drop the message
+					self.peerAudit.Update(func(a *PeerAudit) {
+						a.discard(receivePack.MessageByteCount)
+					})
+
+					fmt.Printf("RECEIVE DROPPED A MESSAGE\n")
+				}
 
 			// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
-			if deliver {
+			} else if self.nextSequenceNumber <= receivePack.Pack.SequenceNumber {
 				// store only up to a max size in the receive queue
 				canBuffer := func(byteCount ByteCount)(bool) {
 			        // always allow at least one item in the receive queue
@@ -1881,7 +1906,9 @@ func (self *ReceiveSequence) Run() {
 			        transferLog("!!!! 3")
 			        lastItem := self.receiveQueue.peekLast()
 			        if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
-			                self.receiveQueue.remove(lastItem.messageId)
+			           	self.receiveQueue.remove(lastItem.messageId)
+			        } else {
+			        	break
 			        }
 				}
 
@@ -2101,6 +2128,11 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 
 
 func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
+	// FIXME
+	if true {
+		return nil
+	}
+
 	for _, frame := range item.frames {
 		if frame.MessageType == protocol.MessageType_TransferContract {
 			// close out the previous contract
@@ -2221,28 +2253,68 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 
 
 	if sequenceNumber <= self.nextSequenceNumber {
-
-		transferLog("[%s] Receive next in sequence %d: %s", self.clientId.String(), item.sequenceNumber, item.frames)
-
-		// this item is the head of sequence
 		if self.nextSequenceNumber == sequenceNumber {
-			self.nextSequenceNumber = sequenceNumber + 1	
-		}
+			// this item is the head of sequence
 
-		if err := self.registerContracts(item); err != nil {
-			return false, err
-		}
-		if self.updateContract(item) {
-			self.receiveHead(item)
-			return true, nil
+			fmt.Printf("[%s] Receive next in sequence [%d]\n", self.clientId.String(), item.sequenceNumber)
+
+			self.nextSequenceNumber = sequenceNumber + 1	
+
+			if err := self.registerContracts(item); err != nil {
+				return false, err
+			}
+			if self.updateContract(item) {
+				self.receiveHead(item)
+				return true, nil
+			} else {
+				return false, fmt.Errorf("Bad contract.")
+			}
 		} else {
-			return false, fmt.Errorf("Bad contract.")
+			// this item is a resend of a previous item
+			return false, nil
 		}
 	} else {
 		self.receiveQueue.add(item)
 		self.sendAck(sequenceNumber, messageId, true)
 		fmt.Printf("ACK C SELECTIVE\n")
 		return true, nil
+	}
+}
+
+func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error) {
+
+	receiveTime := time.Now()
+
+	sequenceNumber := receivePack.Pack.SequenceNumber
+	var contractId *Id
+	if self.receiveContract != nil {
+		contractId = &self.receiveContract.contractId
+	}
+	messageId, err := IdFromBytes(receivePack.Pack.MessageId)
+	if err != nil {
+		return false, errors.New("Bad message_id")
+	}
+
+	item := &receiveItem{
+		contractId: contractId,
+		messageId: messageId,
+		sequenceNumber: sequenceNumber,
+		receiveTime: receiveTime,
+		frames: receivePack.Pack.Frames,
+		messageByteCount: receivePack.MessageByteCount,
+		receiveCallback: receivePack.ReceiveCallback,
+		head: receivePack.Pack.Head,
+		ack: !receivePack.Pack.Nack,
+	}
+
+	if err := self.registerContracts(item); err != nil {
+		return false, err
+	}
+	if self.updateContract(item) {
+		self.receiveHead(item)
+		return true, nil
+	} else {
+		return false, fmt.Errorf("Bad contract.")
 	}
 }
 
@@ -2552,13 +2624,18 @@ func NewForwardBuffer(ctx context.Context,
 }
 
 func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration) error {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
+	initForwardSequence := func(skip *ForwardSequence)(*ForwardSequence) {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
 
-	initForwardSequence := func()(*ForwardSequence) {
 		forwardSequence, ok := self.forwardSequences[forwardPack.DestinationId]
 		if ok {
-			return forwardSequence
+			if skip == nil || skip != forwardSequence {
+				return forwardSequence
+			} else {
+				forwardSequence.Close()
+				delete(self.forwardSequences, forwardPack.DestinationId)
+			}
 		}
 		forwardSequence = NewForwardSequence(
 			self.ctx,
@@ -2583,9 +2660,9 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 		return forwardSequence
 	}
 
-	if open, err := initForwardSequence().Pack(forwardPack, timeout); !open {
-		delete(self.forwardSequences, forwardPack.DestinationId)
-		_, err := initForwardSequence().Pack(forwardPack, timeout)
+	forwardSequence := initForwardSequence(nil)
+	if open, err := forwardSequence.Pack(forwardPack, timeout); !open {
+		_, err := initForwardSequence(forwardSequence).Pack(forwardPack, timeout)
 		return err
 	} else {
 		return err
