@@ -115,7 +115,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		IdleTimeout: 300 * time.Second,
 		SequenceBufferSize: 32,
 		AckBufferSize: 256,
-		AckCompressTimeout: 0 * time.Millisecond,
+		AckCompressTimeout: 10 * time.Millisecond,
 		MinMessageByteCount: ByteCount(1),
 		ResendAbuseThreshold: 4,
 		ResendAbuseMultiple: 0.5,
@@ -328,7 +328,7 @@ func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.D
 
 	err = self.forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
 	if err != nil {
-		fmt.Printf("TIMEOUT FORWARD PACK\n")
+		transferLog("TIMEOUT FORWARD PACK\n")
 		return false
 	}
 	return true
@@ -422,7 +422,7 @@ func (self *Client) SendWithTimeout(
 	} else {
 		err := self.sendBuffer.Pack(sendPack, timeout)
 		if err != nil {
-			fmt.Printf("TIMEOUT SEND PACK\n")
+			transferLog("TIMEOUT SEND PACK\n")
 			return false
 		}
 		return true
@@ -567,7 +567,7 @@ func (self *Client) Run() {
 		}
 		transferFrameBytes, err := multiRouteReader.Read(self.ctx, self.clientSettings.ReadTimeout)
 		if err != nil {
-			fmt.Printf("READ TIMEOUT: active=%v inactive=%v (%s)\n", multiRouteReader.GetActiveRoutes(), multiRouteReader.GetInactiveRoutes(), err)
+			transferLog("READ TIMEOUT: active=%v inactive=%v (%s)\n", multiRouteReader.GetActiveRoutes(), multiRouteReader.GetInactiveRoutes(), err)
 			continue
 		}
 		// at this point, the route is expected to have already parsed the transfer frame
@@ -590,7 +590,7 @@ func (self *Client) Run() {
 			continue
 		}
 
-		fmt.Printf("CLIENT READ %s -> %s via %s\n", sourceId.String(), destinationId.String(), self.clientId.String())
+		transferLog("CLIENT READ %s -> %s via %s\n", sourceId.String(), destinationId.String(), self.clientId.String())
 
 		transferLog("[%s] Read %s -> %s", self.clientId.String(), sourceId.String(), destinationId.String())
 		if destinationId == self.clientId {
@@ -610,7 +610,7 @@ func (self *Client) Run() {
 
 			switch frame.GetMessageType() {
 			case protocol.MessageType_TransferAck:
-				fmt.Printf("GOT ACK AT TOP\n")
+				transferLog("GOT ACK AT TOP\n")
 				ack := &protocol.Ack{}
 				if err := proto.Unmarshal(frame.GetMessageBytes(), ack); err != nil {
 					// bad protobuf
@@ -622,7 +622,7 @@ func (self *Client) Run() {
 				transferLog("[%s] Receive ack %s ->: %s", self.clientId.String(), sourceId.String(), ack)
 				err := self.sendBuffer.Ack(sourceId, ack, self.clientSettings.BufferTimeout)
 				if err != nil {
-					fmt.Printf("TIMEOUT ACK\n")
+					transferLog("TIMEOUT ACK\n")
 				}
 			case protocol.MessageType_TransferPack:
 				pack := &protocol.Pack{}
@@ -651,7 +651,7 @@ func (self *Client) Run() {
 					MessageByteCount: messageByteCount,
 				}, self.clientSettings.BufferTimeout)
 				if err != nil {
-					fmt.Printf("TIMEOUT RECEIVE PACK\n")
+					transferLog("TIMEOUT RECEIVE PACK\n")
 				}
 			default:
 				transferLog("[%s] Receive unknown -> %s: %s", self.clientId.String(), sourceId.String(), frame)
@@ -703,7 +703,7 @@ func (self *Client) Run() {
 				}
 			}
 
-			fmt.Printf("CLIENT FORWARD\n")
+			transferLog("CLIENT FORWARD\n")
 
 			transferLog("[%s] Forward %s -> %s", self.clientId.String(), sourceId.String(), destinationId.String())
 			self.forward(sourceId, destinationId, transferFrameBytes)
@@ -1045,7 +1045,7 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) error {
 
 func (self *SendSequence) Run() {
 	defer func() {
-		fmt.Printf("[%s] Send sequence exit -> %s\n", self.clientId.String(), self.destinationId.String())
+		transferLog("[%s] Send sequence exit -> %s\n", self.clientId.String(), self.destinationId.String())
 
 		self.cancel()
 
@@ -1137,10 +1137,10 @@ func (self *SendSequence) Run() {
 				}
 				transferLog("!!!! RESEND %d [%s]", item.sequenceNumber, self.destinationId.String())
 				if err := self.multiRouteWriter.Write(self.ctx, transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
-					fmt.Printf("!! WRITE TIMEOUT A\n")
+					transferLog("!! WRITE TIMEOUT A\n")
 				} else {
 					clientId := self.client.ClientId()
-					fmt.Printf("WROTE RESEND: %s, %s -> messageId=%s clientId=%s sequenceId=%s\n", item.messageType, clientId.String(), item.messageId.String(), self.destinationId.String(), self.sequenceId.String())
+					transferLog("WROTE RESEND: %s, %s -> messageId=%s clientId=%s sequenceId=%s\n", item.messageType, clientId.String(), item.messageId.String(), self.destinationId.String(), self.sequenceId.String())
 				}
 
 				item.sendCount += 1
@@ -1159,7 +1159,7 @@ func (self *SendSequence) Run() {
 
 		checkpointId := self.idleCondition.Checkpoint()
 		if self.sendBufferSettings.ResendQueueMaxByteCount < self.resendQueue.byteCount {
-			fmt.Printf("AT SEND LIMIT %d %d bytes\n", len(self.resendQueue.orderedItems), self.resendQueue.byteCount)
+			transferLog("AT SEND LIMIT %d %d bytes\n", len(self.resendQueue.orderedItems), self.resendQueue.byteCount)
 			
 			// wait for acks
 			select {
@@ -1183,7 +1183,7 @@ func (self *SendSequence) Run() {
 				}
 			}
 		} else {
-			fmt.Printf("NO SEND LIMIT\n")
+			transferLog("NO SEND LIMIT\n")
 
 			select {
 			case <- self.ctx.Done():
@@ -1204,9 +1204,9 @@ func (self *SendSequence) Run() {
 					transferLog("[%s] Have contract, sending -> %s: %s", self.clientId.String(), self.destinationId.String(), sendPack.Frame)
 					item := self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack)
 					if err := self.multiRouteWriter.Write(self.ctx, item.transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
-						fmt.Printf("!! WRITE TIMEOUT B\n")
+						transferLog("!! WRITE TIMEOUT B\n")
 					} else {
-						fmt.Printf("WROTE FRAME\n")
+						transferLog("WROTE FRAME\n")
 					}
 				} else {
 					// no contract
@@ -1282,9 +1282,9 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				MessageBytes: contractMessageBytes,
 			}, func(error){}, true)
 			if err := self.multiRouteWriter.Write(self.ctx, item.transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
-				fmt.Printf("!! WRITE TIMEOUT C\n")
+				transferLog("!! WRITE TIMEOUT C\n")
 			} else {
-				fmt.Printf("WROTE CONTRACT\n")
+				transferLog("WROTE CONTRACT\n")
 			}
 
 			return true
@@ -1430,11 +1430,11 @@ func (self *SendSequence) setHead(transferFrameBytes []byte) ([]byte, error) {
 }
 
 func (self *SendSequence) receiveAck(messageId Id, selective bool) {
-	fmt.Printf("RECEIVE ACK %t\n", selective)
+	transferLog("RECEIVE ACK %t\n", selective)
 
 	item, ok := self.resendQueue.messageItems[messageId]
 	if !ok {
-		fmt.Printf("RECEIVE ACK MISS\n")
+		transferLog("RECEIVE ACK MISS\n")
 		transferLog("!!!! NO ACK")
 		// message not pending ack
 		return
@@ -1870,7 +1870,7 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 
 func (self *ReceiveSequence) Run() {
 	defer func() {
-		fmt.Printf("[%s] Receive sequence exit %s ->\n", self.clientId.String(), self.sourceId.String())
+		transferLog("[%s] Receive sequence exit %s ->\n", self.clientId.String(), self.sourceId.String())
 
 		self.cancel()
 
@@ -1999,7 +1999,7 @@ func (self *ReceiveSequence) Run() {
 						a.discard(receivePack.MessageByteCount)
 					})
 
-					fmt.Printf("RECEIVE DROPPED A MESSAGE\n")
+					transferLog("RECEIVE DROPPED A MESSAGE\n")
 				}
 
 			// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
@@ -2041,7 +2041,7 @@ func (self *ReceiveSequence) Run() {
 							a.discard(receivePack.MessageByteCount)
 						})
 
-						fmt.Printf("RECEIVE DROPPED A MESSAGE\n")
+						transferLog("RECEIVE DROPPED A MESSAGE\n")
 					}
 				} else {
 					transferLog("!!!! 5b")
@@ -2050,7 +2050,7 @@ func (self *ReceiveSequence) Run() {
 						a.discard(receivePack.MessageByteCount)
 					})
 
-					fmt.Printf("DROPPED A MESSAGE LIMIT\n")
+					transferLog("DROPPED A MESSAGE LIMIT\n")
 				}
 			} else {
 				transferLog("!!!! 6")
@@ -2059,7 +2059,7 @@ func (self *ReceiveSequence) Run() {
 					a.resend(receivePack.MessageByteCount)
 				})
 				self.sendAck(receivePack.Pack.SequenceNumber, messageId, false)
-				fmt.Printf("ACK B\n")
+				transferLog("ACK B\n")
 				// if err != nil {
 				// 	transferLog("!! EXIT E")
 				// 	// could not send ack
@@ -2134,9 +2134,9 @@ func (self *ReceiveSequence) compressAndSendAcks() {
 		transferFrameBytes, _ := proto.Marshal(transferFrame)
 
 		if err := multiRouteWriter.Write(self.ctx, transferFrameBytes, self.receiveBufferSettings.WriteTimeout); err != nil {
-			fmt.Printf("!! WRITE TIMEOUT D\n")
+			transferLog("!! WRITE TIMEOUT D\n")
 		} else {
-			fmt.Printf("WROTE ACK: %s -> messageId=%s clientId=%s sequenceId=%s\n", clientId.String(), sendAck.messageId.String(), self.sourceId.String(), self.sequenceId.String())
+			transferLog("WROTE ACK: %s -> messageId=%s clientId=%s sequenceId=%s\n", clientId.String(), sendAck.messageId.String(), self.sourceId.String(), self.sequenceId.String())
 		}
 	}
 
@@ -2160,22 +2160,28 @@ func (self *ReceiveSequence) compressAndSendAcks() {
 			}
 		}
 
-		CollapseLoop:
-		for {
-			select {
-			case <- self.ctx.Done():
-				return
-			case sendAck := <- self.sendAcks:
-				addAck(sendAck)
-			default:
-				break CollapseLoop
-			}
+		// wait for one ack
+		select {
+		case <- self.ctx.Done():
+			return
+		case sendAck := <- self.sendAcks:
+			addAck(sendAck)
 		}
 
+		CollapseLoop:
 		for {
 			timeout := self.receiveBufferSettings.AckCompressTimeout - time.Now().Sub(compressStartTime)
 			if timeout <= 0 {
-				break
+				for {
+					select {
+					case <- self.ctx.Done():
+						return
+					case sendAck := <- self.sendAcks:
+						addAck(sendAck)
+					default:
+						break CollapseLoop
+					}
+				}
 			} else {
 				select {
 				case <- self.ctx.Done():
@@ -2234,7 +2240,7 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 	)
 	if item.ack {
 		self.sendAck(item.sequenceNumber, item.messageId, false)
-		fmt.Printf("ACK A\n")
+		transferLog("ACK A\n")
 	}
 }
 
@@ -2344,7 +2350,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	}
 
 	if item.head && self.nextSequenceNumber < item.sequenceNumber {
-		fmt.Printf("HEAD ADVANCE %d -> %d\n", self.nextSequenceNumber, item.sequenceNumber)
+		transferLog("HEAD ADVANCE %d -> %d\n", self.nextSequenceNumber, item.sequenceNumber)
 		self.nextSequenceNumber = item.sequenceNumber
 	}
 
@@ -2368,7 +2374,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		if self.nextSequenceNumber == sequenceNumber {
 			// this item is the head of sequence
 
-			fmt.Printf("[%s] Receive next in sequence [%d]\n", self.clientId.String(), item.sequenceNumber)
+			transferLog("[%s] Receive next in sequence [%d]\n", self.clientId.String(), item.sequenceNumber)
 
 			self.nextSequenceNumber = sequenceNumber + 1	
 
@@ -2388,7 +2394,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	} else {
 		self.receiveQueue.add(item)
 		self.sendAck(sequenceNumber, messageId, true)
-		fmt.Printf("ACK C SELECTIVE\n")
+		transferLog("ACK C SELECTIVE\n")
 		return true, nil
 	}
 }
@@ -2890,7 +2896,7 @@ func (self *ForwardSequence) Run() {
 			return
 		case forwardPack := <- self.packs:
 			if err := self.multiRouteWriter.Write(self.ctx, forwardPack.TransferFrameBytes, self.forwardBufferSettings.WriteTimeout); err != nil {
-				fmt.Printf("!! WRITE TIMEOUT E: active=%v inactive=%v (%s)\n", self.multiRouteWriter.GetActiveRoutes(), self.multiRouteWriter.GetInactiveRoutes(), err)
+				transferLog("!! WRITE TIMEOUT E: active=%v inactive=%v (%s)\n", self.multiRouteWriter.GetActiveRoutes(), self.multiRouteWriter.GetInactiveRoutes(), err)
 			}
 		case <- time.After(self.forwardBufferSettings.IdleTimeout):
 			if self.idleCondition.Close(checkpointId) {

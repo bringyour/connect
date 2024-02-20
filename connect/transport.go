@@ -13,6 +13,9 @@ import (
 )
 
 
+var transportLog = LogFn(LogLevelInfo, "transport")
+
+
 const BUFFER = 1
 
 
@@ -170,7 +173,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             HandshakeTimeout: self.settings.WsHandshakeTimeout,
         }
 
-        fmt.Printf("Connecting to %s ...\n", self.platformUrl)
+        transportLog("Connecting to %s ...\n", self.platformUrl)
         
         ws, err := func()(*websocket.Conn, error) {
             ws, _, err := wsDialer.DialContext(self.ctx, self.platformUrl, nil)
@@ -185,7 +188,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                 }
             }()
 
-            fmt.Printf("Connected to %s!\n", self.platformUrl)
+            transportLog("Connected to %s!\n", self.platformUrl)
 
             ws.SetWriteDeadline(time.Now().Add(self.settings.AuthTimeout))
             if err := ws.WriteMessage(websocket.BinaryMessage, authBytes); err != nil {
@@ -210,7 +213,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             return ws, nil
         }()
         if err != nil {
-            fmt.Printf("Auth error (%s)\n", err)
+            transportLog("Auth error (%s)\n", err)
             select {
             case <- self.ctx.Done():
                 return
@@ -246,16 +249,16 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                         if !ok {
                             return
                         }
-                        // fmt.Printf("!!!! WRITE MESSAGE %s\n", message)
+                        // transportLog("!!!! WRITE MESSAGE %s\n", message)
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
-                            fmt.Printf("Write message error %s\n", err)
+                            transportLog("Write message error %s\n", err)
                             return
                         }
                     case <- time.After(self.settings.PingTimeout):
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, make([]byte, 0)); err != nil {
-                            fmt.Printf("Write ping error %s\n", err)
+                            transportLog("Write ping error %s\n", err)
                             return
                         }
                     }
@@ -271,13 +274,13 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 
                 ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
                 messageType, message, err := ws.ReadMessage()
-                // fmt.Printf("Read message %s\n", message)
+                // transportLog("Read message %s\n", message)
                 if err != nil {
-                    fmt.Printf("Read message error %s\n", err)
+                    transportLog("Read message error %s\n", err)
                     return
                 }
 
-                fmt.Printf("READ MESSAGE\n")
+                transportLog("READ MESSAGE\n")
 
                 switch messageType {
                 case websocket.BinaryMessage:
@@ -291,7 +294,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                         return
                     case receiveTransport.receive <- message:
                     case <- time.After(self.settings.WriteTimeout):
-                        fmt.Printf("TIMEOUT J\n")
+                        transportLog("TIMEOUT J\n")
                     }
                 }
             }
@@ -456,7 +459,7 @@ func (self *wsForwardingConn) Read(b []byte) (int, error) {
         self.ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
         messageType, message, err := self.ws.ReadMessage()
         if err != nil {
-            fmt.Printf("!! TIMEOUT TA\n")
+            transportLog("!! TIMEOUT TA\n")
             return i, err
         }
         switch messageType {
@@ -481,7 +484,7 @@ func (self *wsForwardingConn) Write(b []byte) (int, error) {
     self.ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
     err := self.ws.WriteMessage(websocket.BinaryMessage, b)
     if err != nil {
-        fmt.Printf("!! TIMEOUT TB\n")
+        transportLog("!! TIMEOUT TB\n")
         return 0, err
     }
     return len(b), nil
