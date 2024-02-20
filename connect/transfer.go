@@ -93,6 +93,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		// this should be greater than the rtt under load
 		// TODO use an rtt estimator based on the ack times
 		ResendInterval: 2 * time.Second,
+		ResendBackoffScale: 0.25,
 		AckTimeout: 300 * time.Second,
 		IdleTimeout: 300 * time.Second,
 		// pause on resend for selectively acked messaged
@@ -101,7 +102,8 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		// not being able to receive acks will aggravate retries
 		AckBufferSize: 8 * 1024,
 		MinMessageByteCount: ByteCount(1),
-		WriteTimeout: 1 * time.Second,
+		// this includes transport reconnections
+		WriteTimeout: 30 * time.Second,
 		ResendQueueMaxByteCount: mib(1),
 	}
 }
@@ -118,7 +120,8 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		ResendAbuseThreshold: 4,
 		ResendAbuseMultiple: 0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
-		WriteTimeout: 1 * time.Second,
+		// this includes transport reconnections
+		WriteTimeout: 30 * time.Second,
 		ReceiveQueueMaxByteCount: mib(2),
 	}
 }
@@ -226,14 +229,15 @@ type Client struct {
 	receiveBufferSettings *ReceiveBufferSettings
 	forwardBufferSettings *ForwardBufferSettings
 
-	sendPacks chan *SendPack
-	forwardPacks chan *ForwardPack
+	// sendPacks chan *SendPack
+	// forwardPacks chan *ForwardPack
 
 	receiveCallbacks *CallbackList[ReceiveFunction]
 	forwardCallbacks *CallbackList[ForwardFunction]
 
 
-	stateLock sync.Mutex
+	routeManager *RouteManager
+	contractManager *ContractManager
 	sendBuffer *SendBuffer
 	receiveBuffer *ReceiveBuffer
 	forwardBuffer *ForwardBuffer
@@ -254,8 +258,8 @@ func NewClient(ctx context.Context, clientId Id, clientSettings *ClientSettings)
 		sendBufferSettings: DefaultSendBufferSettings(),
 		receiveBufferSettings: DefaultReceiveBufferSettings(),
 		forwardBufferSettings: DefaultForwardBufferSettings(),
-		sendPacks: make(chan *SendPack, clientSettings.SendBufferSize),
-		forwardPacks: make(chan *ForwardPack, clientSettings.ForwardBufferSize),
+		// sendPacks: make(chan *SendPack, clientSettings.SendBufferSize),
+		// forwardPacks: make(chan *ForwardPack, clientSettings.ForwardBufferSize),
 		receiveCallbacks: NewCallbackList[ReceiveFunction](),
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
@@ -293,34 +297,41 @@ func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.D
 		DestinationId: destinationId,
 		TransferFrameBytes: transferFrameBytes,
 	}
-	if timeout < 0 {
-		select {
-		case <- self.ctx.Done():
-			return false
-		case self.forwardPacks <- forwardPack:
-			return true
-		}
-	} else if 0 == timeout {
-		select {
-		case <- self.ctx.Done():
-			return false
-		case self.forwardPacks <- forwardPack:
-			return true
-		default:
-			// full
-			return false
-		}
-	} else {
-		select {
-		case <- self.ctx.Done():
-			return false
-		case self.forwardPacks <- forwardPack:
-			return true
-		case <- time.After(timeout):
-			// full
-			return false
-		}
+	// if timeout < 0 {
+	// 	select {
+	// 	case <- self.ctx.Done():
+	// 		return false
+	// 	case self.forwardPacks <- forwardPack:
+	// 		return true
+	// 	}
+	// } else if 0 == timeout {
+	// 	select {
+	// 	case <- self.ctx.Done():
+	// 		return false
+	// 	case self.forwardPacks <- forwardPack:
+	// 		return true
+	// 	default:
+	// 		// full
+	// 		return false
+	// 	}
+	// } else {
+	// 	select {
+	// 	case <- self.ctx.Done():
+	// 		return false
+	// 	case self.forwardPacks <- forwardPack:
+	// 		return true
+	// 	case <- time.After(timeout):
+	// 		// full
+	// 		return false
+	// 	}
+	// }
+
+	err = self.forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
+	if err != nil {
+		fmt.Printf("TIMEOUT FORWARD PACK\n")
+		return false
 	}
+	return true
 }
 
 func (self *Client) Forward(transferFrameBytes []byte) bool {
@@ -357,38 +368,64 @@ func (self *Client) SendWithTimeout(
 		AckCallback: safeAckCallback,
 		MessageByteCount: messageByteCount,
 	}
-	if timeout < 0 {
-		select {
-		case <- self.ctx.Done():
-			safeAckCallback(errors.New("Closed."))
-			return false
-		case self.sendPacks <- sendPack:
-			return true
-		}
-	} else if 0 == timeout {
-		select {
-		case <- self.ctx.Done():
-			safeAckCallback(errors.New("Closed."))
-			return false
-		case self.sendPacks <- sendPack:
-			return true
-		default:
-			// full
-			safeAckCallback(errors.New("Send buffer full."))
-			return false
-		}
+	// if timeout < 0 {
+	// 	select {
+	// 	case <- self.ctx.Done():
+	// 		safeAckCallback(errors.New("Closed."))
+	// 		return false
+	// 	case self.sendPacks <- sendPack:
+	// 		return true
+	// 	}
+	// } else if 0 == timeout {
+	// 	select {
+	// 	case <- self.ctx.Done():
+	// 		safeAckCallback(errors.New("Closed."))
+	// 		return false
+	// 	case self.sendPacks <- sendPack:
+	// 		return true
+	// 	default:
+	// 		// full
+	// 		safeAckCallback(errors.New("Send buffer full."))
+	// 		return false
+	// 	}
+	// } else {
+	// 	select {
+	// 	case <- self.ctx.Done():
+	// 		safeAckCallback(errors.New("Closed."))
+	// 		return false
+	// 	case self.sendPacks <- sendPack:
+	// 		return true
+	// 	case <- time.After(timeout):
+	// 		// full
+	// 		safeAckCallback(errors.New("Send buffer full."))
+	// 		return false
+	// 	}
+	// }
+
+
+	if sendPack.DestinationId == self.clientId {
+		// loopback
+		func() {
+			defer func() {
+				if err := recover(); err != nil {
+					sendPack.AckCallback(err.(error))
+				}
+			}()
+			self.receive(
+				self.clientId,
+				[]*protocol.Frame{sendPack.Frame},
+				protocol.ProvideMode_Network,
+			)
+			sendPack.AckCallback(nil)
+		}()
+		return true
 	} else {
-		select {
-		case <- self.ctx.Done():
-			safeAckCallback(errors.New("Closed."))
-			return false
-		case self.sendPacks <- sendPack:
-			return true
-		case <- time.After(timeout):
-			// full
-			safeAckCallback(errors.New("Send buffer full."))
+		err := self.sendBuffer.Pack(sendPack, timeout)
+		if err != nil {
+			fmt.Printf("TIMEOUT SEND PACK\n")
 			return false
 		}
+		return true
 	}
 }
 
@@ -441,86 +478,79 @@ func (self *Client) RemoveForwardCallback(forwardCallback ForwardFunction) {
 	self.forwardCallbacks.Remove(forwardCallback)
 }
 
-func (self *Client) Run(routeManager *RouteManager, contractManager *ContractManager) {
+func (self *Client) Setup(routeManager *RouteManager, contractManager *ContractManager) {
+	self.routeManager = routeManager
+	self.contractManager = contractManager
+	self.sendBuffer = NewSendBuffer(self.ctx, self, routeManager, contractManager, self.sendBufferSettings)
+	self.receiveBuffer = NewReceiveBuffer(self.ctx, self, routeManager, contractManager, self.receiveBufferSettings)
+	self.forwardBuffer = NewForwardBuffer(self.ctx, self, routeManager, contractManager, self.forwardBufferSettings)
+}
+
+func (self *Client) Run() {
 	defer self.cancel()
-
-	sendBuffer := NewSendBuffer(self.ctx, self, routeManager, contractManager, self.sendBufferSettings)
-	defer sendBuffer.Close()
-	receiveBuffer := NewReceiveBuffer(self.ctx, self, routeManager, contractManager, self.receiveBufferSettings)
-	defer receiveBuffer.Close()
-	forwardBuffer := NewForwardBuffer(self.ctx, self, routeManager, contractManager, self.forwardBufferSettings)
-	defer forwardBuffer.Close()
-
-
-	// export the buffers for inspection
-	self.stateLock.Lock()
-	self.sendBuffer = sendBuffer
-	self.receiveBuffer = receiveBuffer
-	self.forwardBuffer = forwardBuffer
-	self.stateLock.Unlock()
 
 
 	// forward
-	go func() {
-		defer self.cancel()
+	// go func() {
+	// 	defer self.cancel()
 
-		for {
-			select {
-			case <- self.ctx.Done():
-				return
-			case forwardPack, ok := <- self.forwardPacks:
-				if !ok {
-					return
-				}
-				err := forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
-				if err != nil {
-					fmt.Printf("TIMEOUT FORWARD PACK\n")
-				}
-			}
-		}
-	}()
+	// 	for {
+	// 		select {
+	// 		case <- self.ctx.Done():
+	// 			return
+	// 		case forwardPack, ok := <- self.forwardPacks:
+	// 			if !ok {
+	// 				return
+	// 			}
+	// 			err := forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
+	// 			if err != nil {
+	// 				fmt.Printf("TIMEOUT FORWARD PACK\n")
+	// 			}
+	// 		}
+	// 	}
+	// }()
 
 	// send
-	go func() {
-		defer self.cancel()
+	// go func() {
+	// 	defer self.cancel()
 
-		for {
-			select {
-			case <- self.ctx.Done():
-				return
-			case sendPack, ok := <- self.sendPacks:
-				if !ok {
-					return
-				}
-				if sendPack.DestinationId == self.clientId {
-					// loopback
-					func() {
-						defer func() {
-							if err := recover(); err != nil {
-								sendPack.AckCallback(err.(error))
-							}
-						}()
-						self.receive(
-							self.clientId,
-							[]*protocol.Frame{sendPack.Frame},
-							protocol.ProvideMode_Network,
-						)
-						sendPack.AckCallback(nil)
-					}()
-				} else {
-					err := sendBuffer.Pack(sendPack, self.clientSettings.BufferTimeout)
-					if err != nil {
-						fmt.Printf("TIMEOUT SEND PACK\n")
-					}
-				}
-			}
-		}
-	}()
+	// 	for {
+	// 		select {
+	// 		case <- self.ctx.Done():
+	// 			return
+	// 		case sendPack, ok := <- self.sendPacks:
+	// 			if !ok {
+	// 				return
+	// 			}
+	// 			if sendPack.DestinationId == self.clientId {
+	// 				// loopback
+	// 				func() {
+	// 					defer func() {
+	// 						if err := recover(); err != nil {
+	// 							sendPack.AckCallback(err.(error))
+	// 						}
+	// 					}()
+	// 					self.receive(
+	// 						self.clientId,
+	// 						[]*protocol.Frame{sendPack.Frame},
+	// 						protocol.ProvideMode_Network,
+	// 					)
+	// 					sendPack.AckCallback(nil)
+	// 				}()
+	// 			} else {
+	// 				err := sendBuffer.Pack(sendPack, self.clientSettings.BufferTimeout)
+	// 				if err != nil {
+	// 					fmt.Printf("TIMEOUT SEND PACK\n")
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }()
 
 	
 	// receive
-	multiRouteReader := routeManager.OpenMultiRouteReader(self.clientId)
-	defer routeManager.CloseMultiRouteReader(multiRouteReader)
+	multiRouteReader := self.routeManager.OpenMultiRouteReader(self.clientId)
+	defer self.routeManager.CloseMultiRouteReader(multiRouteReader)
 
 	updatePeerAudit := func(sourceId Id, callback func(*PeerAudit)) {
 		// immediately send peer audits at this level
@@ -590,7 +620,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 					continue
 				}
 				transferLog("[%s] Receive ack %s ->: %s", self.clientId.String(), sourceId.String(), ack)
-				err := sendBuffer.Ack(sourceId, ack, self.clientSettings.BufferTimeout)
+				err := self.sendBuffer.Ack(sourceId, ack, self.clientSettings.BufferTimeout)
 				if err != nil {
 					fmt.Printf("TIMEOUT ACK\n")
 				}
@@ -613,7 +643,7 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 					messageByteCount += ByteCount(len(frame.MessageBytes))
 				}
 				transferLog("[%s] Receive pack %s ->: %s", self.clientId.String(), sourceId.String(), pack.Frames)
-				err = receiveBuffer.Pack(&ReceivePack{
+				err = self.receiveBuffer.Pack(&ReceivePack{
 					SourceId: sourceId,
 					SequenceId: sequenceId,
 					Pack: pack,
@@ -682,9 +712,6 @@ func (self *Client) Run(routeManager *RouteManager, contractManager *ContractMan
 }
 
 func (self *Client) ResendQueueSize(destinationId Id) (int, ByteCount, Id) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
 	if self.sendBuffer == nil {
 		return 0, 0, Id{}
 	} else {
@@ -693,9 +720,6 @@ func (self *Client) ResendQueueSize(destinationId Id) (int, ByteCount, Id) {
 }
 
 func (self *Client) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, ByteCount) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-	
 	if self.receiveBuffer == nil {
 		return 0, 0
 	} else {
@@ -703,27 +727,34 @@ func (self *Client) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, ByteCount
 	}
 }
 
-// FIXME receive queue size
-
 func (self *Client) Close() {
 	self.cancel()
 
-	close(self.sendPacks)
-	close(self.forwardPacks)
+	// close(self.sendPacks)
+	// close(self.forwardPacks)
 
-	for {
-		select {
-		case sendPack, ok := <- self.sendPacks:
-			if !ok {
-				return
-			}
-			sendPack.AckCallback(errors.New("Client closed."))
-		}
-	}
+
+	self.sendBuffer.Close()
+	self.receiveBuffer.Close()
+	self.forwardBuffer.Close()
+
+	// for {
+	// 	select {
+	// 	case sendPack, ok := <- self.sendPacks:
+	// 		if !ok {
+	// 			return
+	// 		}
+	// 		sendPack.AckCallback(errors.New("Client closed."))
+	// 	}
+	// }
 }
 
 func (self *Client) Cancel() {
 	self.cancel()
+
+	self.sendBuffer.Cancel()
+	self.receiveBuffer.Cancel()
+	self.forwardBuffer.Cancel()
 }
 
 func (self *Client) Reset() {
@@ -738,6 +769,7 @@ type SendBufferSettings struct {
 	// TODO replace this with round trip time estimation
 	// resend timeout is the initial time between successive send attempts. Does linear backoff
 	ResendInterval time.Duration
+	ResendBackoffScale float64
 
 	// on ack timeout, no longer attempt to retransmit and notify of ack failure
 	AckTimeout time.Duration
@@ -814,9 +846,9 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
 			defer self.mutex.Unlock()
 			// clean up
 			if sendSequence == self.sendSequences[sendPack.DestinationId] {
+				sendSequence.Close()
 				delete(self.sendSequences, sendPack.DestinationId)
 			}
-			sendSequence.Close()
 		}()
 		return sendSequence
 	}
@@ -854,6 +886,17 @@ func (self *SendBuffer) ResendQueueSize(destinationId Id) (int, ByteCount, Id) {
 }
 
 func (self *SendBuffer) Close() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// cancel all open sequences
+	// the control of the sequence will close it
+	for _, sendSequence := range self.sendSequences {
+		sendSequence.Cancel()
+	}
+}
+
+func (self *SendBuffer) Cancel() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -933,13 +976,32 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 		return false, nil
 	}
 	defer self.idleCondition.UpdateClose()
-	select {
-	case <- self.ctx.Done():
-		return false, nil
-	case self.packs <- sendPack:
-		return true, nil
-	case <- time.After(timeout):
-		return true, fmt.Errorf("Timeout")
+
+	if timeout < 0 {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- sendPack:
+			return true, nil
+		}
+	} else if timeout == 0 {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- sendPack:
+			return true, nil
+		default:
+			return false, nil
+		}
+	} else {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- sendPack:
+			return true, nil
+		case <- time.After(timeout):
+			return true, fmt.Errorf("Timeout")
+		}
 	}
 }
 
@@ -952,13 +1014,32 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) error {
 		// ack is for a different send sequence that no longer exists
 		return nil
 	}
-	select {
-	case <- self.ctx.Done():
-		return nil
-	case self.acks <- ack:
-		return nil
-	case <- time.After(timeout):
-		return fmt.Errorf("Timeout")
+
+	if timeout < 0 {
+		select {
+		case <- self.ctx.Done():
+			return nil
+		case self.acks <- ack:
+			return nil
+		}
+	} else if timeout == 0 {
+		select {
+		case <- self.ctx.Done():
+			return nil
+		case self.acks <- ack:
+			return nil
+		default:
+			return nil
+		}
+	} else {
+		select {
+		case <- self.ctx.Done():
+			return nil
+		case self.acks <- ack:
+			return nil
+		case <- time.After(timeout):
+			return fmt.Errorf("Timeout")
+		}
 	}
 }
 
@@ -1065,7 +1146,8 @@ func (self *SendSequence) Run() {
 				item.sendCount += 1
 				// linear backoff
 				// FIXME use constant backoff
-				itemResendTimeout := self.sendBufferSettings.ResendInterval //* time.Duration(item.sendCount)
+				// itemResendTimeout := self.sendBufferSettings.ResendInterval
+				itemResendTimeout := time.Duration(float64(self.sendBufferSettings.ResendInterval) * (1 + self.sendBufferSettings.ResendBackoffScale * float64(item.sendCount)))
 				if itemResendTimeout < itemAckTimeout {
 					item.resendTime = sendTime.Add(itemResendTimeout)
 				} else {
@@ -1640,9 +1722,9 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 			defer self.mutex.Unlock()
 			// clean up
 			if receiveSequence == self.receiveSequences[receiveSequenceId] {
+				receiveSequence.Close()
 				delete(self.receiveSequences, receiveSequenceId)
 			}
-			receiveSequence.Close()
 		}()
 		return receiveSequence
 	}
@@ -1671,6 +1753,17 @@ func (self *ReceiveBuffer) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, By
 }
 
 func (self *ReceiveBuffer) Close() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// cancel all open sequences
+	// the control of the sequence will close it
+	for _, receiveSequence := range self.receiveSequences {
+		receiveSequence.Cancel()
+	}
+}
+
+func (self *ReceiveBuffer) Cancel() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -1746,13 +1839,32 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 		return false, nil
 	}
 	defer self.idleCondition.UpdateClose()
-	select {
-	case <- self.ctx.Done():
-		return false, nil
-	case self.packs <- receivePack:
-		return true, nil
-	case <- time.After(timeout):
-		return true, fmt.Errorf("Timeout")
+
+	if timeout < 0 {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- receivePack:
+			return true, nil
+		}
+	} else if timeout == 0 {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- receivePack:
+			return true, nil
+		default:
+			return false, nil
+		}
+	} else {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- receivePack:
+			return true, nil
+		case <- time.After(timeout):
+			return true, fmt.Errorf("Timeout")
+		}
 	}
 }
 
@@ -2653,9 +2765,9 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 			defer self.mutex.Unlock()
 			// clean up
 			if forwardSequence == self.forwardSequences[forwardPack.DestinationId] {
+				forwardSequence.Close()
 				delete(self.forwardSequences, forwardPack.DestinationId)
 			}
-			forwardSequence.Close()
 		}()
 		return forwardSequence
 	}
@@ -2673,7 +2785,18 @@ func (self *ForwardBuffer) Close() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	// close all open sequences
+	// cancel all open sequences
+	// the control of the sequence will close it
+	for _, forwardSequence := range self.forwardSequences {
+		forwardSequence.Cancel()
+	}
+}
+
+func (self *ForwardBuffer) Cancel() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// cancel all open sequences
 	for _, forwardSequence := range self.forwardSequences {
 		forwardSequence.Cancel()
 	}
@@ -2725,14 +2848,33 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 		return false, nil
 	}
 	defer self.idleCondition.UpdateClose()
-	select {
-	case <- self.ctx.Done():
-		return false, nil
-	case self.packs <- forwardPack:
-		return true, nil
-	case <- time.After(timeout):
-		return true, fmt.Errorf("Timeout")
-	}
+
+	if timeout < 0 {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- forwardPack:
+			return true, nil
+		}
+	} else if timeout == 0 {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- forwardPack:
+			return true, nil
+		default:
+			return false, nil
+		}
+	} else {
+		select {
+		case <- self.ctx.Done():
+			return false, nil
+		case self.packs <- forwardPack:
+			return true, nil
+		case <- time.After(timeout):
+			return true, fmt.Errorf("Timeout")
+		}
+	}	
 }
 
 func (self *ForwardSequence) Run() {

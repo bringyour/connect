@@ -29,12 +29,12 @@ const BUFFER = 1
 // add the source ip as the X-Extender header
 
 
-const DefaultHttpConnectTimeout = 5 * time.Second
-const DefaultWsHandshakeTimeout = 5 * time.Second
-const DefaultAuthTimeout = 5 * time.Second
-const DefaultReconnectTimeout = 5 * time.Second
-const DefaultPingTimeout = 15 * time.Second
-const DefaultWriteTimeout = 15 * time.Second
+const DefaultHttpConnectTimeout = 2 * time.Second
+const DefaultWsHandshakeTimeout = 2 * time.Second
+const DefaultAuthTimeout = 2 * time.Second
+const DefaultReconnectTimeout = 2 * time.Second
+const DefaultPingTimeout = 5 * time.Second
+const DefaultWriteTimeout = 30 * time.Second
 const DefaultReadTimeout = 2 * DefaultPingTimeout
 
 

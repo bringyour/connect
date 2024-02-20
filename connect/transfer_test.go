@@ -24,7 +24,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// timeout between receives or acks
 	timeout := 30 * time.Second
 	// number of messages
-	n := 10
+	n := 1000
 
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,12 +41,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	aConditioner.update(func() {
 		aConditioner.randomDelay = 5 * time.Second
-		aConditioner.lossProbability = 0.1
+		aConditioner.lossProbability = 0.4
 	})
 
 	bConditioner.update(func() {
 		bConditioner.randomDelay = 5 * time.Second
-		bConditioner.lossProbability = 0.1
+		bConditioner.lossProbability = 0.4
 	})
 
 	aSendTransport := newSendTransport()
@@ -68,8 +68,8 @@ func TestSendReceiveSenderReset(t *testing.T) {
 		aRouteManager.Close()
 		aContractManager.Close()
 	}()
-
-	go a.Run(aRouteManager, aContractManager)
+	a.Setup(aRouteManager, aContractManager)
+	go a.Run()
 
 	aRouteManager.UpdateTransport(aSendTransport, []Route{aSend})
 	aRouteManager.UpdateTransport(aReceiveTransport, []Route{aReceive})
@@ -85,8 +85,8 @@ func TestSendReceiveSenderReset(t *testing.T) {
 		bRouteManager.Close()
 		bContractManager.Close()
 	}()
-
-	go b.Run(bRouteManager, bContractManager)
+	b.Setup(bRouteManager, bContractManager)
+	go b.Run()
 
 	bRouteManager.UpdateTransport(bSendTransport, []Route{bSend})
 	bRouteManager.UpdateTransport(bReceiveTransport, []Route{bReceive})
@@ -111,7 +111,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	})
 
 	var ackCount int
-	// var receiveCount int
+	var receiveCount int
 	var receiveMessages map[string]bool
 	
 	
@@ -143,7 +143,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	}()
 
 	ackCount = 0
-	// receiveCount = 0
+	receiveCount = 0
 	receiveMessages = map[string]bool{}
 	for len(receiveMessages) < n || ackCount < n {
 		select {
@@ -151,8 +151,8 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			return
 		case message := <- receives:
 			receiveMessages[message.Content] = true
-			// assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
-			// receiveCount += 1
+			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
+			receiveCount += 1
 		case err := <- acks:
 			assert.Equal(t, err, nil)
 			ackCount += 1
@@ -178,8 +178,8 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	a2 := NewClientWithDefaults(ctx, aClientId)
 	a2RouteManager := NewRouteManager(a2)
 	a2ContractManager := NewContractManagerWithDefaults(a2)
-
-	go a2.Run(a2RouteManager, a2ContractManager)
+	a2.Setup(a2RouteManager, a2ContractManager)
+	go a2.Run()
 
 	a2RouteManager.UpdateTransport(aSendTransport, []Route{aSend})
 	a2RouteManager.UpdateTransport(aReceiveTransport, []Route{aReceive})
@@ -215,7 +215,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	}()
 
 	ackCount = 0
-	// receiveCount = 0
+	receiveCount = 0
 	receiveMessages = map[string]bool{}
 	for len(receiveMessages) < n || ackCount < n {
 		select {
@@ -223,8 +223,8 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			return
 		case message := <- receives:
 			receiveMessages[message.Content] = true
-			// assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
-			// receiveCount += 1
+			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
+			receiveCount += 1
 		case err := <- acks:
 			assert.Equal(t, err, nil)
 			ackCount += 1

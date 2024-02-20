@@ -117,7 +117,8 @@ func provide(opts docopt.Opts) {
 
     routeManager := connect.NewRouteManager(connectClient)
     contractManager := connect.NewContractManagerWithDefaults(connectClient)
-    go connectClient.Run(routeManager, contractManager)
+    connectClient.Setup(routeManager, contractManager)
+    go connectClient.Run()
 
     auth := &connect.ClientAuth{
         ByJwt: byClientJwt,
