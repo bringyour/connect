@@ -37,7 +37,7 @@ const DefaultWsHandshakeTimeout = 2 * time.Second
 const DefaultAuthTimeout = 2 * time.Second
 const DefaultReconnectTimeout = 2 * time.Second
 const DefaultPingTimeout = 5 * time.Second
-const DefaultWriteTimeout = 30 * time.Second
+const DefaultWriteTimeout = 5 * time.Second
 const DefaultReadTimeout = 2 * DefaultPingTimeout
 
 
@@ -252,6 +252,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                         // transportLog("!!!! WRITE MESSAGE %s\n", message)
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
+                            // fmt.Printf("ws write error\n")
                             transportLog("Write message error %s\n", err)
                             return
                         }

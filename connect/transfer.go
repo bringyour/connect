@@ -274,6 +274,10 @@ func (self *Client) InstanceId() Id {
 	return self.instanceId
 }
 
+func (self *Client) SetInstanceId(instanceId Id) {
+	self.instanceId = instanceId
+}
+
 func (self *Client) ReportAbuse(sourceId Id) {
 	peerAudit := NewSequencePeerAudit(self, sourceId, 0)
 	peerAudit.Update(func (peerAudit *PeerAudit) {
