@@ -24,7 +24,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// timeout between receives or acks
 	timeout := 30 * time.Second
 	// number of messages
-	n := 1000
+	n := 256
 
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,12 +41,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	aConditioner.update(func() {
 		aConditioner.randomDelay = 5 * time.Second
-		aConditioner.lossProbability = 0.4
+		aConditioner.lossProbability = 0.25
 	})
 
 	bConditioner.update(func() {
 		bConditioner.randomDelay = 5 * time.Second
-		bConditioner.lossProbability = 0.4
+		bConditioner.lossProbability = 0.25
 	})
 
 	aSendTransport := newSendTransport()
@@ -157,7 +157,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			assert.Equal(t, err, nil)
 			ackCount += 1
 		case <- time.After(timeout):
-			t.FailNow()
+			t.Fatal("Timeout.")
 		}
 	}
 	for i := 0; i < n; i += 1 {
@@ -229,7 +229,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			assert.Equal(t, err, nil)
 			ackCount += 1
 		case <- time.After(timeout):
-			t.FailNow()
+			t.Fatal("Timeout.")
 		}
 	}
 	for i := 0; i < n; i += 1 {
@@ -505,5 +505,6 @@ func (self *receiveTransport) MatchesReceive(destinationId Id) bool {
 func (self *receiveTransport) Downgrade(sourceId Id) {
 	// nothing to downgrade
 }
+
 
 

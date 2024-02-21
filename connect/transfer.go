@@ -5,8 +5,8 @@ import (
 	"time"
 	"sync"
 	"errors"
-	"container/heap"
-	"sort"
+	// "container/heap"
+	// "sort"
 	"math"
 	"math/rand"
 	"reflect"
@@ -93,7 +93,8 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		// this should be greater than the rtt under load
 		// TODO use an rtt estimator based on the ack times
 		ResendInterval: 2 * time.Second,
-		ResendBackoffScale: 0.25,
+		// no backoff
+		ResendBackoffScale: 0.0,
 		AckTimeout: 300 * time.Second,
 		IdleTimeout: 300 * time.Second,
 		// pause on resend for selectively acked messaged
@@ -967,7 +968,7 @@ func NewSendSequence(
 }
 
 func (self *SendSequence) ResendQueueSize() (int, ByteCount, Id) {
-	count, byteSize := self.resendQueue.resendQueueSize()
+	count, byteSize := self.resendQueue.QueueSize()
 	return count, byteSize, self.sequenceId
 }
 
@@ -1098,8 +1099,12 @@ func (self *SendSequence) Run() {
 		} else {
 			timeout = self.sendBufferSettings.AckTimeout
 
-			for 0 < self.resendQueue.Len() {
-				item := self.resendQueue.removeFirst()
+			for {
+				item := self.resendQueue.PeekFirst()
+				if item == nil {
+					break
+				}
+
 				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
 
 				if itemAckTimeout <= 0 {
@@ -1109,8 +1114,6 @@ func (self *SendSequence) Run() {
 				}
 
 				if sendTime.Before(item.resendTime) {
-					// put back on the queue to send later
-					self.resendQueue.add(item)
 					itemResendTimeout := item.resendTime.Sub(sendTime)
 					if itemResendTimeout < timeout {
 						timeout = itemResendTimeout
@@ -1120,6 +1123,8 @@ func (self *SendSequence) Run() {
 					}
 					break
 				}
+
+				self.resendQueue.RemoveByMessageId(item.messageId)
 
 				// resend
 				var transferFrameBytes []byte
@@ -1153,12 +1158,22 @@ func (self *SendSequence) Run() {
 				} else {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				}
-				self.resendQueue.add(item)
+				self.resendQueue.Add(item)
 			}
 		}
 
 		checkpointId := self.idleCondition.Checkpoint()
-		if self.sendBufferSettings.ResendQueueMaxByteCount < self.resendQueue.byteCount {
+
+		// approximate since this cannot consider the next message byte size
+		canQueue := func()(bool) {
+	        // always allow at least one item in the resend queue
+	        queueSize, queueByteCount := self.resendQueue.QueueSize()
+	        if 0 == queueSize {
+	            return true
+	        }
+	        return queueByteCount < self.sendBufferSettings.ResendQueueMaxByteCount
+		}
+		if !canQueue() {
 			transferLog("AT SEND LIMIT %d %d bytes\n", len(self.resendQueue.orderedItems), self.resendQueue.byteCount)
 			
 			// wait for acks
@@ -1183,8 +1198,6 @@ func (self *SendSequence) Run() {
 				}
 			}
 		} else {
-			transferLog("NO SEND LIMIT\n")
-
 			select {
 			case <- self.ctx.Done():
 				return
@@ -1199,6 +1212,7 @@ func (self *SendSequence) Run() {
 				if !ok {
 					return
 				}
+
 				// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
 				if self.updateContract(sendPack.MessageByteCount) {
 					transferLog("[%s] Have contract, sending -> %s: %s", self.clientId.String(), self.destinationId.String(), sendPack.Frame)
@@ -1345,6 +1359,12 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, a
 		sequenceNumber = 0
 	}
 
+
+	// FIXME
+	// simpleMessage := RequireFromFrame(frame).(*protocol.SimpleMessage)
+	// fmt.Printf("[%d] send %d\n", sequenceNumber, simpleMessage.MessageIndex)
+
+
 	pack := &protocol.Pack{
 		MessageId: messageId.Bytes(),
 		SequenceId: self.sequenceId.Bytes(),
@@ -1372,14 +1392,16 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, a
 	transferFrameBytes, _ := proto.Marshal(transferFrame)
 
 	item := &sendItem{
-		messageId: messageId,
+		transferItem: transferItem{
+			messageId: messageId,
+			sequenceNumber: sequenceNumber,
+			messageByteCount: ByteCount(len(frame.MessageBytes)),
+		},
 		contractId: contractId,
-		sequenceNumber: sequenceNumber,
 		sendTime: sendTime,
 		resendTime: sendTime.Add(self.sendBufferSettings.ResendInterval),
 		sendCount: 1,
 		head: head,
-		messageByteCount: ByteCount(len(frame.MessageBytes)),
 		transferFrameBytes: transferFrameBytes,
 		ackCallback: ackCallback,
 		// selectiveAckEnd: time.Time{},
@@ -1388,7 +1410,7 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, a
 
 	if ack {
 		self.sendItems = append(self.sendItems, item)
-		self.resendQueue.add(item)
+		self.resendQueue.Add(item)
 	} else {
 		// immediately ack
 		ackCallback(nil)
@@ -1432,18 +1454,20 @@ func (self *SendSequence) setHead(transferFrameBytes []byte) ([]byte, error) {
 func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 	transferLog("RECEIVE ACK %t\n", selective)
 
-	item, ok := self.resendQueue.messageItems[messageId]
-	if !ok {
+	item := self.resendQueue.GetByMessageId(messageId)
+	if item == nil {
 		transferLog("RECEIVE ACK MISS\n")
-		transferLog("!!!! NO ACK")
 		// message not pending ack
 		return
 	}
 
 	if selective {
-		self.resendQueue.remove(messageId)
+		removed := self.resendQueue.RemoveByMessageId(messageId)
+		if removed == nil {
+			panic(errors.New("Missing item"))
+		}
 		item.resendTime = time.Now().Add(self.sendBufferSettings.SelectiveAckTimeout)
-		self.resendQueue.add(item)
+		self.resendQueue.Add(item)
 		return
 	}
 
@@ -1458,7 +1482,10 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 		}
 		// self.ackedSequenceNumbers[implicitItem.sequenceNumber] = true
 		transferLog("!!!! ACK %d", implicitItem.sequenceNumber)
-		self.resendQueue.remove(implicitItem.messageId)
+		removed := self.resendQueue.RemoveByMessageId(implicitItem.messageId)
+		if removed == nil {
+			panic(errors.New("Missing item"))
+		}
 		implicitItem.ackCallback(nil)
 
 		if implicitItem.contractId != nil {
@@ -1504,21 +1531,23 @@ func (self *SendSequence) Cancel() {
 
 
 type sendItem struct {
-	messageId Id
+	transferItem
+
+	// messageId Id
 	contractId *Id
-	sequenceNumber uint64
+	// sequenceNumber uint64
 	head bool
 	sendTime time.Time
 	resendTime time.Time
 	sendCount int
-	messageByteCount ByteCount
+	// messageByteCount ByteCount
 	transferFrameBytes []byte
 	ackCallback AckFunction
 
 	// selectiveAckEnd time.Time
 
 	// the index of the item in the heap
-	heapIndex int
+	// heapIndex int
 
 	messageType protocol.MessageType
 }
@@ -1527,104 +1556,18 @@ type sendItem struct {
 // a send event queue which is the union of:
 // - resend times
 // - ack timeouts
-type resendQueue struct {
-	orderedItems []*sendItem
-	// message_id -> item
-	messageItems map[Id]*sendItem
-	byteCount ByteCount
-	stateLock sync.Mutex
-}
+type resendQueue = transferQueue[*sendItem]
 
 func newResendQueue() *resendQueue {
-	resendQueue := &resendQueue{
-		orderedItems: []*sendItem{},
-		messageItems: map[Id]*sendItem{},
-		byteCount: ByteCount(0),
-	}
-	heap.Init(resendQueue)
-	return resendQueue
-}
-
-func (self *resendQueue) resendQueueSize() (int, ByteCount) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	return len(self.orderedItems), self.byteCount
-}
-
-func (self *resendQueue) add(item *sendItem) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	self.messageItems[item.messageId] = item
-	heap.Push(self, item)
-	self.byteCount += ByteCount(len(item.transferFrameBytes))
-}
-
-func (self *resendQueue) remove(messageId Id) *sendItem {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	item, ok := self.messageItems[messageId]
-	if !ok {
-		return nil
-	}
-	delete(self.messageItems, messageId)
-	item_ := heap.Remove(self, item.heapIndex)
-	if item != item_ {
-		panic("Heap invariant broken.")
-	}
-	self.byteCount -= ByteCount(len(item.transferFrameBytes))
-	return item
-}
-
-func (self *resendQueue) removeFirst() *sendItem {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	first := heap.Pop(self)
-	if first == nil {
-		return nil
-	}
-	item := first.(*sendItem)
-	delete(self.messageItems, item.messageId)
-	self.byteCount -= ByteCount(len(item.transferFrameBytes))
-	return item
-}
-
-// heap.Interface
-
-func (self *resendQueue) Push(x any) {
-	item := x.(*sendItem)
-	item.heapIndex = len(self.orderedItems)
-	self.orderedItems = append(self.orderedItems, item)
-}
-
-func (self *resendQueue) Pop() any {
-	i := len(self.orderedItems) - 1
-	item := self.orderedItems[i]
-	self.orderedItems[i] = nil
-	self.orderedItems = self.orderedItems[:i]
-	return item
-}
-
-// sort.Interface
-
-func (self *resendQueue) Len() int {
-	return len(self.orderedItems)
-}
-
-func (self *resendQueue) Less(i int, j int) bool {
-	return self.orderedItems[i].resendTime.Before(self.orderedItems[j].resendTime)
-}
-
-func (self *resendQueue) Swap(i int, j int) {
-	a := self.orderedItems[i]
-	b := self.orderedItems[j]
-	b.heapIndex = i
-	self.orderedItems[i] = b
-	a.heapIndex = j
-	self.orderedItems[j] = a
+	return newTransferQueue[*sendItem](func(a *sendItem, b *sendItem)(int) {
+		if a.resendTime.Before(b.resendTime) {
+			return -1
+		} else if b.resendTime.Before(a.resendTime) {
+			return 1
+		} else {
+			return 0
+		}
+	})
 }
 
 
@@ -1831,7 +1774,7 @@ func NewReceiveSequence(
 }
 
 func (self *ReceiveSequence) ReceiveQueueSize() (int, ByteCount) {
-	return self.receiveQueue.receiveQueueSize()
+	return self.receiveQueue.QueueSize()
 }
 
 func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
@@ -1905,12 +1848,16 @@ func (self *ReceiveSequence) Run() {
 		receiveTime := time.Now()
 		var timeout time.Duration
 		
-		if 0 == self.receiveQueue.Len() {
+		size, _ := self.receiveQueue.QueueSize()
+		if 0 == size {
 			timeout = self.receiveBufferSettings.IdleTimeout
 		} else {
 			timeout = self.receiveBufferSettings.GapTimeout
-			for 0 < self.receiveQueue.Len() {
-				item := self.receiveQueue.removeFirst()
+			for {
+				item := self.receiveQueue.PeekFirst()
+				if item == nil {
+					break
+				}
 
 				itemGapTimeout := item.receiveTime.Add(self.receiveBufferSettings.GapTimeout).Sub(receiveTime)
 				if itemGapTimeout < 0 {
@@ -1923,8 +1870,6 @@ func (self *ReceiveSequence) Run() {
 
 				if self.nextSequenceNumber < item.sequenceNumber {
 					transferLog("[%s] Head of sequence is not next %d <> %d: %s", self.clientId.String(), self.nextSequenceNumber, item.sequenceNumber, item.frames)
-					// put back
-					self.receiveQueue.add(item)
 					if itemGapTimeout < timeout {
 						timeout = itemGapTimeout
 					}
@@ -1932,6 +1877,7 @@ func (self *ReceiveSequence) Run() {
 				}
 				// item.sequenceNumber <= self.nextSequenceNumber
 
+				self.receiveQueue.RemoveByMessageId(item.messageId)
 				
 				
 				if self.nextSequenceNumber == item.sequenceNumber {
@@ -2005,26 +1951,27 @@ func (self *ReceiveSequence) Run() {
 			// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
 			} else if self.nextSequenceNumber <= receivePack.Pack.SequenceNumber {
 				// store only up to a max size in the receive queue
-				canBuffer := func(byteCount ByteCount)(bool) {
+				canQueue := func(byteCount ByteCount)(bool) {
 			        // always allow at least one item in the receive queue
-			        if 0 == self.receiveQueue.Len() {
+			        queueSize, queueByteCount := self.receiveQueue.QueueSize()
+			        if 0 == queueSize {
 			            return true
 			        }
-			        return self.receiveQueue.byteCount + byteCount < self.receiveBufferSettings.ReceiveQueueMaxByteCount
+			        return queueByteCount + byteCount < self.receiveBufferSettings.ReceiveQueueMaxByteCount
 				}
 
 				// remove later items to fit
-				for !canBuffer(receivePack.MessageByteCount) {
+				for !canQueue(receivePack.MessageByteCount) {
 			        transferLog("!!!! 3")
-			        lastItem := self.receiveQueue.peekLast()
+			        lastItem := self.receiveQueue.PeekLast()
 			        if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
-			           	self.receiveQueue.remove(lastItem.messageId)
+			           	self.receiveQueue.RemoveByMessageId(lastItem.messageId)
 			        } else {
 			        	break
 			        }
 				}
 
-				if canBuffer(receivePack.MessageByteCount) {
+				if canQueue(receivePack.MessageByteCount) {
 					received, err := self.receive(receivePack)
 					if err != nil {
 						// bad message
@@ -2222,6 +2169,7 @@ func (self *ReceiveSequence) compressAndSendAcks() {
 }
 
 func (self *ReceiveSequence) receiveHead(item *receiveItem) {
+	// fmt.Printf("[%d] receive\n", item.sequenceNumber)
 	self.peerAudit.Update(func(a *PeerAudit) {
 		a.received(item.messageByteCount)
 	})
@@ -2338,12 +2286,15 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	transferLog("!!!! R %d", sequenceNumber)
 
 	item := &receiveItem{
+		transferItem: transferItem{
+			messageId: messageId,
+			sequenceNumber: sequenceNumber,
+			messageByteCount: receivePack.MessageByteCount,
+		},
+		
 		contractId: contractId,
-		messageId: messageId,
-		sequenceNumber: sequenceNumber,
 		receiveTime: receiveTime,
 		frames: receivePack.Pack.Frames,
-		messageByteCount: receivePack.MessageByteCount,
 		receiveCallback: receivePack.ReceiveCallback,
 		head: receivePack.Pack.Head,
 		ack: !receivePack.Pack.Nack,
@@ -2356,13 +2307,13 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 
 
 	// replace with the latest value (check both messageId and sequenceNumber)
-	if item := self.receiveQueue.remove(messageId); item != nil {
+	if item := self.receiveQueue.RemoveByMessageId(messageId); item != nil {
 		transferLog("!!!! 1")
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(item.messageByteCount)
 		})
 	}
-	if item := self.receiveQueue.removeBySequenceNumber(receivePack.Pack.SequenceNumber); item != nil {
+	if item := self.receiveQueue.RemoveBySequenceNumber(receivePack.Pack.SequenceNumber); item != nil {
 		transferLog("!!!! 2")
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(item.messageByteCount)
@@ -2392,7 +2343,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			return false, nil
 		}
 	} else {
-		self.receiveQueue.add(item)
+		self.receiveQueue.Add(item)
 		self.sendAck(sequenceNumber, messageId, true)
 		transferLog("ACK C SELECTIVE\n")
 		return true, nil
@@ -2414,12 +2365,14 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 	}
 
 	item := &receiveItem{
+		transferItem: transferItem{
+			messageId: messageId,
+			sequenceNumber: sequenceNumber,
+			messageByteCount: receivePack.MessageByteCount,
+		},
 		contractId: contractId,
-		messageId: messageId,
-		sequenceNumber: sequenceNumber,
 		receiveTime: receiveTime,
 		frames: receivePack.Pack.Frames,
-		messageByteCount: receivePack.MessageByteCount,
 		receiveCallback: receivePack.ReceiveCallback,
 		head: receivePack.Pack.Head,
 		ack: !receivePack.Pack.Nack,
@@ -2475,160 +2428,39 @@ type sendAck struct {
 
 
 type receiveItem struct {
+	transferItem
+
 	contractId *Id
-	messageId Id
+	// messageId Id
 	
-	sequenceNumber uint64
+	// sequenceNumber uint64
 	head bool
 	receiveTime time.Time
 	frames []*protocol.Frame
-	messageByteCount ByteCount
+	// messageByteCount ByteCount
 	receiveCallback ReceiveFunction
 
 	// the index of the item in the heap
-	heapIndex int
+	// heapIndex int
+	// maxHeapIndex int
 
 	ack bool
 }
 
 
 // ordered by sequenceNumber
-type receiveQueue struct {
-	orderedItems []*receiveItem
-	// message_id -> item
-	messageItems map[Id]*receiveItem
-	byteCount ByteCount
-	stateLock sync.Mutex
-}
+type receiveQueue = transferQueue[*receiveItem]
 
 func newReceiveQueue() *receiveQueue {
-	receiveQueue := &receiveQueue{
-		orderedItems: []*receiveItem{},
-		messageItems: map[Id]*receiveItem{},
-		byteCount: 0,
-	}
-	heap.Init(receiveQueue)
-	return receiveQueue
-}
-
-func (self *receiveQueue) receiveQueueSize() (int, ByteCount) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	return len(self.orderedItems), self.byteCount
-}
-
-func (self *receiveQueue) add(item *receiveItem) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	self.messageItems[item.messageId] = item
-	heap.Push(self, item)
-	transferLog("!!!! P %d %d", item.sequenceNumber, item.heapIndex)
-	self.byteCount += item.messageByteCount
-}
-
-func (self *receiveQueue) remove(messageId Id) *receiveItem {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	item, ok := self.messageItems[messageId]
-	if !ok {
-		return nil
-	}
-	delete(self.messageItems, messageId)
-	item_ := heap.Remove(self, item.heapIndex)
-	if item != item_ {
-		panic("Heap invariant broken.")
-	}
-
-	// self.orderedItems = slices.DeleteFunc(self.orderedItems, func(i *receiveItem)(bool) {
-	// 	return i.messageId == messageId
-	// })
-	// heap.Init(self)
-	self.byteCount -= item.messageByteCount
-	return item
-}
-
-func (self *receiveQueue) removeBySequenceNumber(sequenceNumber uint64) *receiveItem {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	i, found := sort.Find(len(self.orderedItems), func(i int)(int) {
-		d := sequenceNumber - self.orderedItems[i].sequenceNumber
-		if d < 0 {
+	return newTransferQueue[*receiveItem](func(a *receiveItem, b *receiveItem)(int) {
+		if a.sequenceNumber < b.sequenceNumber {
 			return -1
-		} else if 0 < d {
+		} else if b.sequenceNumber < a.sequenceNumber {
 			return 1
 		} else {
 			return 0
 		}
 	})
-	if found && sequenceNumber == self.orderedItems[i].sequenceNumber {
-		return self.remove(self.orderedItems[i].messageId)
-	}
-	return nil
-}
-
-func (self *receiveQueue) removeFirst() *receiveItem {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	first := heap.Pop(self)
-	if first == nil {
-		return nil
-	}
-	item := first.(*receiveItem)
-	transferLog("!!!! POP %d %d: %d", item.sequenceNumber, item.heapIndex, self.Len())
-	delete(self.messageItems, item.messageId)
-	self.byteCount -= item.messageByteCount
-	return item
-}
-
-func (self *receiveQueue) peekLast() *receiveItem {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-
-	if len(self.orderedItems) == 0 {
-		return nil
-	}
-	return self.orderedItems[0]
-}
-
-// heap.Interface
-
-func (self *receiveQueue) Push(x any) {
-	item := x.(*receiveItem)
-	item.heapIndex = len(self.orderedItems)
-	self.orderedItems = append(self.orderedItems, item)
-}
-
-func (self *receiveQueue) Pop() any {
-	n := len(self.orderedItems)
-	i := n - 1
-	item := self.orderedItems[i]
-	self.orderedItems[i] = nil
-	self.orderedItems = self.orderedItems[:n-1]
-	return item
-}
-
-// sort.Interface
-
-func (self *receiveQueue) Len() int {
-	return len(self.orderedItems)
-}
-
-func (self *receiveQueue) Less(i int, j int) bool {
-	return self.orderedItems[i].sequenceNumber < self.orderedItems[j].sequenceNumber
-}
-
-func (self *receiveQueue) Swap(i int, j int) {
-	a := self.orderedItems[i]
-	b := self.orderedItems[j]
-	b.heapIndex = i
-	self.orderedItems[i] = b
-	a.heapIndex = j
-	self.orderedItems[j] = a
 }
 
 
