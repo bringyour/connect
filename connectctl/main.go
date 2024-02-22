@@ -515,6 +515,9 @@ func send(opts docopt.Opts) {
         messageCount = 1
     }
 
+    // need at least one. Use more for testing.
+    transportCount := 4
+
     timeout := 30 * time.Second
 
 
@@ -541,14 +544,15 @@ func send(opts docopt.Opts) {
         InstanceId: client.InstanceId(),
         AppVersion: fmt.Sprintf("connectctl %s", ConnectCtlVersion),
     }
-    platformTransport := connect.NewPlatformTransportWithDefaults(
-        cancelCtx,
-        fmt.Sprintf("%s/", connectUrl),
-        auth,
-    )
-    defer platformTransport.Close()
-
-    go platformTransport.Run(routeManager)
+    for i := 0; i < transportCount; i += 1 {
+        platformTransport := connect.NewPlatformTransportWithDefaults(
+            cancelCtx,
+            fmt.Sprintf("%s/", connectUrl),
+            auth,
+        )
+        defer platformTransport.Close()
+        go platformTransport.Run(routeManager)
+    }
 
 
     provideModes := map[protocol.ProvideMode]bool{
@@ -634,6 +638,8 @@ func sink(opts docopt.Opts) {
         messageCount = -1
     }
 
+    transportCount := 4
+
     instanceIdStr, err := opts.String("--instance_id")
     var instanceId connect.Id
     if err == nil {
@@ -678,14 +684,15 @@ func sink(opts docopt.Opts) {
         InstanceId: client.InstanceId(),
         AppVersion: fmt.Sprintf("connectctl %s", ConnectCtlVersion),
     }
-    platformTransport := connect.NewPlatformTransportWithDefaults(
-        cancelCtx,
-        fmt.Sprintf("%s/", connectUrl),
-        auth,
-    )
-    defer platformTransport.Close()
-
-    go platformTransport.Run(routeManager)
+    for i := 0; i < transportCount; i += 1 {
+        platformTransport := connect.NewPlatformTransportWithDefaults(
+            cancelCtx,
+            fmt.Sprintf("%s/", connectUrl),
+            auth,
+        )
+        defer platformTransport.Close()
+        go platformTransport.Run(routeManager)
+    }
 
     type Receive struct {
         sourceId connect.Id

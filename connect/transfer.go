@@ -570,9 +570,10 @@ func (self *Client) Run() {
 			return
 		default:
 		}
+		// fmt.Printf("read (->%s) active=%v inactive=%v\n", self.clientId, multiRouteReader.GetActiveRoutes(), multiRouteReader.GetInactiveRoutes())
+			
 		transferFrameBytes, err := multiRouteReader.Read(self.ctx, self.clientSettings.ReadTimeout)
 		if err != nil {
-			transferLog("READ TIMEOUT: active=%v inactive=%v (%s)\n", multiRouteReader.GetActiveRoutes(), multiRouteReader.GetInactiveRoutes(), err)
 			continue
 		}
 		// at this point, the route is expected to have already parsed the transfer frame
@@ -1145,11 +1146,16 @@ func (self *SendSequence) Run() {
 					transferFrameBytes = item.transferFrameBytes
 				}
 				transferLog("!!!! RESEND %d [%s]", item.sequenceNumber, self.destinationId.String())
+				// fmt.Printf("buffer resend write message %s->\n", self.clientId)
+				// a := time.Now()
 				if err := self.multiRouteWriter.Write(self.ctx, transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
 					transferLog("!! WRITE TIMEOUT A\n")
+					// d := time.Now().Sub(a)
+					// fmt.Printf("buffer resend write message %s-> (%s) %.2fms\n", self.clientId, err, float64(d) / float64(time.Millisecond))
 				} else {
-					clientId := self.client.ClientId()
-					transferLog("WROTE RESEND: %s, %s -> messageId=%s clientId=%s sequenceId=%s\n", item.messageType, clientId.String(), item.messageId.String(), self.destinationId.String(), self.sequenceId.String())
+					transferLog("WROTE RESEND: %s, %s -> messageId=%s clientId=%s sequenceId=%s\n", item.messageType, self.clientId.String(), item.messageId.String(), self.destinationId.String(), self.sequenceId.String())
+					// d := time.Now().Sub(a)
+					// fmt.Printf("buffer resend write message %s-> %.2fms\n", self.clientId, float64(d) / float64(time.Millisecond))
 				}
 
 				item.sendCount += 1
@@ -1221,6 +1227,7 @@ func (self *SendSequence) Run() {
 				if self.updateContract(sendPack.MessageByteCount) {
 					transferLog("[%s] Have contract, sending -> %s: %s", self.clientId.String(), self.destinationId.String(), sendPack.Frame)
 					item := self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack)
+					// fmt.Printf("buffer send write message %s->\n", self.clientId)
 					if err := self.multiRouteWriter.Write(self.ctx, item.transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
 						transferLog("!! WRITE TIMEOUT B\n")
 					} else {
@@ -1380,11 +1387,10 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, a
 
 	packBytes, _ := proto.Marshal(pack)
 
-	clientId := self.client.ClientId()
 	transferFrame := &protocol.TransferFrame{
 		TransferPath: &protocol.TransferPath{
 			DestinationId: self.destinationId.Bytes(),
-			SourceId: clientId.Bytes(),
+			SourceId: self.clientId.Bytes(),
 			StreamId: DirectStreamId.Bytes(),
 		},
 		Frame: &protocol.Frame{
@@ -1906,8 +1912,12 @@ func (self *ReceiveSequence) Run() {
 						})
 						return
 					}
+				} else {
+					// this item is a resend of a previous item
+					if item.ack {
+						self.sendAck(item.sequenceNumber, item.messageId, false)
+					}
 				}
-				// else this item is a resend of a previous item
 			}
 		}
 
@@ -2069,11 +2079,10 @@ func (self *ReceiveSequence) compressAndSendAcks() {
 
 		ackBytes, _ := proto.Marshal(ack)
 
-		clientId := self.client.ClientId()
 		transferFrame := &protocol.TransferFrame{
 			TransferPath: &protocol.TransferPath{
 				DestinationId: self.sourceId.Bytes(),
-				SourceId: clientId.Bytes(),
+				SourceId: self.clientId.Bytes(),
 				StreamId: DirectStreamId.Bytes(),
 			},
 			Frame: &protocol.Frame{
@@ -2084,10 +2093,11 @@ func (self *ReceiveSequence) compressAndSendAcks() {
 
 		transferFrameBytes, _ := proto.Marshal(transferFrame)
 
+		// fmt.Printf("buffer write ack %s->\n", self.clientId)
 		if err := multiRouteWriter.Write(self.ctx, transferFrameBytes, self.receiveBufferSettings.WriteTimeout); err != nil {
 			transferLog("!! WRITE TIMEOUT D\n")
 		} else {
-			transferLog("WROTE ACK: %s -> messageId=%s clientId=%s sequenceId=%s\n", clientId.String(), sendAck.messageId.String(), self.sourceId.String(), self.sequenceId.String())
+			transferLog("WROTE ACK: %s -> messageId=%s clientId=%s sequenceId=%s\n", self.clientId.String(), sendAck.messageId.String(), self.sourceId.String(), self.sequenceId.String())
 		}
 	}
 
@@ -2310,15 +2320,17 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	}
 
 
-	// replace with the latest value (check both messageId and sequenceNumber)
-	if item := self.receiveQueue.RemoveByMessageId(messageId); item != nil {
-		transferLog("!!!! 1")
+
+	if item := self.receiveQueue.RemoveBySequenceNumber(sequenceNumber); item != nil {
+		transferLog("!!!! 2")
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(item.messageByteCount)
 		})
 	}
-	if item := self.receiveQueue.RemoveBySequenceNumber(receivePack.Pack.SequenceNumber); item != nil {
-		transferLog("!!!! 2")
+
+	// replace with the latest value (check both messageId and sequenceNumber)
+	if item := self.receiveQueue.RemoveByMessageId(messageId); item != nil {
+		transferLog("!!!! 1")
 		self.peerAudit.Update(func(a *PeerAudit) {
 			a.resend(item.messageByteCount)
 		})
@@ -2344,6 +2356,9 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			}
 		} else {
 			// this item is a resend of a previous item
+			if item.ack {
+				self.sendAck(sequenceNumber, messageId, false)
+			}
 			return false, nil
 		}
 	} else {
@@ -2650,6 +2665,7 @@ type ForwardSequence struct {
 	cancel context.CancelFunc
 
 	client *Client
+	clientId Id
 	routeManager *RouteManager
 	contractManager *ContractManager
 
@@ -2676,6 +2692,7 @@ func NewForwardSequence(
 		ctx: cancelCtx,
 		cancel: cancel,
 		client: client,
+		clientId: client.ClientId(),
 		routeManager: routeManager,
 		contractManager: contractManager,
 		destinationId: destinationId,
@@ -2731,6 +2748,7 @@ func (self *ForwardSequence) Run() {
 		case <- self.ctx.Done():
 			return
 		case forwardPack := <- self.packs:
+			// fmt.Printf("buffer forward write message %s->\n", self.clientId)
 			if err := self.multiRouteWriter.Write(self.ctx, forwardPack.TransferFrameBytes, self.forwardBufferSettings.WriteTimeout); err != nil {
 				transferLog("!! WRITE TIMEOUT E: active=%v inactive=%v (%s)\n", self.multiRouteWriter.GetActiveRoutes(), self.multiRouteWriter.GetInactiveRoutes(), err)
 			}
@@ -2873,6 +2891,8 @@ type Route = chan []byte
 
 
 type Transport interface {
+	TransportId() Id
+	
 	// lower priority takes precedence
 	Priority() int
 	
@@ -2930,28 +2950,28 @@ func (self *RouteManager) OpenMultiRouteWriter(destinationId Id) MultiRouteWrite
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	return MultiRouteWriter(self.writerMatchState.OpenMultiRouteSelector(destinationId))
+	return MultiRouteWriter(self.writerMatchState.openMultiRouteSelector(destinationId))
 }
 
 func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	self.writerMatchState.CloseMultiRouteSelector(w.(*MultiRouteSelector))
+	self.writerMatchState.closeMultiRouteSelector(w.(*MultiRouteSelector))
 }
 
 func (self *RouteManager) OpenMultiRouteReader(destinationId Id) MultiRouteReader {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	return MultiRouteReader(self.readerMatchState.OpenMultiRouteSelector(destinationId))
+	return MultiRouteReader(self.readerMatchState.openMultiRouteSelector(destinationId))
 }
 
 func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	self.readerMatchState.CloseMultiRouteSelector(r.(*MultiRouteSelector))
+	self.readerMatchState.closeMultiRouteSelector(r.(*MultiRouteSelector))
 }
 
 func (self *RouteManager) UpdateTransport(transport Transport, routes []Route) {
@@ -2986,8 +3006,10 @@ type MatchState struct {
 
 	transportRoutes map[Transport][]Route
 
+	// destination id -> multi route selectors
 	destinationMultiRouteSelectors map[Id]map[*MultiRouteSelector]bool
 
+	// transport -> destination ids
 	transportMatchedDestinations map[Transport]map[Id]bool
 }
 
@@ -3023,7 +3045,9 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 	return netStats
 }
 
-func (self *MatchState) OpenMultiRouteSelector(destinationId Id) *MultiRouteSelector {
+func (self *MatchState) openMultiRouteSelector(destinationId Id) *MultiRouteSelector {
+	// fmt.Printf("create selector transports=%d\n", len(self.transportRoutes))
+
 	ctx, cancel := context.WithCancel(context.Background())
 	multiRouteSelector := NewMultiRouteSelector(ctx, cancel, destinationId, self.weightedRoutes)
 
@@ -3051,7 +3075,7 @@ func (self *MatchState) OpenMultiRouteSelector(destinationId Id) *MultiRouteSele
 	return multiRouteSelector
 }
 
-func (self *MatchState) CloseMultiRouteSelector(multiRouteSelector *MultiRouteSelector) {
+func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSelector) {
 	// TODO readers do not need to prioritize routes
 
 	destinationId := multiRouteSelector.destinationId
@@ -3071,7 +3095,13 @@ func (self *MatchState) CloseMultiRouteSelector(multiRouteSelector *MultiRouteSe
 }
 
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
-	if routes == nil {
+	// c := 0
+	// for _, multiRouteSelectors := range self.destinationMultiRouteSelectors {
+	// 	c += len(multiRouteSelectors)
+	// }
+	// fmt.Printf("update transport selectors=%d routes=%v\n", c, routes)
+
+	if len(routes) == 0 {
 		if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
 			for destinationId, _ := range currentMatchedDestinations {
 				if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]; ok {
@@ -3087,24 +3117,21 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 	} else {
 		matchedDestinations := map[Id]bool{}
 
+		currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]
+		if !ok {
+			currentMatchedDestinations = map[Id]bool{}
+		}
+
 		for destinationId, multiRouteSelectors := range self.destinationMultiRouteSelectors {
 			if self.matches(transport, destinationId) {
 				matchedDestinations[destinationId] = true
 				for multiRouteSelector, _ := range multiRouteSelectors {
 					multiRouteSelector.updateTransport(transport, routes)
 				}
-			}
-		}
-
-		if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
-			for destinationId, _ := range currentMatchedDestinations {
-				if _, ok := currentMatchedDestinations[destinationId]; !ok {
-					// no longer matches
-					if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]; ok {
-						for multiRouteSelector, _ := range multiRouteSelectors {
-							multiRouteSelector.updateTransport(transport, nil)
-						}
-					}
+			} else if _, ok := currentMatchedDestinations[destinationId]; ok {
+				// no longer matches
+				for multiRouteSelector, _ := range multiRouteSelectors {
+					multiRouteSelector.updateTransport(transport, nil)
 				}
 			}
 		}
@@ -3175,18 +3202,33 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	if routes == nil {
-		currentRoutes, ok := self.transportRoutes[transport]
-		if !ok {
-			// transport not set
+	// activeRoutes := func()([]Route) {
+	// 	activeRoutes := []Route{}
+	// 	for _, routes := range self.transportRoutes {
+	// 		for _, route := range routes {
+	// 			if self.routeActive[route] {
+	// 				activeRoutes = append(activeRoutes, route)
+	// 			}
+	// 		}
+	// 	}
+	// 	return activeRoutes
+	// }
+
+	// preTransportCount := len(self.transportRoutes)
+	// preActiveRouteCount := len(activeRoutes())
+
+	if len(routes) == 0 {
+		if currentRoutes, ok := self.transportRoutes[transport]; ok {
+			for _, currentRoute := range currentRoutes {
+				delete(self.routeStats, currentRoute)
+				delete(self.routeActive, currentRoute)
+				delete(self.routeWeight, currentRoute)
+			}
+			delete(self.transportRoutes, transport)
+		} else {
+			// transport is not active. nothing to do
 			return
 		}
-		for _, currentRoute := range currentRoutes {
-			delete(self.routeStats, currentRoute)
-			delete(self.routeActive, currentRoute)
-			delete(self.routeWeight, currentRoute)
-		}
-		delete(self.transportRoutes, transport)
 	} else {
 		if currentRoutes, ok := self.transportRoutes[transport]; ok {
 			for _, currentRoute := range currentRoutes {
@@ -3217,36 +3259,63 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 	}
 
 	if self.weightedRoutes {
-		updatedRouteWeight := map[Route]float32{}
+		self.updateRouteWeights()
+	}
 
-		transportStats := map[Transport]*RouteStats{}
-		for transport, currentRoutes := range self.transportRoutes {
-			netStats := NewRouteStats()
-			for _, currentRoute := range currentRoutes {
-				if stats, ok := self.routeStats[currentRoute]; ok {
-					netStats.sendCount += stats.sendCount
-					netStats.sendByteCount += stats.sendByteCount
-					netStats.receiveCount += stats.receiveCount
-					netStats.receiveByteCount += stats.receiveByteCount
-				}
+	self.transportUpdate.NotifyAll()
+
+
+	// postTransportCount := len(self.transportRoutes)
+	// postActiveRouteCount := len(activeRoutes())
+		
+	// fmt.Printf("updated transports=%d->%d routes=%d->%d\n", preTransportCount, postTransportCount, preActiveRouteCount, postActiveRouteCount)
+}
+
+func (self *MultiRouteSelector) updateRouteWeights() {
+	updatedRouteWeight := map[Route]float32{}
+
+	transportStats := map[Transport]*RouteStats{}
+	for transport, currentRoutes := range self.transportRoutes {
+		netStats := NewRouteStats()
+		for _, currentRoute := range currentRoutes {
+			if stats, ok := self.routeStats[currentRoute]; ok {
+				netStats.sendCount += stats.sendCount
+				netStats.sendByteCount += stats.sendByteCount
+				netStats.receiveCount += stats.receiveCount
+				netStats.receiveByteCount += stats.receiveByteCount
 			}
-			transportStats[transport] = netStats
 		}
+		transportStats[transport] = netStats
+	}
 
-		orderedTransports := maps.Keys(self.transportRoutes)
-		// shuffle the same priority values
-		rand.Shuffle(len(orderedTransports), func(i int, j int) {
-			t := orderedTransports[i]
-			orderedTransports[i] = orderedTransports[j]
-			orderedTransports[j] = t
-		})
-		slices.SortStableFunc(orderedTransports, func(a Transport, b Transport)(int) {
-			return a.Priority() - b.Priority()
-		})
+	orderedTransports := maps.Keys(self.transportRoutes)
+	// shuffle the same priority values
+	rand.Shuffle(len(orderedTransports), func(i int, j int) {
+		t := orderedTransports[i]
+		orderedTransports[i] = orderedTransports[j]
+		orderedTransports[j] = t
+	})
+	slices.SortStableFunc(orderedTransports, func(a Transport, b Transport)(int) {
+		return a.Priority() - b.Priority()
+	})
 
-		n := len(orderedTransports)
+	n := len(orderedTransports)
 
-		allCanEval := true
+	allCanEval := true
+	for i := 0; i < n; i += 1 {
+		transport := orderedTransports[i]
+		routeStats := transportStats[transport]
+		remainingStats := map[Transport]*RouteStats{}
+		for j := i + 1; j < n; j += 1 {
+			remainingStats[orderedTransports[j]] = transportStats[orderedTransports[j]]
+		}
+		canEval := transport.CanEvalRouteWeight(routeStats, remainingStats)
+		allCanEval = allCanEval && canEval
+	}
+
+	if allCanEval {
+		var allWeight float32
+		allWeight = 1.0
 		for i := 0; i < n; i += 1 {
 			transport := orderedTransports[i]
 			routeStats := transportStats[transport]
@@ -3254,41 +3323,24 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
 			for j := i + 1; j < n; j += 1 {
 				remainingStats[orderedTransports[j]] = transportStats[orderedTransports[j]]
 			}
-			canEval := transport.CanEvalRouteWeight(routeStats, remainingStats)
-			allCanEval = allCanEval && canEval
+			weight := transport.RouteWeight(routeStats, remainingStats)
+			for _, route := range self.transportRoutes[transport] {
+				updatedRouteWeight[route] = allWeight * weight
+			}
+			allWeight *= (1.0 - weight)
 		}
 
-		if allCanEval {
-			var allWeight float32
-			allWeight = 1.0
-			for i := 0; i < n; i += 1 {
-				transport := orderedTransports[i]
-				routeStats := transportStats[transport]
-				remainingStats := map[Transport]*RouteStats{}
-				for j := i + 1; j < n; j += 1 {
-					remainingStats[orderedTransports[j]] = transportStats[orderedTransports[j]]
-				}
-				weight := transport.RouteWeight(routeStats, remainingStats)
-				for _, route := range self.transportRoutes[transport] {
-					updatedRouteWeight[route] = allWeight * weight
-				}
-				allWeight *= (1.0 - weight)
-			}
+		self.routeWeight = updatedRouteWeight
 
-			self.routeWeight = updatedRouteWeight
-
-			updatedRouteStats := map[Route]*RouteStats{}
-			for _, currentRoutes := range self.transportRoutes {
-				for _, currentRoute := range currentRoutes {
-					// reset the stats
-					updatedRouteStats[currentRoute] = NewRouteStats()
-				}
+		updatedRouteStats := map[Route]*RouteStats{}
+		for _, currentRoutes := range self.transportRoutes {
+			for _, currentRoute := range currentRoutes {
+				// reset the stats
+				updatedRouteStats[currentRoute] = NewRouteStats()
 			}
-			self.routeStats = updatedRouteStats
 		}
+		self.routeStats = updatedRouteStats
 	}
-
-	self.transportUpdate.NotifyAll()
 }
 
 func (self *MultiRouteSelector) GetActiveRoutes() []Route {
@@ -3305,9 +3357,7 @@ func (self *MultiRouteSelector) GetActiveRoutes() []Route {
 	}
 
 	rand.Shuffle(len(activeRoutes), func(i int, j int) {
-		t := activeRoutes[i]
-		activeRoutes[i] = activeRoutes[j]
-		activeRoutes[j] = t
+		activeRoutes[i], activeRoutes[j] = activeRoutes[j], activeRoutes[i]
 	})
 
 	if self.weightedRoutes {
@@ -3400,6 +3450,16 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 		notify := self.transportUpdate.NotifyChannel()
 		activeRoutes := self.GetActiveRoutes()
 
+		// non-blocking priority 
+		for _, route := range activeRoutes {
+			select {
+			case route <- transportFrameBytes:
+				self.updateSendStats(route, 1, ByteCount(len(transportFrameBytes)))
+				return nil
+			default:
+			}
+		}
+
 		// select cases are in order:
 		// - ctx.Done
 		// - self.ctx.Done
@@ -3460,8 +3520,14 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
 			}
 		}
 
+		// fmt.Printf("write (->%s) select from %d routes (%d transports)\n", self.destinationId, timeoutIndex - routeStartIndex, len(self.transportRoutes))
+
+
 		// note writing to a channel does not return an ok value
+		// a := time.Now()
 		chosenIndex, _, _ := reflect.Select(selectCases)
+		// d := time.Now().Sub(a)
+		// fmt.Printf("write (->%s) selected from %d routes (%.2fms)\n", self.destinationId, timeoutIndex - routeStartIndex, float64(d) / float64(time.Millisecond))
 
 		switch chosenIndex {
 		case contextDoneIndex:
@@ -3489,7 +3555,27 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 	for {
 		notify := self.transportUpdate.NotifyChannel()
 		activeRoutes := self.GetActiveRoutes()
-		
+
+		// non-blocking priority
+		retry := false
+		for _, route := range activeRoutes {
+			select {
+			case transportFrameBytes, ok := <- route:
+				if ok {
+					self.updateReceiveStats(route, 1, ByteCount(len(transportFrameBytes)))
+					return transportFrameBytes, nil
+				} else {
+					// mark the route as closed, try again
+					self.setActive(route, false)
+					retry = true
+				}
+			default:
+			}
+		}
+		if retry {
+			continue
+		}
+
 		// select cases are in order:
 		// - ctx.Done
 		// - self.ctx.Done
@@ -3548,7 +3634,11 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 			}
 		}
 
+		// a := time.Now()
 		chosenIndex, value, ok := reflect.Select(selectCases)
+		// d := time.Now().Sub(a)
+		// fmt.Printf("read (->%s) selected from %d routes (%.2fms)\n", self.destinationId, timeoutIndex - routeStartIndex, float64(d) / float64(time.Millisecond))
+
 
 		switch chosenIndex {
 		case contextDoneIndex:

@@ -441,10 +441,17 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 
 // conforms to `Transport`
 type sendTransport struct {
+	transportId Id
 }
 
 func newSendTransport() *sendTransport {
-	return &sendTransport{}
+	return &sendTransport{
+		transportId: NewId(),
+	}
+}
+
+func (self *sendTransport) TransportId() Id {
+	return self.transportId
 }
 
 func (self *sendTransport) Priority() int {
@@ -475,10 +482,17 @@ func (self *sendTransport) Downgrade(sourceId Id) {
 
 // conforms to `Transport`
 type receiveTransport struct {
+	transportId Id
 }
 
 func newReceiveTransport() *receiveTransport {
-	return &receiveTransport{}
+	return &receiveTransport{
+		transportId: NewId(),
+	}
+}
+
+func (self *receiveTransport) TransportId() Id {
+	return self.transportId
 }
 
 func (self *receiveTransport) Priority() int {
