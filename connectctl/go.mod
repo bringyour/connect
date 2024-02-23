@@ -1,6 +1,6 @@
 module bringyour.com/connectctl
 
-go 1.21.0
+go 1.22.0
 
 replace bringyour.com/connect v0.0.0 => ../connect
 

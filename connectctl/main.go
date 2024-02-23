@@ -21,7 +21,7 @@ import (
     "net/http"
     "log"
     "encoding/json"
-    "encoding/base64"
+    // "encoding/base64"
     "bytes"
 
     // "golang.org/x/exp/maps"
@@ -78,9 +78,12 @@ Usage:
     connectctl client-id [--api_url=<api_url>] --jwt=<jwt> 
     connectctl send [--connect_url=<connect_url>] --jwt=<jwt>
         --destination_id=<destination_id>
-        [<message>]
+        <message>
+        [--message_count=<message_count>]
+        [--instance_id=<instance_id>]
     connectctl sink [--connect_url=<connect_url>] --jwt=<jwt>
         [--message_count=<message_count>]
+        [--instance_id=<instance_id>]
     
 Options:
     -h --help                        Show this screen.
@@ -94,7 +97,8 @@ Options:
     --code=<code>
     --jwt=<jwt>                      Your platform JWT.
     --destination_id=<destination_id>   Destination client_id
-    --message_count=<message_count>  Print this many messages then exit.`,
+    --message_count=<message_count>  Print this many messages then exit.
+    --instance_id=<instance_id>      Set the client instance id.`,
         DefaultApiUrl,
         DefaultConnectUrl,
     )
@@ -139,6 +143,14 @@ func expandByJwt(result map[string]any) {
 
         for claimKey, claimValue := range claims {
             result[fmt.Sprintf("by_jwt_%s", claimKey)] = claimValue
+        }
+    }
+    if jwt, ok := result["by_client_jwt"]; ok {
+        claims := gojwt.MapClaims{}
+        gojwt.NewParser().ParseUnverified(jwt.(string), claims)
+
+        for claimKey, claimValue := range claims {
+            result[fmt.Sprintf("by_client_jwt_%s", claimKey)] = claimValue
         }
     }
     for _, value := range result {
@@ -388,7 +400,7 @@ func clientId(opts docopt.Opts) {
 
     jwt, _ := opts.String("--jwt")
 
-    bearer := base64.StdEncoding.EncodeToString([]byte(jwt))
+    bearer := []byte(jwt)
 
     timeout := 5 * time.Second
 
@@ -428,7 +440,7 @@ func clientId(opts docopt.Opts) {
         return
     }
 
-    // fmt.Printf("response: %s\n", resBody)
+    fmt.Printf("response: %s\n", resBody)
 
     result := map[string]any{}
     err = json.Unmarshal(resBody, &result)
@@ -480,8 +492,31 @@ func send(opts docopt.Opts) {
         fmt.Printf("Invalid destination_id (%s).\n", err)
         return
     }
+
+    instanceIdStr, err := opts.String("--instance_id")
+    var instanceId connect.Id
+    if err == nil {
+        instanceId, err = connect.ParseId(instanceIdStr)
+        if err != nil {
+            fmt.Printf("Invalid instance_id (%s).\n", err)
+            return
+        }
+    } else {
+        instanceId = connect.NewId()
+    }
+
+    fmt.Printf("instance_id: %s\n", instanceId.String())
+
     
     messageContent, _ := opts.String("<message>")
+
+    messageCount, err := opts.Int("--message_count")
+    if err != nil {
+        messageCount = 1
+    }
+
+    // need at least one. Use more for testing.
+    transportCount := 4
 
     timeout := 30 * time.Second
 
@@ -495,24 +530,29 @@ func send(opts docopt.Opts) {
     )
     defer client.Close()
 
+
+    client.SetInstanceId(instanceId)
+    
+
     routeManager := connect.NewRouteManager(client)
     contractManager := connect.NewContractManagerWithDefaults(client)
-
-    go client.Run(routeManager, contractManager)
+    client.Setup(routeManager, contractManager)
+    go client.Run()
 
     auth := &connect.ClientAuth{
         ByJwt: jwt,
         InstanceId: client.InstanceId(),
         AppVersion: fmt.Sprintf("connectctl %s", ConnectCtlVersion),
     }
-    platformTransport := connect.NewPlatformTransportWithDefaults(
-        cancelCtx,
-        fmt.Sprintf("%s/", connectUrl),
-        auth,
-    )
-    defer platformTransport.Close()
-
-    go platformTransport.Run(routeManager)
+    for i := 0; i < transportCount; i += 1 {
+        platformTransport := connect.NewPlatformTransportWithDefaults(
+            cancelCtx,
+            fmt.Sprintf("%s/", connectUrl),
+            auth,
+        )
+        defer platformTransport.Close()
+        go platformTransport.Run(routeManager)
+    }
 
 
     provideModes := map[protocol.ProvideMode]bool{
@@ -521,30 +561,40 @@ func send(opts docopt.Opts) {
     contractManager.SetProvideModes(provideModes)
 
 
+    // FIXME break into 2k chunks?
     acks := make(chan error)
+    go func() {
+        for i := 0; i < messageCount; i += 1 {
+            var content string
+            if 0 < messageCount {
+                content = fmt.Sprintf("[%d] %s", i, messageContent)
+            } else {
+                content = messageContent
+            }
+            message := &protocol.SimpleMessage{
+                Content: content,
+            }
 
-    // FIXME break into 2k chunks
-    message := &protocol.SimpleMessage{
-        Content: messageContent,
-    }
-
-    client.Send(
-        connect.RequireToFrame(message),
-        destinationId,
-        func(err error) {
-            acks <- err
-        },
-    )
-
-    select {
-    case err := <- acks:
-        if err == nil {
-            fmt.Printf("Message acked.")
-        } else {
-            fmt.Printf("Message not acked (%s).", err)
+            client.Send(
+                connect.RequireToFrame(message),
+                destinationId,
+                func(err error) {
+                    acks <- err
+                },
+            ) 
         }
-    case <- time.After(timeout):
-        fmt.Printf("Message not acked (timeout).")
+    }()
+    for i := 0; i < messageCount; i += 1 {
+        select {
+        case err := <- acks:
+            if err == nil {
+                fmt.Printf("Message acked.\n")
+            } else {
+                fmt.Printf("Message not acked (%s).\n", err)
+            }
+        case <- time.After(timeout):
+            fmt.Printf("Message not acked (timeout).\n")
+        }
     }
 }
 
@@ -588,6 +638,22 @@ func sink(opts docopt.Opts) {
         messageCount = -1
     }
 
+    transportCount := 4
+
+    instanceIdStr, err := opts.String("--instance_id")
+    var instanceId connect.Id
+    if err == nil {
+        instanceId, err = connect.ParseId(instanceIdStr)
+        if err != nil {
+            fmt.Printf("Invalid instance_id (%s).\n", err)
+            return
+        }
+    } else {
+        instanceId = connect.NewId()
+    }
+
+    fmt.Printf("instance_id: %s\n", instanceId.String())
+
 
     cancelCtx, cancel := context.WithCancel(context.Background())
     defer cancel()
@@ -598,29 +664,35 @@ func sink(opts docopt.Opts) {
     )
     defer client.Close()
 
+    client.SetInstanceId(instanceId)
+
     routeManager := connect.NewRouteManager(client)
     contractManager := connect.NewContractManagerWithDefaults(client)
+
+    client.Setup(routeManager, contractManager)
+    go client.Run()
+
 
     provideModes := map[protocol.ProvideMode]bool{
         protocol.ProvideMode_Network: true,
     }
     contractManager.SetProvideModes(provideModes)
 
-    go client.Run(routeManager, contractManager)
 
     auth := &connect.ClientAuth{
         ByJwt: jwt,
         InstanceId: client.InstanceId(),
         AppVersion: fmt.Sprintf("connectctl %s", ConnectCtlVersion),
     }
-    platformTransport := connect.NewPlatformTransportWithDefaults(
-        cancelCtx,
-        fmt.Sprintf("%s/", connectUrl),
-        auth,
-    )
-    defer platformTransport.Close()
-
-    go platformTransport.Run(routeManager)
+    for i := 0; i < transportCount; i += 1 {
+        platformTransport := connect.NewPlatformTransportWithDefaults(
+            cancelCtx,
+            fmt.Sprintf("%s/", connectUrl),
+            auth,
+        )
+        defer platformTransport.Close()
+        go platformTransport.Run(routeManager)
+    }
 
     type Receive struct {
         sourceId connect.Id
@@ -643,7 +715,7 @@ func sink(opts docopt.Opts) {
     for i := 0; messageCount < 0 || i < messageCount; i += 1 {
         select {
         case receive := <- receives:
-            fmt.Printf("GOT A MESSAGE %s %s %s\n", receive.sourceId, receive.frames, receive.provideMode)
+            fmt.Printf("[%s %s] %s\n", receive.sourceId, receive.provideMode, receive.frames)
         }
     }
 }

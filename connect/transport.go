@@ -13,7 +13,10 @@ import (
 )
 
 
-const BUFFER = 1
+var transportLog = LogFn(LogLevelInfo, "transport")
+
+
+const TransportBufferSize = 1
 
 
 // note that it is possible to have multiple transports for the same client destination
@@ -29,13 +32,15 @@ const BUFFER = 1
 // add the source ip as the X-Extender header
 
 
-const DefaultHttpConnectTimeout = 5 * time.Second
-const DefaultWsHandshakeTimeout = 5 * time.Second
-const DefaultAuthTimeout = 5 * time.Second
-const DefaultReconnectTimeout = 5 * time.Second
-const DefaultPingTimeout = 15 * time.Second
-const DefaultWriteTimeout = 15 * time.Second
+const DefaultHttpConnectTimeout = 2 * time.Second
+const DefaultWsHandshakeTimeout = 2 * time.Second
+const DefaultAuthTimeout = 2 * time.Second
+const DefaultReconnectTimeout = 2 * time.Second
+const DefaultPingTimeout = 5 * time.Second
+const DefaultWriteTimeout = 5 * time.Second
 const DefaultReadTimeout = 2 * DefaultPingTimeout
+
+const TransportDrainTimeout = 30 * time.Second
 
 
 type PlatformTransportSettings struct {
@@ -64,6 +69,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 
 type ClientAuth struct {
     ByJwt string
+    ClientId Id
     InstanceId Id
     AppVersion string
 }
@@ -143,17 +149,7 @@ func NewPlatformTransport(
 
 func (self *PlatformTransport) Run(routeManager *RouteManager) {
     // connect and update route manager for this transport
-
-    sendTransport := newPlatformSendTransport()
-    receiveTransport := newPlatformReceiveTransport()
-
-    defer func() {
-        self.cancel()
-        routeManager.RemoveTransport(sendTransport)
-        routeManager.RemoveTransport(receiveTransport)
-        sendTransport.Close()
-        receiveTransport.Close()
-    }()
+    defer self.cancel()
 
     authBytes, err := EncodeFrame(&protocol.Auth{
         ByJwt: self.auth.ByJwt,
@@ -170,7 +166,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             HandshakeTimeout: self.settings.WsHandshakeTimeout,
         }
 
-        fmt.Printf("Connecting to %s ...\n", self.platformUrl)
+        transportLog("Connecting to %s ...\n", self.platformUrl)
         
         ws, err := func()(*websocket.Conn, error) {
             ws, _, err := wsDialer.DialContext(self.ctx, self.platformUrl, nil)
@@ -185,7 +181,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                 }
             }()
 
-            fmt.Printf("Connected to %s!\n", self.platformUrl)
+            transportLog("Connected to %s!\n", self.platformUrl)
 
             ws.SetWriteDeadline(time.Now().Add(self.settings.AuthTimeout))
             if err := ws.WriteMessage(websocket.BinaryMessage, authBytes); err != nil {
@@ -210,7 +206,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             return ws, nil
         }()
         if err != nil {
-            fmt.Printf("Auth error (%s)\n", err)
+            transportLog("Auth error (%s)\n", err)
             select {
             case <- self.ctx.Done():
                 return
@@ -219,82 +215,115 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             }
         }
 
-        // ws.SetDeadline(time.Time{})
-
         func() {
             handleCtx, handleCancel := context.WithCancel(self.ctx)
 
-            routeManager.UpdateTransport(sendTransport, []Route{sendTransport.send})
-            routeManager.UpdateTransport(receiveTransport, []Route{receiveTransport.receive})
+            send := make(chan []byte, TransportBufferSize)
+            receive := make(chan []byte, TransportBufferSize)
 
-            closeHandle := func() {
+            // the platform can route any destination,
+            // since every client has a platform transport
+            sendTransport := NewSendGatewayTransport()
+            receiveTransport := NewReceiveGatewayTransport()
+
+            routeManager.UpdateTransport(sendTransport, []Route{send})
+            routeManager.UpdateTransport(receiveTransport, []Route{receive})
+
+            defer func() {
                 routeManager.RemoveTransport(sendTransport)
                 routeManager.RemoveTransport(receiveTransport)
+                
                 handleCancel()
                 ws.Close()
-            }
-            defer closeHandle()
+
+                go func() {
+                    select {
+                    case <- time.After(TransportDrainTimeout):
+                    }
+
+                    close(send)
+                }()
+            }()
 
             go func() {
-                defer closeHandle()
+                defer handleCancel()
 
                 for {
                     select {
                     case <- handleCtx.Done():
                         return
-                    case message, ok := <- sendTransport.send:
+                    case message, ok := <- send:
                         if !ok {
                             return
                         }
-                        // fmt.Printf("!!!! WRITE MESSAGE %s\n", message)
+
+                        // fmt.Printf("transport write message %s->\n", self.auth.ClientId)
+
+                        // transportLog("!!!! WRITE MESSAGE %s\n", message)
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
-                            fmt.Printf("Write message error %s\n", err)
+                            // fmt.Printf("ws write error\n")
+                            transportLog("Write message error %s\n", err)
                             return
                         }
                     case <- time.After(self.settings.PingTimeout):
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, make([]byte, 0)); err != nil {
-                            fmt.Printf("Write ping error %s\n", err)
+                            transportLog("Write ping error %s\n", err)
                             return
                         }
                     }
                 }
             }()
 
-            for {
-                select {
-                case <- handleCtx.Done():
-                    return
-                default:
-                }
+            go func() {
+                defer func() {
+                    handleCancel()
+                    close(receive)
+                }()
 
-                ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
-                messageType, message, err := ws.ReadMessage()
-                // fmt.Printf("Read message %s\n", message)
-                if err != nil {
-                    fmt.Printf("Read message error %s\n", err)
-                    return
-                }
-
-                fmt.Printf("READ MESSAGE\n")
-
-                switch messageType {
-                case websocket.BinaryMessage:
-                    if 0 == len(message) {
-                        // ping
-                        continue
-                    }
-
+                for {
                     select {
                     case <- handleCtx.Done():
                         return
-                    case receiveTransport.receive <- message:
-                    case <- time.After(self.settings.WriteTimeout):
-                        fmt.Printf("TIMEOUT J\n")
+                    default:
+                    }
+
+                    ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
+                    messageType, message, err := ws.ReadMessage()
+                    // transportLog("Read message %s\n", message)
+                    if err != nil {
+                        transportLog("Read message error %s\n", err)
+                        return
+                    }
+
+                    transportLog("READ MESSAGE\n")
+
+                    switch messageType {
+                    case websocket.BinaryMessage:
+                        if 0 == len(message) {
+                            // ping
+                            continue
+                        }
+
+                        // fmt.Printf("transport read message ->%s\n", self.auth.ClientId)
+
+                        select {
+                        case <- handleCtx.Done():
+                            return
+                        case receive <- message:
+                            // fmt.Printf("transport wrote message to channel ->%s\n", self.auth.ClientId)
+                        case <- time.After(self.settings.WriteTimeout):
+                            transportLog("TIMEOUT J\n")
+                        }
                     }
                 }
-            }
+            }()
+
+            select {
+            case <- handleCtx.Done():
+                return
+            }  
         }()
 
         select {
@@ -307,90 +336,6 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 
 func (self *PlatformTransport) Close() {
     self.cancel()
-}
-
-
-// conforms to `connect.Transport`
-type platformSendTransport struct {
-    send chan []byte
-}
-
-func newPlatformSendTransport() *platformSendTransport {
-    return &platformSendTransport{
-        send: make(chan []byte, BUFFER),
-    }
-}
-
-func (self *platformSendTransport) Priority() int {
-    return 100
-}
-
-func (self *platformSendTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
-    return true
-}
-
-func (self *platformSendTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
-    // uniform weight
-    return 1.0 / float32(1 + len(remainingStats))
-}
-
-func (self *platformSendTransport) MatchesSend(destinationId Id) bool {
-    // the platform can route any destination,
-    // since every client has a platform transport
-    return true
-}
-
-func (self *platformSendTransport) MatchesReceive(destinationId Id) bool {
-    return false
-}
-
-func (self *platformSendTransport) Downgrade(sourceId Id) {
-    // nothing to downgrade
-}
-
-func (self *platformSendTransport) Close() {
-    close(self.send)
-}
-
-
-// conforms to `connect.Transport`
-type platformReceiveTransport struct {
-    receive chan []byte
-}
-
-func newPlatformReceiveTransport() *platformReceiveTransport {
-    return &platformReceiveTransport{
-        receive: make(chan []byte, BUFFER),
-    }
-}
-
-func (self *platformReceiveTransport) Priority() int {
-    return 100
-}
-
-func (self *platformReceiveTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
-    return true
-}
-
-func (self *platformReceiveTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
-    // uniform weight
-    return 1.0 / float32(1 + len(remainingStats))
-}
-
-func (self *platformReceiveTransport) MatchesSend(destinationId Id) bool {
-    return false
-}
-
-func (self *platformReceiveTransport) MatchesReceive(destinationId Id) bool {
-    return true
-}
-
-func (self *platformReceiveTransport) Downgrade(sourceId Id) {
-    // nothing to downgrade
-}
-
-func (self *platformReceiveTransport) Close() {
-    close(self.receive)
 }
 
 
@@ -456,7 +401,7 @@ func (self *wsForwardingConn) Read(b []byte) (int, error) {
         self.ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
         messageType, message, err := self.ws.ReadMessage()
         if err != nil {
-            fmt.Printf("!! TIMEOUT TA\n")
+            transportLog("!! TIMEOUT TA\n")
             return i, err
         }
         switch messageType {
@@ -481,7 +426,7 @@ func (self *wsForwardingConn) Write(b []byte) (int, error) {
     self.ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
     err := self.ws.WriteMessage(websocket.BinaryMessage, b)
     if err != nil {
-        fmt.Printf("!! TIMEOUT TB\n")
+        transportLog("!! TIMEOUT TB\n")
         return 0, err
     }
     return len(b), nil
