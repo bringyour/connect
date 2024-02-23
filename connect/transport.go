@@ -223,8 +223,10 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             send := make(chan []byte, TransportBufferSize)
             receive := make(chan []byte, TransportBufferSize)
 
-            sendTransport := newPlatformSendTransport()
-            receiveTransport := newPlatformReceiveTransport()
+            // the platform can route any destination,
+            // since every client has a platform transport
+            sendTransport := NewSendGatewayTransport()
+            receiveTransport := NewReceiveGatewayTransport()
 
             routeManager.UpdateTransport(sendTransport, []Route{send})
             routeManager.UpdateTransport(receiveTransport, []Route{receive})
@@ -340,90 +342,6 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
 
 func (self *PlatformTransport) Close() {
     self.cancel()
-}
-
-
-// conforms to `connect.Transport`
-type platformSendTransport struct {
-    transportId Id
-}
-
-func newPlatformSendTransport() *platformSendTransport {
-    return &platformSendTransport{
-        transportId: NewId(),
-    }
-}
-
-func (self *platformSendTransport) TransportId() Id {
-    return self.transportId
-}
-
-func (self *platformSendTransport) Priority() int {
-    return 100
-}
-
-func (self *platformSendTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
-    return true
-}
-
-func (self *platformSendTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
-    // uniform weight
-    return 1.0 / float32(1 + len(remainingStats))
-}
-
-func (self *platformSendTransport) MatchesSend(destinationId Id) bool {
-    // the platform can route any destination,
-    // since every client has a platform transport
-    return true
-}
-
-func (self *platformSendTransport) MatchesReceive(destinationId Id) bool {
-    return false
-}
-
-func (self *platformSendTransport) Downgrade(sourceId Id) {
-    // nothing to downgrade
-}
-
-
-// conforms to `connect.Transport`
-type platformReceiveTransport struct {
-    transportId Id
-}
-
-func newPlatformReceiveTransport() *platformReceiveTransport {
-    return &platformReceiveTransport{
-        transportId: NewId(),
-    }
-}
-
-func (self *platformReceiveTransport) TransportId() Id {
-    return self.transportId
-}
-
-func (self *platformReceiveTransport) Priority() int {
-    return 100
-}
-
-func (self *platformReceiveTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
-    return true
-}
-
-func (self *platformReceiveTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
-    // uniform weight
-    return 1.0 / float32(1 + len(remainingStats))
-}
-
-func (self *platformReceiveTransport) MatchesSend(destinationId Id) bool {
-    return false
-}
-
-func (self *platformReceiveTransport) MatchesReceive(destinationId Id) bool {
-    return true
-}
-
-func (self *platformReceiveTransport) Downgrade(sourceId Id) {
-    // nothing to downgrade
 }
 
 

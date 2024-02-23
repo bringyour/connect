@@ -8,6 +8,7 @@ import (
     "fmt"
     "crypto/hmac"
 	"crypto/sha256"
+	"sync"
 
 	"google.golang.org/protobuf/proto"
 
@@ -24,7 +25,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// timeout between receives or acks
 	timeout := 30 * time.Second
 	// number of messages
-	n := 256
+	n := 16 * 1024
 
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,19 +42,19 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	aConditioner.update(func() {
 		aConditioner.randomDelay = 5 * time.Second
-		aConditioner.lossProbability = 0.25
+		aConditioner.lossProbability = 0.5
 	})
 
 	bConditioner.update(func() {
 		bConditioner.randomDelay = 5 * time.Second
-		bConditioner.lossProbability = 0.25
+		bConditioner.lossProbability = 0.5
 	})
 
-	aSendTransport := newSendTransport()
-	aReceiveTransport := newReceiveTransport()
+	aSendTransport := NewSendGatewayTransport()
+	aReceiveTransport := NewReceiveGatewayTransport()
 
-	bSendTransport := newSendTransport()
-	bReceiveTransport := newReceiveTransport()
+	bSendTransport := NewSendGatewayTransport()
+	bReceiveTransport := NewReceiveGatewayTransport()
 
 	provideModes := map[protocol.ProvideMode]bool{
         protocol.ProvideMode_Network: true,
@@ -61,14 +62,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 
 	a := NewClientWithDefaults(ctx, aClientId)
-	aRouteManager := NewRouteManager(a)
-	aContractManager := NewContractManagerWithDefaults(a)
-	defer func() {
-		a.Cancel()
-		aRouteManager.Close()
-		aContractManager.Close()
-	}()
-	a.Setup(aRouteManager, aContractManager)
+	aRouteManager := a.RouteManager()
+	aContractManager := a.ContractManager()
+	// aRouteManager := NewRouteManager(a)
+	// aContractManager := NewContractManagerWithDefaults(a)
+	defer a.Cancel()
+	// a.Setup(aRouteManager, aContractManager)
 	go a.Run()
 
 	aRouteManager.UpdateTransport(aSendTransport, []Route{aSend})
@@ -78,14 +77,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 
 	b := NewClientWithDefaults(ctx, bClientId)
-	bRouteManager := NewRouteManager(b)
-	bContractManager := NewContractManagerWithDefaults(b)
-	defer func() {
-		b.Cancel()
-		bRouteManager.Close()
-		bContractManager.Close()
-	}()
-	b.Setup(bRouteManager, bContractManager)
+	bRouteManager := b.RouteManager()
+	bContractManager := b.ContractManager()
+	// bRouteManager := NewRouteManager(b)
+	// bContractManager := NewContractManagerWithDefaults(b)
+	defer b.Cancel()
+	// b.Setup(bRouteManager, bContractManager)
 	go b.Run()
 
 	bRouteManager.UpdateTransport(bSendTransport, []Route{bSend})
@@ -99,19 +96,15 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	b.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 		for _, frame := range frames {
-			message, err := FromFrame(frame)
-			if err != nil {
-				panic(err)
-			}
-			switch v := message.(type) {
-			case *protocol.SimpleMessage:
-				receives <- v
-			}
+			v := RequireFromFrame(frame).(*protocol.SimpleMessage)
+			receives <- v
 		}
 	})
 
 	var ackCount int
+	var waitingAckCount int
 	var receiveCount int
+	var waitingReceiveCount int
 	var receiveMessages map[string]bool
 	
 	
@@ -132,20 +125,26 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			message := &protocol.SimpleMessage{
 				Content: fmt.Sprintf("hi %d", i),
 			}
-			frame, err := ToFrame(message)
-			if err != nil {
-				panic(err)
-			}
-			a.SendWithTimeout(frame, bClientId, func(err error) {
+			frame := RequireToFrame(message)
+			a.Send(frame, bClientId, func(err error) {
 				acks <- err
-			}, timeout)
+			})
 		}
 	}()
 
 	ackCount = 0
+	waitingAckCount = -1
 	receiveCount = 0
+	waitingReceiveCount = -1
 	receiveMessages = map[string]bool{}
-	for len(receiveMessages) < n || ackCount < n {
+	for receiveCount < n || ackCount < n {
+		if receiveCount < n && waitingReceiveCount < receiveCount {
+			fmt.Printf("[0] waiting for %d/%d\n", receiveCount + 1, n)
+			waitingReceiveCount = receiveCount
+		} else if ackCount < n && waitingAckCount < ackCount {
+			fmt.Printf("[0] waiting for ack %d/%d\n", ackCount + 1, n)
+		}
+
 		select {
 		case <- ctx.Done():
 			return
@@ -176,9 +175,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 
 	a2 := NewClientWithDefaults(ctx, aClientId)
-	a2RouteManager := NewRouteManager(a2)
-	a2ContractManager := NewContractManagerWithDefaults(a2)
-	a2.Setup(a2RouteManager, a2ContractManager)
+	a2RouteManager := a2.RouteManager()
+	a2ContractManager := a2.ContractManager()
+	// a2RouteManager := NewRouteManager(a2)
+	// a2ContractManager := NewContractManagerWithDefaults(a2)
+	// a2.Setup(a2RouteManager, a2ContractManager)
+	defer a2.Cancel()
 	go a2.Run()
 
 	a2RouteManager.UpdateTransport(aSendTransport, []Route{aSend})
@@ -204,20 +206,26 @@ func TestSendReceiveSenderReset(t *testing.T) {
 			message := &protocol.SimpleMessage{
 				Content: fmt.Sprintf("hi %d", i),
 			}
-			frame, err := ToFrame(message)
-			if err != nil {
-				panic(err)
-			}
-			a2.SendWithTimeout(frame, bClientId, func(err error) {
+			frame := RequireToFrame(message)
+			a2.Send(frame, bClientId, func(err error) {
 				acks <- err
-			}, timeout)
+			})
 		}
 	}()
 
 	ackCount = 0
+	waitingAckCount = -1
 	receiveCount = 0
+	waitingReceiveCount = -1
 	receiveMessages = map[string]bool{}
-	for len(receiveMessages) < n || ackCount < n {
+	for receiveCount < n || ackCount < n {
+		if receiveCount < n && waitingReceiveCount < receiveCount {
+			fmt.Printf("[1] waiting for %d/%d\n", receiveCount + 1, n)
+			waitingReceiveCount = receiveCount
+		} else if ackCount < n && waitingAckCount < ackCount {
+			fmt.Printf("[1] waiting for ack %d/%d\n", ackCount + 1, n)
+		}
+
 		select {
 		case <- ctx.Done():
 			return
@@ -237,6 +245,8 @@ func TestSendReceiveSenderReset(t *testing.T) {
 		found := receiveMessages[message]
 		assert.Equal(t, found, true)
 	}
+
+	fmt.Printf("[2] done\n")
 
 	assert.Equal(t, n, len(receiveMessages))
 	assert.Equal(t, n, ackCount)
@@ -365,6 +375,7 @@ type conditioner struct {
 	invertFraction float32
 	lossProbability float32
 	monitor *Monitor
+	mutex sync.Mutex
 }
 
 func newConditioner(ctx context.Context, in chan []byte) (*conditioner, chan []byte) {
@@ -381,12 +392,33 @@ func newConditioner(ctx context.Context, in chan []byte) (*conditioner, chan []b
 }
 
 func (self *conditioner) update(callback func()) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
 	callback()
 	self.monitor.NotifyAll()
 }
 
+func (self *conditioner) calcLoss() bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return mathrand.Float32() < self.lossProbability
+}
+
+func (self *conditioner) calcDelay() time.Duration {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	delay := self.fixedDelay
+	if 0 < self.randomDelay {
+		delay += time.Duration(mathrand.Intn(int(self.randomDelay)))
+	}
+	return delay
+}
+
 func (self *conditioner) run(in chan []byte, out chan []byte) {
-	defer close(out)
+	// defer close(out)
 
 	for {
 		select {
@@ -399,14 +431,11 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 				return
 			}
 
-			if mathrand.Float32() < self.lossProbability {
+			if self.calcLoss() {
 				continue
 			}
 
-			delay := self.fixedDelay
-			if 0 < self.randomDelay {
-				delay += time.Duration(mathrand.Intn(int(self.randomDelay)))
-			}
+			delay := self.calcDelay()
 
 			if delay <= 0 {
 				select {
@@ -428,97 +457,12 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 					case out <- b:
 					}
 				}()
-			}
-
-
-				
+			}				
 		}
 	}
 }
 
 
-
-
-// conforms to `Transport`
-type sendTransport struct {
-	transportId Id
-}
-
-func newSendTransport() *sendTransport {
-	return &sendTransport{
-		transportId: NewId(),
-	}
-}
-
-func (self *sendTransport) TransportId() Id {
-	return self.transportId
-}
-
-func (self *sendTransport) Priority() int {
-	return 100
-}
-
-func (self *sendTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
-	return true
-}
-
-func (self *sendTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
-	// uniform weight
-	return 1.0 / float32(1 + len(remainingStats))
-}
-
-func (self *sendTransport) MatchesSend(destinationId Id) bool {
-	return true
-}
-
-func (self *sendTransport) MatchesReceive(destinationId Id) bool {
-	return false
-}
-
-func (self *sendTransport) Downgrade(sourceId Id) {
-	// nothing to downgrade
-}
-
-
-// conforms to `Transport`
-type receiveTransport struct {
-	transportId Id
-}
-
-func newReceiveTransport() *receiveTransport {
-	return &receiveTransport{
-		transportId: NewId(),
-	}
-}
-
-func (self *receiveTransport) TransportId() Id {
-	return self.transportId
-}
-
-func (self *receiveTransport) Priority() int {
-	return 100
-}
-
-func (self *receiveTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
-	return true
-}
-
-func (self *receiveTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
-	// uniform weight
-	return 1.0 / float32(1 + len(remainingStats))
-}
-
-func (self *receiveTransport) MatchesSend(destinationId Id) bool {
-	return false
-}
-
-func (self *receiveTransport) MatchesReceive(destinationId Id) bool {
-	return true
-}
-
-func (self *receiveTransport) Downgrade(sourceId Id) {
-	// nothing to downgrade
-}
 
 
 

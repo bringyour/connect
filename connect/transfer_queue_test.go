@@ -8,10 +8,6 @@ import (
 )
 
 
-
-
-
-
 func TestTransferQueue(t *testing.T) {
 
 	type myTransferItem struct {
