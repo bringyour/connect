@@ -5,22 +5,11 @@ import (
 	"time"
 	"sync"
 	"errors"
-	// "container/heap"
-	// "sort"
-	// "math"
 	mathrand "math/rand"
 	"reflect"
-	// "crypto/hmac"
-	// "crypto/sha256"
-	// "runtime/debug"
-	// "fmt"
 	"slices"
 
 	"golang.org/x/exp/maps"
-
-	// "google.golang.org/protobuf/proto"
-
-	// "bringyour.com/protocol"
 )
 
 
@@ -837,10 +826,6 @@ func NewRouteStats() *RouteStats {
 }
 
 
-
-
-
-
 // conforms to `Transport`
 type sendGatewayTransport struct {
 	transportId Id
@@ -880,8 +865,6 @@ func (self *sendGatewayTransport) MatchesReceive(destinationId Id) bool {
 func (self *sendGatewayTransport) Downgrade(sourceId Id) {
 	// nothing to downgrade
 }
-
-
 
 
 // conforms to `Transport`

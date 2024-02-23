@@ -3,9 +3,7 @@ package connect
 import (
     "container/heap"
     "sync"
-    // "sort"
 )
-
 
 
 type transferQueueItem interface {

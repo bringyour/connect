@@ -215,8 +215,6 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             }
         }
 
-        // ws.SetDeadline(time.Time{})
-
         func() {
             handleCtx, handleCancel := context.WithCancel(self.ctx)
 
@@ -244,9 +242,7 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                     }
 
                     close(send)
-                    // close(receive)
                 }()
-
             }()
 
             go func() {
@@ -301,7 +297,6 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                         return
                     }
 
-
                     transportLog("READ MESSAGE\n")
 
                     switch messageType {
@@ -310,7 +305,6 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
                             // ping
                             continue
                         }
-
 
                         // fmt.Printf("transport read message ->%s\n", self.auth.ClientId)
 

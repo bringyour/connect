@@ -5,25 +5,13 @@ import (
 	"time"
 	"sync"
 	"errors"
-	// "container/heap"
-	// "sort"
 	"math"
-	// "math/rand"
-	// "reflect"
-	// "crypto/hmac"
-	// "crypto/sha256"
-	// "runtime/debug"
 	"fmt"
-	// "slices"
-
-	// "golang.org/x/exp/maps"
 
 	"google.golang.org/protobuf/proto"
 
 	"bringyour.com/protocol"
 )
-
-
 
 
 /*
@@ -223,12 +211,8 @@ type Client struct {
 	receiveBufferSettings *ReceiveBufferSettings
 	forwardBufferSettings *ForwardBufferSettings
 
-	// sendPacks chan *SendPack
-	// forwardPacks chan *ForwardPack
-
 	receiveCallbacks *CallbackList[ReceiveFunction]
 	forwardCallbacks *CallbackList[ForwardFunction]
-
 
 	routeManager *RouteManager
 	contractManager *ContractManager
@@ -251,8 +235,6 @@ func NewClient(ctx context.Context, clientId Id, clientSettings *ClientSettings)
 		sendBufferSettings: DefaultSendBufferSettings(),
 		receiveBufferSettings: DefaultReceiveBufferSettings(),
 		forwardBufferSettings: DefaultForwardBufferSettings(),
-		// sendPacks: make(chan *SendPack, clientSettings.SendBufferSize),
-		// forwardPacks: make(chan *ForwardPack, clientSettings.ForwardBufferSize),
 		receiveCallbacks: NewCallbackList[ReceiveFunction](),
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
@@ -309,34 +291,6 @@ func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.D
 		DestinationId: destinationId,
 		TransferFrameBytes: transferFrameBytes,
 	}
-	// if timeout < 0 {
-	// 	select {
-	// 	case <- self.ctx.Done():
-	// 		return false
-	// 	case self.forwardPacks <- forwardPack:
-	// 		return true
-	// 	}
-	// } else if 0 == timeout {
-	// 	select {
-	// 	case <- self.ctx.Done():
-	// 		return false
-	// 	case self.forwardPacks <- forwardPack:
-	// 		return true
-	// 	default:
-	// 		// full
-	// 		return false
-	// 	}
-	// } else {
-	// 	select {
-	// 	case <- self.ctx.Done():
-	// 		return false
-	// 	case self.forwardPacks <- forwardPack:
-	// 		return true
-	// 	case <- time.After(timeout):
-	// 		// full
-	// 		return false
-	// 	}
-	// }
 
 	err = self.forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
 	if err != nil {
@@ -380,40 +334,6 @@ func (self *Client) SendWithTimeout(
 		AckCallback: safeAckCallback,
 		MessageByteCount: messageByteCount,
 	}
-	// if timeout < 0 {
-	// 	select {
-	// 	case <- self.ctx.Done():
-	// 		safeAckCallback(errors.New("Closed."))
-	// 		return false
-	// 	case self.sendPacks <- sendPack:
-	// 		return true
-	// 	}
-	// } else if 0 == timeout {
-	// 	select {
-	// 	case <- self.ctx.Done():
-	// 		safeAckCallback(errors.New("Closed."))
-	// 		return false
-	// 	case self.sendPacks <- sendPack:
-	// 		return true
-	// 	default:
-	// 		// full
-	// 		safeAckCallback(errors.New("Send buffer full."))
-	// 		return false
-	// 	}
-	// } else {
-	// 	select {
-	// 	case <- self.ctx.Done():
-	// 		safeAckCallback(errors.New("Closed."))
-	// 		return false
-	// 	case self.sendPacks <- sendPack:
-	// 		return true
-	// 	case <- time.After(timeout):
-	// 		// full
-	// 		safeAckCallback(errors.New("Send buffer full."))
-	// 		return false
-	// 	}
-	// }
-
 
 	if sendPack.DestinationId == self.clientId {
 		// loopback
@@ -492,65 +412,6 @@ func (self *Client) RemoveForwardCallback(forwardCallback ForwardFunction) {
 
 func (self *Client) Run() {
 	defer self.cancel()
-
-
-	// forward
-	// go func() {
-	// 	defer self.cancel()
-
-	// 	for {
-	// 		select {
-	// 		case <- self.ctx.Done():
-	// 			return
-	// 		case forwardPack, ok := <- self.forwardPacks:
-	// 			if !ok {
-	// 				return
-	// 			}
-	// 			err := forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
-	// 			if err != nil {
-	// 				fmt.Printf("TIMEOUT FORWARD PACK\n")
-	// 			}
-	// 		}
-	// 	}
-	// }()
-
-	// send
-	// go func() {
-	// 	defer self.cancel()
-
-	// 	for {
-	// 		select {
-	// 		case <- self.ctx.Done():
-	// 			return
-	// 		case sendPack, ok := <- self.sendPacks:
-	// 			if !ok {
-	// 				return
-	// 			}
-	// 			if sendPack.DestinationId == self.clientId {
-	// 				// loopback
-	// 				func() {
-	// 					defer func() {
-	// 						if err := recover(); err != nil {
-	// 							sendPack.AckCallback(err.(error))
-	// 						}
-	// 					}()
-	// 					self.receive(
-	// 						self.clientId,
-	// 						[]*protocol.Frame{sendPack.Frame},
-	// 						protocol.ProvideMode_Network,
-	// 					)
-	// 					sendPack.AckCallback(nil)
-	// 				}()
-	// 			} else {
-	// 				err := sendBuffer.Pack(sendPack, self.clientSettings.BufferTimeout)
-	// 				if err != nil {
-	// 					fmt.Printf("TIMEOUT SEND PACK\n")
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	// }()
-
 	
 	// receive
 	multiRouteReader := self.routeManager.OpenMultiRouteReader(self.clientId)
@@ -735,26 +596,12 @@ func (self *Client) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, ByteCount
 func (self *Client) Close() {
 	self.cancel()
 
-	// close(self.sendPacks)
-	// close(self.forwardPacks)
-
-
 	self.sendBuffer.Close()
 	self.receiveBuffer.Close()
 	self.forwardBuffer.Close()
 
 	self.routeManager.Close()
 	self.contractManager.Close()
-
-	// for {
-	// 	select {
-	// 	case sendPack, ok := <- self.sendPacks:
-	// 		if !ok {
-	// 			return
-	// 		}
-	// 		sendPack.AckCallback(errors.New("Client closed."))
-	// 	}
-	// }
 }
 
 func (self *Client) Cancel() {
@@ -763,10 +610,6 @@ func (self *Client) Cancel() {
 	self.sendBuffer.Cancel()
 	self.receiveBuffer.Cancel()
 	self.forwardBuffer.Cancel()
-}
-
-func (self *Client) Reset() {
-	// FIXME close buffers and sequences
 }
 
 
@@ -1085,7 +928,6 @@ func (self *SendSequence) Run() {
 		}()
 	}()
 
-
 	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.destinationId)
 	defer self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
 
@@ -1385,12 +1227,6 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, a
 		sequenceNumber = 0
 	}
 
-
-	// FIXME
-	// simpleMessage := RequireFromFrame(frame).(*protocol.SimpleMessage)
-	// fmt.Printf("[%d] send %d\n", sequenceNumber, simpleMessage.MessageIndex)
-
-
 	pack := &protocol.Pack{
 		MessageId: messageId.Bytes(),
 		SequenceId: self.sequenceId.Bytes(),
@@ -1445,9 +1281,6 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, a
 }
 
 func (self *SendSequence) setHead(transferFrameBytes []byte) ([]byte, error) {
-	// TODO this could avoid the memory copy by modifying the raw bytes
-	// TODO this is expected to be done infrequently if resends are infrequent, so not an issue
-
 	var transferFrame protocol.TransferFrame
 	err := proto.Unmarshal(transferFrameBytes, &transferFrame)
 	if err != nil {
@@ -1532,7 +1365,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 
 func (self *SendSequence) Close() {
 	self.cancel()
-
+	self.idleCondition.WaitForClose()
 	close(self.packs)
 	close(self.acks)
 }
@@ -1545,21 +1378,13 @@ func (self *SendSequence) Cancel() {
 type sendItem struct {
 	transferItem
 
-	// messageId Id
 	contractId *Id
-	// sequenceNumber uint64
 	head bool
 	sendTime time.Time
 	resendTime time.Time
 	sendCount int
-	// messageByteCount ByteCount
 	transferFrameBytes []byte
 	ackCallback AckFunction
-
-	// selectiveAckEnd time.Time
-
-	// the index of the item in the heap
-	// heapIndex int
 
 	messageType protocol.MessageType
 }
@@ -1944,16 +1769,6 @@ func (self *ReceiveSequence) Run() {
 				transferLog("!! EXIT B")
 				return
 			}
-			// messageId, err := IdFromBytes(receivePack.Pack.MessageId)
-			// if err != nil {
-			// 	// bad message
-			// 	// close the sequence
-			// 	self.peerAudit.Update(func(a *PeerAudit) {
-			// 		a.badMessage(receivePack.MessageByteCount)
-			// 	})
-			// 	transferLog("!! EXIT C")
-			// 	return
-			// }
 
 			if receivePack.Pack.Nack {
 				received, err := self.receiveNack(receivePack)
@@ -2163,80 +1978,6 @@ func (self *ReceiveSequence) compressAndSendAcks() {
 	}
 }
 
-func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
-	// FIXME
-	if true {
-		return nil
-	}
-
-	for _, frame := range item.frames {
-		if frame.MessageType == protocol.MessageType_TransferContract {
-			// close out the previous contract
-			if self.receiveContract != nil {
-				self.contractManager.Complete(
-					self.receiveContract.contractId,
-					self.receiveContract.ackedByteCount,
-					self.receiveContract.unackedByteCount,
-				)
-				self.receiveContract = nil
-			}
-
-			var contract protocol.Contract
-			err := proto.Unmarshal(frame.MessageBytes, &contract)
-			if err != nil {
-				transferLog("!! EXIT I")
-				// bad message
-				// close sequence
-				self.peerAudit.Update(func(a *PeerAudit) {
-					a.badMessage(item.messageByteCount)
-				})
-				return err
-			}
-
-			// FIXME
-			/*
-			// check the hmac with the local provider secret key
-			if !self.contractManager.Verify(
-					contract.StoredContractHmac,
-					contract.StoredContractBytes,
-					contract.ProvideMode) {
-				transferLog("!! EXIT J")
-				// bad contract
-				// close sequence
-				self.peerAudit.Update(func(a *PeerAudit) {
-					a.badContract()
-				})
-				return
-			}
-			*/
-
-			self.receiveContract, err = newSequenceContract(&contract, self.receiveBufferSettings.MinMessageByteCount)
-			if err != nil {
-				transferLog("!! EXIT K")
-				// bad contract
-				// close sequence
-				self.peerAudit.Update(func(a *PeerAudit) {
-					a.badContract()
-				})
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
-	// `receiveNoContract` is a mutual configuration 
-	// both sides must configure themselves to require no contract from each other
-	if self.contractManager.ReceiveNoContract(self.sourceId) {
-		return true
-	}
-	if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
-		return true
-	}
-	return false
-}
-
 func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	receiveTime := time.Now()
 
@@ -2419,9 +2160,83 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 	}
 }
 
+func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
+	// FIXME
+	if true {
+		return nil
+	}
+
+	for _, frame := range item.frames {
+		if frame.MessageType == protocol.MessageType_TransferContract {
+			// close out the previous contract
+			if self.receiveContract != nil {
+				self.contractManager.Complete(
+					self.receiveContract.contractId,
+					self.receiveContract.ackedByteCount,
+					self.receiveContract.unackedByteCount,
+				)
+				self.receiveContract = nil
+			}
+
+			var contract protocol.Contract
+			err := proto.Unmarshal(frame.MessageBytes, &contract)
+			if err != nil {
+				transferLog("!! EXIT I")
+				// bad message
+				// close sequence
+				self.peerAudit.Update(func(a *PeerAudit) {
+					a.badMessage(item.messageByteCount)
+				})
+				return err
+			}
+
+			// FIXME
+			/*
+			// check the hmac with the local provider secret key
+			if !self.contractManager.Verify(
+					contract.StoredContractHmac,
+					contract.StoredContractBytes,
+					contract.ProvideMode) {
+				transferLog("!! EXIT J")
+				// bad contract
+				// close sequence
+				self.peerAudit.Update(func(a *PeerAudit) {
+					a.badContract()
+				})
+				return
+			}
+			*/
+
+			self.receiveContract, err = newSequenceContract(&contract, self.receiveBufferSettings.MinMessageByteCount)
+			if err != nil {
+				transferLog("!! EXIT K")
+				// bad contract
+				// close sequence
+				self.peerAudit.Update(func(a *PeerAudit) {
+					a.badContract()
+				})
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
+	// `receiveNoContract` is a mutual configuration 
+	// both sides must configure themselves to require no contract from each other
+	if self.contractManager.ReceiveNoContract(self.sourceId) {
+		return true
+	}
+	if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
+		return true
+	}
+	return false
+}
+
 func (self *ReceiveSequence) Close() {
 	self.cancel()
-
+	self.idleCondition.WaitForClose()
 	close(self.packs)
 }
 
@@ -2441,19 +2256,10 @@ type receiveItem struct {
 	transferItem
 
 	contractId *Id
-	// messageId Id
-	
-	// sequenceNumber uint64
 	head bool
 	receiveTime time.Time
 	frames []*protocol.Frame
-	// messageByteCount ByteCount
 	receiveCallback ReceiveFunction
-
-	// the index of the item in the heap
-	// heapIndex int
-	// maxHeapIndex int
-
 	ack bool
 }
 
@@ -2758,7 +2564,7 @@ func (self *ForwardSequence) Run() {
 
 func (self *ForwardSequence) Close() {
 	self.cancel()
-
+	self.idleCondition.WaitForClose()
 	close(self.packs)
 }
 
@@ -2822,7 +2628,6 @@ func (self *PeerAudit) resend(byteCount ByteCount) {
 	self.ResendCount += 1
 	self.ResendByteCount += byteCount
 }
-
 
 
 type SequencePeerAudit struct {

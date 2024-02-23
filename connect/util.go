@@ -89,14 +89,19 @@ func  (self *CallbackList[T]) Remove(callback T) {
 
 // this coordinates and idle shutdown when the shutdown and adding to the work channel are on separate goroutines
 type IdleCondition struct {
-	mutex sync.Mutex
+	mutex *sync.Mutex
+	condition *sync.Cond
 	modId uint64
 	updateOpenCount int
 	closed bool
 }
 
 func NewIdleCondition() *IdleCondition {
+	mutex := &sync.Mutex{}
+	condition := sync.NewCond(mutex)
 	return &IdleCondition{
+		mutex: mutex,
+		condition: condition,
 		modId: 0,
 		updateOpenCount: 0,
 		closed: false,
@@ -122,6 +127,16 @@ func (self *IdleCondition) Close(checkpointId uint64) bool {
 	return true
 }
 
+func (self *IdleCondition) WaitForClose() bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	for 0 < self.updateOpenCount {
+		self.condition.Wait()
+	}
+	self.closed = true
+	return true
+}
+
 func (self *IdleCondition) UpdateOpen() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -137,6 +152,7 @@ func (self *IdleCondition) UpdateClose() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	self.updateOpenCount -= 1
+	self.condition.Signal()
 }
 
 
