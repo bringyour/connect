@@ -28,7 +28,7 @@ The UNAT emulates a raw socket using user-space sockets.
 
 
 // FIXME tune this
-const SendTimeout = 200 * time.Millisecond
+const SendTimeout = 5 * time.Second
 
 
 var ipLog = LogFn(LogLevelDebug, "ip")
@@ -76,6 +76,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 
 
 // send from a raw socket
+// note `ipProtocol` is not supplied. The implementation must do a packet inspection to determine protocol
 type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, packet []byte)
 
 
@@ -1635,7 +1636,7 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
         return
     }
 
-    fmt.Printf("REMOTE USER NAT PROVIDER RETURN\n")
+    // fmt.Printf("REMOTE USER NAT PROVIDER RETURN\n")
 
     ipPacketFromProvider := &protocol.IpPacketFromProvider{
         IpPacket: &protocol.IpPacket{
@@ -1646,6 +1647,8 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
     if err != nil {
         panic(err)
     }
+
+    fmt.Printf("remote user nat provider s packet ->%s\n", source.ClientId)
 
     // fmt.Printf("SEND PROTOCOL %s\n", ipProtocol)
     opts := []any{}
@@ -1668,7 +1671,7 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
     for _, frame := range frames {
         switch frame.MessageType {
         case protocol.MessageType_IpIpPacketToProvider:
-            fmt.Printf("REMOTE USER NAT PROVIDER SEND\n")
+            // fmt.Printf("REMOTE USER NAT PROVIDER SEND\n")
 
             ipPacketToProvider_, err := FromFrame(frame)
             if err != nil {
@@ -1677,10 +1680,12 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
             ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
 
             packet := ipPacketToProvider.IpPacket.PacketBytes
-            r := self.securityPolicy.Inspect(provideMode, packet)
+            _, r := self.securityPolicy.Inspect(provideMode, packet)
             ipLog("CLIENT RECEIVE %d -> %s", len(packet), r)
             switch r {
             case SecurityPolicyResultAllow:
+                fmt.Printf("remote user nat provider r packet %s->\n", sourceId)
+
                 source := Path{ClientId: sourceId}
                 success := self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, SendTimeout)
                 if !success {
@@ -1743,11 +1748,11 @@ func NewRemoteUserNatClient(
 
 // `SendPacketFunction`
 func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
-    fmt.Printf("REMOTE USER NAT CLIENT SEND\n")
+    // fmt.Printf("REMOTE USER NAT CLIENT SEND\n")
 
     minRelationship := max(provideMode, self.provideMode)
 
-    r := self.securityPolicy.Inspect(minRelationship, packet)
+    ipPath, r := self.securityPolicy.Inspect(minRelationship, packet)
     switch r {
     case SecurityPolicyResultAllow:
         destination, err := self.pathTable.SelectDestination(packet)
@@ -1768,8 +1773,14 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
             panic(err)
         }
 
+        fmt.Printf("remote user nat client s packet ->%s\n", destination.ClientId)
+
         // the sender will control transfer
-        opts := []any{NoAck()}
+        opts := []any{}
+        switch ipPath.protocol {
+        case IpProtocolUdp:
+            opts = append(opts, NoAck())
+        }
         success := self.client.SendWithTimeout(frame, destination.ClientId, func(err error) {
             // TODO log if no ack
             ipLog("!! OUT PACKET (%s)", err)
@@ -1793,13 +1804,15 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
     for _, frame := range frames {
         switch frame.MessageType {
         case protocol.MessageType_IpIpPacketFromProvider:
-            fmt.Printf("REMOTE USER NAT CLIENT RETURN\n")
+            // fmt.Printf("REMOTE USER NAT CLIENT RETURN\n")
             
             ipPacketFromProvider_, err := FromFrame(frame)
             if err != nil {
                 panic(err)
             }
             ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
+
+            fmt.Printf("remote user nat client r packet %s<-\n", source)
 
             self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
         }
@@ -2011,11 +2024,11 @@ func DefaultSecurityPolicy() *SecurityPolicy {
     return &SecurityPolicy{}
 }
 
-func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []byte) SecurityPolicyResult {
+func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []byte) (*ipPath, SecurityPolicyResult) {
     ipPath, err := parseIpPath(packet)
     if err != nil {
         // back ip packet
-        return SecurityPolicyResultDrop
+        return ipPath, SecurityPolicyResultDrop
     }
 
     if protocol.ProvideMode_Public <= provideMode {
@@ -2024,7 +2037,7 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
         // - block insecure or known unencrypted traffic
 
         if !isPublicUnicast(ipPath.destinationIp) {
-            return SecurityPolicyResultIncident 
+            return ipPath, SecurityPolicyResultIncident 
         }
 
         // block insecure or unencrypted traffic is implemented as a block list,
@@ -2041,11 +2054,11 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
             }
         }
         if !allow() {
-            return SecurityPolicyResultDrop
+            return ipPath, SecurityPolicyResultDrop
         }
     }
 
-    return SecurityPolicyResultAllow
+    return ipPath, SecurityPolicyResultAllow
 }
 
 

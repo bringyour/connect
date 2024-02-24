@@ -115,18 +115,22 @@ func provide(opts docopt.Opts) {
 
     connectClient := connect.NewClientWithDefaults(ctx, clientId)
 
-    routeManager := connect.NewRouteManager(connectClient)
-    contractManager := connect.NewContractManagerWithDefaults(connectClient)
-    connectClient.Setup(routeManager, contractManager)
+    // routeManager := connect.NewRouteManager(connectClient)
+    // contractManager := connect.NewContractManagerWithDefaults(connectClient)
+    // connectClient.Setup(routeManager, contractManager)
     go connectClient.Run()
+
+    fmt.Printf("client_id: %s\n", clientId)
+    fmt.Printf("instance_id: %s\n", instanceId)
 
     auth := &connect.ClientAuth{
         ByJwt: byClientJwt,
+        ClientId: clientId,
         InstanceId: instanceId,
         AppVersion: RequireVersion(),
     }
     platformTransport := connect.NewPlatformTransportWithDefaults(ctx, connectUrl, auth)
-    go platformTransport.Run(routeManager)
+    go platformTransport.Run(connectClient.RouteManager())
 
     localUserNat := connect.NewLocalUserNatWithDefaults(ctx)
     remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat)
@@ -135,7 +139,7 @@ func provide(opts docopt.Opts) {
         protocol.ProvideMode_Public: true,
         protocol.ProvideMode_Network: true,
     }
-    contractManager.SetProvideModes(provideModes)
+    connectClient.ContractManager().SetProvideModes(provideModes)
 
 
     fmt.Printf(
@@ -186,6 +190,7 @@ func provideAuth(ctx context.Context, apiUrl string, opts docopt.Opts) (byClient
             panic(err)
         }
         password = string(passwordBytes)
+        fmt.Printf("\n")
     }
 
     // fmt.Printf("userAuth='%s'; password='%s'\n", userAuth, password)

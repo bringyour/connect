@@ -2009,16 +2009,12 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	}
 
 
+	// this case happens when the receiver is reformed or loses state.
+	// the sequence id guarantees the sender is the same for the sequence
+	// past head items are retransmits. Future head items depend on previous ack,
+	// which represent some state the sender has that the receiver is missing
+	// advance the receiver state to the latest from the sender
 	if item.head && self.nextSequenceNumber < item.sequenceNumber {
-		// remove earlier items in the receive queue
-		for {
-			first := self.receiveQueue.PeekFirst()
-			if first == nil || item.sequenceNumber < first.sequenceNumber {
-				break
-			}
-			self.receiveQueue.RemoveBySequenceNumber(first.sequenceNumber)
-		}
-
 		transferLog("HEAD ADVANCE %d -> %d\n", self.nextSequenceNumber, item.sequenceNumber)
 		self.nextSequenceNumber = item.sequenceNumber
 	}

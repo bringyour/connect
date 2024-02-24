@@ -1593,6 +1593,16 @@ components:
                                 type: integer
                             match_distance:
                                 type: integer
+                devices:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            device_name:
+                                type: string
 
         FindActiveProvidersArgs:
             type: object
