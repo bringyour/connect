@@ -235,3 +235,33 @@ func (self *Event) SetOnSignals(signalValues ...syscall.Signal) func() {
 }
 
 
+func WeightedShuffle[T any](values []T, weights map[T]float32) {
+	mathrand.Shuffle(len(values), func(i int, j int) {
+        values[i], values[j] = values[j], values[i]
+    })
+
+    n := len(values)
+    for i := 0; i < n - 1; i += 1 {
+        j := func ()(int) {
+            var net float32
+            net = 0
+            for j := i; j < n; j += 1 {
+                net += weights[values[j]]
+            }
+            r := mathrand.Float32()
+            rnet := r * net
+            net = 0
+            for j := i; j < n; j += 1 {
+                net += weights[values[j]]
+                if rnet < net {
+                    return j
+                }
+            }
+            // addition err, use the last value
+            return n - 1
+        }()
+        values[i], values[j] = values[j], values[i]
+    }
+}
+
+

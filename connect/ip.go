@@ -1705,6 +1705,7 @@ func (self *RemoteUserNatProvider) Close() {
 }
 
 
+// this is a basic implementation. See `RemoteUserNatWindowedClient` for a more robust implementation
 type RemoteUserNatClient struct {
     client *Client
     receivePacketCallback ReceivePacketFunction
@@ -1796,7 +1797,7 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
     source := Path{ClientId: sourceId}
 
     // only process frames from the destinations
-    if allow, ok := self.sourceFilter[source]; !ok || !allow {
+    if allow := self.sourceFilter[source]; !allow {
         ipLog("PACKET FILTERED")
         return
     }

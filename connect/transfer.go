@@ -84,7 +84,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		ResendInterval: 2 * time.Second,
 		// no backoff
 		ResendBackoffScale: 0.0,
-		AckTimeout: 300 * time.Second,
+		AckTimeout: 60 * time.Second,
 		IdleTimeout: 300 * time.Second,
 		// pause on resend for selectively acked messaged
 		SelectiveAckTimeout: 15 * time.Second,

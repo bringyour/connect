@@ -495,36 +495,14 @@ func (self *MultiRouteSelector) GetActiveRoutes() []Route {
         }
     }
 
-    mathrand.Shuffle(len(activeRoutes), func(i int, j int) {
-        activeRoutes[i], activeRoutes[j] = activeRoutes[j], activeRoutes[i]
-    })
-
     if self.weightedRoutes {
         // prioritize the routes (weighted shuffle)
         // if all weights are equal, this is the same as a shuffle
-        n := len(activeRoutes)
-        for i := 0; i < n - 1; i += 1 {
-            j := func ()(int) {
-                var net float32
-                net = 0
-                for j := i; j < n; j += 1 {
-                    net += self.routeWeight[activeRoutes[j]]
-                }
-                r := mathrand.Float32()
-                rnet := r * net
-                net = 0
-                for j := i; j < n; j += 1 {
-                    net += self.routeWeight[activeRoutes[j]]
-                    if rnet < net {
-                        return j
-                    }
-                }
-                panic("Incorrect weights")
-            }()
-            t := activeRoutes[i]
-            activeRoutes[i] = activeRoutes[j]
-            activeRoutes[j] = t
-        }
+        WeightedShuffle(activeRoutes, self.routeWeight)
+    } else {
+        mathrand.Shuffle(len(activeRoutes), func(i int, j int) {
+            activeRoutes[i], activeRoutes[j] = activeRoutes[j], activeRoutes[i]
+        })
     }
 
     return activeRoutes

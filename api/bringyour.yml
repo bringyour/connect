@@ -470,7 +470,7 @@ paths:
     /network/find-locations:
         post:
             description: |
-                Search for locations and groups that match a query,
+                Search for locations, groups, and devices that match a query,
                 regardless of whether an providers are active.
             operationId: Network Find Locations
             security: []
@@ -508,6 +508,48 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/FindActiveProvidersResult"
+
+    /network/find-providers2:
+        post:
+            description: |
+                Randomly sample providers for locations, groups, or devices,
+                which are active and in good health.
+                This allows random iteration by using the exclude input to mark
+                visited providers.
+            operationId: Network Find Providers 2
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindActiveProviders2Args"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindActiveProviders2Result"
+
+    /network/find-providers-spec:
+        post:
+            description: |
+                Create a spec object for `find-providers2` using a description
+                of the intended use of the network.
+            operationId: Network Find Providers Spec
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindActiveProvidersSpecArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindActiveProvidersSpecResult"
 
     /wallet/balance:
         get:
@@ -1540,6 +1582,25 @@ components:
         FindLocationsResult:
             type: object
             properties:
+                intents:
+                    type: object
+                    properties:
+                        name:
+                            type: string
+                        # specs can be directly passed to `find-providers2` to enumerate clients for this result
+                        specs:
+                            type: array
+                            items:
+                                type: object
+                                properties:
+                                    location_id:
+                                        description: udid
+                                        type: string
+                                    location_group_id:
+                                        description: udid
+                                        type: string
+                                    client_id:
+                                        description: udid
                 groups:
                     type: array
                     items:
@@ -1629,6 +1690,65 @@ components:
                     items:
                         description: udid
                         type: string
+
+        ProviderSpec:
+            type: object
+            properties:
+                location_id:
+                    description: udid
+                    type: string
+                location_group_id:
+                    description: udid
+                    type: string
+                client_id:
+                    description: udid
+
+        FindActiveProviders2Args:
+            type: object
+            properties:
+                # specs are unioned (or)
+                specs:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/ProviderSpec"
+                count:
+                    type: integer
+                exclude_client_ids:
+                    type: array
+                    items:
+                        description: udid
+                        type: string
+
+        FindActiveProviders2Result:
+            type: object
+            properties:
+                client_ids:
+                    type: array
+                    # FIXME initial stats
+                    items:
+                        type: object
+                        properites:
+                            client_id:
+                                description: udid
+                                type: string
+                            estimated_bytes_per_second:
+                                type: integer
+
+        FindActiveProvidersSpecArgs:
+            type: object
+            properties:
+                query:
+                    description: description of the intended use of the connection
+                    type: string
+
+        FindActiveProvidersSpecResult:
+            type: object
+            properties:
+                # specs are unioned (or)
+                specs:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/ProviderSpec"
 
         WalletBalanceResult:
             type: object
