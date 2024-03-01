@@ -55,6 +55,12 @@ func NewApiCallback[R any](callback func(result R, err error)) apiCallback[R] {
 	}
 }
 
+func NewNoopApiCallback[R any]() apiCallback[R] {
+	return &simpleApiCallback[R]{
+		callback: func(result R, err error){},
+	}
+}
+
 func (self *simpleApiCallback[R]) Result(result R, err error) {
 	self.callback(result, err)
 }
@@ -297,10 +303,102 @@ func (self *BringYourApi) AuthNetworkClient(authNetworkClient *AuthNetworkClient
 	)
 }
 
+func (self *BringYourApi) AuthNetworkClientSync(authNetworkClient *AuthNetworkClientArgs) (*AuthNetworkClientResult, error) {
+	return post(
+		self.ctx,
+		fmt.Sprintf("%s/network/auth-client", self.apiUrl),
+		authNetworkClient,
+		self.byJwt,
+		&AuthNetworkClientResult{},
+		NewNoopApiCallback[*AuthNetworkClientResult](),
+	)
+}
 
 
+type RemoveNetworkClientCallback apiCallback[*RemoveNetworkClientResult]
 
-func post[R any](ctx context.Context, url string, args any, byJwt string, result R, callback apiCallback[R]) {
+type RemoveNetworkClientArgs struct {
+	ClientId Id `json:"client_id"`
+}
+
+type RemoveNetworkClientResult struct {
+	Error *RemoveNetworkClientError `json:"error"`
+}
+
+type RemoveNetworkClientError struct {
+	Message string `json:"message"`
+}
+
+func (self *BringYourApi) RemoveNetworkClient(removeNetworkClient *RemoveNetworkClientArgs, callback RemoveNetworkClientCallback) {
+	go post(
+		self.ctx,
+		fmt.Sprintf("%s/network/remove-client", self.apiUrl),
+		removeNetworkClient,
+		self.byJwt,
+		&RemoveNetworkClientResult{},
+		callback,
+	)
+}
+
+func (self *BringYourApi) RemoveNetworkClientSync(removeNetworkClient *RemoveNetworkClientArgs) (*RemoveNetworkClientResult, error) {
+	return post(
+		self.ctx,
+		fmt.Sprintf("%s/network/remove-client", self.apiUrl),
+		removeNetworkClient,
+		self.byJwt,
+		&RemoveNetworkClientResult{},
+		NewNoopApiCallback[*RemoveNetworkClientResult](),
+	)
+}
+
+
+type ProviderSpec struct {
+    LocationId *Id `json:"location_id,omitempty"`
+    LocationGroupId *Id `json:"location_group_id,omitempty"`
+    ClientId *Id `json:"client_id,omitempty"`
+}
+
+type FindProviders2Callback apiCallback[*FindProviders2Result]
+
+type FindProviders2Args struct {
+	Specs []*ProviderSpec `json:"specs"`
+	Count int `json:"count"`
+	ExcludeClientIds []Id `json:"exclude_client_ids"`
+}
+
+type FindProviders2Result struct {
+	Providers []*FindProvidersProvider `json:"providers"`
+}
+
+type FindProvidersProvider struct {
+	ClientId Id `json:"client_id"`
+	EstimatedBytesPerSecond int `json:"estimated_bytes_per_second"`
+}
+
+func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, callback FindProviders2Callback) {
+	go post(
+		self.ctx,
+		fmt.Sprintf("%s/network/find-providers2", self.apiUrl),
+		findProviders2,
+		self.byJwt,
+		&FindProviders2Result{},
+		callback,
+	)
+}
+
+func (self *BringYourApi) FindProviders2Sync(findProviders2 *FindProviders2Args) (*FindProviders2Result, error) {
+	return post(
+		self.ctx,
+		fmt.Sprintf("%s/network/find-providers2", self.apiUrl),
+		findProviders2,
+		self.byJwt,
+		&FindProviders2Result{},
+		NewNoopApiCallback[*FindProviders2Result](),
+	)
+}
+
+
+func post[R any](ctx context.Context, url string, args any, byJwt string, result R, callback apiCallback[R]) (R, error) {
 	var requestBodyBytes []byte
 	if args == nil {
 		requestBodyBytes = make([]byte, 0)
@@ -310,7 +408,7 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 		if err != nil {
 			var empty R
 			callback.Result(empty, err)
-			return
+			return empty, err
 		}
 	}
 
@@ -321,7 +419,7 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 	if err != nil {
 		var empty R
 		callback.Result(empty, err)
-		return
+		return empty, err
 	}
 
 	req.Header.Add("Content-Type", "text/json")
@@ -341,7 +439,7 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 		apiLog("REQUEST ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
-		return
+		return empty, err
 	}
 	defer r.Body.Close()
 
@@ -351,13 +449,14 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 		// the response body is the error message
 		errorMessage := strings.TrimSpace(string(responseBodyBytes))
 		apiLog("RESPONSE ERROR %s: %s", r.Status, errorMessage)
-		callback.Result(result, errors.New(errorMessage))
-		return
+		err = errors.New(errorMessage)
+		callback.Result(result, err)
+		return result, err
 	}
 
 	if err != nil {
 		callback.Result(result, err)
-		return
+		return result, err
 	}
 
 	apiLog("GOT API RESPONSE BODY: %s", string(responseBodyBytes))
@@ -367,19 +466,20 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 		apiLog("UNMARSHAL ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
-		return
+		return empty, err
 	}
 
 	callback.Result(result, nil)
+	return result, nil
 }
 
 
-func get[R any](ctx context.Context, url string, byJwt string, result R, callback apiCallback[R]) {
+func get[R any](ctx context.Context, url string, byJwt string, result R, callback apiCallback[R]) (R, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		var empty R
 		callback.Result(empty, err)
-		return
+		return empty, err
 	}
 
 	req.Header.Add("Content-Type", "text/json")
@@ -399,7 +499,7 @@ func get[R any](ctx context.Context, url string, byJwt string, result R, callbac
 		apiLog("REQUEST ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
-		return
+		return empty, err
 	}
 
 	responseBodyBytes, err := io.ReadAll(r.Body)
@@ -412,10 +512,11 @@ func get[R any](ctx context.Context, url string, byJwt string, result R, callbac
 		apiLog("UNMARSHAL ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
-		return
+		return empty, err
 	}
 
 	callback.Result(result, nil)
+	return result, nil
 }
 
 

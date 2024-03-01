@@ -501,13 +501,13 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/FindActiveProvidersArgs"
+                            $ref: "#/components/schemas/FindProvidersArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/FindActiveProvidersResult"
+                                $ref: "#/components/schemas/FindProvidersResult"
 
     /network/find-providers2:
         post:
@@ -523,15 +523,15 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/FindActiveProviders2Args"
+                            $ref: "#/components/schemas/FindProviders2Args"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/FindActiveProviders2Result"
+                                $ref: "#/components/schemas/FindProviders2Result"
 
-    /network/find-providers-spec:
+    /network/create-provider-spec:
         post:
             description: |
                 Create a spec object for `find-providers2` using a description
@@ -543,13 +543,13 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/FindActiveProvidersSpecArgs"
+                            $ref: "#/components/schemas/CreateProviderSpecArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/FindActiveProvidersSpecResult"
+                                $ref: "#/components/schemas/CreateProviderSpecResult"
 
     /wallet/balance:
         get:
@@ -1408,6 +1408,11 @@ components:
                 device_spec:
                     description: If this is a new device, sets the device spec.
                     type: string
+                derived_client_id:
+                    description: udid. Optional. |
+                        The client that the new client is derived from. 
+                        If this is called with a client jwt, the derived client id is inferred from the jwt.
+                    type: string
 
         AuthNetworkClientResult:
             type: object
@@ -1582,25 +1587,11 @@ components:
         FindLocationsResult:
             type: object
             properties:
-                intents:
-                    type: object
-                    properties:
-                        name:
-                            type: string
-                        # specs can be directly passed to `find-providers2` to enumerate clients for this result
-                        specs:
-                            type: array
-                            items:
-                                type: object
-                                properties:
-                                    location_id:
-                                        description: udid
-                                        type: string
-                                    location_group_id:
-                                        description: udid
-                                        type: string
-                                    client_id:
-                                        description: udid
+                # specs can be directly passed to `find-providers2` to enumerate clients for this result
+                specs:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/ProviderSpec"
                 groups:
                     type: array
                     items:
@@ -1665,7 +1656,7 @@ components:
                             device_name:
                                 type: string
 
-        FindActiveProvidersArgs:
+        FindProvidersArgs:
             type: object
             properties:
                 location_id:
@@ -1682,7 +1673,7 @@ components:
                         description: udid
                         type: string
 
-        FindActiveProvidersResult:
+        FindProvidersResult:
             type: object
             properties:
                 client_ids:
@@ -1703,7 +1694,7 @@ components:
                 client_id:
                     description: udid
 
-        FindActiveProviders2Args:
+        FindProviders2Args:
             type: object
             properties:
                 # specs are unioned (or)
@@ -1719,12 +1710,11 @@ components:
                         description: udid
                         type: string
 
-        FindActiveProviders2Result:
+        FindProviders2Result:
             type: object
             properties:
-                client_ids:
+                providers:
                     type: array
-                    # FIXME initial stats
                     items:
                         type: object
                         properites:
@@ -1734,14 +1724,14 @@ components:
                             estimated_bytes_per_second:
                                 type: integer
 
-        FindActiveProvidersSpecArgs:
+        CreateProviderSpecArgs:
             type: object
             properties:
                 query:
                     description: description of the intended use of the connection
                     type: string
 
-        FindActiveProvidersSpecResult:
+        CreateProviderSpecResult:
             type: object
             properties:
                 # specs are unioned (or)

@@ -70,6 +70,9 @@ func DefaultClientSettings() *ClientSettings {
 		ForwardBufferSize: 32,
 		ReadTimeout: 30 * time.Second,
 		BufferTimeout: 30 * time.Second,
+		SendBufferSettings: DefaultSendBufferSettings(),
+		ReceiveBufferSettings: DefaultReceiveBufferSettings(),
+		ForwardBufferSettings: DefaultForwardBufferSettings(),
 		ContractManagerSettings: DefaultContractManagerSettings(),
 	}
 }
@@ -194,6 +197,9 @@ type ClientSettings struct {
 	ReadTimeout time.Duration
 	BufferTimeout time.Duration
 
+	SendBufferSettings *SendBufferSettings
+	ReceiveBufferSettings *ReceiveBufferSettings
+	ForwardBufferSettings *ForwardBufferSettings
 	ContractManagerSettings *ContractManagerSettings
 }
 
@@ -206,10 +212,6 @@ type Client struct {
 	clientId Id
 
 	clientSettings *ClientSettings
-
-	sendBufferSettings *SendBufferSettings
-	receiveBufferSettings *ReceiveBufferSettings
-	forwardBufferSettings *ForwardBufferSettings
 
 	receiveCallbacks *CallbackList[ReceiveFunction]
 	forwardCallbacks *CallbackList[ForwardFunction]
@@ -232,9 +234,6 @@ func NewClient(ctx context.Context, clientId Id, clientSettings *ClientSettings)
 		cancel: cancel,
 		clientId: clientId,
 		clientSettings: clientSettings,
-		sendBufferSettings: DefaultSendBufferSettings(),
-		receiveBufferSettings: DefaultReceiveBufferSettings(),
-		forwardBufferSettings: DefaultForwardBufferSettings(),
 		receiveCallbacks: NewCallbackList[ReceiveFunction](),
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
@@ -244,15 +243,17 @@ func NewClient(ctx context.Context, clientId Id, clientSettings *ClientSettings)
 
 	client.initBuffers(routeManager, contractManager)
 
+	go client.run()
+
 	return client
 }
 
 func (self *Client) initBuffers(routeManager *RouteManager, contractManager *ContractManager) {
 	self.routeManager = routeManager
 	self.contractManager = contractManager
-	self.sendBuffer = NewSendBuffer(self.ctx, self, routeManager, contractManager, self.sendBufferSettings)
-	self.receiveBuffer = NewReceiveBuffer(self.ctx, self, routeManager, contractManager, self.receiveBufferSettings)
-	self.forwardBuffer = NewForwardBuffer(self.ctx, self, routeManager, contractManager, self.forwardBufferSettings)
+	self.sendBuffer = NewSendBuffer(self.ctx, self, routeManager, contractManager, self.clientSettings.SendBufferSettings)
+	self.receiveBuffer = NewReceiveBuffer(self.ctx, self, routeManager, contractManager, self.clientSettings.ReceiveBufferSettings)
+	self.forwardBuffer = NewForwardBuffer(self.ctx, self, routeManager, contractManager, self.clientSettings.ForwardBufferSettings)
 }
 
 func (self *Client) RouteManager() *RouteManager {
@@ -410,7 +411,7 @@ func (self *Client) RemoveForwardCallback(forwardCallback ForwardFunction) {
 	self.forwardCallbacks.Remove(forwardCallback)
 }
 
-func (self *Client) Run() {
+func (self *Client) run() {
 	defer self.cancel()
 	
 	// receive

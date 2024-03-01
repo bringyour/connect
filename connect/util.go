@@ -8,6 +8,9 @@ import (
     "os"
     "os/signal"
     "syscall"
+    "fmt"
+    "runtime/debug"
+    mathrand "math/rand"
 )
 
 
@@ -235,7 +238,7 @@ func (self *Event) SetOnSignals(signalValues ...syscall.Signal) func() {
 }
 
 
-func WeightedShuffle[T any](values []T, weights map[T]float32) {
+func WeightedShuffle[T comparable](values []T, weights map[T]float32) {
 	mathrand.Shuffle(len(values), func(i int, j int) {
         values[i], values[j] = values[j], values[i]
     })
@@ -262,6 +265,21 @@ func WeightedShuffle[T any](values []T, weights map[T]float32) {
         }()
         values[i], values[j] = values[j], values[i]
     }
+}
+
+
+
+func HandleError(do func(), handlers ...func()) {
+    defer func() {
+        if r := recover(); r != nil {
+        	debug.PrintStack()
+            fmt.Printf("Unexpected error: %v\n", r)
+            for _, handler := range handlers {
+                handler()
+            }
+        }
+    }()
+    do()
 }
 
 
