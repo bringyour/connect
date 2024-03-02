@@ -24,6 +24,12 @@ import (
 // net frame count statistics (acks - nacks)
 
 
+type multiClientChannelUpdate struct {
+    lock sync.Mutex
+    client *multiClientChannel
+}
+
+
 type MultiClientTesting interface {
     NextDesintationIds(count int, excludedClientIds []Id) map[Id]ByteCount
     NewClientArgs() (Id, *ClientAuth)
@@ -51,25 +57,29 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
         WindowSizeMin: 4,
+        WindowSizeMax: 32,
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
         MultiWriteTimeoutExpandSize: 2,
         ClientNackInitialLimit: 1,
-        ClientNackMaxLimit: 8 * 1024,
+        ClientNackMaxLimit: -1,
         // linear addition on each ack
-        ClientNackScale: 100,
+        ClientNackScale: 32,
+        SendTimeout: 30 * time.Second,
         WriteTimeout: 5 * time.Second,
-        MultiWriteTimeout: 1 * time.Second,
-        WindowExpandTimeout: 1 * time.Second,
+        MultiWriteTimeout: 5 * time.Second,
+        WindowExpandTimeout: 5 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
         StatsWindowDuration: 300 * time.Second,
+        StatsWindowBucketDuration: 1 * time.Second,
     }
 }
 
 
 type MultiClientSettings struct {
     WindowSizeMin int
+    WindowSizeMax int
     WindowSizeReconnectScale float32
     MultiWriteTimeoutExpandSize int
 
@@ -78,6 +88,7 @@ type MultiClientSettings struct {
     ClientNackScale float32
     ClientWriteTimeout time.Duration
 
+    SendTimeout time.Duration
     WriteTimeout time.Duration
     MultiWriteTimeout time.Duration
     WindowExpandTimeout time.Duration
@@ -85,6 +96,7 @@ type MultiClientSettings struct {
     WindowEnumerateErrorTimeout time.Duration
 
     StatsWindowDuration time.Duration
+    StatsWindowBucketDuration time.Duration
 }
 
 
@@ -105,10 +117,11 @@ type RemoteUserNatMultiClient struct {
     window *multiClientWindow
 
     stateLock sync.Mutex
-    ip4PathClients map[Ip4Path]*multiClientChannel 
-    ip6PathClients map[Ip6Path]*multiClientChannel
-    clientIp4Paths map[*multiClientChannel]map[Ip4Path]bool
-    clientIp6Paths map[*multiClientChannel]map[Ip6Path]bool
+    ip4PathUpdates map[Ip4Path]*multiClientChannelUpdate
+    ip6PathUpdates map[Ip6Path]*multiClientChannelUpdate
+    updateIp4Paths map[*multiClientChannelUpdate]map[Ip4Path]bool
+    updateIp6Paths map[*multiClientChannelUpdate]map[Ip6Path]bool
+    clientUpdates map[*multiClientChannel]*multiClientChannelUpdate
 }
 
 func NewRemoteUserNatMultiClientWithDefaults(
@@ -187,13 +200,129 @@ func NewRemoteUserNatMultiClientWithTesting(
         settings: settings,
         testing: testing,
         window: window,
-        ip4PathClients: map[Ip4Path]*multiClientChannel{},
-        ip6PathClients: map[Ip6Path]*multiClientChannel{},
-        clientIp4Paths: map[*multiClientChannel]map[Ip4Path]bool{},
-        clientIp6Paths: map[*multiClientChannel]map[Ip6Path]bool{},
+        ip4PathUpdates: map[Ip4Path]*multiClientChannelUpdate{},
+        ip6PathUpdates: map[Ip6Path]*multiClientChannelUpdate{},
+        updateIp4Paths: map[*multiClientChannelUpdate]map[Ip4Path]bool{},
+        updateIp6Paths: map[*multiClientChannelUpdate]map[Ip6Path]bool{},
+        clientUpdates: map[*multiClientChannel]*multiClientChannelUpdate{},
     }
 }
 
+
+func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback func(*multiClientChannelUpdate)) {
+    reserveUpdate := func()(*multiClientChannelUpdate) {
+        self.stateLock.Lock()
+        defer self.stateLock.Unlock()
+
+        switch ipPath.Version {
+        case 4:
+            ip4Path := ipPath.ToIp4Path()
+            update, ok := self.ip4PathUpdates[ip4Path]
+            if !ok {
+                update = &multiClientChannelUpdate{}
+                self.ip4PathUpdates[ip4Path] = update
+            }
+            return update
+        case 6:
+            ip6Path := ipPath.ToIp6Path()
+            update, ok := self.ip6PathUpdates[ip6Path]
+            if !ok {
+                update = &multiClientChannelUpdate{}
+                self.ip6PathUpdates[ip6Path] = update
+            }
+            return update
+        default:
+            panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
+        }
+    }
+
+    updatePaths := func(previousClient *multiClientChannel, update *multiClientChannelUpdate) {
+        self.stateLock.Lock()
+        defer self.stateLock.Unlock()
+
+        if previousClient != update.client {
+            if previousClient != nil {
+                delete(self.clientUpdates, previousClient)
+            }
+            if update.client != nil {
+                self.clientUpdates[update.client] = update
+            }
+        }
+
+
+        client := update.client
+        if client != nil {
+            switch ipPath.Version {
+            case 4:
+                ip4Path := ipPath.ToIp4Path()
+                self.ip4PathUpdates[ip4Path] = update
+                ip4Paths, ok := self.updateIp4Paths[update]
+                if !ok {
+                    ip4Paths = map[Ip4Path]bool{}
+                    self.updateIp4Paths[update] = ip4Paths
+                }
+                ip4Paths[ip4Path] = true
+            case 6:
+                ip6Path := ipPath.ToIp6Path()
+                self.ip6PathUpdates[ip6Path] = update
+                ip6Paths, ok := self.updateIp6Paths[update]
+                if !ok {
+                    ip6Paths = map[Ip6Path]bool{}
+                    self.updateIp6Paths[update] = ip6Paths
+                }
+                ip6Paths[ip6Path] = true
+            default:
+                panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
+            }
+        } else {
+            switch ipPath.Version {
+            case 4:
+                ip4Path := ipPath.ToIp4Path()
+                delete(self.ip4PathUpdates, ip4Path)
+                if ip4Paths, ok := self.updateIp4Paths[update]; ok {
+                    delete(ip4Paths, ip4Path)
+                    if len(ip4Paths) == 0 {
+                        delete(self.updateIp4Paths, update)
+                    }
+                }
+            case 6:
+                ip6Path := ipPath.ToIp6Path()
+                delete(self.ip6PathUpdates, ip6Path)
+                if ip6Paths, ok := self.updateIp6Paths[update]; ok {
+                    delete(ip6Paths, ip6Path)
+                    if len(ip6Paths) == 0 {
+                        delete(self.updateIp6Paths, update)
+                    }
+                }
+            default:
+                panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
+            }
+        }
+    }
+
+    for {
+        update := reserveUpdate()
+        success := func()(bool) {
+            update.lock.Lock()
+            defer update.lock.Unlock()
+
+            if updateInLock := reserveUpdate(); update != updateInLock {
+                return false
+            }
+
+            previousClient := update.client
+            callback(update)
+            updatePaths(previousClient, update)
+            return true
+        }()
+        if success {
+            return
+        }
+    }
+}
+
+
+/*
 func (self *RemoteUserNatMultiClient) getPathClient(ipPath *IpPath) *multiClientChannel {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
@@ -265,139 +394,160 @@ func (self *RemoteUserNatMultiClient) removePathClient(ipPath *IpPath, client *m
         panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
     }
 }
+*/
+
+
+// remove the client from paths
+// no need to lock the clients
 
 func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
+
+    if update, ok := self.clientUpdates[client]; ok {
+        delete(self.clientUpdates, client)
     
-    if ip4Paths, ok := self.clientIp4Paths[client]; ok {
-        delete(self.clientIp4Paths, client)
-        for ip4Path, _ := range ip4Paths {
-            delete(self.ip4PathClients, ip4Path)
+        if ip4Paths, ok := self.updateIp4Paths[update]; ok {
+            delete(self.updateIp4Paths, update)
+            for ip4Path, _ := range ip4Paths {
+                delete(self.ip4PathUpdates, ip4Path)
+            }
+        }
+
+        if ip6Paths, ok := self.updateIp6Paths[update]; ok {
+            delete(self.updateIp6Paths, update)
+            for ip6Path, _ := range ip6Paths {
+                delete(self.ip6PathUpdates, ip6Path)
+            }
         }
     }
-
-    if ip6Paths, ok := self.clientIp6Paths[client]; ok {
-        delete(self.clientIp6Paths, client)
-        for ip6Path, _ := range ip6Paths {
-            delete(self.ip6PathClients, ip6Path)
-        }
-    }
-
-    // client.Close()
 }
 
 
-func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
-    HandleError(func() {
-        self._SendPacket(source, provideMode, packet)
-    })
-}
+// func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
+//     HandleError(func() {
+//         self._SendPacket(source, provideMode, packet)
+//     })
+// }
 
 // `SendPacketFunction`
-func (self *RemoteUserNatMultiClient) _SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
+func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
         // bad packet
         return
     }
 
-    if client := self.getPathClient(parsedPacket.ipPath); client != nil {
-        select {
-        case <- self.ctx.Done():
-            return
-        // the client was already selected so do not limit sending by the nack limit
-        // at this point the limit is the send buffer
-        case client.SendNoLimit() <- parsedPacket:
-            return
-        case <- time.After(self.settings.WriteTimeout):
-            fmt.Printf("[multi] Existing path timeout %s->%s\n", client.args.clientId, client.args.destinationId)
+    self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
+        endTime := time.Now().Add(self.settings.SendTimeout)
 
-            // now we can change the routing of this path
-            self.removePathClient(parsedPacket.ipPath, client)
-        }
-    }
-
-    for {
-        orderedClients, removedClients := self.window.OrderedClients(self.settings.WindowExpandTimeout)
-        fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
-
-        for _, client := range removedClients {
-            fmt.Printf("[multi] Remove client %s->%s.\n", client.args.clientId, client.args.destinationId)
-            
-            self.removeClient(client)
-        }
-
-        for _, client := range orderedClients {
+        if update.client != nil {
             select {
-            case client.Send() <- parsedPacket:
-                fmt.Printf("[multi] Set client %s->%s.\n", client.args.clientId, client.args.destinationId)
+            case <- self.ctx.Done():
+                return
+            // the client was already selected so do not limit sending by the nack limit
+            // at this point the limit is the send buffer
+            case update.client.SendNoLimit() <- parsedPacket:
+                return
+            case <- time.After(self.settings.WriteTimeout):
+                fmt.Printf("[multi] Existing path timeout %s->%s\n", update.client.args.clientId, update.client.args.destinationId)
 
-                // lock the path to the client
-                self.setPathClient(parsedPacket.ipPath, client)
+                // now we can change the routing of this path
+                // self.removePathClient(parsedPacket.ipPath, client)
+                update.client = nil
+            }
+        }
+
+        for {
+            timeout := endTime.Sub(time.Now())
+
+            orderedClients, removedClients := self.window.OrderedClients(self.settings.WindowExpandTimeout)
+            fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
+
+            for _, client := range removedClients {
+                fmt.Printf("[multi] Remove client %s->%s.\n", client.args.clientId, client.args.destinationId)
+                
+                self.removeClient(client)
+            }
+
+            for _, client := range orderedClients {
+                select {
+                case client.Send() <- parsedPacket:
+                    fmt.Printf("[multi] Set client %s->%s.\n", client.args.clientId, client.args.destinationId)
+
+                    // lock the path to the client
+                    // self.setPathClient(parsedPacket.ipPath, client)
+                    update.client = client
+                    return
+                default:
+                }
+            }
+
+            if timeout <= 0 {
+                return
+            }
+
+            // select cases are in order:
+            // - self.ctx.Done
+            // - client writes...
+            // - timeout
+
+            selectCases := make([]reflect.SelectCase, 0, 2 + len(orderedClients))
+
+            // add the done case
+            doneIndex := len(selectCases)
+            selectCases = append(selectCases, reflect.SelectCase{
+                Dir: reflect.SelectRecv,
+                Chan: reflect.ValueOf(self.ctx.Done()),
+            })
+
+            // add all the clients
+            clientStartIndex := len(selectCases)
+            if 0 < len(orderedClients) {
+                sendValue := reflect.ValueOf(parsedPacket)
+                for _, client := range orderedClients {
+                    selectCases = append(selectCases, reflect.SelectCase{
+                        Dir: reflect.SelectSend,
+                        Chan: reflect.ValueOf(client.Send()),
+                        Send: sendValue,
+                    })
+                }
+            }
+
+            // add a timeout case
+            timeoutIndex := len(selectCases)
+            selectCases = append(selectCases, reflect.SelectCase{
+                Dir: reflect.SelectRecv,
+                Chan: reflect.ValueOf(time.After(min(timeout, self.settings.MultiWriteTimeout))),
+            })
+
+            chosenIndex, _, _ := reflect.Select(selectCases)
+
+            switch chosenIndex {
+            case doneIndex:
+                // return errors.New("Done")
+                return
+            case timeoutIndex:
+                fmt.Printf("[multi] Timeout expand\n")
+
+                // return errors.New("Timeout")
+                self.window.ExpandBy(self.settings.MultiWriteTimeoutExpandSize)
                 return
             default:
+                // a route
+                clientIndex := chosenIndex - clientStartIndex
+                client := orderedClients[clientIndex]
+
+                fmt.Printf("[multi] Set client after select %s->%s.\n", client.args.clientId, client.args.destinationId)
+
+                // lock the path to the client
+                // self.setPathClient(parsedPacket.ipPath, client)
+                update.client = client
+                return
             }
         }
+    })
 
-        // select cases are in order:
-        // - self.ctx.Done
-        // - client writes...
-        // - timeout
-
-        selectCases := make([]reflect.SelectCase, 0, 2 + len(orderedClients))
-
-        // add the done case
-        doneIndex := len(selectCases)
-        selectCases = append(selectCases, reflect.SelectCase{
-            Dir: reflect.SelectRecv,
-            Chan: reflect.ValueOf(self.ctx.Done()),
-        })
-
-        // add all the clients
-        clientStartIndex := len(selectCases)
-        if 0 < len(orderedClients) {
-            sendValue := reflect.ValueOf(parsedPacket)
-            for _, client := range orderedClients {
-                selectCases = append(selectCases, reflect.SelectCase{
-                    Dir: reflect.SelectSend,
-                    Chan: reflect.ValueOf(client.Send()),
-                    Send: sendValue,
-                })
-            }
-        }
-
-        // add a timeout case
-        timeoutIndex := len(selectCases)
-        selectCases = append(selectCases, reflect.SelectCase{
-            Dir: reflect.SelectRecv,
-            Chan: reflect.ValueOf(time.After(self.settings.MultiWriteTimeout)),
-        })
-
-        chosenIndex, _, _ := reflect.Select(selectCases)
-
-        switch chosenIndex {
-        case doneIndex:
-            // return errors.New("Done")
-            return
-        case timeoutIndex:
-            fmt.Printf("[multi] Timeout expand\n")
-
-            // return errors.New("Timeout")
-            self.window.ExpandBy(self.settings.MultiWriteTimeoutExpandSize)
-            return
-        default:
-            // a route
-            clientIndex := chosenIndex - clientStartIndex
-            client := orderedClients[clientIndex]
-
-            fmt.Printf("[multi] Set client after select %s->%s.\n", client.args.clientId, client.args.destinationId)
-
-            // lock the path to the client
-            self.setPathClient(parsedPacket.ipPath, client)
-            return
-        }
-    }
 }
 
 // `connect.ReceiveFunction`
@@ -631,6 +781,11 @@ func (self *multiClientWindow) expandTo(targetWindowSize int) {
             return
         }
 
+        if 0 < self.settings.WindowSizeMax && self.settings.WindowSizeMax <= windowSize {
+            fmt.Printf("[multi] Expand done max size\n")
+            return
+        }
+
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
             fmt.Printf("[multi] Expand window timeout\n")
@@ -643,7 +798,7 @@ func (self *multiClientWindow) expandTo(targetWindowSize int) {
         case <- update:
             // continue
         case args := <- self.clientChannelArgs:
-            fmt.Printf("[multi] Expand got args %v\n", args)
+            // fmt.Printf("[multi] Expand got args %v\n", args)
 
             self.stateLock.Lock()
             _, ok := self.destinationClients[args.destinationId]
@@ -663,6 +818,7 @@ func (self *multiClientWindow) expandTo(targetWindowSize int) {
                 go HandleError(func() {
                     defer removeClientAuth(args.clientId, self.api)
                     client.Run()
+                    client.Close()
                 }, self.cancel)
 
                 self.stateLock.Lock()
@@ -748,15 +904,26 @@ const (
 )
 
 
-type multiClientEvent struct {
-    eventType multiClientEventType
-    // ack bool
-    ackByteCount ByteCount
-    err error
-    ipPath *IpPath
+type multiClientEventBucket struct {
+    createTime time.Time
     eventTime time.Time
+
+    ackCount int
+    ackByteCount ByteCount
+    nackCount int
+    nackByteCount ByteCount
+    errs []error
+    ip4Paths map[Ip4Path]bool
+    ip6Paths map[Ip6Path]bool
 }
 
+func newMultiClientEventBucket() *multiClientEventBucket {
+    now := time.Now()
+    return &multiClientEventBucket{
+        createTime: now,
+        eventTime: now,
+    }
+}
 
 type clientWindowStats struct {
     sourceCount int
@@ -787,9 +954,7 @@ type multiClientChannel struct {
     client *Client
 
     stateLock sync.Mutex
-    // FIXME need to minimize memory here, use buckets
-    // FIXME need to bucket the events
-    events []*multiClientEvent
+    eventBuckets []*multiClientEventBucket
     // destination -> source -> count
     ip4DestinationSourceCount map[Ip4Path]map[Ip4Path]int
     ip6DestinationSourceCount map[Ip6Path]map[Ip6Path]int
@@ -822,7 +987,7 @@ func newMultiClientChannel(
     if testing != nil {
         testing.SetTransports(client)
     } else {
-        fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
+        // fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
         NewPlatformTransportWithDefaults(
             cancelCtx,
             args.platformUrl,
@@ -846,7 +1011,7 @@ func newMultiClientChannel(
         settings: settings,
         sourceFilter: sourceFilter,
         client: client,
-        events: []*multiClientEvent{},
+        eventBuckets: []*multiClientEventBucket{},
         ip4DestinationSourceCount: map[Ip4Path]map[Ip4Path]int{},
         ip6DestinationSourceCount: map[Ip6Path]map[Ip6Path]int{},
         packetStats: &clientWindowStats{},
@@ -881,7 +1046,7 @@ func (self *multiClientChannel) Run() {
             self.addNack(packetByteCount)
             self.addSource(parsedPacket.ipPath)
             ackCallback := func(err error) {
-                fmt.Printf("[multi] ack callback (%v)\n", err)
+                // fmt.Printf("[multi] ack callback (%v)\n", err)
                 if err == nil {
                     self.addAck(packetByteCount)
                 } else {
@@ -889,7 +1054,7 @@ func (self *multiClientChannel) Run() {
                 }
             }
 
-            fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
+            // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
 
             success := self.client.SendWithTimeout(
                 frame,
@@ -956,6 +1121,30 @@ func (self *multiClientChannel) isMaxAcks() bool {
     return (self.maxNackCount <= self.packetStats.nackCount)
 }
 
+func (self *multiClientChannel) eventBucket() *multiClientEventBucket {
+    // must be called with stateLock
+
+    now := time.Now()
+
+    var eventBucket *multiClientEventBucket
+    if n := len(self.eventBuckets); 0 < n {
+        eventBucket = self.eventBuckets[n - 1]
+        if eventBucket.createTime.Add(self.settings.StatsWindowBucketDuration).Before(now) {
+            // expired
+            eventBucket = nil
+        }
+    }
+    
+    if eventBucket == nil {
+        eventBucket = newMultiClientEventBucket()
+        self.eventBuckets = append(self.eventBuckets, eventBucket)
+    }
+
+    eventBucket.eventTime = now
+
+    return eventBucket
+}
+
 func (self *multiClientChannel) addNack(ackByteCount ByteCount) {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
@@ -963,11 +1152,9 @@ func (self *multiClientChannel) addNack(ackByteCount ByteCount) {
     self.packetStats.nackCount += 1
     self.packetStats.nackByteCount += ackByteCount
 
-    self.events = append(self.events, &multiClientEvent{
-        eventType: multiClientEventTypeNack,
-        ackByteCount: ackByteCount,
-        eventTime: time.Now(),
-    })
+    eventBucket := self.eventBucket()
+    eventBucket.nackCount += 1
+    eventBucket.nackByteCount += ackByteCount
 
     self.eventUpdate.NotifyAll()
 }
@@ -981,16 +1168,18 @@ func (self *multiClientChannel) addAck(ackByteCount ByteCount) {
     self.packetStats.ackCount += 1
     self.packetStats.ackByteCount += ackByteCount
 
-    self.maxNackCount = min(
-        self.settings.ClientNackMaxLimit,
-        int(float32(self.maxNackCount) + self.settings.ClientNackScale),
-    )
+    if 0 < self.settings.ClientNackMaxLimit {
+        self.maxNackCount = min(
+            self.settings.ClientNackMaxLimit,
+            int(float32(self.maxNackCount) + self.settings.ClientNackScale),
+        )
+    } else {
+        self.maxNackCount = int(float32(self.maxNackCount) + self.settings.ClientNackScale)
+    }
 
-    self.events = append(self.events, &multiClientEvent{
-        eventType: multiClientEventTypeAck,
-        ackByteCount: ackByteCount,
-        eventTime: time.Now(),
-    })
+    eventBucket := self.eventBucket()
+    eventBucket.ackCount += 1
+    eventBucket.ackByteCount += ackByteCount
 
     self.eventUpdate.NotifyAll()
 }
@@ -1020,11 +1209,21 @@ func (self *multiClientChannel) addSource(ipPath *IpPath) {
         panic(fmt.Errorf("Bad protocol version %d", source.Version))
     }
 
-    self.events = append(self.events, &multiClientEvent{
-        eventType: multiClientEventTypeSource,
-        ipPath: ipPath,
-        eventTime: time.Now(),
-    })
+    eventBucket := self.eventBucket()
+    switch ipPath.Version {
+    case 4:
+        if eventBucket.ip4Paths == nil {
+            eventBucket.ip4Paths = map[Ip4Path]bool{}
+        }
+        eventBucket.ip4Paths[ipPath.ToIp4Path()] = true
+    case 6:
+        if eventBucket.ip6Paths == nil {
+            eventBucket.ip6Paths = map[Ip6Path]bool{}
+        }
+        eventBucket.ip6Paths[ipPath.ToIp6Path()] = true
+    default:
+        panic(fmt.Errorf("Bad protocol version %d", source.Version))
+    }
 
     self.eventUpdate.NotifyAll()
 }
@@ -1037,18 +1236,13 @@ func (self *multiClientChannel) addError(err error) {
         self.endErr = err
     }
 
-    self.events = append(self.events, &multiClientEvent{
-        eventType: multiClientEventTypeError,
-        err: err,
-        eventTime: time.Now(),
-    })
+    eventBucket := self.eventBucket()
+    eventBucket.errs = append(eventBucket.errs, err)
 
     self.eventUpdate.NotifyAll()
 }
 
 func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnErr error) {
-    changed := false
-
     func() {
         self.stateLock.Lock()
         defer self.stateLock.Unlock()
@@ -1057,61 +1251,56 @@ func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnE
 
         // remove events before the window start
         i := 0
-        for i < len(self.events) {
-            event := self.events[i]
+        for i < len(self.eventBuckets) {
+            eventBucket := self.eventBuckets[i]
             // fmt.Printf("[multi] event advance %v %s\n", event, windowStart)
-            if windowStart.Before(event.eventTime) {
+            if windowStart.Before(eventBucket.eventTime) {
                 break
             }
-            switch event.eventType {
-            // `multiClientEventTypeNack` only ack or error can remove nack
 
-            case multiClientEventTypeAck:
-                self.packetStats.ackCount -= 1
-                self.packetStats.ackByteCount -= event.ackByteCount
-                changed = true
+            self.packetStats.ackCount -= eventBucket.ackCount
+            self.packetStats.ackByteCount -= eventBucket.ackByteCount
 
-            case multiClientEventTypeSource:
-                source := event.ipPath.Source()
-                destination := event.ipPath.Destination()
-                switch source.Version {
-                case 4:
-                    sourceCount, ok := self.ip4DestinationSourceCount[destination.ToIp4Path()]
-                    if ok {
-                        count := sourceCount[source.ToIp4Path()]
-                        if count - 1 <= 0 {
-                            delete(sourceCount, source.ToIp4Path())
-                        } else {
-                            sourceCount[source.ToIp4Path()] = count - 1
-                        }
-                        if len(sourceCount) == 0 {
-                            delete(self.ip4DestinationSourceCount, destination.ToIp4Path())
-                        }
+            for ip4Path, _ := range eventBucket.ip4Paths {
+                source := ip4Path.Source()
+                destination := ip4Path.Destination()
+                
+                sourceCount, ok := self.ip4DestinationSourceCount[destination]
+                if ok {
+                    count := sourceCount[source]
+                    if count - 1 <= 0 {
+                        delete(sourceCount, source)
+                    } else {
+                        sourceCount[source] = count - 1
                     }
-                case 6:
-                    sourceCount, ok := self.ip6DestinationSourceCount[destination.ToIp6Path()]
-                    if ok {
-                        count := sourceCount[source.ToIp6Path()]
-                        if count - 1 <= 0 {
-                            delete(sourceCount, source.ToIp6Path())
-                        } else {
-                            sourceCount[source.ToIp6Path()] = count - 1
-                        }
-                        if len(sourceCount) == 0 {
-                            delete(self.ip6DestinationSourceCount, destination.ToIp6Path())
-                        }
+                    if len(sourceCount) == 0 {
+                        delete(self.ip4DestinationSourceCount, destination)
                     }
-                default:
-                    panic(fmt.Errorf("Bad protocol version %d", source.Version))
                 }
-                changed = true
-
-            // `multiClientEventTypeError` nothing to remove, ended
             }
-            self.events[i] = nil
+
+            for ip6Path, _ := range eventBucket.ip6Paths {
+                source := ip6Path.Source()
+                destination := ip6Path.Destination()
+
+                sourceCount, ok := self.ip6DestinationSourceCount[destination]
+                if ok {
+                    count := sourceCount[source]
+                    if count - 1 <= 0 {
+                        delete(sourceCount, source)
+                    } else {
+                        sourceCount[source] = count - 1
+                    }
+                    if len(sourceCount) == 0 {
+                        delete(self.ip6DestinationSourceCount, destination)
+                    }
+                }
+            }
+
+            self.eventBuckets[i] = nil
             i += 1
         }
-        self.events = self.events[i:]
+        self.eventBuckets = self.eventBuckets[i:]
 
         maxSourceCount := 0
         for _, sourceCounts := range self.ip4DestinationSourceCount {
@@ -1131,9 +1320,7 @@ func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnE
         returnErr = self.endErr
     }()
 
-    if changed {
-        self.eventUpdate.NotifyAll()
-    }
+    self.eventUpdate.NotifyAll()
     return
 }
 
@@ -1155,18 +1342,19 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
             }
             ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
 
-            fmt.Printf("[multi] Receive %s<-\n", self.args.destinationId)
+            // fmt.Printf("[multi] Receive %s<-\n", self.args.destinationId)
             
             self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
         }
     }
 }
 
-/*
 func (self *multiClientChannel) Close() {
     self.cancel()
 
-    close(self.send)
-    close(self.sendNoLimit)
+    self.client.Cancel()
+
+    // after drain timeout?
+    // close(self.send)
+    // close(self.sendNoLimit)
 }
-*/

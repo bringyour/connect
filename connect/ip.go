@@ -2033,6 +2033,22 @@ type Ip4Path struct {
     DestinationPort int
 }
 
+func (self *Ip4Path) Source() Ip4Path {
+    return Ip4Path{
+        Protocol: self.Protocol,
+        SourceIp: self.SourceIp,
+        SourcePort: self.SourcePort,
+    }
+}
+
+func (self *Ip4Path) Destination() Ip4Path {
+    return Ip4Path{
+        Protocol: self.Protocol,
+        DestinationIp: self.DestinationIp,
+        DestinationPort: self.DestinationPort,
+    }
+}
+
 
 // comparable
 type Ip6Path struct {
@@ -2041,6 +2057,22 @@ type Ip6Path struct {
     SourcePort int
     DestinationIp [16]byte
     DestinationPort int
+}
+
+func (self *Ip6Path) Source() Ip6Path {
+    return Ip6Path{
+        Protocol: self.Protocol,
+        SourceIp: self.SourceIp,
+        SourcePort: self.SourcePort,
+    }
+}
+
+func (self *Ip6Path) Destination() Ip6Path {
+    return Ip6Path{
+        Protocol: self.Protocol,
+        DestinationIp: self.DestinationIp,
+        DestinationPort: self.DestinationPort,
+    }
 }
 
 
