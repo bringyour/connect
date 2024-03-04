@@ -118,19 +118,19 @@ func provide(opts docopt.Opts) {
     // routeManager := connect.NewRouteManager(connectClient)
     // contractManager := connect.NewContractManagerWithDefaults(connectClient)
     // connectClient.Setup(routeManager, contractManager)
-    go connectClient.Run()
+    // go connectClient.Run()
 
     fmt.Printf("client_id: %s\n", clientId)
     fmt.Printf("instance_id: %s\n", instanceId)
 
     auth := &connect.ClientAuth{
         ByJwt: byClientJwt,
-        ClientId: clientId,
+        // ClientId: clientId,
         InstanceId: instanceId,
         AppVersion: RequireVersion(),
     }
-    platformTransport := connect.NewPlatformTransportWithDefaults(ctx, connectUrl, auth)
-    go platformTransport.Run(connectClient.RouteManager())
+    connect.NewPlatformTransportWithDefaults(ctx, connectUrl, auth, connectClient.RouteManager())
+    // go platformTransport.Run(connectClient.RouteManager())
 
     localUserNat := connect.NewLocalUserNatWithDefaults(ctx)
     remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat)

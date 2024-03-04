@@ -62,17 +62,15 @@ type MultiRouteReader interface {
 
 type RouteManager struct {
 	ctx context.Context
-    client *Client
 
     mutex sync.Mutex
     writerMatchState *MatchState
     readerMatchState *MatchState
 }
 
-func NewRouteManager(ctx context.Context, client *Client) *RouteManager {
+func NewRouteManager(ctx context.Context) *RouteManager {
     return &RouteManager{
     	ctx: ctx,
-        client: client,
         writerMatchState: NewMatchState(ctx, true, Transport.MatchesSend),
         // `weightedRoutes=false` because unless there is a cpu limit this is not needed
         readerMatchState: NewMatchState(ctx, false, Transport.MatchesReceive),

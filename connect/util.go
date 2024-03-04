@@ -238,6 +238,8 @@ func (self *Event) SetOnSignals(signalValues ...syscall.Signal) func() {
 }
 
 
+// FIXME test this. run N times and look at the average position.
+// FIXME the average position order should equal the weight order
 func WeightedShuffle[T comparable](values []T, weights map[T]float32) {
 	mathrand.Shuffle(len(values), func(i int, j int) {
         values[i], values[j] = values[j], values[i]
@@ -260,13 +262,12 @@ func WeightedShuffle[T comparable](values []T, weights map[T]float32) {
                     return j
                 }
             }
-            // addition err, use the last value
+            // zero weights, use the last value
             return n - 1
         }()
         values[i], values[j] = values[j], values[i]
     }
 }
-
 
 
 func HandleError(do func(), handlers ...func()) {

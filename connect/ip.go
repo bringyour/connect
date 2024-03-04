@@ -1113,12 +1113,14 @@ func (self *TcpSequence) Run() {
         self.DestinationAuthority(),
         self.tcpBufferSettings.ConnectTimeout,
     )
-    // default is nodelay=true
     if err != nil {
         self.log("[init]connect error (%s)", err)
         return
     }
     defer socket.Close()
+
+    tcpSocket := socket.(*net.TCPConn)
+    tcpSocket.SetNoDelay(false)
 
     self.log("[init]connect success")
 

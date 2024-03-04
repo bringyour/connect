@@ -87,7 +87,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		ResendInterval: 2 * time.Second,
 		// no backoff
 		ResendBackoffScale: 0.0,
-		AckTimeout: 60 * time.Second,
+		AckTimeout: 300 * time.Second,
 		IdleTimeout: 300 * time.Second,
 		// pause on resend for selectively acked messaged
 		SelectiveAckTimeout: 15 * time.Second,
@@ -238,7 +238,7 @@ func NewClient(ctx context.Context, clientId Id, clientSettings *ClientSettings)
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
 
-	routeManager := NewRouteManager(ctx, client)
+	routeManager := NewRouteManager(ctx)
 	contractManager := NewContractManager(ctx, client, clientSettings.ContractManagerSettings)
 
 	client.initBuffers(routeManager, contractManager)
@@ -443,6 +443,10 @@ func (self *Client) run() {
 		// decode a minimal subset of the full message needed to make a routing decision
 		filteredTransferFrame := &protocol.FilteredTransferFrame{}
 		if err := proto.Unmarshal(transferFrameBytes, filteredTransferFrame); err != nil {
+			// bad protobuf (unexpected, see route note above)
+			continue
+		}
+		if filteredTransferFrame.TransferPath == nil {
 			// bad protobuf (unexpected, see route note above)
 			continue
 		}

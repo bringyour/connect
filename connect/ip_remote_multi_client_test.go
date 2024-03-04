@@ -2,7 +2,7 @@ package connect
 
 
 
-
+/*
 func TestMultiClient() {
 
 
@@ -19,3 +19,4 @@ func TestMultiClient() {
 
 
 }
+*/

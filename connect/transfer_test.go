@@ -68,7 +68,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// aContractManager := NewContractManagerWithDefaults(a)
 	defer a.Cancel()
 	// a.Setup(aRouteManager, aContractManager)
-	go a.Run()
+	// go a.Run()
 
 	aRouteManager.UpdateTransport(aSendTransport, []Route{aSend})
 	aRouteManager.UpdateTransport(aReceiveTransport, []Route{aReceive})
@@ -83,7 +83,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// bContractManager := NewContractManagerWithDefaults(b)
 	defer b.Cancel()
 	// b.Setup(bRouteManager, bContractManager)
-	go b.Run()
+	// go b.Run()
 
 	bRouteManager.UpdateTransport(bSendTransport, []Route{bSend})
 	bRouteManager.UpdateTransport(bReceiveTransport, []Route{bReceive})
@@ -181,7 +181,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// a2ContractManager := NewContractManagerWithDefaults(a2)
 	// a2.Setup(a2RouteManager, a2ContractManager)
 	defer a2.Cancel()
-	go a2.Run()
+	// go a2.Run()
 
 	a2RouteManager.UpdateTransport(aSendTransport, []Route{aSend})
 	a2RouteManager.UpdateTransport(aReceiveTransport, []Route{aReceive})
@@ -462,6 +462,9 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 	}
 }
 
+
+
+// FIXME TestAckTimeout
 
 
 

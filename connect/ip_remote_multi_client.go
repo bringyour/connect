@@ -7,6 +7,8 @@ import (
     "reflect"
     "errors"
     "fmt"
+    "slices"
+    "math"
 
     "golang.org/x/exp/maps"
 
@@ -22,6 +24,10 @@ import (
 // scaling up successful destinations to use the full transfer buffer
 // - the clients are chosen with probability weighted by their 
 // net frame count statistics (acks - nacks)
+
+
+// FIXME on receive, only send packet if client is matched to the destination
+// parse the dest on the packet. then make sure client equals dest
 
 
 type multiClientChannelUpdate struct {
@@ -57,18 +63,18 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
         WindowSizeMin: 4,
-        WindowSizeMax: 32,
+        WindowSizeMax: 16,
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
         MultiWriteTimeoutExpandSize: 2,
         ClientNackInitialLimit: 1,
-        ClientNackMaxLimit: -1,
-        // linear addition on each ack
-        ClientNackScale: 32,
-        SendTimeout: 30 * time.Second,
-        WriteTimeout: 5 * time.Second,
+        ClientNackMaxLimit: 128 * 1024,
+        ClientNackScale: 1.5,
+        SendTimeout: 60 * time.Second,
+        WriteTimeout: 30 * time.Second,
         MultiWriteTimeout: 5 * time.Second,
-        WindowExpandTimeout: 5 * time.Second,
+        AckTimeout: 5 * time.Second,
+        WindowExpandTimeout: 2 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
         StatsWindowDuration: 300 * time.Second,
@@ -80,17 +86,18 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 type MultiClientSettings struct {
     WindowSizeMin int
     WindowSizeMax int
-    WindowSizeReconnectScale float32
+    WindowSizeReconnectScale float64
     MultiWriteTimeoutExpandSize int
 
     ClientNackInitialLimit int
     ClientNackMaxLimit int
-    ClientNackScale float32
+    ClientNackScale float64
     ClientWriteTimeout time.Duration
 
     SendTimeout time.Duration
     WriteTimeout time.Duration
     MultiWriteTimeout time.Duration
+    AckTimeout time.Duration
     WindowExpandTimeout time.Duration
     WindowEnumerateEmptyTimeout time.Duration
     WindowEnumerateErrorTimeout time.Duration
@@ -445,6 +452,9 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             select {
             case <- self.ctx.Done():
                 return
+            case <- update.client.Done():
+                // now we can change the routing of this path
+                update.client = nil
             // the client was already selected so do not limit sending by the nack limit
             // at this point the limit is the send buffer
             case update.client.SendNoLimit() <- parsedPacket:
@@ -492,7 +502,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             // - client writes...
             // - timeout
 
-            selectCases := make([]reflect.SelectCase, 0, 2 + len(orderedClients))
+            selectCases := make([]reflect.SelectCase, 0, 2 + 2 * len(orderedClients))
 
             // add the done case
             doneIndex := len(selectCases)
@@ -521,19 +531,33 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 Chan: reflect.ValueOf(time.After(min(timeout, self.settings.MultiWriteTimeout))),
             })
 
+
+            // add all the client dones
+            clientDoneStartIndex := len(selectCases)
+            if 0 < len(orderedClients) {
+                for _, client := range orderedClients {
+                    selectCases = append(selectCases, reflect.SelectCase{
+                        Dir: reflect.SelectRecv,
+                        Chan: reflect.ValueOf(client.Done()),
+                    })
+                }
+            }
+
+
             chosenIndex, _, _ := reflect.Select(selectCases)
 
-            switch chosenIndex {
-            case doneIndex:
+            if chosenIndex == doneIndex {
                 // return errors.New("Done")
                 return
-            case timeoutIndex:
+            } else if chosenIndex == timeoutIndex {
                 fmt.Printf("[multi] Timeout expand\n")
 
                 // return errors.New("Timeout")
                 self.window.ExpandBy(self.settings.MultiWriteTimeoutExpandSize)
-                return
-            default:
+                // retry
+            } else if clientDoneStartIndex <= chosenIndex {
+                // retry
+            } else {
                 // a route
                 clientIndex := chosenIndex - clientStartIndex
                 client := orderedClients[clientIndex]
@@ -758,15 +782,16 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
     }
 }
 
-func (self *multiClientWindow) ExpandBy(expandStep int) {
+func (self *multiClientWindow) ExpandBy(expandStep int) bool {
     self.stateLock.Lock()
     windowSize := len(self.destinationClients)
     self.stateLock.Unlock()
 
-    self.expandTo(windowSize + expandStep)
+    return self.expandTo(windowSize + expandStep)
 }
 
-func (self *multiClientWindow) expandTo(targetWindowSize int) {
+func (self *multiClientWindow) expandTo(targetWindowSize int) bool {
+    updated := false
     endTime := time.Now().Add(self.settings.WindowExpandTimeout)
     for {
         update := self.windowUpdate.NotifyChannel()
@@ -778,23 +803,23 @@ func (self *multiClientWindow) expandTo(targetWindowSize int) {
 
         if targetWindowSize <= windowSize {
             fmt.Printf("[multi] Expand done\n")
-            return
+            return updated
         }
 
         if 0 < self.settings.WindowSizeMax && self.settings.WindowSizeMax <= windowSize {
             fmt.Printf("[multi] Expand done max size\n")
-            return
+            return updated
         }
 
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
             fmt.Printf("[multi] Expand window timeout\n")
-            return
+            return updated
         }
 
         select {
         case <- self.ctx.Done():
-            return
+            return updated
         case <- update:
             // continue
         case args := <- self.clientChannelArgs:
@@ -826,12 +851,13 @@ func (self *multiClientWindow) expandTo(targetWindowSize int) {
                 self.stateLock.Unlock()
                 
                 self.windowUpdate.NotifyAll()
+                updated = true
             } else {
                 removeClientAuth(args.clientId, self.api)
             }
         case <- time.After(timeout):
             fmt.Printf("[multi] Expand window timeout waiting for args\n")
-            return
+            return updated
         }
     }
 }
@@ -841,40 +867,83 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
     clients := maps.Values(self.destinationClients)
     self.stateLock.Unlock()
 
-    removedClients := []*multiClientChannel{}
+    n := 2
+    for {
+        n -= 1
+        removedClients := []*multiClientChannel{}
+        netSourceCount := 0
+        // nonNegativeClients := []*multiClientChannel{}
+        weights := map[*multiClientChannel]float32{}
 
-    netSourceCount := 0
-    clientWeights := map[*multiClientChannel]float32{}
-    for _, client := range clients {
-        stats, err := client.WindowStats()
-        if err != nil {
-            removedClients = append(removedClients, client)
+        for _, client := range clients {
+            stats, err := client.WindowStats()
+            if err != nil {
+                removedClients = append(removedClients, client)
+                self.stateLock.Lock()
+                delete(self.destinationClients, client.DestinationId())
+                self.stateLock.Unlock()
+                self.windowUpdate.NotifyAll()
+            } else {
+                netSourceCount += stats.sourceCount
+                weight := float32(stats.ackByteCount - stats.nackByteCount)
+                weights[client] = weight
+                // if 0 <= weight {
+                //     nonNegativeClients = append(nonNegativeClients, client)
+                // }
+            }
+        }
+
+        targetWindowSize := int(math.Ceil(
+            float64(self.settings.WindowSizeMin) + 
+            float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
+        ))
+        if 0 < n && len(clients) - len(removedClients) < targetWindowSize && self.expandTo(targetWindowSize) {
             self.stateLock.Lock()
-            delete(self.destinationClients, client.DestinationId())
+            clients = maps.Values(self.destinationClients)
             self.stateLock.Unlock()
-            self.windowUpdate.NotifyAll()
+            // repeat
         } else {
-            netSourceCount += stats.sourceCount
-            clientWeights[client] = float32(stats.ackByteCount - stats.nackByteCount)
+            // quantize the weights
+            // 2-5 quartiles for positive net bytes
+            // 1 no bytes
+            // 0 negative bytes. do not include these in the clients
+            slices.SortFunc(clients, func(a *multiClientChannel, b *multiClientChannel)(int) {
+                // descending weight
+                aWeight := weights[a]
+                bWeight := weights[b]
+                if aWeight < bWeight {
+                    return 1
+                } else if bWeight < aWeight {
+                    return -1
+                } else {
+                    return 0
+                }
+            })
+            q1 := len(clients) / 4
+            q2 := 2 * len(clients) / 4
+            q3 := 3 * len(clients) / 4
+            // quantizedWeights := map[*multiClientChannel]float32{}
+            for i, client := range clients {
+                if weight := weights[client]; weight < 0 {
+                    weights[client] = 0
+                } else if weight == 0 {
+                    weights[client] = 1
+                } else if i <= q1 {
+                    weights[client] = 5
+                } else if i <= q2 {
+                    weights[client] = 4
+                } else if i <= q3 {
+                    weights[client] = 3
+                } else {
+                    weights[client] = 2
+                }
+            }
+
+            WeightedShuffle(clients, weights)
+
+            return clients, removedClients
         }
     }
-
-    targetWindowSize := int(
-        float32(self.settings.WindowSizeMin) + 
-        float32(netSourceCount) * self.settings.WindowSizeReconnectScale,
-    )
-    if len(clients) - len(removedClients) < targetWindowSize {
-        self.expandTo(targetWindowSize)
-
-        self.stateLock.Lock()
-        clients = maps.Values(self.destinationClients)
-        self.stateLock.Unlock()
-    }
-
-    // now order the clients based on the stats
-    WeightedShuffle(clients, clientWeights)
-
-    return clients, removedClients
 }
 
 
@@ -982,7 +1051,7 @@ func newMultiClientChannel(
     }
 
     clientSettings := DefaultClientSettings()
-    clientSettings.SendBufferSettings.AckTimeout = settings.WriteTimeout
+    clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
     client := NewClient(cancelCtx, byJwt.ClientId, clientSettings)
     if testing != nil {
         testing.SetTransports(client)
@@ -1056,11 +1125,17 @@ func (self *multiClientChannel) Run() {
 
             // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
 
+            opts := []any{}
+            switch parsedPacket.ipPath.Protocol {
+            case IpProtocolUdp:
+                opts = append(opts, NoAck())
+            }
             success := self.client.SendWithTimeout(
                 frame,
                 self.args.destinationId,
                 ackCallback,
                 self.settings.WriteTimeout,
+                opts...,
             )
             if !success {
                 fmt.Printf("[multi] Timeout ->%s\n", self.args.destinationId)
@@ -1104,6 +1179,10 @@ func (self *multiClientChannel) Run() {
 
 func (self *multiClientChannel) DestinationId() Id {
     return self.args.destinationId
+}
+
+func (self *multiClientChannel) Done() <-chan struct{} {
+    return self.ctx.Done()
 }
 
 func (self *multiClientChannel) Send() chan *parsedPacket {
@@ -1168,14 +1247,10 @@ func (self *multiClientChannel) addAck(ackByteCount ByteCount) {
     self.packetStats.ackCount += 1
     self.packetStats.ackByteCount += ackByteCount
 
-    if 0 < self.settings.ClientNackMaxLimit {
-        self.maxNackCount = min(
-            self.settings.ClientNackMaxLimit,
-            int(float32(self.maxNackCount) + self.settings.ClientNackScale),
-        )
-    } else {
-        self.maxNackCount = int(float32(self.maxNackCount) + self.settings.ClientNackScale)
-    }
+    self.maxNackCount = min(
+        self.settings.ClientNackMaxLimit,
+        int(math.Ceil(float64(self.maxNackCount) * self.settings.ClientNackScale)),
+    )
 
     eventBucket := self.eventBucket()
     eventBucket.ackCount += 1
