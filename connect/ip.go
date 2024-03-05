@@ -27,7 +27,6 @@ The UNAT emulates a raw socket using user-space sockets.
 */
 
 
-// FIXME tune this
 const SendTimeout = 30 * time.Second
 
 
@@ -44,8 +43,8 @@ const debugVerifyHeaders = false
 
 func DefaultUdpBufferSettings() *UdpBufferSettings {
     return &UdpBufferSettings{
-        // ReadTimeout: 120 * time.Second,
-        // WriteTimeout: 60 * time.Second,
+        ReadTimeout: 120 * time.Second,
+        WriteTimeout: 30 * time.Second,
         // ReadPollTimeout: 60 * time.Second,
         // WritePollTimeout: 60 * time.Second,
         IdleTimeout: 300 * time.Second,
@@ -59,8 +58,8 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
 func DefaultTcpBufferSettings() *TcpBufferSettings {
     tcpBufferSettings := &TcpBufferSettings{
         ConnectTimeout: 60 * time.Second,
-        // ReadTimeout: 120 * time.Second,
-        // WriteTimeout: 60 * time.Second,
+        ReadTimeout: 120 * time.Second,
+        WriteTimeout: 30 * time.Second,
         // ReadPollTimeout: 60 * time.Second,
         // WritePollTimeout: 60 * time.Second,
         IdleTimeout: 300 * time.Second,
@@ -188,6 +187,8 @@ func (self *LocalUserNat) receive(source Path, ipProtocol IpProtocol, packet []b
 }
 
 func (self *LocalUserNat) Run() {
+    defer self.cancel()
+
     udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.udpBufferSettings)
     udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.udpBufferSettings)
     tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.tcpBufferSettings)
@@ -312,8 +313,8 @@ func NewBufferId6(source Path, sourceIp net.IP, sourcePort int, destinationIp ne
 
 
 type UdpBufferSettings struct {
-    // ReadTimeout time.Duration
-    // WriteTimeout time.Duration
+    ReadTimeout time.Duration
+    WriteTimeout time.Duration
     // ReadPollTimeout time.Duration
     // WritePollTimeout time.Duration
     IdleTimeout time.Duration
@@ -415,10 +416,10 @@ func (self *UdpBuffer[BufferId]) udpSend(
     ipVersion int,
     udp *layers.UDP,
 ) {
-    self.mutex.Lock()
-    defer self.mutex.Unlock()
-
     initSequence := func()(*UdpSequence) {
+        self.mutex.Lock()
+        defer self.mutex.Unlock()
+
         sequence, ok := self.sequences[bufferId]
         if ok {
             return sequence
@@ -450,7 +451,9 @@ func (self *UdpBuffer[BufferId]) udpSend(
 
     if !initSequence().send(provideMode, udp) {
         // sequence closed
+        self.mutex.Lock()
         delete(self.sequences, bufferId)
+        self.mutex.Unlock()
         initSequence().send(provideMode, udp)
     }
 }
@@ -560,7 +563,7 @@ func (self *UdpSequence) Run() {
 
         buffer := make([]byte, self.udpBufferSettings.ReadBufferSize)
 
-        // readTimeout := time.Now().Add(self.udpBufferSettings.ReadTimeout)
+        readTimeout := time.Now().Add(self.udpBufferSettings.ReadTimeout)
         for forwardIter := 0; ; forwardIter += 1 {
             select {
             case <- self.ctx.Done():
@@ -572,7 +575,7 @@ func (self *UdpSequence) Run() {
             //     time.Now().Add(self.udpBufferSettings.ReadPollTimeout),
             //     readTimeout,
             // )
-            // socket.SetReadDeadline(readTimeout)
+            socket.SetReadDeadline(readTimeout)
             n, err := socket.Read(buffer)
 
             if err == nil {
@@ -593,20 +596,19 @@ func (self *UdpSequence) Run() {
                     self.log("[f%d]receive (%d)", forwardIter, len(packet))
                     receive(packet)
                 }
-                // readTimeout = time.Now().Add(self.udpBufferSettings.ReadTimeout)
+                readTimeout = time.Now().Add(self.udpBufferSettings.ReadTimeout)
             }
 
             if err != nil {
-                return
-                // if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                //     if readTimeout.Before(time.Now()) {
-                //         self.log("[f%d]timeout")
-                //         return
-                //     }
-                // } else {
-                //     // some other error
-                //     return
-                // }
+                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                    if readTimeout.Before(time.Now()) {
+                        self.log("[f%d]timeout")
+                        return
+                    }
+                } else {
+                    // some other error
+                    return
+                }
             }
         }
     }()
@@ -617,7 +619,7 @@ func (self *UdpSequence) Run() {
         case <- self.ctx.Done():
             return
         case sendItem := <- self.sendItems:
-            // writeTimeout := time.Now().Add(self.udpBufferSettings.WriteTimeout)
+            writeTimeout := time.Now().Add(self.udpBufferSettings.WriteTimeout)
 
             payload := sendItem.udp.Payload
 
@@ -634,7 +636,7 @@ func (self *UdpSequence) Run() {
                 //     time.Now().Add(self.udpBufferSettings.WritePollTimeout),
                 //     writeTimeout,
                 // )
-                // socket.SetWriteDeadline(writeTimeout)
+                socket.SetWriteDeadline(writeTimeout)
                 n, err := socket.Write(payload)
 
                 if err == nil {
@@ -646,15 +648,14 @@ func (self *UdpSequence) Run() {
                 payload = payload[n:]
 
                 if err != nil {
-                    return
-                    // if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                    //     if writeTimeout.Before(time.Now()) {
-                    //         return
-                    //     }
-                    // } else {
-                    //     // some other error
-                    //     return
-                    // }
+                    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                        if writeTimeout.Before(time.Now()) {
+                            return
+                        }
+                    } else {
+                        // some other error
+                        return
+                    }
                 }
             }
         case <- time.After(self.udpBufferSettings.IdleTimeout):
@@ -795,8 +796,8 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 
 type TcpBufferSettings struct {
     ConnectTimeout time.Duration
-    // ReadTimeout time.Duration
-    // WriteTimeout time.Duration
+    ReadTimeout time.Duration
+    WriteTimeout time.Duration
     // ReadPollTimeout time.Duration
     // WritePollTimeout time.Duration
     IdleTimeout time.Duration
@@ -905,20 +906,21 @@ func (self *TcpBuffer[BufferId]) tcpSend(
     ipVersion int,
     tcp *layers.TCP,
 ) {
-    self.mutex.Lock()
-    defer self.mutex.Unlock()
+    initSequence := func()(*TcpSequence) {
+        self.mutex.Lock()
+        defer self.mutex.Unlock()
 
-    // new sequence
-    if tcp.SYN {
-        if sequence, ok := self.sequences[bufferId]; ok {
-            sequence.Close()
-            delete(self.sequences, bufferId)
-        }
-    }
-
-    sequence, ok := self.sequences[bufferId]
-    if !ok {
+        // new sequence
         if tcp.SYN {
+            if sequence, ok := self.sequences[bufferId]; ok {
+                sequence.Close()
+                delete(self.sequences, bufferId)
+            }
+        }
+
+        if sequence, ok := self.sequences[bufferId]; ok {
+            return sequence
+        } else if tcp.SYN {
             sequence = NewTcpSequence(
                 self.ctx,
                 self.receiveCallback,
@@ -941,6 +943,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
                     delete(self.sequences, bufferId)
                 }
             }()
+            return sequence
         } else {
             // drop the packet; only create a new sequence on SYN
             ipLog("TcpBuffer drop (%s %s %s)",
@@ -954,10 +957,12 @@ func (self *TcpBuffer[BufferId]) tcpSend(
                 ),
                 tcpFlagsString(tcp),
             )
-            return
+            return nil
         }
     }
-    sequence.send(provideMode, tcp)
+    if sequence := initSequence(); sequence != nil {
+        sequence.send(provideMode, tcp)
+    }
 }
 
 /*
@@ -1129,7 +1134,7 @@ func (self *TcpSequence) Run() {
 
         buffer := make([]byte, self.tcpBufferSettings.ReadBufferSize)
         
-        // readTimeout := time.Now().Add(self.tcpBufferSettings.ReadTimeout)
+        readTimeout := time.Now().Add(self.tcpBufferSettings.ReadTimeout)
         for forwardIter := 0; ; forwardIter += 1 {
             select {
             case <- self.ctx.Done():
@@ -1141,7 +1146,7 @@ func (self *TcpSequence) Run() {
             //     time.Now().Add(self.tcpBufferSettings.ReadPollTimeout),
             //     readTimeout,
             // )
-            // socket.SetReadDeadline(readTimeout)
+            socket.SetReadDeadline(readTimeout)
             
             n, err := socket.Read(buffer)
 
@@ -1168,20 +1173,19 @@ func (self *TcpSequence) Run() {
                     }
                 }
                 
-                // readTimeout = time.Now().Add(self.tcpBufferSettings.ReadTimeout)
+                readTimeout = time.Now().Add(self.tcpBufferSettings.ReadTimeout)
             }
             
             if err != nil {
-                return
-                // if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                //     if readTimeout.Before(time.Now()) {
-                //         fmt.Printf("[f%d]timeout\n", forwardIter)
-                //         return
-                //     }
-                // } else {
-                //     // some other error
-                //     return
-                // }
+                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                    if readTimeout.Before(time.Now()) {
+                        fmt.Printf("[f%d]timeout\n", forwardIter)
+                        return
+                    }
+                } else {
+                    // some other error
+                    return
+                }
             }
         }
     }()
@@ -1242,7 +1246,7 @@ func (self *TcpSequence) Run() {
             //     self.mutex.Unlock()
             // }
 
-            // writeTimeout := time.Now().Add(self.tcpBufferSettings.WriteTimeout)
+            writeTimeout := time.Now().Add(self.tcpBufferSettings.WriteTimeout)
 
             payload := sendItem.tcp.Payload
             seq += len(payload)
@@ -1257,7 +1261,7 @@ func (self *TcpSequence) Run() {
                 //     time.Now().Add(self.tcpBufferSettings.WritePollTimeout),
                 //     writeTimeout,
                 // )
-                // socket.SetWriteDeadline(writeTimeout)
+                socket.SetWriteDeadline(writeTimeout)
                 n, err := socket.Write(payload[i:])
 
                 if err == nil {
@@ -1273,15 +1277,14 @@ func (self *TcpSequence) Run() {
                 }
 
                 if err != nil {
-                    return
-                    // if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                    //     if writeTimeout.Before(time.Now()) {
-                    //         return
-                    //     }
-                    // } else {
-                    //     // some other error
-                    //     return
-                    // }
+                    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                        if writeTimeout.Before(time.Now()) {
+                            return
+                        }
+                    } else {
+                        // some other error
+                        return
+                    }
                 }
             }
 
