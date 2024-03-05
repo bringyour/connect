@@ -63,7 +63,7 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
         WindowSizeMin: 1,
-        WindowSizeMax: 16,
+        WindowSizeMax: 32,
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
         MultiWriteTimeoutExpandSize: 2,
@@ -77,7 +77,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         WindowExpandTimeout: 2 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
-        StatsWindowDuration: 300 * time.Second,
+        StatsWindowDuration: 120 * time.Second,
         StatsWindowBucketDuration: 1 * time.Second,
     }
 }
@@ -441,7 +441,7 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
-        fmt.Printf("[multi] Bad packet.\n")
+        fmt.Printf("[multi] Bad packet (%s).\n", err)
         // bad packet
         return
     }
@@ -909,32 +909,26 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
     self.stateLock.Unlock()
 
     removedClients := []*multiClientChannel{}
-    // netSourceCount := 0
+    netSourceCount := 0
     // nonNegativeClients := []*multiClientChannel{}
     weights := map[*multiClientChannel]float32{}
+    durations := map[*multiClientChannel]time.Duration{}
 
     for _, client := range clients {
         stats, err := client.WindowStats()
         if err != nil {
             removedClients = append(removedClients, client)
-            self.stateLock.Lock()
-            delete(self.destinationClients, client.DestinationId())
-            self.stateLock.Unlock()
-            self.windowUpdate.NotifyAll()
         } else {
-            // netSourceCount += stats.sourceCount
+            netSourceCount += stats.sourceCount
             weight := float32(stats.ackByteCount - stats.nackByteCount)
             weights[client] = weight
+            durations[client] = stats.duration
             // if 0 <= weight {
             //     nonNegativeClients = append(nonNegativeClients, client)
             // }
         }
     }
 
-    // quantize the weights
-    // 2-5 quartiles for positive net bytes
-    // 1 no bytes
-    // 0 negative bytes. do not include these in the clients
     slices.SortFunc(clients, func(a *multiClientChannel, b *multiClientChannel)(int) {
         // descending weight
         aWeight := weights[a]
@@ -947,24 +941,70 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
             return 0
         }
     })
-    q1 := len(clients) / 4
-    q2 := 2 * len(clients) / 4
+
+
+    targetWindowSize := int(math.Ceil(
+        float64(self.settings.WindowSizeMin) + 
+        float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
+    ))
+    if targetWindowSize < len(clients) {
+        // collapse
+        for _, client := range clients[targetWindowSize:] {
+            client.Close()
+            removedClients = append(removedClients, client)
+        }
+        clients = clients[:targetWindowSize]
+    }
+
+    // q1 := len(clients) / 4
+    // q2 := 2 * len(clients) / 4
     q3 := 3 * len(clients) / 4
+    // collapse clients in the fourth quartile with duration of the half the stats window
+    if q3 + 1 < len(clients) {
+        q4Clients := clients[q3 + 1:]
+        clients = clients[:q3 + 1]
+        for _, client := range q4Clients {
+            if self.settings.StatsWindowDuration / 2 <= durations[client] {
+                client.Close()
+                removedClients = append(removedClients, client)
+            } else {
+                clients = append(clients, client)
+            }
+        }
+    }
+
+
+    if 0 < len(removedClients) {
+        self.stateLock.Lock()
+        for _, client := range removedClients {
+            delete(self.destinationClients, client.DestinationId())
+        }
+        self.stateLock.Unlock()
+        self.windowUpdate.NotifyAll()
+    }
+
+    // quantize the weights
+    // 20,10,5,2 quartiles for positive net bytes
+    // 1 no bytes
+    // 0 negative bytes
+    
     // quantizedWeights := map[*multiClientChannel]float32{}
-    for i, client := range clients {
+    for _, client := range clients {
         if weight := weights[client]; weight < 0 {
             weights[client] = 0
         } else if weight == 0 {
+            // FIXME use the esimate
             weights[client] = 1
-        } else if i <= q1 {
-            weights[client] = 5
-        } else if i <= q2 {
-            weights[client] = 4
-        } else if i <= q3 {
-            weights[client] = 3
-        } else {
-            weights[client] = 2
         }
+        // else if i <= q1 {
+        //     weights[client] = 20
+        // } else if i <= q2 {
+        //     weights[client] = 10
+        // } else if i <= q3 {
+        //     weights[client] = 5
+        // } else {
+        //     weights[client] = 2
+        // }
     }
 
     WeightedShuffle(clients, weights)
@@ -1026,6 +1066,7 @@ type clientWindowStats struct {
     nackCount int
     ackByteCount ByteCount
     nackByteCount ByteCount
+    duration time.Duration
 }
 
 
@@ -1409,7 +1450,16 @@ func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnE
             self.eventBuckets[i] = nil
             i += 1
         }
-        self.eventBuckets = self.eventBuckets[i:]
+        if 0 < i {
+            self.eventBuckets = self.eventBuckets[i:]
+        }
+
+
+        duration := time.Duration(0)
+        if 0 < len(self.eventBuckets) {
+            duration = time.Now().Sub(self.eventBuckets[0].createTime)
+        }
+
 
         maxSourceCount := 0
         for _, sourceCounts := range self.ip4DestinationSourceCount {
@@ -1425,6 +1475,7 @@ func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnE
             nackCount: self.packetStats.nackCount,
             ackByteCount: self.packetStats.ackByteCount,
             nackByteCount: self.packetStats.nackByteCount,
+            duration: duration,
         }
         returnErr = self.endErr
     }()
