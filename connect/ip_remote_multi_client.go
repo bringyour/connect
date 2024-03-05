@@ -62,18 +62,18 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
-        WindowSizeMin: 4,
+        WindowSizeMin: 1,
         WindowSizeMax: 16,
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
         MultiWriteTimeoutExpandSize: 2,
         ClientNackInitialLimit: 1,
-        ClientNackMaxLimit: 128 * 1024,
-        ClientNackScale: 1.5,
+        ClientNackMaxLimit: 64 * 1024,
+        ClientNackScale: 2,
         SendTimeout: 60 * time.Second,
         WriteTimeout: 30 * time.Second,
-        MultiWriteTimeout: 5 * time.Second,
-        AckTimeout: 5 * time.Second,
+        MultiWriteTimeout: 1 * time.Second,
+        AckTimeout: 15 * time.Second,
         WindowExpandTimeout: 2 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
@@ -441,6 +441,7 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
+        fmt.Printf("[multi] Bad packet.\n")
         // bad packet
         return
     }
@@ -647,6 +648,7 @@ func newMultiClientWindow(
     }
 
     go HandleError(window.randomEnumerateClientArgs, cancel)
+    go HandleError(window.resize, cancel)
 
     return window
 }
@@ -656,7 +658,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
     visitedDestinationIds := map[Id]bool{}
     for {
 
-        destinationIds := []Id{}
+        destinationIds := map[Id]bool{}
         for {
             next := func(count int) (map[Id]ByteCount, error) {
                 if self.testing != nil {
@@ -697,7 +699,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 }
             } else if 0 < len(nextDestinationIds) {
                 for destinationId, _ := range nextDestinationIds {
-                    destinationIds = append(destinationIds, destinationId)
+                    destinationIds[destinationId] = true
                     visitedDestinationIds[destinationId] = true
                 }
                 break
@@ -713,9 +715,16 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
             }
         }
 
+        // remove destinations that are already in the window
+        self.stateLock.Lock()
+        for destinationId, _ := range self.destinationClients {
+            delete(destinationIds, destinationId)
+        }
+        self.stateLock.Unlock()
+        
         fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
         
-        for _, destinationId := range destinationIds {
+        for destinationId, _ := range destinationIds {
             if self.testing != nil {
                 clientId, clientAuth := self.testing.NewClientArgs()
                 args := &multiClientChannelArgs{
@@ -782,16 +791,48 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
     }
 }
 
-func (self *multiClientWindow) ExpandBy(expandStep int) bool {
+func (self *multiClientWindow) resize() {
+    for {
+        select {
+        case <- self.ctx.Done():
+            return
+        default:
+        }
+
+        self.stateLock.Lock()
+        clients := maps.Values(self.destinationClients)
+        self.stateLock.Unlock()
+
+        netSourceCount := 0
+        for _, client := range clients {
+            stats, err := client.WindowStats()
+            if err == nil {
+                netSourceCount += stats.sourceCount
+            }
+        }
+
+        targetWindowSize := int(math.Ceil(
+            float64(self.settings.WindowSizeMin) + 
+            float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
+        ))
+        self.expandTo(targetWindowSize)
+
+        select {
+        case <- time.After(1 * time.Second):
+        }
+    }
+}
+
+
+func (self *multiClientWindow) ExpandBy(expandStep int) {
     self.stateLock.Lock()
     windowSize := len(self.destinationClients)
     self.stateLock.Unlock()
 
-    return self.expandTo(windowSize + expandStep)
+    self.expandTo(windowSize + expandStep)
 }
 
-func (self *multiClientWindow) expandTo(targetWindowSize int) bool {
-    updated := false
+func (self *multiClientWindow) expandTo(targetWindowSize int) {
     endTime := time.Now().Add(self.settings.WindowExpandTimeout)
     for {
         update := self.windowUpdate.NotifyChannel()
@@ -803,23 +844,23 @@ func (self *multiClientWindow) expandTo(targetWindowSize int) bool {
 
         if targetWindowSize <= windowSize {
             fmt.Printf("[multi] Expand done\n")
-            return updated
+            return
         }
 
         if 0 < self.settings.WindowSizeMax && self.settings.WindowSizeMax <= windowSize {
             fmt.Printf("[multi] Expand done max size\n")
-            return updated
+            return
         }
 
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
             fmt.Printf("[multi] Expand window timeout\n")
-            return updated
+            return
         }
 
         select {
         case <- self.ctx.Done():
-            return updated
+            return
         case <- update:
             // continue
         case args := <- self.clientChannelArgs:
@@ -851,99 +892,84 @@ func (self *multiClientWindow) expandTo(targetWindowSize int) bool {
                 self.stateLock.Unlock()
                 
                 self.windowUpdate.NotifyAll()
-                updated = true
             } else {
                 removeClientAuth(args.clientId, self.api)
             }
         case <- time.After(timeout):
             fmt.Printf("[multi] Expand window timeout waiting for args\n")
-            return updated
+            return
         }
     }
 }
 
 func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiClientChannel, []*multiClientChannel) {
+
     self.stateLock.Lock()
     clients := maps.Values(self.destinationClients)
     self.stateLock.Unlock()
 
-    n := 2
-    for {
-        n -= 1
-        removedClients := []*multiClientChannel{}
-        netSourceCount := 0
-        // nonNegativeClients := []*multiClientChannel{}
-        weights := map[*multiClientChannel]float32{}
+    removedClients := []*multiClientChannel{}
+    // netSourceCount := 0
+    // nonNegativeClients := []*multiClientChannel{}
+    weights := map[*multiClientChannel]float32{}
 
-        for _, client := range clients {
-            stats, err := client.WindowStats()
-            if err != nil {
-                removedClients = append(removedClients, client)
-                self.stateLock.Lock()
-                delete(self.destinationClients, client.DestinationId())
-                self.stateLock.Unlock()
-                self.windowUpdate.NotifyAll()
-            } else {
-                netSourceCount += stats.sourceCount
-                weight := float32(stats.ackByteCount - stats.nackByteCount)
-                weights[client] = weight
-                // if 0 <= weight {
-                //     nonNegativeClients = append(nonNegativeClients, client)
-                // }
-            }
-        }
-
-        targetWindowSize := int(math.Ceil(
-            float64(self.settings.WindowSizeMin) + 
-            float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
-        ))
-        if 0 < n && len(clients) - len(removedClients) < targetWindowSize && self.expandTo(targetWindowSize) {
+    for _, client := range clients {
+        stats, err := client.WindowStats()
+        if err != nil {
+            removedClients = append(removedClients, client)
             self.stateLock.Lock()
-            clients = maps.Values(self.destinationClients)
+            delete(self.destinationClients, client.DestinationId())
             self.stateLock.Unlock()
-            // repeat
+            self.windowUpdate.NotifyAll()
         } else {
-            // quantize the weights
-            // 2-5 quartiles for positive net bytes
-            // 1 no bytes
-            // 0 negative bytes. do not include these in the clients
-            slices.SortFunc(clients, func(a *multiClientChannel, b *multiClientChannel)(int) {
-                // descending weight
-                aWeight := weights[a]
-                bWeight := weights[b]
-                if aWeight < bWeight {
-                    return 1
-                } else if bWeight < aWeight {
-                    return -1
-                } else {
-                    return 0
-                }
-            })
-            q1 := len(clients) / 4
-            q2 := 2 * len(clients) / 4
-            q3 := 3 * len(clients) / 4
-            // quantizedWeights := map[*multiClientChannel]float32{}
-            for i, client := range clients {
-                if weight := weights[client]; weight < 0 {
-                    weights[client] = 0
-                } else if weight == 0 {
-                    weights[client] = 1
-                } else if i <= q1 {
-                    weights[client] = 5
-                } else if i <= q2 {
-                    weights[client] = 4
-                } else if i <= q3 {
-                    weights[client] = 3
-                } else {
-                    weights[client] = 2
-                }
-            }
-
-            WeightedShuffle(clients, weights)
-
-            return clients, removedClients
+            // netSourceCount += stats.sourceCount
+            weight := float32(stats.ackByteCount - stats.nackByteCount)
+            weights[client] = weight
+            // if 0 <= weight {
+            //     nonNegativeClients = append(nonNegativeClients, client)
+            // }
         }
     }
+
+    // quantize the weights
+    // 2-5 quartiles for positive net bytes
+    // 1 no bytes
+    // 0 negative bytes. do not include these in the clients
+    slices.SortFunc(clients, func(a *multiClientChannel, b *multiClientChannel)(int) {
+        // descending weight
+        aWeight := weights[a]
+        bWeight := weights[b]
+        if aWeight < bWeight {
+            return 1
+        } else if bWeight < aWeight {
+            return -1
+        } else {
+            return 0
+        }
+    })
+    q1 := len(clients) / 4
+    q2 := 2 * len(clients) / 4
+    q3 := 3 * len(clients) / 4
+    // quantizedWeights := map[*multiClientChannel]float32{}
+    for i, client := range clients {
+        if weight := weights[client]; weight < 0 {
+            weights[client] = 0
+        } else if weight == 0 {
+            weights[client] = 1
+        } else if i <= q1 {
+            weights[client] = 5
+        } else if i <= q2 {
+            weights[client] = 4
+        } else if i <= q3 {
+            weights[client] = 3
+        } else {
+            weights[client] = 2
+        }
+    }
+
+    WeightedShuffle(clients, weights)
+
+    return clients, removedClients
 }
 
 
@@ -1050,6 +1076,8 @@ func newMultiClientChannel(
         return nil, err
     }
 
+    fmt.Printf("[multi] NEW CLIENT\n")
+
     clientSettings := DefaultClientSettings()
     clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
     client := NewClient(cancelCtx, byJwt.ClientId, clientSettings)
@@ -1103,6 +1131,7 @@ func (self *multiClientChannel) Run() {
     }()
 
     send := func(parsedPacket *parsedPacket) {
+        fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
         ipPacketToProvider := &protocol.IpPacketToProvider{
             IpPacket: &protocol.IpPacket{
                 PacketBytes: parsedPacket.packet,
@@ -1137,7 +1166,9 @@ func (self *multiClientChannel) Run() {
                 self.settings.WriteTimeout,
                 opts...,
             )
-            if !success {
+            if success {
+                fmt.Printf("[multi] Sent ->%s\n", self.args.destinationId)
+            } else {
                 fmt.Printf("[multi] Timeout ->%s\n", self.args.destinationId)
 
                 self.addError(errors.New("Send timeout."))
@@ -1172,6 +1203,7 @@ func (self *multiClientChannel) Run() {
                     return
                 }
                 send(parsedPacket)
+            case <- update:
             }
         }
     }
@@ -1247,10 +1279,12 @@ func (self *multiClientChannel) addAck(ackByteCount ByteCount) {
     self.packetStats.ackCount += 1
     self.packetStats.ackByteCount += ackByteCount
 
-    self.maxNackCount = min(
-        self.settings.ClientNackMaxLimit,
-        int(math.Ceil(float64(self.maxNackCount) * self.settings.ClientNackScale)),
-    )
+    if self.maxNackCount < self.settings.ClientNackMaxLimit {
+        self.maxNackCount = min(
+            self.settings.ClientNackMaxLimit,
+            int(math.Ceil(float64(self.maxNackCount) * self.settings.ClientNackScale)),
+        )
+    }
 
     eventBucket := self.eventBucket()
     eventBucket.ackCount += 1
@@ -1405,6 +1439,7 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
 
     // only process frames from the destinations
     if allow := self.sourceFilter[source]; !allow {
+        fmt.Printf("[multi] Receive drop %d %s<-\n", len(frames), self.args.destinationId)
         return
     }
 
@@ -1417,9 +1452,11 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
             }
             ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
 
-            // fmt.Printf("[multi] Receive %s<-\n", self.args.destinationId)
+            fmt.Printf("[multi] Receive allow %s<-\n", self.args.destinationId)
             
             self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
+        default:
+            fmt.Printf("[multi] Receive drop 1 %s<-\n", self.args.destinationId)
         }
     }
 }
