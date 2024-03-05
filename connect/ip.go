@@ -10,6 +10,7 @@ import (
     "strings"
     "errors"
     mathrand "math/rand"
+    "math"
 
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
@@ -60,8 +61,8 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
         Mtu: DefaultMtu,
         // avoid fragmentation
         ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
+        WindowSize: mib(1),
     }
-    tcpBufferSettings.WindowSize = tcpBufferSettings.ChannelBufferSize * tcpBufferSettings.Mtu / 2
     return tcpBufferSettings
 }
 
@@ -312,8 +313,8 @@ type UdpBufferSettings struct {
     ReadTimeout time.Duration
     WriteTimeout time.Duration
     IdleTimeout time.Duration
-    Mtu int
-    ReadBufferSize int
+    Mtu ByteCount
+    ReadBufferSize ByteCount
     ChannelBufferSize int
 }
 
@@ -787,12 +788,13 @@ type TcpBufferSettings struct {
     // ReadPollTimeout time.Duration
     // WritePollTimeout time.Duration
     IdleTimeout time.Duration
-    ReadBufferSize int
+    ReadBufferSize ByteCount
     ChannelBufferSize int
-    Mtu int
+    Mtu ByteCount
     // the window size is the max amount of packet data in memory for each sequence
-    // to avoid blocking, the window size should be smaller than the channel buffer byte size (channel buffer size * mean packet size)
-    WindowSize int
+    // TODO currently we do not enable window scale
+    // TODO this value is max 2^16
+    WindowSize ByteCount
 }
 
 
@@ -983,6 +985,14 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         destinationIp net.IP, destinationPort layers.TCPPort,
         tcpBufferSettings *TcpBufferSettings) *TcpSequence {
     cancelCtx, cancel := context.WithCancel(ctx)
+
+    var windowSize uint16
+    if math.MaxUint16 < tcpBufferSettings.WindowSize {
+        windowSize = math.MaxUint16
+    } else {
+        windowSize = uint16(tcpBufferSettings.WindowSize)
+    }
+
     connectionState := ConnectionState{
         source: source,
         ipVersion: ipVersion,
@@ -991,7 +1001,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         destinationIp: destinationIp,
         destinationPort: destinationPort,
         // the window size starts at the fixed value
-        windowSize: uint16(tcpBufferSettings.WindowSize),
+        windowSize: windowSize,
     }
     return &TcpSequence{
         log: SubLogFn(LogLevelDebug, ipLog, fmt.Sprintf(
@@ -1205,8 +1215,12 @@ func (self *TcpSequence) Run() {
             }
 
             // ignore ACKs because we do not need to retransmit (see above)
-            // it can be the case that the local socket drops packets even with perfect delivery
+            // this assumes a normal operation where the socket acks as soon as it received an in order packet,
+            // so we ignore the window size.
+            // it can be the case that the local socket drops packets even with perfect delivery,
+            // such as a full receive buffer or stressed behavior.
             // in that case, there is no recovery and we let the connection close naturally
+            // TODO implement some congestion control here
             if sendItem.tcp.ACK {
                 self.mutex.Lock()
                 self.log("[r%d]ACK (%d %d)", sendIter, self.receiveSeq, sendItem.tcp.Ack)
@@ -1367,6 +1381,8 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
         ACK: true,
         SYN: true,
         Window: self.windowSize,
+        // TODO window scale
+        // https://datatracker.ietf.org/doc/html/rfc1323#page-8
     }
     tcp.SetNetworkLayerForChecksum(ip)
     headerSize += TcpHeaderSizeWithoutExtensions
