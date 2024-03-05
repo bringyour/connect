@@ -20,11 +20,8 @@ import (
 )
 
 
-/*
-implements user-space NAT (UNAT) and packet inspection
-The UNAT emulates a raw socket using user-space sockets.
-
-*/
+// implements user-space NAT (UNAT) and packet inspection
+// The UNAT emulates a raw socket using user-space sockets.
 
 
 const SendTimeout = 30 * time.Second
@@ -45,13 +42,11 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
     return &UdpBufferSettings{
         ReadTimeout: 120 * time.Second,
         WriteTimeout: 30 * time.Second,
-        // ReadPollTimeout: 60 * time.Second,
-        // WritePollTimeout: 60 * time.Second,
         IdleTimeout: 300 * time.Second,
         Mtu: DefaultMtu,
         // avoid fragmentation
         ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
-        ChannelBufferSize: 1,
+        ChannelBufferSize: 32,
     }
 }
 
@@ -60,10 +55,8 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
         ConnectTimeout: 60 * time.Second,
         ReadTimeout: 120 * time.Second,
         WriteTimeout: 30 * time.Second,
-        // ReadPollTimeout: 60 * time.Second,
-        // WritePollTimeout: 60 * time.Second,
         IdleTimeout: 300 * time.Second,
-        ChannelBufferSize: 1,
+        ChannelBufferSize: 32,
         Mtu: DefaultMtu,
         // avoid fragmentation
         ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
@@ -71,7 +64,6 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
     tcpBufferSettings.WindowSize = tcpBufferSettings.ChannelBufferSize * tcpBufferSettings.Mtu / 2
     return tcpBufferSettings
 }
-
 
 
 // send from a raw socket
@@ -83,8 +75,12 @@ type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, pack
 type ReceivePacketFunction func(source Path, ipProtocol IpProtocol, packet []byte)
 
 
+type UserNatClient interface {
+    // `SendPacketFunction`
+    SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte)
+    Close()
+}
 
-// FIXME rename this to local user nat
 
 // forwards packets using user space sockets
 // this assumes transfer between the packet source and this is lossless and in order,
@@ -315,8 +311,6 @@ func NewBufferId6(source Path, sourceIp net.IP, sourcePort int, destinationIp ne
 type UdpBufferSettings struct {
     ReadTimeout time.Duration
     WriteTimeout time.Duration
-    // ReadPollTimeout time.Duration
-    // WritePollTimeout time.Duration
     IdleTimeout time.Duration
     Mtu int
     ReadBufferSize int
@@ -571,10 +565,6 @@ func (self *UdpSequence) Run() {
             default:
             }
 
-            // deadline := MinTime(
-            //     time.Now().Add(self.udpBufferSettings.ReadPollTimeout),
-            //     readTimeout,
-            // )
             socket.SetReadDeadline(readTimeout)
             n, err := socket.Read(buffer)
 
@@ -632,10 +622,6 @@ func (self *UdpSequence) Run() {
                 default:
                 }
 
-                // deadline := MinTime(
-                //     time.Now().Add(self.udpBufferSettings.WritePollTimeout),
-                //     writeTimeout,
-                // )
                 socket.SetWriteDeadline(writeTimeout)
                 n, err := socket.Write(payload)
 
@@ -1142,10 +1128,6 @@ func (self *TcpSequence) Run() {
             default:
             }
 
-            // deadline := MinTime(
-            //     time.Now().Add(self.tcpBufferSettings.ReadPollTimeout),
-            //     readTimeout,
-            // )
             socket.SetReadDeadline(readTimeout)
             
             n, err := socket.Read(buffer)
@@ -1257,10 +1239,6 @@ func (self *TcpSequence) Run() {
                 default:
                 }
 
-                // deadline := MinTime(
-                //     time.Now().Add(self.tcpBufferSettings.WritePollTimeout),
-                //     writeTimeout,
-                // )
                 socket.SetWriteDeadline(writeTimeout)
                 n, err := socket.Write(payload[i:])
 

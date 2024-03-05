@@ -26,10 +26,6 @@ import (
 // net frame count statistics (acks - nacks)
 
 
-// FIXME on receive, only send packet if client is matched to the destination
-// parse the dest on the packet. then make sure client equals dest
-
-
 type multiClientChannelUpdate struct {
     lock sync.Mutex
     client *multiClientChannel
@@ -66,13 +62,11 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         WindowSizeMax: 16,
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
-        // MultiWriteTimeoutExpandSize: 2,
         ClientNackInitialLimit: 1,
         ClientNackMaxLimit: 64 * 1024,
         ClientNackScale: 2,
         SendTimeout: 60 * time.Second,
         WriteTimeout: 30 * time.Second,
-        // MultiWriteTimeout: 1 * time.Second,
         AckTimeout: 15 * time.Second,
         WindowExpandTimeout: 2 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
@@ -86,22 +80,18 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 type MultiClientSettings struct {
     WindowSizeMin int
     WindowSizeMax int
+    // reconnects per source
     WindowSizeReconnectScale float64
-    // MultiWriteTimeoutExpandSize int
-
     ClientNackInitialLimit int
     ClientNackMaxLimit int
     ClientNackScale float64
     ClientWriteTimeout time.Duration
-
     SendTimeout time.Duration
     WriteTimeout time.Duration
-    // MultiWriteTimeout time.Duration
     AckTimeout time.Duration
     WindowExpandTimeout time.Duration
     WindowEnumerateEmptyTimeout time.Duration
     WindowEnumerateErrorTimeout time.Duration
-
     StatsWindowDuration time.Duration
     StatsWindowBucketDuration time.Duration
 }
@@ -136,6 +126,8 @@ func NewRemoteUserNatMultiClientWithDefaults(
     apiUrl string,
     byJwt string,
     platformUrl string,
+    deviceDescription string,
+    deviceSpec string,
     specs []*ProviderSpec,
     receivePacketCallback ReceivePacketFunction,
 ) *RemoteUserNatMultiClient {
@@ -144,6 +136,8 @@ func NewRemoteUserNatMultiClientWithDefaults(
         apiUrl,
         byJwt,
         platformUrl,
+        deviceDescription,
+        deviceSpec,
         specs,
         receivePacketCallback,
         DefaultMultiClientSettings(),
@@ -155,6 +149,8 @@ func NewRemoteUserNatMultiClient(
     apiUrl string,
     byJwt string,
     platformUrl string,
+    deviceDescription string,
+    deviceSpec string,
     specs []*ProviderSpec,
     receivePacketCallback ReceivePacketFunction,
     settings *MultiClientSettings,
@@ -164,6 +160,8 @@ func NewRemoteUserNatMultiClient(
         apiUrl,
         byJwt,
         platformUrl,
+        deviceDescription,
+        deviceSpec,
         specs,
         receivePacketCallback,
         settings,
@@ -176,6 +174,8 @@ func NewRemoteUserNatMultiClientWithTesting(
     apiUrl string,
     byJwt string,
     platformUrl string,
+    deviceDescription string,
+    deviceSpec string,
     specs []*ProviderSpec,
     receivePacketCallback ReceivePacketFunction,
     settings *MultiClientSettings,
@@ -191,6 +191,8 @@ func NewRemoteUserNatMultiClientWithTesting(
         cancel,
         api,
         platformUrl,
+        deviceDescription,
+        deviceSpec,
         specs,
         receivePacketCallback,
         settings,
@@ -256,7 +258,6 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
             }
         }
 
-
         client := update.client
         if client != nil {
             switch ipPath.Version {
@@ -307,12 +308,16 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
         }
     }
 
+    // the client state lock can be acquired from inside the update lock
+    // ** important ** the update lock cannot be acquired from inside the client state lock
     for {
+        // spin to acquire the correct update lock
         update := reserveUpdate()
         success := func()(bool) {
             update.lock.Lock()
             defer update.lock.Unlock()
 
+            // update might have changed
             if updateInLock := reserveUpdate(); update != updateInLock {
                 return false
             }
@@ -328,85 +333,8 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
     }
 }
 
-
-/*
-func (self *RemoteUserNatMultiClient) getPathClient(ipPath *IpPath) *multiClientChannel {
-    self.stateLock.Lock()
-    defer self.stateLock.Unlock()
-
-    switch ipPath.Version {
-    case 4:
-        ip4Path := ipPath.ToIp4Path()
-        return self.ip4PathClients[ip4Path]
-    case 6:
-        ip6Path := ipPath.ToIp6Path()
-        return self.ip6PathClients[ip6Path]
-    default:
-        panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
-    }
-}
-
-func (self *RemoteUserNatMultiClient) setPathClient(ipPath *IpPath, client *multiClientChannel) {
-    self.stateLock.Lock()
-    defer self.stateLock.Unlock()
-    
-    switch ipPath.Version {
-    case 4:
-        ip4Path := ipPath.ToIp4Path()
-        self.ip4PathClients[ip4Path] = client
-        ip4Paths, ok := self.clientIp4Paths[client]
-        if !ok {
-            ip4Paths = map[Ip4Path]bool{}
-            self.clientIp4Paths[client] = ip4Paths
-        }
-        ip4Paths[ip4Path] = true
-    case 6:
-        ip6Path := ipPath.ToIp6Path()
-        self.ip6PathClients[ip6Path] = client
-        ip6Paths, ok := self.clientIp6Paths[client]
-        if !ok {
-            ip6Paths = map[Ip6Path]bool{}
-            self.clientIp6Paths[client] = ip6Paths
-        }
-        ip6Paths[ip6Path] = true
-    default:
-        panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
-    }
-}
-
-func (self *RemoteUserNatMultiClient) removePathClient(ipPath *IpPath, client *multiClientChannel) {
-    self.stateLock.Lock()
-    defer self.stateLock.Unlock()
-    
-    switch ipPath.Version {
-    case 4:
-        ip4Path := ipPath.ToIp4Path()
-        delete(self.ip4PathClients, ip4Path)
-        if ip4Paths, ok := self.clientIp4Paths[client]; ok {
-            delete(ip4Paths, ip4Path)
-            if len(ip4Paths) == 0 {
-                delete(self.clientIp4Paths, client)
-            }
-        }
-    case 6:
-        ip6Path := ipPath.ToIp6Path()
-        delete(self.ip6PathClients, ip6Path)
-        if ip6Paths, ok := self.clientIp6Paths[client]; ok {
-            delete(ip6Paths, ip6Path)
-            if len(ip6Paths) == 0 {
-                delete(self.clientIp6Paths, client)
-            }
-        }
-    default:
-        panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
-    }
-}
-*/
-
-
-// remove the client from paths
-// no need to lock the clients
-
+// remove a client from all paths
+// this acts as a drop. it does not lock the client update
 func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
@@ -430,13 +358,6 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
     }
 }
 
-
-// func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
-//     HandleError(func() {
-//         self._SendPacket(source, provideMode, packet)
-//     })
-// }
-
 // `SendPacketFunction`
 func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
     parsedPacket, err := newParsedPacket(packet)
@@ -444,10 +365,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
         fmt.Printf("[multi] Send bad packet (%s).\n", err)
         // bad packet
         return
-    } 
-    // else {
-    //     fmt.Printf("[multi] Send packet\n")
-    // }
+    }
 
     self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
         endTime := time.Now().Add(self.settings.SendTimeout)
@@ -467,7 +385,6 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 fmt.Printf("[multi] Existing path timeout %s->%s\n", update.client.args.clientId, update.client.args.destinationId)
 
                 // now we can change the routing of this path
-                // self.removePathClient(parsedPacket.ipPath, client)
                 update.client = nil
             }
         }
@@ -476,11 +393,10 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             timeout := endTime.Sub(time.Now())
 
             orderedClients, removedClients, windowUpdate := self.window.OrderedClients(self.settings.WindowExpandTimeout)
-            fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
+            // fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
 
             for _, client := range removedClients {
-                fmt.Printf("[multi] Remove client %s->%s.\n", client.args.clientId, client.args.destinationId)
-                
+                // fmt.Printf("[multi] Remove client %s->%s.\n", client.args.clientId, client.args.destinationId) 
                 self.removeClient(client)
             }
 
@@ -490,7 +406,6 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                     // fmt.Printf("[multi] Set client %s->%s.\n", client.args.clientId, client.args.destinationId)
 
                     // lock the path to the client
-                    // self.setPathClient(parsedPacket.ipPath, client)
                     update.client = client
                     return
                 default:
@@ -498,6 +413,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             }
 
             if timeout <= 0 {
+                // drop
                 return
             }
 
@@ -543,7 +459,6 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 Chan: reflect.ValueOf(windowUpdate),
             })
 
-
             // add all the client dones
             clientDoneStartIndex := len(selectCases)
             if 0 < len(orderedClients) {
@@ -557,21 +472,17 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             clientDoneEndIndex := len(selectCases)
 
 
-
-
             chosenIndex, _, _ := reflect.Select(selectCases)
 
             if chosenIndex == doneIndex {
-                // return errors.New("Done")
+                // drop
                 return
             } else if chosenIndex == timeoutIndex {
                 fmt.Printf("[multi] Timeout\n")
-
-                // return errors.New("Timeout")
-                // self.window.ExpandBy(self.settings.MultiWriteTimeoutExpandSize)
                 // retry
             } else if chosenIndex == windowUpdateIndex {
                 fmt.Printf("[multi] Update\n")
+                // retry
             } else if clientDoneStartIndex <= chosenIndex && chosenIndex < clientDoneEndIndex {
                 fmt.Printf("[multi] Done\n")
                 // retry
@@ -580,39 +491,13 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 clientIndex := chosenIndex - clientStartIndex
                 client := orderedClients[clientIndex]
 
-                // fmt.Printf("[multi] Set client after select %s->%s.\n", client.args.clientId, client.args.destinationId)
-
                 // lock the path to the client
-                // self.setPathClient(parsedPacket.ipPath, client)
                 update.client = client
                 return
             }
         }
     })
-
 }
-
-// `connect.ReceiveFunction`
-// func (self *RemoteUserNatMultiClient) ClientReceive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-//     // the client channels have already filtered the messages for the actual destinations only
-
-//     source := Path{ClientId: sourceId}
-
-//     for _, frame := range frames {
-//         switch frame.MessageType {
-//         case protocol.MessageType_IpIpPacketFromProvider:
-//             ipPacketFromProvider_, err := FromFrame(frame)
-//             if err != nil {
-//                 panic(err)
-//             }
-//             ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
-
-//             fmt.Printf("remote user nat client r packet %s<-\n", source)
-
-//             self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
-//         }
-//     }
-// }
 
 func (self *RemoteUserNatMultiClient) Close() {
     self.cancel()
@@ -625,6 +510,8 @@ type multiClientWindow struct {
 
     api *BringYourApi
     platformUrl string
+    deviceDescription string
+    deviceSpec string
 
     specs []*ProviderSpec
     receivePacketCallback ReceivePacketFunction
@@ -645,6 +532,8 @@ func newMultiClientWindow(
     cancel context.CancelFunc,
     api *BringYourApi,
     platformUrl string,
+    deviceDescription string,
+    deviceSpec string,
     specs []*ProviderSpec,
     receivePacketCallback ReceivePacketFunction,
     settings *MultiClientSettings,
@@ -655,6 +544,8 @@ func newMultiClientWindow(
         cancel: cancel,
         api: api,
         platformUrl: platformUrl,
+        deviceDescription: deviceDescription,
+        deviceSpec: deviceSpec,
         specs: specs,
         receivePacketCallback: receivePacketCallback,
         settings: settings,
@@ -706,7 +597,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
             }
 
             nextDestinationIds, err := next(1)
-            fmt.Printf("[multi] Window enumerate found %v (%v).\n", nextDestinationIds, err)
+            // fmt.Printf("[multi] Window enumerate found %v (%v).\n", nextDestinationIds, err)
             if err != nil {
                 select {
                 case <- self.ctx.Done():
@@ -739,7 +630,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
         }
         self.stateLock.Unlock()
         
-        fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
+        // fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
         
         for destinationId, _ := range destinationIds {
             if self.testing != nil {
@@ -759,8 +650,8 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 auth := func() (string, error) {
                     // note the derived client id will be inferred by the api jwt
                     authNetworkClient := &AuthNetworkClientArgs{
-                        Description: "multi client",
-                        DeviceSpec: "multi client",
+                        Description: self.deviceDescription,
+                        DeviceSpec: self.deviceSpec,
                     }
 
                     result, err := self.api.AuthNetworkClientSync(authNetworkClient)
@@ -1173,8 +1064,6 @@ func newMultiClientChannel(
         maxNackCount: settings.ClientNackInitialLimit,
         eventUpdate: NewMonitor(),
     }
-
-    // go clientChannel.run()
 
     client.AddReceiveCallback(clientChannel.clientReceive)
 
