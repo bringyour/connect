@@ -61,7 +61,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
         Mtu: DefaultMtu,
         // avoid fragmentation
         ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
-        WindowSize: mib(1),
+        WindowSize: int(mib(1)),
     }
     return tcpBufferSettings
 }
@@ -313,8 +313,8 @@ type UdpBufferSettings struct {
     ReadTimeout time.Duration
     WriteTimeout time.Duration
     IdleTimeout time.Duration
-    Mtu ByteCount
-    ReadBufferSize ByteCount
+    Mtu int
+    ReadBufferSize int
     ChannelBufferSize int
 }
 
@@ -788,13 +788,13 @@ type TcpBufferSettings struct {
     // ReadPollTimeout time.Duration
     // WritePollTimeout time.Duration
     IdleTimeout time.Duration
-    ReadBufferSize ByteCount
+    ReadBufferSize int
     ChannelBufferSize int
-    Mtu ByteCount
+    Mtu int
     // the window size is the max amount of packet data in memory for each sequence
     // TODO currently we do not enable window scale
     // TODO this value is max 2^16
-    WindowSize ByteCount
+    WindowSize int
 }
 
 

@@ -12,7 +12,7 @@ import (
 
 
 // use this type when counting bytes
-type ByteCount = int
+type ByteCount = int64
 
 func kib(c ByteCount) ByteCount {
 	c *= ByteCount(1024)

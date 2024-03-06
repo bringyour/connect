@@ -372,7 +372,7 @@ type FindProviders2Result struct {
 
 type FindProvidersProvider struct {
 	ClientId Id `json:"client_id"`
-	EstimatedBytesPerSecond int `json:"estimated_bytes_per_second"`
+	EstimatedBytesPerSecond ByteCount `json:"estimated_bytes_per_second"`
 }
 
 func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, callback FindProviders2Callback) {

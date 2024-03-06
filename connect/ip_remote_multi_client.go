@@ -4,7 +4,7 @@ import (
     "context"
     "time"
     "sync"
-    "reflect"
+    // "reflect"
     "errors"
     "fmt"
     "slices"
@@ -59,21 +59,22 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
         WindowSizeMin: 4,
-        WindowSizeMax: 16,
+        WindowSizeMax: 32,
         // reconnects per source
-        WindowSizeReconnectScale: 1.0,
-        ClientNackInitialLimit: 1,
-        ClientNackMaxLimit: 64 * 1024,
-        ClientNackScale: 2,
-        SendTimeout: 15 * time.Second,
-        WriteTimeout: 5 * time.Second,
+        WindowSizeReconnectScale: 4.0,
+        // ClientNackInitialLimit: 1,
+        // ClientNackMaxLimit: 64 * 1024,
+        // ClientNackScale: 4,
+        // SendTimeout: 60 * time.Second,
+        WriteTimeout: 30 * time.Second,
+        WriteRetryTimeout: 200 * time.Millisecond,
         AckTimeout: 5 * time.Second,
         WindowResizeTimeout: 1 * time.Second,
-        WindowCollapseGraceperiod: 15 * time.Second,
+        StatsWindowGraceperiod: 30 * time.Second,
         WindowExpandTimeout: 2 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
-        StatsWindowDuration: 600 * time.Second,
+        StatsWindowDuration: 120 * time.Second,
         StatsWindowBucketDuration: 10 * time.Second,
     }
 }
@@ -84,15 +85,16 @@ type MultiClientSettings struct {
     WindowSizeMax int
     // reconnects per source
     WindowSizeReconnectScale float64
-    ClientNackInitialLimit int
-    ClientNackMaxLimit int
-    ClientNackScale float64
+    // ClientNackInitialLimit int
+    // ClientNackMaxLimit int
+    // ClientNackScale float64
     ClientWriteTimeout time.Duration
-    SendTimeout time.Duration
+    // SendTimeout time.Duration
     WriteTimeout time.Duration
+    WriteRetryTimeout time.Duration
     AckTimeout time.Duration
     WindowResizeTimeout time.Duration
-    WindowCollapseGraceperiod time.Duration
+    StatsWindowGraceperiod time.Duration
     WindowExpandTimeout time.Duration
     WindowEnumerateEmptyTimeout time.Duration
     WindowEnumerateErrorTimeout time.Duration
@@ -363,31 +365,18 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
     }
 
     self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
-        endTime := time.Now().Add(self.settings.SendTimeout)
-
         if update.client != nil {
-            select {
-            case <- self.ctx.Done():
-                return
-            case <- update.client.Done():
-                // now we can change the routing of this path
-                update.client = nil
-            // the client was already selected so do not limit sending by the nack limit
-            // at this point the limit is the send buffer
-            case update.client.SendNoLimit() <- parsedPacket:
-                return
-            case <- time.After(self.settings.WriteTimeout):
-                fmt.Printf("[multi] Existing path timeout %s->%s\n", update.client.args.clientId, update.client.args.destinationId)
-
-                // now we can change the routing of this path
-                update.client = nil
-            }
+            update.client.Send(parsedPacket, self.settings.WriteTimeout)
+            // if not success, drop the packet
+            return
         }
 
-        for {
-            timeout := endTime.Sub(time.Now())
+        endTime := time.Now().Add(self.settings.WriteTimeout)
 
-            orderedClients, removedClients, windowUpdate := self.window.OrderedClients(self.settings.WindowExpandTimeout)
+        for {
+            
+
+            orderedClients, removedClients := self.window.OrderedClients(self.settings.WindowExpandTimeout)
             // fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
 
             for _, client := range removedClients {
@@ -396,99 +385,25 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             }
 
             for _, client := range orderedClients {
-                select {
-                case client.Send() <- parsedPacket:
-                    // fmt.Printf("[multi] Set client %s->%s.\n", client.args.clientId, client.args.destinationId)
-
+                if client.Send(parsedPacket, 0) {
                     // lock the path to the client
                     update.client = client
                     return
-                default:
                 }
             }
+
+            timeout := endTime.Sub(time.Now())
 
             if timeout <= 0 {
                 // drop
                 return
             }
 
-            // select cases are in order:
-            // - self.ctx.Done
-            // - client writes...
-            // - timeout
-
-            selectCases := make([]reflect.SelectCase, 0, 2 + 2 * len(orderedClients))
-
-            // add the done case
-            doneIndex := len(selectCases)
-            selectCases = append(selectCases, reflect.SelectCase{
-                Dir: reflect.SelectRecv,
-                Chan: reflect.ValueOf(self.ctx.Done()),
-            })
-
-            // add all the clients
-            clientStartIndex := len(selectCases)
-            if 0 < len(orderedClients) {
-                sendValue := reflect.ValueOf(parsedPacket)
-                for _, client := range orderedClients {
-                    selectCases = append(selectCases, reflect.SelectCase{
-                        Dir: reflect.SelectSend,
-                        Chan: reflect.ValueOf(client.Send()),
-                        Send: sendValue,
-                    })
-                }
-            }
-            clientEndIndex := len(selectCases)
-
-            // add a timeout case
-            timeoutIndex := len(selectCases)
-            selectCases = append(selectCases, reflect.SelectCase{
-                Dir: reflect.SelectRecv,
-                Chan: reflect.ValueOf(time.After(timeout)),
-            })
-
-            // add a timeout case
-            windowUpdateIndex := len(selectCases)
-            selectCases = append(selectCases, reflect.SelectCase{
-                Dir: reflect.SelectRecv,
-                Chan: reflect.ValueOf(windowUpdate),
-            })
-
-            // add all the client dones
-            clientDoneStartIndex := len(selectCases)
-            if 0 < len(orderedClients) {
-                for _, client := range orderedClients {
-                    selectCases = append(selectCases, reflect.SelectCase{
-                        Dir: reflect.SelectRecv,
-                        Chan: reflect.ValueOf(client.Done()),
-                    })
-                }
-            }
-            clientDoneEndIndex := len(selectCases)
-
-
-            chosenIndex, _, _ := reflect.Select(selectCases)
-
-            if chosenIndex == doneIndex {
-                // drop
+            select {
+            case <- self.ctx.Done():
                 return
-            } else if chosenIndex == timeoutIndex {
-                fmt.Printf("[multi] Timeout\n")
+            case <- time.After(min(timeout, self.settings.WriteRetryTimeout)):
                 // retry
-            } else if chosenIndex == windowUpdateIndex {
-                fmt.Printf("[multi] Update\n")
-                // retry
-            } else if clientDoneStartIndex <= chosenIndex && chosenIndex < clientDoneEndIndex {
-                fmt.Printf("[multi] Done\n")
-                // retry
-            } else if clientStartIndex <= chosenIndex && chosenIndex < clientEndIndex {
-                // a route
-                clientIndex := chosenIndex - clientStartIndex
-                client := orderedClients[clientIndex]
-
-                // lock the path to the client
-                update.client = client
-                return
             }
         }
     })
@@ -519,7 +434,7 @@ type multiClientWindow struct {
     stateLock sync.Mutex
     destinationClients map[Id]*multiClientChannel
 
-    windowUpdate *Monitor
+    // windowUpdate *Monitor
 }
 
 func newMultiClientWindow(
@@ -547,7 +462,7 @@ func newMultiClientWindow(
         testing: testing,
         clientChannelArgs: make(chan *multiClientChannelArgs),
         destinationClients: map[Id]*multiClientChannel{},
-        windowUpdate: NewMonitor(),
+        // windowUpdate: NewMonitor(),
     }
 
     go HandleError(window.randomEnumerateClientArgs, cancel)
@@ -561,7 +476,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
     visitedDestinationIds := map[Id]bool{}
     for {
 
-        destinationIds := map[Id]bool{}
+        destinationIdEstimatedBytesPerSecond := map[Id]ByteCount{}
         for {
             next := func(count int) (map[Id]ByteCount, error) {
                 if self.testing != nil {
@@ -591,7 +506,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 }
             }
 
-            nextDestinationIds, err := next(1)
+            nextDestinationIdEstimatedBytesPerSecond, err := next(1)
             // fmt.Printf("[multi] Window enumerate found %v (%v).\n", nextDestinationIds, err)
             if err != nil {
                 select {
@@ -600,9 +515,9 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 case <- time.After(self.settings.WindowEnumerateErrorTimeout):
                     fmt.Printf("[multi] Window enumerate error timeout.\n")
                 }
-            } else if 0 < len(nextDestinationIds) {
-                for destinationId, _ := range nextDestinationIds {
-                    destinationIds[destinationId] = true
+            } else if 0 < len(nextDestinationIdEstimatedBytesPerSecond) {
+                for destinationId, estimatedBytesPerSecond := range nextDestinationIdEstimatedBytesPerSecond {
+                    destinationIdEstimatedBytesPerSecond[destinationId] = estimatedBytesPerSecond
                     visitedDestinationIds[destinationId] = true
                 }
                 break
@@ -621,18 +536,19 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
         // remove destinations that are already in the window
         self.stateLock.Lock()
         for destinationId, _ := range self.destinationClients {
-            delete(destinationIds, destinationId)
+            delete(destinationIdEstimatedBytesPerSecond, destinationId)
         }
         self.stateLock.Unlock()
         
         // fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
         
-        for destinationId, _ := range destinationIds {
+        for destinationId, estimatedBytesPerSecond := range destinationIdEstimatedBytesPerSecond {
             if self.testing != nil {
                 clientId, clientAuth := self.testing.NewClientArgs()
                 args := &multiClientChannelArgs{
                     platformUrl: self.platformUrl,
                     destinationId: destinationId,
+                    estimatedBytesPerSecond: estimatedBytesPerSecond,
                     clientId: clientId,
                     clientAuth: clientAuth,
                 }
@@ -676,6 +592,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                     args := &multiClientChannelArgs{
                         platformUrl: self.platformUrl,
                         destinationId: destinationId,
+                        estimatedBytesPerSecond: estimatedBytesPerSecond,
                         clientId: byJwt.ClientId,
                         clientAuth: clientAuth,
                     }
@@ -718,9 +635,9 @@ func (self *multiClientWindow) resize() {
         for _, client := range self.clients() {
             if stats, err := client.WindowStats(); err == nil {
                 clients = append(clients, client)
-                netSourceCount += stats.sourceCount
+                netSourceCount = max(netSourceCount, stats.sourceCount)
                 // byte count per second
-                weights[client] = stats.ByteCountPerSecond()
+                weights[client] = float32(stats.ByteCountPerSecond())
                 durations[client] = stats.duration
                 // if 0 <= weight {
                 //     nonNegativeClients = append(nonNegativeClients, client)
@@ -773,22 +690,23 @@ func (self *multiClientWindow) resize() {
             }
             clients = clients[:targetWindowSize]
         } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
-            // optimize by removing the lowest quartile
-            // collapse clients in the fourth quartile with duration of the half the stats window
+            // optimize by removing unused from the lowest quartile
 
-            n := len(clients) - (q3 + 1)
-            fmt.Printf("[multi] Optimize -%d\n", n)
+            n := 0
 
             q4Clients := clients[q3 + 1:]
             clients = clients[:q3 + 1]
             for _, client := range q4Clients {
-                if self.settings.WindowCollapseGraceperiod <= durations[client] {
+                if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
                     client.Cancel()
                     // removedClients = append(removedClients, client)
+                    n += 1
                 } else {
                     clients = append(clients, client)
                 }
             }
+
+            fmt.Printf("[multi] Optimize -%d\n", n)
         }
 
         select {
@@ -831,16 +749,19 @@ func (self *multiClientWindow) expand(n int) {
                     self.testing,
             ); err == nil {
                 go HandleError(func() {
-                    defer removeClientAuth(args.clientId, self.api)
-                    client.Run()
+                    select {
+                    case <- self.ctx.Done():
+                    case <- client.Done():
+                    }
                     client.Cancel()
+                    removeClientAuth(args.clientId, self.api)
                 }, self.cancel)
 
                 self.stateLock.Lock()
                 self.destinationClients[args.destinationId] = client
                 self.stateLock.Unlock()
                 
-                self.windowUpdate.NotifyAll()
+                // self.windowUpdate.NotifyAll()
             } else {
                 removeClientAuth(args.clientId, self.api)
             }
@@ -857,9 +778,7 @@ func (self *multiClientWindow) clients() []*multiClientChannel {
     return maps.Values(self.destinationClients)
 }
 
-func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiClientChannel, []*multiClientChannel, chan struct{}) {
-
-    update := self.windowUpdate.NotifyChannel()
+func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiClientChannel, []*multiClientChannel) {
 
     clients := []*multiClientChannel{}
 
@@ -867,7 +786,7 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
     // netSourceCount := 0
     // nonNegativeClients := []*multiClientChannel{}
     weights := map[*multiClientChannel]float32{}
-    // durations := map[*multiClientChannel]time.Duration{}
+    durations := map[*multiClientChannel]time.Duration{}
 
     for _, client := range self.clients() {
         if stats, err := client.WindowStats(); err != nil {
@@ -875,9 +794,9 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
         } else {
             clients = append(clients, client)
             // netSourceCount += stats.sourceCount
-            weight := stats.ByteCountPerSecond()
-            weights[client] = weight
-            // durations[client] = stats.duration
+            // weight := float32(stats.ByteCountPerSecond())
+            weights[client] = float32(stats.ByteCountPerSecond())
+            durations[client] = stats.duration
             // if 0 <= weight {
             //     nonNegativeClients = append(nonNegativeClients, client)
             // }
@@ -887,31 +806,40 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
     if 0 < len(removedClients) {
         self.stateLock.Lock()
         for _, client := range removedClients {
+            fmt.Printf("[multi] Remove client.\n")
+            client.Cancel()
             delete(self.destinationClients, client.DestinationId())
         }
         self.stateLock.Unlock()
 
-        self.windowUpdate.NotifyAll()
+        // self.windowUpdate.NotifyAll()
     }
 
+    // iterate and adjust weights for clients with weights >= 0
+    nonNegativeClients := []*multiClientChannel{}
     for _, client := range clients {
-        if weight := weights[client]; weight < 0 {
-            weights[client] = 0
-        } else if weight == 0 {
-            // use the estimate
-            weights[client] = client.EstimatedByteCountPerSecond()
+        if weight := weights[client]; 0 <= weight {
+            if duration := durations[client]; duration < self.settings.StatsWindowGraceperiod {
+                // use the estimate
+                weights[client] = float32(client.EstimatedByteCountPerSecond())
+            } else if 0 == weight {
+                // not used, use the estimate
+                weights[client] = float32(client.EstimatedByteCountPerSecond())
+            }
+            nonNegativeClients = append(nonNegativeClients, client)
         }
     }
 
-    WeightedShuffle(clients, weights)
+    WeightedShuffle(nonNegativeClients, weights)
 
-    return clients, removedClients, update
+    return nonNegativeClients, removedClients
 }
 
 
 type multiClientChannelArgs struct {
     platformUrl string
     destinationId Id
+    estimatedBytesPerSecond ByteCount
     clientId Id
     clientAuth *ClientAuth
 }
@@ -965,8 +893,12 @@ type clientWindowStats struct {
     duration time.Duration
 }
 
-func (self *clientWindowStats) ByteCountPerSecond() float32 {
-    return float32(self.ackByteCount - self.nackByteCount) / float32(self.duration / time.Second)
+func (self *clientWindowStats) ByteCountPerSecond() ByteCount {
+    seconds := float64(self.duration / time.Second)
+    if seconds <= 0 {
+        return ByteCount(0)
+    }
+    return ByteCount(float64(self.ackByteCount - self.nackByteCount) / seconds)
 }
 
 
@@ -978,8 +910,8 @@ type multiClientChannel struct {
 
     api *BringYourApi
 
-    send chan *parsedPacket
-    sendNoLimit chan *parsedPacket
+    // send chan *parsedPacket
+    // sendNoLimit chan *parsedPacket
 
     receivePacketCallback ReceivePacketFunction
 
@@ -997,9 +929,9 @@ type multiClientChannel struct {
     packetStats *clientWindowStats
     endErr error
 
-    maxNackCount int
+    // maxNackCount int
 
-    eventUpdate *Monitor
+    // eventUpdate *Monitor
 }
 
 func newMultiClientChannel(
@@ -1041,8 +973,8 @@ func newMultiClientChannel(
         cancel: cancel,
         args: args,
         api: api,
-        send: make(chan *parsedPacket),
-        sendNoLimit: make(chan *parsedPacket),
+        // send: make(chan *parsedPacket),
+        // sendNoLimit: make(chan *parsedPacket),
         receivePacketCallback: receivePacketCallback,
         settings: settings,
         sourceFilter: sourceFilter,
@@ -1052,8 +984,8 @@ func newMultiClientChannel(
         ip6DestinationSourceCount: map[Ip6Path]map[Ip6Path]int{},
         packetStats: &clientWindowStats{},
         endErr: nil,
-        maxNackCount: settings.ClientNackInitialLimit,
-        eventUpdate: NewMonitor(),
+        // maxNackCount: settings.ClientNackInitialLimit,
+        // eventUpdate: NewMonitor(),
     }
 
     client.AddReceiveCallback(clientChannel.clientReceive)
@@ -1061,115 +993,57 @@ func newMultiClientChannel(
     return clientChannel, nil
 }
 
-func (self *multiClientChannel) Run() {
-    defer func() {
-        self.cancel()
-        self.addError(errors.New("Done."))
-    }()
+func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Duration) bool {
+    // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
+    ipPacketToProvider := &protocol.IpPacketToProvider{
+        IpPacket: &protocol.IpPacket{
+            PacketBytes: parsedPacket.packet,
+        },
+    }
+    if frame, err := ToFrame(ipPacketToProvider); err != nil {
+        self.addError(err)
+        return false
+    } else {
+        packetByteCount := ByteCount(len(parsedPacket.packet))
+        self.addSendNack(packetByteCount)
+        self.addSource(parsedPacket.ipPath)
+        ackCallback := func(err error) {
+            // fmt.Printf("[multi] ack callback (%v)\n", err)
+            if err == nil {
+                self.addSendAck(packetByteCount)
+            } else {
+                self.addError(err)
+            }
+        }
 
-    send := func(parsedPacket *parsedPacket) {
         // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
-        ipPacketToProvider := &protocol.IpPacketToProvider{
-            IpPacket: &protocol.IpPacket{
-                PacketBytes: parsedPacket.packet,
-            },
+
+        opts := []any{}
+        switch parsedPacket.ipPath.Protocol {
+        case IpProtocolUdp:
+            opts = append(opts, NoAck())
         }
-        if frame, err := ToFrame(ipPacketToProvider); err != nil {
-            self.addError(err)
-        } else {
-            packetByteCount := ByteCount(len(parsedPacket.packet))
-            self.addSendNack(packetByteCount)
-            self.addSource(parsedPacket.ipPath)
-            ackCallback := func(err error) {
-                // fmt.Printf("[multi] ack callback (%v)\n", err)
-                if err == nil {
-                    self.addSendAck(packetByteCount)
-                } else {
-                    self.addError(err)
-                }
-            }
-
-            // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
-
-            opts := []any{}
-            switch parsedPacket.ipPath.Protocol {
-            case IpProtocolUdp:
-                opts = append(opts, NoAck())
-            }
-            success := self.client.SendWithTimeout(
-                frame,
-                self.args.destinationId,
-                ackCallback,
-                self.settings.WriteTimeout,
-                opts...,
-            )
-            if !success {
-                fmt.Printf("[multi] Timeout ->%s\n", self.args.destinationId)
-
-                self.addError(errors.New("Send timeout."))
-            }
-        }
-    }
-
-    for {
-        update := self.eventUpdate.NotifyChannel()
-        if self.isMaxAcks() {
-            select {
-            case <- self.ctx.Done():
-                return
-            case parsedPacket, ok := <- self.sendNoLimit:
-                if !ok {
-                    return
-                }
-                send(parsedPacket)
-            case <- update:
-            }
-        } else {
-            select {
-            case <- self.ctx.Done():
-                return
-            case parsedPacket, ok := <- self.sendNoLimit:
-                if !ok {
-                    return
-                }
-                send(parsedPacket)
-            case parsedPacket, ok := <- self.send:
-                if !ok {
-                    return
-                }
-                send(parsedPacket)
-            case <- update:
-            }
-        }
+        success := self.client.SendWithTimeout(
+            frame,
+            self.args.destinationId,
+            ackCallback,
+            timeout,
+            opts...,
+        )
+        return success
     }
 }
 
-func (self *multiClientChannel) EstimatedByteCountPerSecond() float32 {
-    // FIXME use the value from the args
-    return 1.0
-}
-
-func (self *multiClientChannel) DestinationId() Id {
-    return self.args.destinationId
+func (self *multiClientChannel) EstimatedByteCountPerSecond() ByteCount {
+    return self.args.estimatedBytesPerSecond
 }
 
 func (self *multiClientChannel) Done() <-chan struct{} {
     return self.ctx.Done()
 }
 
-func (self *multiClientChannel) Send() chan *parsedPacket {
-    return self.send
-}
-
-func (self *multiClientChannel) SendNoLimit() chan *parsedPacket {
-    return self.sendNoLimit
-}
-
-func (self *multiClientChannel) isMaxAcks() bool {
-    self.stateLock.Lock()
-    defer self.stateLock.Unlock()
-
-    return (self.maxNackCount <= self.packetStats.nackCount)
+func (self *multiClientChannel) DestinationId() Id {
+    return self.args.destinationId
 }
 
 func (self *multiClientChannel) eventBucket() *multiClientEventBucket {
@@ -1206,8 +1080,6 @@ func (self *multiClientChannel) addSendNack(ackByteCount ByteCount) {
     eventBucket := self.eventBucket()
     eventBucket.nackCount += 1
     eventBucket.nackByteCount += ackByteCount
-
-    self.eventUpdate.NotifyAll()
 }
 
 func (self *multiClientChannel) addSendAck(ackByteCount ByteCount) {
@@ -1219,18 +1091,9 @@ func (self *multiClientChannel) addSendAck(ackByteCount ByteCount) {
     self.packetStats.ackCount += 1
     self.packetStats.ackByteCount += ackByteCount
 
-    if self.maxNackCount < self.settings.ClientNackMaxLimit {
-        self.maxNackCount = min(
-            self.settings.ClientNackMaxLimit,
-            int(math.Ceil(float64(self.maxNackCount) * self.settings.ClientNackScale)),
-        )
-    }
-
     eventBucket := self.eventBucket()
     eventBucket.ackCount += 1
     eventBucket.ackByteCount += ackByteCount
-
-    self.eventUpdate.NotifyAll()
 }
 
 func (self *multiClientChannel) addReceiveAck(ackByteCount ByteCount) {
@@ -1243,8 +1106,6 @@ func (self *multiClientChannel) addReceiveAck(ackByteCount ByteCount) {
     eventBucket := self.eventBucket()
     eventBucket.ackCount += 1
     eventBucket.ackByteCount += ackByteCount
-
-    self.eventUpdate.NotifyAll()
 }
 
 func (self *multiClientChannel) addSource(ipPath *IpPath) {
@@ -1287,8 +1148,6 @@ func (self *multiClientChannel) addSource(ipPath *IpPath) {
     default:
         panic(fmt.Errorf("Bad protocol version %d", source.Version))
     }
-
-    self.eventUpdate.NotifyAll()
 }
 
 func (self *multiClientChannel) addError(err error) {
@@ -1301,8 +1160,6 @@ func (self *multiClientChannel) addError(err error) {
 
     eventBucket := self.eventBucket()
     eventBucket.errs = append(eventBucket.errs, err)
-
-    self.eventUpdate.NotifyAll()
 }
 
 func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnErr error) {
@@ -1393,7 +1250,6 @@ func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnE
         returnErr = self.endErr
     }()
 
-    self.eventUpdate.NotifyAll()
     return
 }
 
@@ -1426,7 +1282,7 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
 
             packet := ipPacketFromProvider.IpPacket.PacketBytes
 
-            self.addReceiveAck(len(packet))
+            self.addReceiveAck(ByteCount(len(packet)))
 
             self.receivePacketCallback(source, IpProtocolUnknown, packet)
         default:
@@ -1436,6 +1292,7 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
 }
 
 func (self *multiClientChannel) Cancel() {
+    self.addError(errors.New("Done."))
     self.cancel()
     self.client.Cancel()
 }
