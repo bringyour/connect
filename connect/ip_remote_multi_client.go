@@ -65,14 +65,16 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         ClientNackInitialLimit: 1,
         ClientNackMaxLimit: 64 * 1024,
         ClientNackScale: 2,
-        SendTimeout: 60 * time.Second,
-        WriteTimeout: 30 * time.Second,
-        AckTimeout: 15 * time.Second,
+        SendTimeout: 15 * time.Second,
+        WriteTimeout: 5 * time.Second,
+        AckTimeout: 5 * time.Second,
+        WindowResizeTimeout: 1 * time.Second,
+        WindowCollapseGraceperiod: 15 * time.Second,
         WindowExpandTimeout: 2 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
-        StatsWindowDuration: 120 * time.Second,
-        StatsWindowBucketDuration: 1 * time.Second,
+        StatsWindowDuration: 600 * time.Second,
+        StatsWindowBucketDuration: 10 * time.Second,
     }
 }
 
@@ -89,6 +91,8 @@ type MultiClientSettings struct {
     SendTimeout time.Duration
     WriteTimeout time.Duration
     AckTimeout time.Duration
+    WindowResizeTimeout time.Duration
+    WindowCollapseGraceperiod time.Duration
     WindowExpandTimeout time.Duration
     WindowEnumerateEmptyTimeout time.Duration
     WindowEnumerateErrorTimeout time.Duration
@@ -231,6 +235,12 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
                 update = &multiClientChannelUpdate{}
                 self.ip4PathUpdates[ip4Path] = update
             }
+            ip4Paths, ok := self.updateIp4Paths[update]
+            if !ok {
+                ip4Paths = map[Ip4Path]bool{}
+                self.updateIp4Paths[update] = ip4Paths
+            }
+            ip4Paths[ip4Path] = true
             return update
         case 6:
             ip6Path := ipPath.ToIp6Path()
@@ -239,6 +249,12 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
                 update = &multiClientChannelUpdate{}
                 self.ip6PathUpdates[ip6Path] = update
             }
+            ip6Paths, ok := self.updateIp6Paths[update]
+            if !ok {
+                ip6Paths = map[Ip6Path]bool{}
+                self.updateIp6Paths[update] = ip6Paths
+            }
+            ip6Paths[ip6Path] = true
             return update
         default:
             panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
@@ -249,40 +265,19 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
         self.stateLock.Lock()
         defer self.stateLock.Unlock()
 
-        if previousClient != update.client {
+
+        client := update.client
+
+        if previousClient != client {
             if previousClient != nil {
                 delete(self.clientUpdates, previousClient)
             }
-            if update.client != nil {
-                self.clientUpdates[update.client] = update
+            if client != nil {
+                self.clientUpdates[client] = update
             }
         }
 
-        client := update.client
-        if client != nil {
-            switch ipPath.Version {
-            case 4:
-                ip4Path := ipPath.ToIp4Path()
-                self.ip4PathUpdates[ip4Path] = update
-                ip4Paths, ok := self.updateIp4Paths[update]
-                if !ok {
-                    ip4Paths = map[Ip4Path]bool{}
-                    self.updateIp4Paths[update] = ip4Paths
-                }
-                ip4Paths[ip4Path] = true
-            case 6:
-                ip6Path := ipPath.ToIp6Path()
-                self.ip6PathUpdates[ip6Path] = update
-                ip6Paths, ok := self.updateIp6Paths[update]
-                if !ok {
-                    ip6Paths = map[Ip6Path]bool{}
-                    self.updateIp6Paths[update] = ip6Paths
-                }
-                ip6Paths[ip6Path] = true
-            default:
-                panic(fmt.Errorf("Bad protocol version %d", ipPath.Version))
-            }
-        } else {
+        if client == nil {
             switch ipPath.Version {
             case 4:
                 ip4Path := ipPath.ToIp4Path()
@@ -777,29 +772,27 @@ func (self *multiClientWindow) resize() {
                 client.Cancel()
             }
             clients = clients[:targetWindowSize]
-        } else {
+        } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
             // optimize by removing the lowest quartile
-
-            // q1 := len(clients) / 4
-            // q2 := 2 * len(clients) / 4
-            q3 := 3 * len(clients) / 4
             // collapse clients in the fourth quartile with duration of the half the stats window
-            if q3 + 1 < len(clients) {
-                q4Clients := clients[q3 + 1:]
-                clients = clients[:q3 + 1]
-                for _, client := range q4Clients {
-                    if self.settings.StatsWindowDuration / 2 <= durations[client] {
-                        client.Cancel()
-                        // removedClients = append(removedClients, client)
-                    } else {
-                        clients = append(clients, client)
-                    }
+
+            n := len(clients) - (q3 + 1)
+            fmt.Printf("[multi] Optimize -%d\n", n)
+
+            q4Clients := clients[q3 + 1:]
+            clients = clients[:q3 + 1]
+            for _, client := range q4Clients {
+                if self.settings.WindowCollapseGraceperiod <= durations[client] {
+                    client.Cancel()
+                    // removedClients = append(removedClients, client)
+                } else {
+                    clients = append(clients, client)
                 }
             }
         }
 
         select {
-        case <- time.After(1 * time.Second):
+        case <- time.After(self.settings.WindowResizeTimeout):
         }
 
     }
@@ -820,7 +813,7 @@ func (self *multiClientWindow) expand(n int) {
         // case <- update:
         //     // continue
         case args := <- self.clientChannelArgs:
-            fmt.Printf("[multi] Expand got args %v\n", args)
+            fmt.Printf("[multi] Expand new client\n")
 
             self.stateLock.Lock()
             _, ok := self.destinationClients[args.destinationId]
@@ -1023,8 +1016,6 @@ func newMultiClientChannel(
     if err != nil {
         return nil, err
     }
-
-    fmt.Printf("[multi] NEW CLIENT\n")
 
     clientSettings := DefaultClientSettings()
     clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout

@@ -25,7 +25,7 @@ import (
 // The UNAT emulates a raw socket using user-space sockets.
 
 
-const SendTimeout = 30 * time.Second
+const SendTimeout = 5 * time.Second
 
 
 var ipLog = LogFn(LogLevelDebug, "ip")
