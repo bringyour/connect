@@ -522,7 +522,7 @@ func (self *UdpSequence) send(provideMode protocol.ProvideMode, udp *layers.UDP)
 
 func (self *UdpSequence) Run() {
     defer func() {
-        self.Close()
+        self.cancel()
 
         close(self.sendItems)
         // drain and drop
@@ -554,7 +554,7 @@ func (self *UdpSequence) Run() {
     self.log("[init]connect success")
 
     go func() {
-        defer self.Close()
+        defer self.cancel()
 
         buffer := make([]byte, self.udpBufferSettings.ReadBufferSize)
 
@@ -1041,7 +1041,7 @@ func (self *TcpSequence) send(provideMode protocol.ProvideMode, tcp *layers.TCP)
 
 func (self *TcpSequence) Run() {
     defer func() {
-        self.Close()
+        self.cancel()
 
         close(self.sendItems)
 
@@ -1066,12 +1066,13 @@ func (self *TcpSequence) Run() {
     defer func() {
         self.log("[final]FIN")
         self.mutex.Lock()
-        if packet, err := self.FinAck(); err == nil {
+        packet, err := self.FinAck()
+        self.receiveSeq += 1
+        self.mutex.Unlock()
+        if err == nil {
             self.log("[final]send FIN+ACK (%d)", self.sendSeq)
             receive(packet)
         }
-        self.receiveSeq += 1
-        self.mutex.Unlock()
     }()
 
 
@@ -1092,12 +1093,15 @@ func (self *TcpSequence) Run() {
                 // start the send seq at send seq
                 // this is arbitrary, and since there is no transport security risk back to sender is fine
                 self.receiveSeq = sendItem.tcp.Seq
-                if packet, err := self.SynAck(); err == nil {
+                self.receiveSeqAck = sendItem.tcp.Seq
+                self.receiveWindowSize = sendItem.tcp.Window
+                packet, err := self.SynAck()
+                self.receiveSeq += 1
+                self.mutex.Unlock()
+                if err == nil {
                     self.log("[init]receive SYN+ACK")
                     receive(packet)
                 }
-                self.receiveSeq += 1
-                self.mutex.Unlock()
                 
                 syn = true
             } else {
@@ -1124,9 +1128,17 @@ func (self *TcpSequence) Run() {
 
     self.log("[init]connect success")
 
+    receiveActive := true
+    receiveAckCond := sync.NewCond(&self.mutex)
+    defer func() {
+        self.mutex.Lock()
+        receiveActive = false
+        receiveAckCond.Broadcast()
+        self.mutex.Unlock()
+    }()
 
     go func() {
-        defer self.Close()
+        defer self.cancel()
 
         buffer := make([]byte, self.tcpBufferSettings.ReadBufferSize)
         
@@ -1157,10 +1169,21 @@ func (self *TcpSequence) Run() {
                     fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
                 }
                 self.log("[f%d]receive(%d %d %d)", forwardIter, n, len(packets), self.receiveSeq)
+
+                // fmt.Printf("[multi] Receive window %d <> %d\n", uint32(self.receiveWindowSize), self.receiveSeq - self.receiveSeqAck + uint32(n))
+                for uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
+                    if !receiveActive {
+                        return
+                    }
+                    fmt.Printf("[multi] Receive window wait\n")
+                    receiveAckCond.Wait()
+                }
+
                 self.receiveSeq += uint32(n)
                 self.mutex.Unlock()
+
                 if err == nil {
-                    for _, packet := range packets {   
+                    for _, packet := range packets { 
                         receive(packet)
                     }
                 }
@@ -1200,13 +1223,13 @@ func (self *TcpSequence) Run() {
                 // a retransmit
                 // since the transfer from local to remote is lossless and preserves order,
                 // the packet is already pending. Ignore.
-                // if packet, err := self.PureAck(); err == nil {
-                //     receive(packet)
-                // }
-
-                // fmt.Printf("[r%d]retransmit (%d %d)(%d %d)(%d %s)\n", sendIter, self.sendSeq, sendItem.tcp.Seq, self.receiveSeq, sendItem.tcp.Ack, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
-                
                 drop = true
+            } else if sendItem.tcp.ACK {
+                // acks are reliably delivered (see above)
+                // we do not need to resend receive packets on missing acks
+                self.receiveWindowSize = sendItem.tcp.Window
+                self.receiveSeqAck = sendItem.tcp.Ack
+                receiveAckCond.Broadcast()
             }
             self.mutex.Unlock()
 
@@ -1214,33 +1237,10 @@ func (self *TcpSequence) Run() {
                 continue
             }
 
-            // ignore ACKs because we do not need to retransmit (see above)
-            // this assumes a normal operation where the socket acks as soon as it received an in order packet,
-            // so we ignore the window size.
-            // it can be the case that the local socket drops packets even with perfect delivery,
-            // such as a full receive buffer or stressed behavior.
-            // in that case, there is no recovery and we let the connection close naturally
-            // TODO implement some congestion control here
-            if sendItem.tcp.ACK {
-                self.mutex.Lock()
-                self.log("[r%d]ACK (%d %d)", sendIter, self.receiveSeq, sendItem.tcp.Ack)
-                self.mutex.Unlock()
-            }
-
             if sendItem.tcp.FIN {
                 self.log("[r%d]FIN", sendIter)
-                // self.mutex.Lock()
-                // self.sendSeq += 1
-                // self.mutex.Unlock()
-                // FIXME return
                 seq += 1
             }
-
-            // if sendItem.tcp.SYN {
-            //     self.mutex.Lock()
-            //     self.sendSeq += 1
-            //     self.mutex.Unlock()
-            // }
 
             writeTimeout := time.Now().Add(self.tcpBufferSettings.WriteTimeout)
 
@@ -1332,6 +1332,8 @@ type ConnectionState struct {
 
     sendSeq uint32
     receiveSeq uint32
+    receiveSeqAck uint32
+    receiveWindowSize uint16
     windowSize uint16
 }
 

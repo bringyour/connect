@@ -670,27 +670,27 @@ func (self *multiClientWindow) resize() {
                 float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
             )),
         )
-        fmt.Printf("[multi] Resize ->%d\n", targetWindowSize)
+        // fmt.Printf("[multi] Resize ->%d\n", targetWindowSize)
 
         if len(clients) < targetWindowSize {
             // expand
 
             n := targetWindowSize - len(clients)
-            fmt.Printf("[multi] Expand +%d\n", n)
+            fmt.Printf("[multi] Expand +%d ->%d\n", n, targetWindowSize)
             
             self.expand(n)
         } else if targetWindowSize < len(clients) {
             // collapse the lowest weighted
             
             n := len(clients) - targetWindowSize
-            fmt.Printf("[multi] Collapse -%d\n", n)
+            fmt.Printf("[multi] Collapse -%d ->%d\n", n, targetWindowSize)
 
             for _, client := range clients[targetWindowSize:] {
                 client.Cancel()
             }
             clients = clients[:targetWindowSize]
         } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
-            // optimize by removing unused from the lowest quartile
+            // optimize by removing unused from q4
 
             n := 0
 
@@ -706,7 +706,9 @@ func (self *multiClientWindow) resize() {
                 }
             }
 
-            fmt.Printf("[multi] Optimize -%d\n", n)
+            if 0 < n {
+                fmt.Printf("[multi] Optimize -%d\n", n)
+            }
         }
 
         select {
