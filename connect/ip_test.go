@@ -1,0 +1,687 @@
+package connect
+
+import (
+	"context"
+    "testing"
+    "time"
+    // mathrand "math/rand"
+    // "fmt"
+    // "crypto/hmac"
+	// "crypto/sha256"
+	// "sync"
+	// "slices"
+	// "bytes"
+	"encoding/binary"
+	"net"
+	"reflect"
+	// "fmt"
+	"sync"
+
+	"github.com/google/gopacket"
+    "github.com/google/gopacket/layers"
+
+	// "google.golang.org/protobuf/proto"
+
+    "github.com/go-playground/assert/v2"
+
+    "bringyour.com/protocol"
+)
+
+
+
+
+// test ippath parsing
+
+// FIXME
+// TestUdp6Path
+// TestTcp6Path
+
+
+type PacketGeneratorFunction func(int, int, int, int)([]byte, []byte)
+
+
+func udp4Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
+
+	// b := &bytes.Buffer{}
+	// binary.Write(b, binary.LittleEndian, s)
+	// payload = b.Bytes()
+
+	payload = make([]byte, 4)
+    binary.LittleEndian.PutUint32(payload, uint32(s))
+
+
+	sourceIp := net.IPv4(72, 0, 0, 1)
+	sourcePort := layers.UDPPort(40000 + s)
+	destinationIp := net.IPv4(byte(72), byte(1 + i), byte(1 + j), byte(1 + k))
+	destinationPort := layers.UDPPort(443)
+
+    ip := &layers.IPv4{
+        Version: 4,
+        TTL: 64,
+        SrcIP: sourceIp,
+        DstIP: destinationIp,
+        Protocol: layers.IPProtocolUDP,
+    }
+
+    udp := layers.UDP{
+        SrcPort: sourcePort,
+        DstPort: destinationPort,
+    }
+    udp.SetNetworkLayerForChecksum(ip)
+
+    options := gopacket.SerializeOptions{
+        ComputeChecksums: true,
+        FixLengths: true,
+    }
+
+    buffer := gopacket.NewSerializeBufferExpectedSize(1024, 0)
+    err := gopacket.SerializeLayers(buffer, options,
+        gopacket.SerializableLayer(ip),
+        &udp,
+        gopacket.Payload(payload),
+    )
+    if err != nil {
+        panic(err)
+    }
+    packet = buffer.Bytes()
+
+    return
+}
+
+
+func tcp4Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
+
+	// b := &bytes.Buffer{}
+	// binary.Write(b, binary.LittleEndian, s)
+	// payload = b.Bytes()
+
+	payload = make([]byte, 4)
+    binary.LittleEndian.PutUint32(payload, uint32(s))
+
+
+	sourceIp := net.IPv4(72, 0, 0, 1)
+	sourcePort := layers.TCPPort(40000 + s)
+	destinationIp := net.IPv4(byte(72), byte(1 + i), byte(1 + j), byte(1 + k))
+	destinationPort := layers.TCPPort(443)
+
+    ip := &layers.IPv4{
+        Version: 4,
+        TTL: 64,
+        SrcIP: sourceIp,
+        DstIP: destinationIp,
+        Protocol: layers.IPProtocolTCP,
+    }
+
+    tcp := layers.TCP{
+        SrcPort: sourcePort,
+        DstPort: destinationPort,
+        Seq: 0,
+        Ack: 0,
+        Window: 1024,
+    }
+    tcp.SetNetworkLayerForChecksum(ip)
+
+    options := gopacket.SerializeOptions{
+        ComputeChecksums: true,
+        FixLengths: true,
+    }
+
+    buffer := gopacket.NewSerializeBufferExpectedSize(1024, 0)
+    err := gopacket.SerializeLayers(buffer, options,
+        gopacket.SerializableLayer(ip),
+        &tcp,
+        gopacket.Payload(payload),
+    )
+    if err != nil {
+        panic(err)
+    }
+    packet = buffer.Bytes()
+
+    return
+}
+
+
+func udp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
+
+	// b := &bytes.Buffer{}
+	// binary.Write(b, binary.LittleEndian, s)
+	// payload = b.Bytes()
+
+	payload = make([]byte, 4)
+    binary.LittleEndian.PutUint32(payload, uint32(s))
+
+
+	sourceIp := net.IPv4(72, 0, 0, 1).To16()
+	sourcePort := layers.UDPPort(40000 + s)
+	destinationIp := net.IPv4(byte(72), byte(1 + i), byte(1 + j), byte(1 + k)).To16()
+	destinationPort := layers.UDPPort(443)
+
+    ip := &layers.IPv6{
+        Version: 6,
+        HopLimit: 64,
+        SrcIP: sourceIp,
+        DstIP: destinationIp,        
+        NextHeader: layers.IPProtocolUDP,
+    }
+
+    udp := layers.UDP{
+        SrcPort: sourcePort,
+        DstPort: destinationPort,
+    }
+    udp.SetNetworkLayerForChecksum(ip)
+
+    options := gopacket.SerializeOptions{
+        ComputeChecksums: true,
+        FixLengths: true,
+    }
+
+    buffer := gopacket.NewSerializeBufferExpectedSize(1024, 0)
+    err := gopacket.SerializeLayers(buffer, options,
+        gopacket.SerializableLayer(ip),
+        &udp,
+        gopacket.Payload(payload),
+    )
+    if err != nil {
+        panic(err)
+    }
+    packet = buffer.Bytes()
+
+    return
+}
+
+
+
+func tcp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
+
+	// b := &bytes.Buffer{}
+	// binary.Write(b, binary.LittleEndian, s)
+	// payload = b.Bytes()
+
+	payload = make([]byte, 4)
+    binary.LittleEndian.PutUint32(payload, uint32(s))
+
+
+	sourceIp := net.IPv4(72, 0, 0, 1).To16()
+	sourcePort := layers.TCPPort(40000 + s)
+	destinationIp := net.IPv4(byte(72), byte(1 + i), byte(1 + j), byte(1 + k)).To16()
+	destinationPort := layers.TCPPort(443)
+
+    ip := &layers.IPv6{
+        Version: 6,
+        HopLimit: 64,
+        SrcIP: sourceIp,
+        DstIP: destinationIp,
+        NextHeader: layers.IPProtocolTCP,
+    }
+
+    tcp := layers.TCP{
+        SrcPort: sourcePort,
+        DstPort: destinationPort,
+        Seq: 0,
+        Ack: 0,
+        Window: 1024,
+    }
+    tcp.SetNetworkLayerForChecksum(ip)
+
+    options := gopacket.SerializeOptions{
+        ComputeChecksums: true,
+        FixLengths: true,
+    }
+
+    buffer := gopacket.NewSerializeBufferExpectedSize(1024, 0)
+    err := gopacket.SerializeLayers(buffer, options,
+        gopacket.SerializableLayer(ip),
+        &tcp,
+        gopacket.Payload(payload),
+    )
+    if err != nil {
+        panic(err)
+    }
+    packet = buffer.Bytes()
+
+    return
+}
+
+
+func TestUdp4Path(t *testing.T) {
+
+
+
+	packet, _ := udp4Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolUdp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 4,
+		Protocol: IpProtocolUdp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip4Path := ipPath.ToIp4Path()
+	assert.Equal(t, Ip4Path{
+		Protocol: IpProtocolUdp,
+	    SourceIp: [4]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [4]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4()),
+	    DestinationPort: 443,
+	}, ip4Path)
+
+
+}
+
+
+func TestTcp4Path(t *testing.T) {
+
+
+
+	packet, _ := tcp4Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolTcp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 4,
+		Protocol: IpProtocolTcp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip4Path := ipPath.ToIp4Path()
+	assert.Equal(t, Ip4Path{
+		Protocol: IpProtocolTcp,
+	    SourceIp: [4]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [4]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4()),
+	    DestinationPort: 443,
+	}, ip4Path)
+
+
+}
+
+
+
+func TestUdp6Path(t *testing.T) {
+
+
+
+	packet, _ := udp6Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolUdp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 6,
+		Protocol: IpProtocolUdp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip6Path := ipPath.ToIp6Path()
+	assert.Equal(t, Ip6Path{
+		Protocol: IpProtocolUdp,
+	    SourceIp: [16]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [16]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16()),
+	    DestinationPort: 443,
+	}, ip6Path)
+
+
+}
+
+
+func TestTcp6Path(t *testing.T) {
+
+
+
+	packet, _ := tcp6Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolTcp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 6,
+		Protocol: IpProtocolTcp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip6Path := ipPath.ToIp6Path()
+	assert.Equal(t, Ip6Path{
+		Protocol: IpProtocolTcp,
+	    SourceIp: [16]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [16]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16()),
+	    DestinationPort: 443,
+	}, ip6Path)
+
+
+}
+
+
+// FIXME TestClientTcp
+
+func TestClientUdp4(t *testing.T) {
+	testClient(t, testingNewClient, udp4Packet, (*IpPath).ToIp4Path)
+}
+
+func TestClientTcp4(t *testing.T) {
+	testClient(t, testingNewClient, tcp4Packet, (*IpPath).ToIp4Path)
+}
+
+func TestClientUdp6(t *testing.T) {
+	testClient(t, testingNewClient, udp6Packet, (*IpPath).ToIp6Path)
+}
+
+func TestClientTcp6(t *testing.T) {
+	testClient(t, testingNewClient, tcp6Packet, (*IpPath).ToIp6Path)
+}
+
+
+func testingNewClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
+
+	client := NewClientWithDefaults(ctx, NewId())
+
+	routesSend := []Route{
+		make(chan []byte),
+	}
+	routesReceive := []Route{
+		make(chan []byte),
+	}
+
+	transportSend := NewSendGatewayTransport()
+	transportReceive := NewReceiveGatewayTransport()
+	client.RouteManager().UpdateTransport(transportSend, routesSend)
+	client.RouteManager().UpdateTransport(transportReceive, routesReceive)
+
+	providerTransportSend := NewSendClientTransport(client.ClientId())
+	providerTransportReceive := NewReceiveGatewayTransport()
+	providerClient.RouteManager().UpdateTransport(providerTransportReceive, routesSend)
+	providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
+
+	return NewRemoteUserNatClient(
+		client,
+		receivePacketCallback,
+		[]Path{
+			Path{ClientId: providerClient.ClientId()},
+		},
+		protocol.ProvideMode_Network,
+	)
+	
+}
+
+
+
+func testClient[P comparable](
+	t *testing.T,
+	userNatClientGenerator func(context.Context, *Client, ReceivePacketFunction)(UserNatClient, error),
+	packetGenerator PacketGeneratorFunction,
+	toComparableIpPath func(*IpPath)(P),
+) {
+	timeout := 30 * time.Second
+
+	m := 4
+	n := 4
+	repeatCount := 4
+	parallelCount := 4
+	echoCount := 0
+
+
+
+	// each packet gets echoed back
+	totalCount := parallelCount * m * n * n * n * repeatCount * (1 + echoCount)
+
+	cMutex := sync.Mutex{}
+	cSendCount := 0
+	cReceiveCount := 0
+
+
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// n destinations
+	// all have the same receiver callback, put into a channel of messages
+	// echo the received packet
+
+	// create fake ip4 packets to 72.i.j.k for all iterations of i,j,k in a range
+	// randomly retransmit some packets by increasing source port
+	// make sure all packets are received
+	// make sure all packets are echoed back
+
+	
+
+
+	clientId := NewId()
+	providerClientId := NewId()
+
+
+	providerClient := NewClientWithDefaults(ctx, providerClientId)
+
+
+
+
+
+
+	type receivePacket struct {
+		sourceId Id
+		packet []byte
+	}
+
+	receivePackets := make(chan *receivePacket)
+
+
+	receivePacketCallback := func(source Path, ipProtocol IpProtocol, packet []byte) {
+		// record the echo packet
+
+		cMutex.Lock()
+		cReceiveCount += 1
+		// fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
+		cMutex.Unlock()
+
+        receivePacket := &receivePacket{
+        	sourceId: source.ClientId,
+        	packet: packet,
+        }
+
+        receivePackets <- receivePacket
+	}
+
+
+	natClient, err := userNatClientGenerator(ctx, providerClient, receivePacketCallback)
+	assert.Equal(t, err, nil)
+
+
+
+
+
+	providerClient.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+		cMutex.Lock()
+		cReceiveCount += 1
+		// fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
+		cMutex.Unlock()
+
+		echo := func(packet []byte) {
+            ipPacketFromProvider := &protocol.IpPacketFromProvider{
+		        IpPacket: &protocol.IpPacket{
+		            PacketBytes: packet,
+		        },
+		    }
+		    frame, err := ToFrame(ipPacketFromProvider)
+		    if err != nil {
+		        panic(err)
+		    }
+
+		    providerClient.SendWithTimeout(frame, sourceId, func(err error) {
+		        // ignore
+		    }, timeout)
+
+		    cMutex.Lock()
+			cSendCount += 1
+			// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
+			cMutex.Unlock()
+		}
+		for _, frame := range frames {
+            if ipPacketToProvider_, err := FromFrame(frame); err == nil {
+	            ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
+
+	            packet := ipPacketToProvider.IpPacket.PacketBytes
+
+	            receivePacket := &receivePacket{
+	            	sourceId: sourceId,
+	            	packet: packet,
+	            }
+
+	            receivePackets <- receivePacket
+
+	            for i := 0; i < echoCount; i += 1 {
+		            echo(packet)
+		        }
+	        }
+
+        }
+	})
+
+
+
+
+
+	for p := 0; p < parallelCount; p += 1 {
+		go func() {
+			source := Path{ClientId:clientId}
+			for s := 0; s < m; s += 1 {
+				for i := 0; i < n; i += 1 {
+					for j := 0; j < n; j += 1 {
+						for k := 0; k < n; k += 1 {
+							for a := 0; a < repeatCount; a += 1 {
+								packet, _ := packetGenerator(s, i, j, k)
+								success := natClient.SendPacket(source, protocol.ProvideMode_Network, packet, timeout)
+
+								if success {
+									cMutex.Lock()
+									cSendCount += 1
+									// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
+									cMutex.Unlock()
+								}
+							}
+						}
+					}
+				}
+			}
+		}()
+	}
+
+
+	comparableIpPathPayloads := map[P][][]byte{}
+	comparableIpPathSources := map[P]map[Id]bool{}
+
+	for i := 0; i < totalCount; i += 1 {
+		select {
+		case receivePacket := <- receivePackets:
+			// fmt.Printf("Receive %d/%d (%.2f%%)\n", i + 1, totalCount, 100.0 * float32(i + 1) / float32(totalCount))
+
+			ipPath, err := ParseIpPath(receivePacket.packet)
+			assert.Equal(t, err, nil)
+
+			var payload []byte
+			switch ipPath.Version {
+			case 4:
+				ipv4 := layers.IPv4{}
+	            ipv4.DecodeFromBytes(receivePacket.packet, gopacket.NilDecodeFeedback)
+	            payload = ipv4.Payload
+			case 6:
+				ipv6 := layers.IPv6{}
+		        ipv6.DecodeFromBytes(receivePacket.packet, gopacket.NilDecodeFeedback)
+		        payload = ipv6.Payload
+		    }
+
+			switch ipPath.Protocol {
+			case IpProtocolUdp:
+				udp := layers.UDP{}
+	            udp.DecodeFromBytes(payload, gopacket.NilDecodeFeedback)
+	            payload = udp.Payload
+			case IpProtocolTcp:
+				tcp := layers.TCP{}
+	            tcp.DecodeFromBytes(payload, gopacket.NilDecodeFeedback)
+	            payload = tcp.Payload
+			}
+
+
+			// fmt.Printf("GOT %d PAYLOAD %v (%d)\n", ipPath.Protocol, payload, len(payload))
+
+
+			
+				// ip4Path := ipPath.ToIp4Path()
+			comparableIpPath := toComparableIpPath(ipPath)
+
+
+			comparableIpPathPayloads[comparableIpPath] = append(comparableIpPathPayloads[comparableIpPath], payload)
+
+
+			sources, ok := comparableIpPathSources[comparableIpPath]
+			if !ok {
+				sources = map[Id]bool{}
+				comparableIpPathSources[comparableIpPath] = sources
+			}
+			sources[receivePacket.sourceId] = true
+		case <- time.After(timeout):
+			t.Fail()
+		}
+	}
+
+	// make sure all messages were received
+	// make sure each path has just one source
+	for s := 0; s < m; s += 1 {
+		for i := 0; i < n; i += 1 {
+			for j := 0; j < n; j += 1 {
+				for k := 0; k < n; k += 1 {
+
+					packet, payload := packetGenerator(s, i, j, k)
+					ipPath, err := ParseIpPath(packet)
+					assert.Equal(t, err, nil)
+					comparableIpPath := toComparableIpPath(ipPath)
+
+					payloads := comparableIpPathPayloads[comparableIpPath]
+
+					// fmt.Printf("PAYLOADS %v <> %v\n", payload, payloads)
+
+					count := 0
+					for _, b := range payloads {
+						e := reflect.DeepEqual(b, payload)
+						// fmt.Printf("DEEP EQUAL %v (%d %T) <> %v (%d %T) %t\n", b, len(b), b, payload, len(payload), payload, e)
+						if e {
+							count += 1
+						}
+					}
+
+					assert.Equal(t, parallelCount * repeatCount * (1 + echoCount), count)
+
+					sources := comparableIpPathSources[comparableIpPath]
+
+					if 0 < echoCount {
+						assert.Equal(t, 2, len(sources))
+					} else {
+						assert.Equal(t, 1, len(sources))
+					}
+				}
+			}
+		}
+	}
+
+
+}
+
+

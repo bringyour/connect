@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"fmt"
+	// "runtime/debug"
 
 	"google.golang.org/protobuf/proto"
 
@@ -293,12 +294,11 @@ func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.D
 		TransferFrameBytes: transferFrameBytes,
 	}
 
-	err = self.forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
+	success, err := self.forwardBuffer.Pack(forwardPack, self.clientSettings.BufferTimeout)
 	if err != nil {
-		transferLog("TIMEOUT FORWARD PACK\n")
 		return false
 	}
-	return true
+	return success
 }
 
 func (self *Client) Forward(transferFrameBytes []byte) bool {
@@ -353,12 +353,11 @@ func (self *Client) SendWithTimeout(
 		}()
 		return true
 	} else {
-		err := self.sendBuffer.Pack(sendPack, timeout)
+		success, err := self.sendBuffer.Pack(sendPack, timeout)
 		if err != nil {
-			transferLog("TIMEOUT SEND PACK\n")
 			return false
 		}
-		return true
+		return success
 	}
 }
 
@@ -514,14 +513,14 @@ func (self *Client) run() {
 					messageByteCount += ByteCount(len(frame.MessageBytes))
 				}
 				transferLog("[%s] Receive pack %s ->: %s", self.clientId.String(), sourceId.String(), pack.Frames)
-				err = self.receiveBuffer.Pack(&ReceivePack{
+				success, err := self.receiveBuffer.Pack(&ReceivePack{
 					SourceId: sourceId,
 					SequenceId: sequenceId,
 					Pack: pack,
 					ReceiveCallback: self.receive,
 					MessageByteCount: messageByteCount,
 				}, self.clientSettings.BufferTimeout)
-				if err != nil {
+				if err != nil || !success {
 					transferLog("TIMEOUT RECEIVE PACK\n")
 				}
 			default:
@@ -610,6 +609,9 @@ func (self *Client) Close() {
 }
 
 func (self *Client) Cancel() {
+	// debug.PrintStack()
+
+	fmt.Printf("CANCEL 02\n")
 	self.cancel()
 
 	self.sendBuffer.Cancel()
@@ -672,7 +674,7 @@ func NewSendBuffer(ctx context.Context,
 	}
 }
 
-func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
+func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
 	initSendSequence := func(skip *SendSequence)(*SendSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
@@ -710,12 +712,11 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) error {
 	}
 
 	sendSequence := initSendSequence(nil)
-	if open, err := sendSequence.Pack(sendPack, timeout); !open {
-		// sequence closed
-		_, err := initSendSequence(sendSequence).Pack(sendPack, timeout)
-		return err
+	if success, err := sendSequence.Pack(sendPack, timeout); err == nil {
+		return success, nil
 	} else {
-		return err
+		// sequence closed
+		return initSendSequence(sendSequence).Pack(sendPack, timeout)
 	}
 }
 
@@ -827,8 +828,10 @@ func (self *SendSequence) ResendQueueSize() (int, ByteCount, Id) {
 	return count, byteSize, self.sequenceId
 }
 
+// success, error
 func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
 	if !self.idleCondition.UpdateOpen() {
+		// fmt.Printf("PACK 01\n")
 		return false, nil
 	}
 	defer self.idleCondition.UpdateClose()
@@ -836,27 +839,35 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	if timeout < 0 {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			// fmt.Printf("PACK 02\n")
+			return false, errors.New("Done.")
 		case self.packs <- sendPack:
+			// fmt.Printf("PACK 03\n")
 			return true, nil
 		}
 	} else if timeout == 0 {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			// fmt.Printf("PACK 04\n")
+			return false, errors.New("Done.")
 		case self.packs <- sendPack:
+			// fmt.Printf("PACK 05\n")
 			return true, nil
 		default:
+			// fmt.Printf("PACK 06\n")
 			return false, nil
 		}
 	} else {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			// fmt.Printf("PACK 07\n")
+			return false, errors.New("Done.")
 		case self.packs <- sendPack:
+			// fmt.Printf("PACK 08\n")
 			return true, nil
 		case <- time.After(timeout):
-			return true, fmt.Errorf("Timeout")
+			// fmt.Printf("PACK 09\n")
+			return false, nil
 		}
 	}
 }
@@ -901,6 +912,10 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) error {
 
 func (self *SendSequence) Run() {
 	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("ERROR: %s\n", r)
+		}
+
 		transferLog("[%s] Send sequence exit -> %s\n", self.clientId.String(), self.destinationId.String())
 
 		self.cancel()
@@ -977,6 +992,7 @@ func (self *SendSequence) Run() {
 				if itemAckTimeout <= 0 {
 					// message took too long to ack
 					// close the sequence
+					fmt.Printf("EXIT 01\n")
 					return
 				}
 
@@ -1001,6 +1017,7 @@ func (self *SendSequence) Run() {
 					transferFrameBytes_, err := self.setHead(item.transferFrameBytes)
 					if err != nil {
 						transferLog("!!!! SET HEAD ERROR %s", err)
+						fmt.Printf("EXIT 02\n")
 						return
 					}
 					transferFrameBytes = transferFrameBytes_
@@ -1051,9 +1068,11 @@ func (self *SendSequence) Run() {
 			// wait for acks
 			select {
 			case <- self.ctx.Done():
+				fmt.Printf("EXIT 04\n")
 			    return
 			case ack, ok := <- self.acks:
 				if !ok {
+					fmt.Printf("EXIT 05\n")
 					return
 				}
 				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
@@ -1064,6 +1083,7 @@ func (self *SendSequence) Run() {
 					// idle timeout
 					if self.idleCondition.Close(checkpointId) {
 						// close the sequence
+						fmt.Printf("EXIT 06\n")
 					    return
 					}
 					// else there are pending updates
@@ -1072,9 +1092,11 @@ func (self *SendSequence) Run() {
 		} else {
 			select {
 			case <- self.ctx.Done():
+				fmt.Printf("EXIT 07\n")
 				return
 			case ack, ok := <- self.acks:
 				if !ok {
+					fmt.Printf("EXIT 08\n")
 					return
 				}
 				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
@@ -1082,6 +1104,7 @@ func (self *SendSequence) Run() {
 				}
 			case sendPack, ok := <- self.packs:
 				if !ok {
+					fmt.Printf("EXIT 09\n")
 					return
 				}
 
@@ -1098,6 +1121,7 @@ func (self *SendSequence) Run() {
 				} else {
 					// no contract
 					// close the sequence
+					fmt.Printf("EXIT 10\n")
 					sendPack.AckCallback(errors.New("No contract"))
 					return
 				}
@@ -1105,6 +1129,7 @@ func (self *SendSequence) Run() {
 				if 0 == self.resendQueue.Len() {
 					// idle timeout
 					if self.idleCondition.Close(checkpointId) {
+						fmt.Printf("EXIT 11\n")
 						// close the sequence
 						return
 					}
@@ -1369,6 +1394,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 }
 
 func (self *SendSequence) Close() {
+	// debug.PrintStack()
 	self.cancel()
 	self.idleCondition.WaitForClose()
 	close(self.packs)
@@ -1376,6 +1402,8 @@ func (self *SendSequence) Close() {
 }
 
 func (self *SendSequence) Cancel() {
+	// debug.PrintStack()
+	fmt.Printf("CANCEL 01\n")
 	self.cancel()
 }
 
@@ -1471,7 +1499,7 @@ func NewReceiveBuffer(ctx context.Context,
 	}
 }
 
-func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration) error {
+func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
 	receiveSequenceId := receiveSequenceId{
 		SourceId: receivePack.SourceId,
 		SequenceId: receivePack.SequenceId,
@@ -1515,11 +1543,11 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 	}
 
 	receiveSequence := initReceiveSequence(nil)
-	if open, err := receiveSequence.Pack(receivePack, timeout); !open {
-		_, err := initReceiveSequence(receiveSequence).Pack(receivePack, timeout)
-		return err
+	if success, err := receiveSequence.Pack(receivePack, timeout); err == nil {
+		return success, nil
 	} else {
-		return err
+		// sequence closed
+		return initReceiveSequence(receiveSequence).Pack(receivePack, timeout)
 	}
 }
 
@@ -1619,6 +1647,7 @@ func (self *ReceiveSequence) ReceiveQueueSize() (int, ByteCount) {
 	return self.receiveQueue.QueueSize()
 }
 
+// success, error
 func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
 	if !self.idleCondition.UpdateOpen() {
 		return false, nil
@@ -1628,14 +1657,14 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 	if timeout < 0 {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			return false, errors.New("Done.")
 		case self.packs <- receivePack:
 			return true, nil
 		}
 	} else if timeout == 0 {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			return false, errors.New("Done.")
 		case self.packs <- receivePack:
 			return true, nil
 		default:
@@ -1644,11 +1673,11 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 	} else {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			return false, errors.New("Done.")
 		case self.packs <- receivePack:
 			return true, nil
 		case <- time.After(timeout):
-			return true, fmt.Errorf("Timeout")
+			return false, nil
 		}
 	}
 }
@@ -1717,7 +1746,7 @@ func (self *ReceiveSequence) Run() {
 					transferLog("!! EXIT H")
 					transferLog("[%s] Gap timeout", self.clientId.String())
 					// did not receive a preceding message in time
-					// close sequence
+					// quence
 					return
 				}
 
@@ -2390,7 +2419,7 @@ func NewForwardBuffer(ctx context.Context,
 	}
 }
 
-func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration) error {
+func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration) (bool, error) {
 	initForwardSequence := func(skip *ForwardSequence)(*ForwardSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
@@ -2428,11 +2457,11 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 	}
 
 	forwardSequence := initForwardSequence(nil)
-	if open, err := forwardSequence.Pack(forwardPack, timeout); !open {
-		_, err := initForwardSequence(forwardSequence).Pack(forwardPack, timeout)
-		return err
+	if success, err := forwardSequence.Pack(forwardPack, timeout); err == nil {
+		return success, nil
 	} else {
-		return err
+		// sequence closed
+		return initForwardSequence(forwardSequence).Pack(forwardPack, timeout)
 	}
 }
 
@@ -2500,6 +2529,7 @@ func NewForwardSequence(
 	}
 }
 
+// success, error
 func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duration) (bool, error) {
 	if !self.idleCondition.UpdateOpen() {
 		return false, nil
@@ -2509,14 +2539,14 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 	if timeout < 0 {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			return false, errors.New("Done.")
 		case self.packs <- forwardPack:
 			return true, nil
 		}
 	} else if timeout == 0 {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			return false, errors.New("Done.")
 		case self.packs <- forwardPack:
 			return true, nil
 		default:
@@ -2525,11 +2555,11 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 	} else {
 		select {
 		case <- self.ctx.Done():
-			return false, nil
+			return false, errors.New("Done.")
 		case self.packs <- forwardPack:
 			return true, nil
 		case <- time.After(timeout):
-			return true, fmt.Errorf("Timeout")
+			return false, nil
 		}
 	}	
 }

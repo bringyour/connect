@@ -844,6 +844,53 @@ func (self *sendGatewayTransport) Downgrade(sourceId Id) {
 
 
 // conforms to `Transport`
+type sendClientTransport struct {
+    transportId Id
+    destinationIds map[Id]bool
+}
+
+func NewSendClientTransport(destinationIds ...Id) *sendClientTransport {
+    destinationIds_ := map[Id]bool{}
+    for _, destinationId := range destinationIds {
+        destinationIds_[destinationId] = true
+    }
+    return &sendClientTransport{
+        transportId: NewId(),
+        destinationIds: destinationIds_,
+    }
+}
+
+func (self *sendClientTransport) TransportId() Id {
+    return self.transportId
+}
+
+func (self *sendClientTransport) Priority() int {
+    return 100
+}
+
+func (self *sendClientTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
+    return true
+}
+
+func (self *sendClientTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
+    // uniform weight
+    return 1.0 / float32(1 + len(remainingStats))
+}
+
+func (self *sendClientTransport) MatchesSend(destinationId Id) bool {
+    return self.destinationIds[destinationId]
+}
+
+func (self *sendClientTransport) MatchesReceive(destinationId Id) bool {
+    return false
+}
+
+func (self *sendClientTransport) Downgrade(sourceId Id) {
+    // nothing to downgrade
+}
+
+
+// conforms to `Transport`
 type receiveGatewayTransport struct {
 	transportId Id
 }

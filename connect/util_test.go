@@ -10,6 +10,30 @@ import (
 )
 
 
+// FIXME
+// func TestMonitor() {
+
+// }
+
+
+// FIXME
+// func TestCallbackList() {
+
+// }
+
+
+// FIXME
+// func TestIdleCondition() {
+
+// }
+
+
+// FIXME
+// func TestEvent() {
+
+// }
+
+
 func TestWeightedShuffle(t *testing.T) {
 	// weighted shuffle many times and look at the average position
 	// the average position order should trend with the weight order

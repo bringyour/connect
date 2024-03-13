@@ -26,33 +26,13 @@ import (
 // net frame count statistics (acks - nacks)
 
 
-type multiClientChannelUpdate struct {
-    lock sync.Mutex
-    client *multiClientChannel
-}
-
-
-type MultiClientTesting interface {
-    NextDesintationIds(count int, excludedClientIds []Id) map[Id]ByteCount
-    NewClientArgs() (Id, *ClientAuth)
-    SetTransports(client *Client)
-}
-
-
-type parsedPacket struct {
-    packet []byte
-    ipPath *IpPath
-}
-
-func newParsedPacket(packet []byte) (*parsedPacket, error) {
-    ipPath, err := ParseIpPath(packet)
-    if err != nil {
-        return nil, err
-    }
-    return &parsedPacket{
-        packet: packet,
-        ipPath: ipPath,
-    }, nil
+type MultiClientGenerator interface {
+    // client id -> estimated byte count per second
+    NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
+    // client id, client auth
+    NewClientArgs() (*MultiClientGeneratorClientArgs, error)
+    RemoveClientArgs(args *MultiClientGeneratorClientArgs)
+    NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
 
 
@@ -66,7 +46,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         // ClientNackMaxLimit: 64 * 1024,
         // ClientNackScale: 4,
         // SendTimeout: 60 * time.Second,
-        WriteTimeout: 30 * time.Second,
+        // WriteTimeout: 30 * time.Second,
         WriteRetryTimeout: 200 * time.Millisecond,
         AckTimeout: 5 * time.Second,
         WindowResizeTimeout: 1 * time.Second,
@@ -88,9 +68,9 @@ type MultiClientSettings struct {
     // ClientNackInitialLimit int
     // ClientNackMaxLimit int
     // ClientNackScale float64
-    ClientWriteTimeout time.Duration
+    // ClientWriteTimeout time.Duration
     // SendTimeout time.Duration
-    WriteTimeout time.Duration
+    // WriteTimeout time.Duration
     WriteRetryTimeout time.Duration
     AckTimeout time.Duration
     WindowResizeTimeout time.Duration
@@ -107,15 +87,11 @@ type RemoteUserNatMultiClient struct {
     ctx context.Context
     cancel context.CancelFunc
 
-    api *BringYourApi
-    platformUrl string
-
-    specs []*ProviderSpec
+    generator MultiClientGenerator
 
     receivePacketCallback ReceivePacketFunction
 
     settings *MultiClientSettings
-    testing MultiClientTesting
 
     window *multiClientWindow
 
@@ -129,22 +105,12 @@ type RemoteUserNatMultiClient struct {
 
 func NewRemoteUserNatMultiClientWithDefaults(
     ctx context.Context,
-    apiUrl string,
-    byJwt string,
-    platformUrl string,
-    deviceDescription string,
-    deviceSpec string,
-    specs []*ProviderSpec,
+    generator MultiClientGenerator,
     receivePacketCallback ReceivePacketFunction,
 ) *RemoteUserNatMultiClient {
     return NewRemoteUserNatMultiClient(
         ctx,
-        apiUrl,
-        byJwt,
-        platformUrl,
-        deviceDescription,
-        deviceSpec,
-        specs,
+        generator,
         receivePacketCallback,
         DefaultMultiClientSettings(),
     )
@@ -152,68 +118,26 @@ func NewRemoteUserNatMultiClientWithDefaults(
 
 func NewRemoteUserNatMultiClient(
     ctx context.Context,
-    apiUrl string,
-    byJwt string,
-    platformUrl string,
-    deviceDescription string,
-    deviceSpec string,
-    specs []*ProviderSpec,
+    generator MultiClientGenerator,
     receivePacketCallback ReceivePacketFunction,
     settings *MultiClientSettings,
-) *RemoteUserNatMultiClient {
-    return NewRemoteUserNatMultiClientWithTesting(
-        ctx,
-        apiUrl,
-        byJwt,
-        platformUrl,
-        deviceDescription,
-        deviceSpec,
-        specs,
-        receivePacketCallback,
-        settings,
-        nil,
-    )
-}
-
-func NewRemoteUserNatMultiClientWithTesting(
-    ctx context.Context,
-    apiUrl string,
-    byJwt string,
-    platformUrl string,
-    deviceDescription string,
-    deviceSpec string,
-    specs []*ProviderSpec,
-    receivePacketCallback ReceivePacketFunction,
-    settings *MultiClientSettings,
-    testing MultiClientTesting,
 ) *RemoteUserNatMultiClient {
     cancelCtx, cancel := context.WithCancel(ctx)
-
-    api := NewBringYourApi(apiUrl)
-    api.SetByJwt(byJwt)
 
     window := newMultiClientWindow(
         cancelCtx,
         cancel,
-        api,
-        platformUrl,
-        deviceDescription,
-        deviceSpec,
-        specs,
+        generator,
         receivePacketCallback,
         settings,
-        testing,
     )
 
     return &RemoteUserNatMultiClient{
         ctx: cancelCtx,
         cancel: cancel,
-        api: api,
-        platformUrl: platformUrl,
-        specs: specs,
+        generator: generator,
         receivePacketCallback: receivePacketCallback,
         settings: settings,
-        testing: testing,
         window: window,
         ip4PathUpdates: map[Ip4Path]*multiClientChannelUpdate{},
         ip6PathUpdates: map[Ip6Path]*multiClientChannelUpdate{},
@@ -222,7 +146,6 @@ func NewRemoteUserNatMultiClientWithTesting(
         clientUpdates: map[*multiClientChannel]*multiClientChannelUpdate{},
     }
 }
-
 
 func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback func(*multiClientChannelUpdate)) {
     reserveUpdate := func()(*multiClientChannelUpdate) {
@@ -356,31 +279,29 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 }
 
 // `SendPacketFunction`
-func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
+func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
         fmt.Printf("[multi] Send bad packet (%s).\n", err)
         // bad packet
-        return
+        return false
     }
 
+    success := false
     self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
         if update.client != nil {
-            update.client.Send(parsedPacket, self.settings.WriteTimeout)
-            // if not success, drop the packet
+            success = update.client.Send(parsedPacket, timeout)
             return
         }
 
-        endTime := time.Now().Add(self.settings.WriteTimeout)
+        endTime := time.Now().Add(timeout)
 
         for {
-            
-
             orderedClients, removedClients := self.window.OrderedClients(self.settings.WindowExpandTimeout)
             // fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
 
             for _, client := range removedClients {
-                // fmt.Printf("[multi] Remove client %s->%s.\n", client.args.clientId, client.args.destinationId) 
+                fmt.Printf("[multi] Remove client %s->%s.\n", client.args.ClientId, client.args.DestinationId) 
                 self.removeClient(client)
             }
 
@@ -388,6 +309,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 if client.Send(parsedPacket, 0) {
                     // lock the path to the client
                     update.client = client
+                    success = true
                     return
                 }
             }
@@ -396,17 +318,22 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
 
             if timeout <= 0 {
                 // drop
+                fmt.Printf("DROPPED ONE\n")
+                success = false
                 return
             }
 
             select {
             case <- self.ctx.Done():
+                fmt.Printf("DROPPED ONE DONE\n")
+                success = false
                 return
             case <- time.After(min(timeout, self.settings.WriteRetryTimeout)):
                 // retry
             }
         }
     })
+    return success
 }
 
 func (self *RemoteUserNatMultiClient) Close() {
@@ -414,20 +341,170 @@ func (self *RemoteUserNatMultiClient) Close() {
 }
 
 
+type multiClientChannelUpdate struct {
+    lock sync.Mutex
+    client *multiClientChannel
+}
+
+
+type parsedPacket struct {
+    packet []byte
+    ipPath *IpPath
+}
+
+func newParsedPacket(packet []byte) (*parsedPacket, error) {
+    ipPath, err := ParseIpPath(packet)
+    if err != nil {
+        return nil, err
+    }
+    return &parsedPacket{
+        packet: packet,
+        ipPath: ipPath,
+    }, nil
+}
+
+
+type MultiClientGeneratorClientArgs struct {
+    ClientId Id
+    ClientAuth *ClientAuth
+}
+
+
+type ApiMultiClientGenerator struct {
+    specs []*ProviderSpec
+    apiUrl string
+    byJwt string
+    platformUrl string
+    deviceDescription string
+    deviceSpec string
+    appVersion string
+
+    api *BringYourApi
+}
+
+func NewApiMultiClientGenerator(
+    specs []*ProviderSpec,
+    apiUrl string,
+    byJwt string,
+    platformUrl string,
+    deviceDescription string,
+    deviceSpec string,
+    appVersion string,
+) *ApiMultiClientGenerator {
+    api := NewBringYourApi(apiUrl)
+    api.SetByJwt(byJwt)
+
+    return &ApiMultiClientGenerator{
+        specs: specs,
+        apiUrl: apiUrl,
+        byJwt: byJwt,
+        platformUrl: platformUrl,
+        deviceDescription: deviceDescription,
+        deviceSpec: deviceSpec,
+        appVersion: appVersion,
+        api: api,
+    }
+}
+
+func (self *ApiMultiClientGenerator) NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
+    findProviders2 := &FindProviders2Args{
+        Specs: self.specs,
+        ExcludeClientIds: excludedClientIds,
+        Count: count,
+    }
+
+    result, err := self.api.FindProviders2Sync(findProviders2)
+    if err != nil {
+        return nil, err
+    }
+
+    clientIdEstimatedBytesPerSecond := map[Id]ByteCount{}
+    for _, provider := range result.Providers {
+        clientIdEstimatedBytesPerSecond[provider.ClientId] = provider.EstimatedBytesPerSecond
+    }
+
+    return clientIdEstimatedBytesPerSecond, nil
+}
+
+func (self *ApiMultiClientGenerator) NewClientArgs() (*MultiClientGeneratorClientArgs, error) {
+    auth := func() (string, error) {
+        // note the derived client id will be inferred by the api jwt
+        authNetworkClient := &AuthNetworkClientArgs{
+            Description: self.deviceDescription,
+            DeviceSpec: self.deviceSpec,
+        }
+
+        result, err := self.api.AuthNetworkClientSync(authNetworkClient)
+        if err != nil {
+            return "", err
+        }
+
+        if result.Error != nil {
+            return "", errors.New(result.Error.Message)
+        }
+
+        return result.ByClientJwt, nil
+    }
+
+    if byJwtStr, err := auth(); err == nil {
+        byJwt, err := ParseByJwtUnverified(byJwtStr)
+        if err != nil {
+            // in this case we cannot clean up the client because we don't know the client id
+            panic(err)
+        }
+
+        clientAuth := &ClientAuth{
+            ByJwt: byJwtStr,
+            InstanceId: NewId(),
+            AppVersion: self.appVersion,
+        }
+        return &MultiClientGeneratorClientArgs{
+            ClientId: byJwt.ClientId,
+            ClientAuth: clientAuth,
+        }, nil
+    } else {
+        return nil, err
+    }
+}
+
+func (self *ApiMultiClientGenerator) RemoveClientArgs(args *MultiClientGeneratorClientArgs) {
+    removeNetworkClient := &RemoveNetworkClientArgs{
+        ClientId: args.ClientId,
+    }
+
+    self.api.RemoveNetworkClient(removeNetworkClient, NewApiCallback(func(result *RemoveNetworkClientResult, err error) {
+    }))
+}
+
+func (self *ApiMultiClientGenerator) NewClient(
+    ctx context.Context,
+    args *MultiClientGeneratorClientArgs,
+    clientSettings *ClientSettings,
+) (*Client, error) {
+    byJwt, err := ParseByJwtUnverified(args.ClientAuth.ByJwt)
+    if err != nil {
+        return nil, err
+    }
+    client := NewClient(ctx, byJwt.ClientId, clientSettings)
+    // fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
+    NewPlatformTransportWithDefaults(
+        ctx,
+        self.platformUrl,
+        args.ClientAuth,
+        client.RouteManager(),
+    )
+    return client, nil
+}
+
+
 type multiClientWindow struct {
     ctx context.Context
     cancel context.CancelFunc
 
-    api *BringYourApi
-    platformUrl string
-    deviceDescription string
-    deviceSpec string
-
-    specs []*ProviderSpec
+    generator MultiClientGenerator
     receivePacketCallback ReceivePacketFunction
 
     settings *MultiClientSettings
-    testing MultiClientTesting
 
     clientChannelArgs chan *multiClientChannelArgs
 
@@ -440,26 +517,16 @@ type multiClientWindow struct {
 func newMultiClientWindow(
     ctx context.Context,
     cancel context.CancelFunc,
-    api *BringYourApi,
-    platformUrl string,
-    deviceDescription string,
-    deviceSpec string,
-    specs []*ProviderSpec,
+    generator MultiClientGenerator,
     receivePacketCallback ReceivePacketFunction,
     settings *MultiClientSettings,
-    testing MultiClientTesting,
 ) *multiClientWindow {
     window := &multiClientWindow{
         ctx: ctx,
         cancel: cancel,
-        api: api,
-        platformUrl: platformUrl,
-        deviceDescription: deviceDescription,
-        deviceSpec: deviceSpec,
-        specs: specs,
+        generator: generator,
         receivePacketCallback: receivePacketCallback,
         settings: settings,
-        testing: testing,
         clientChannelArgs: make(chan *multiClientChannelArgs),
         destinationClients: map[Id]*multiClientChannel{},
         // windowUpdate: NewMonitor(),
@@ -475,35 +542,13 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
     // continually reset the visited set when there are no more
     visitedDestinationIds := map[Id]bool{}
     for {
-
         destinationIdEstimatedBytesPerSecond := map[Id]ByteCount{}
         for {
             next := func(count int) (map[Id]ByteCount, error) {
-                if self.testing != nil {
-                    clientIdEstimatedBytesPerSecond := self.testing.NextDesintationIds(
-                        count,
-                        maps.Keys(visitedDestinationIds),
-                    )
-                    return clientIdEstimatedBytesPerSecond, nil
-                } else {
-                    findProviders2 := &FindProviders2Args{
-                        Specs: self.specs,
-                        ExcludeClientIds: maps.Keys(visitedDestinationIds),
-                        Count: count,
-                    }
-
-                    result, err := self.api.FindProviders2Sync(findProviders2)
-                    if err != nil {
-                        return nil, err
-                    }
-
-                    clientIdEstimatedBytesPerSecond := map[Id]ByteCount{}
-                    for _, provider := range result.Providers {
-                        clientIdEstimatedBytesPerSecond[provider.ClientId] = provider.EstimatedBytesPerSecond
-                    }
-
-                    return clientIdEstimatedBytesPerSecond, nil
-                }
+                return self.generator.NextDestintationIds(
+                    count,
+                    maps.Keys(visitedDestinationIds),
+                )
             }
 
             nextDestinationIdEstimatedBytesPerSecond, err := next(1)
@@ -543,70 +588,23 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
         // fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
         
         for destinationId, estimatedBytesPerSecond := range destinationIdEstimatedBytesPerSecond {
-            if self.testing != nil {
-                clientId, clientAuth := self.testing.NewClientArgs()
+
+            if clientArgs, err := self.generator.NewClientArgs(); err == nil {
                 args := &multiClientChannelArgs{
-                    platformUrl: self.platformUrl,
-                    destinationId: destinationId,
-                    estimatedBytesPerSecond: estimatedBytesPerSecond,
-                    clientId: clientId,
-                    clientAuth: clientAuth,
+                    DestinationId: destinationId,
+                    EstimatedBytesPerSecond: estimatedBytesPerSecond,
+                    MultiClientGeneratorClientArgs: *clientArgs,
                 }
                 select {
                 case <- self.ctx.Done():
+                    self.generator.RemoveClientArgs(clientArgs)
                     return
                 case self.clientChannelArgs <- args:
                 }
             } else {
-                auth := func() (string, error) {
-                    // note the derived client id will be inferred by the api jwt
-                    authNetworkClient := &AuthNetworkClientArgs{
-                        Description: self.deviceDescription,
-                        DeviceSpec: self.deviceSpec,
-                    }
-
-                    result, err := self.api.AuthNetworkClientSync(authNetworkClient)
-                    if err != nil {
-                        return "", err
-                    }
-
-                    if result.Error != nil {
-                        return "", errors.New(result.Error.Message)
-                    }
-
-                    return result.ByClientJwt, nil
-                }
-
-                if byJwtStr, err := auth(); err == nil {
-                    byJwt, err := ParseByJwtUnverified(byJwtStr)
-                    if err != nil {
-                        // in this case we cannot clean up the client because we don't know the client id
-                        panic(err)
-                    }
-
-                    clientAuth := &ClientAuth{
-                        ByJwt: byJwtStr,
-                        InstanceId: NewId(),
-                        AppVersion: "0.0.0-multi",
-                    }
-                    args := &multiClientChannelArgs{
-                        platformUrl: self.platformUrl,
-                        destinationId: destinationId,
-                        estimatedBytesPerSecond: estimatedBytesPerSecond,
-                        clientId: byJwt.ClientId,
-                        clientAuth: clientAuth,
-                    }
-
-                    select {
-                    case <- self.ctx.Done():
-                        removeClientAuth(args.clientId, self.api)
-                        return
-                    case self.clientChannelArgs <- args:
-                    }
-                } else {
-                    fmt.Printf("[multi] Could not auth client.\n")
-                }
+                fmt.Printf("[multi] Could not auth client.\n")
             }
+        
         }
     }
 }
@@ -619,10 +617,6 @@ func (self *multiClientWindow) resize() {
         default:
         }
 
-
-
-
-
         clients := []*multiClientChannel{}
 
         // removedClients := []*multiClientChannel{}
@@ -630,7 +624,6 @@ func (self *multiClientWindow) resize() {
         // nonNegativeClients := []*multiClientChannel{}
         weights := map[*multiClientChannel]float32{}
         durations := map[*multiClientChannel]time.Duration{}
-
 
         for _, client := range self.clients() {
             if stats, err := client.WindowStats(); err == nil {
@@ -657,11 +650,6 @@ func (self *multiClientWindow) resize() {
                 return 0
             }
         })
-
-
-
-
-
 
         targetWindowSize := min(
             self.settings.WindowSizeMax,
@@ -714,7 +702,6 @@ func (self *multiClientWindow) resize() {
         select {
         case <- time.After(self.settings.WindowResizeTimeout):
         }
-
     }
 }
 
@@ -736,36 +723,36 @@ func (self *multiClientWindow) expand(n int) {
             fmt.Printf("[multi] Expand new client\n")
 
             self.stateLock.Lock()
-            _, ok := self.destinationClients[args.destinationId]
+            _, ok := self.destinationClients[args.DestinationId]
             self.stateLock.Unlock()
 
             if ok {
                 // already have a client in the window for this destination
-                removeClientAuth(args.clientId, self.api)
-            } else if client, err := newMultiClientChannel(
+                self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
+            } else {
+                client, err := newMultiClientChannel(
                     self.ctx,
                     args,
-                    self.api,
+                    self.generator,
                     self.receivePacketCallback,
                     self.settings,
-                    self.testing,
-            ); err == nil {
-                go HandleError(func() {
-                    select {
-                    case <- self.ctx.Done():
-                    case <- client.Done():
-                    }
-                    client.Cancel()
-                    removeClientAuth(args.clientId, self.api)
-                }, self.cancel)
+                )
+                if err == nil {
+                    go HandleError(func() {
+                        select {
+                        case <- self.ctx.Done():
+                        case <- client.Done():
+                        }
+                        client.Cancel()
+                        self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
+                    }, self.cancel)
 
-                self.stateLock.Lock()
-                self.destinationClients[args.destinationId] = client
-                self.stateLock.Unlock()
-                
-                // self.windowUpdate.NotifyAll()
-            } else {
-                removeClientAuth(args.clientId, self.api)
+                    self.stateLock.Lock()
+                    self.destinationClients[args.DestinationId] = client
+                    self.stateLock.Unlock()
+                } else {
+                    self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
+                }
             }
         case <- time.After(timeout):
             fmt.Printf("[multi] Expand window timeout waiting for args\n")
@@ -792,6 +779,7 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
 
     for _, client := range self.clients() {
         if stats, err := client.WindowStats(); err != nil {
+            fmt.Printf("[multi] Remove client (%s)\n", err)
             removedClients = append(removedClients, client)
         } else {
             clients = append(clients, client)
@@ -808,7 +796,7 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
     if 0 < len(removedClients) {
         self.stateLock.Lock()
         for _, client := range removedClients {
-            fmt.Printf("[multi] Remove client.\n")
+            // fmt.Printf("[multi] Remove client.\n")
             client.Cancel()
             delete(self.destinationClients, client.DestinationId())
         }
@@ -839,20 +827,13 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
 
 
 type multiClientChannelArgs struct {
-    platformUrl string
-    destinationId Id
-    estimatedBytesPerSecond ByteCount
-    clientId Id
-    clientAuth *ClientAuth
-}
+    MultiClientGeneratorClientArgs
 
-func removeClientAuth(clientId Id, api *BringYourApi) {
-    removeNetworkClient := &RemoveNetworkClientArgs{
-        ClientId: clientId,
-    }
-
-    api.RemoveNetworkClient(removeNetworkClient, NewApiCallback(func(result *RemoveNetworkClientResult, err error) {
-    }))
+    // platformUrl string
+    DestinationId Id
+    EstimatedBytesPerSecond ByteCount
+    // clientId Id
+    // clientAuth *ClientAuth
 }
 
 
@@ -939,42 +920,32 @@ type multiClientChannel struct {
 func newMultiClientChannel(
     ctx context.Context,
     args *multiClientChannelArgs,
-    api *BringYourApi,
+    generator MultiClientGenerator,
     receivePacketCallback ReceivePacketFunction,
     settings *MultiClientSettings,
-    testing MultiClientTesting,
 ) (*multiClientChannel, error) {
     cancelCtx, cancel := context.WithCancel(ctx)
 
-    byJwt, err := ParseByJwtUnverified(args.clientAuth.ByJwt)
+    clientSettings := DefaultClientSettings()
+    clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
+    
+    client, err := generator.NewClient(
+        cancelCtx,
+        &args.MultiClientGeneratorClientArgs,
+        clientSettings,
+    )
     if err != nil {
         return nil, err
     }
 
-    clientSettings := DefaultClientSettings()
-    clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
-    client := NewClient(cancelCtx, byJwt.ClientId, clientSettings)
-    if testing != nil {
-        testing.SetTransports(client)
-    } else {
-        // fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
-        NewPlatformTransportWithDefaults(
-            cancelCtx,
-            args.platformUrl,
-            args.clientAuth,
-            client.RouteManager(),
-        )
-    }
-
     sourceFilter := map[Path]bool{
-        Path{ClientId:args.destinationId}: true,
+        Path{ClientId:args.DestinationId}: true,
     }
 
     clientChannel := &multiClientChannel{
         ctx: cancelCtx,
         cancel: cancel,
         args: args,
-        api: api,
         // send: make(chan *parsedPacket),
         // sendNoLimit: make(chan *parsedPacket),
         receivePacketCallback: receivePacketCallback,
@@ -1027,7 +998,7 @@ func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Du
         }
         success := self.client.SendWithTimeout(
             frame,
-            self.args.destinationId,
+            self.args.DestinationId,
             ackCallback,
             timeout,
             opts...,
@@ -1037,7 +1008,7 @@ func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Du
 }
 
 func (self *multiClientChannel) EstimatedByteCountPerSecond() ByteCount {
-    return self.args.estimatedBytesPerSecond
+    return self.args.EstimatedBytesPerSecond
 }
 
 func (self *multiClientChannel) Done() <-chan struct{} {
@@ -1045,7 +1016,7 @@ func (self *multiClientChannel) Done() <-chan struct{} {
 }
 
 func (self *multiClientChannel) DestinationId() Id {
-    return self.args.destinationId
+    return self.args.DestinationId
 }
 
 func (self *multiClientChannel) eventBucket() *multiClientEventBucket {
@@ -1267,28 +1238,28 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
 
     // only process frames from the destinations
     if allow := self.sourceFilter[source]; !allow {
-        fmt.Printf("[multi] Receive drop %d %s<-\n", len(frames), self.args.destinationId)
+        fmt.Printf("[multi] Receive drop %d %s<-\n", len(frames), self.args.DestinationId)
         return
     }
 
     for _, frame := range frames {
         switch frame.MessageType {
         case protocol.MessageType_IpIpPacketFromProvider:
-            ipPacketFromProvider_, err := FromFrame(frame)
-            if err != nil {
-                panic(err)
+            if ipPacketFromProvider_, err := FromFrame(frame); err == nil {
+                ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
+
+                // fmt.Printf("[multi] Receive allow %s<-\n", self.args.destinationId)
+
+                packet := ipPacketFromProvider.IpPacket.PacketBytes
+
+                self.addReceiveAck(ByteCount(len(packet)))
+
+                self.receivePacketCallback(source, IpProtocolUnknown, packet)
+            } else {
+                fmt.Printf("[multi] Receive drop 2 %s<-\n", self.args.DestinationId)
             }
-            ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
-
-            // fmt.Printf("[multi] Receive allow %s<-\n", self.args.destinationId)
-
-            packet := ipPacketFromProvider.IpPacket.PacketBytes
-
-            self.addReceiveAck(ByteCount(len(packet)))
-
-            self.receivePacketCallback(source, IpProtocolUnknown, packet)
         default:
-            fmt.Printf("[multi] Receive drop 1 %s<-\n", self.args.destinationId)
+            fmt.Printf("[multi] Receive drop 1 %s<-\n", self.args.DestinationId)
         }
     }
 }

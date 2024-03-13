@@ -25,9 +25,6 @@ import (
 // The UNAT emulates a raw socket using user-space sockets.
 
 
-const SendTimeout = 5 * time.Second
-
-
 var ipLog = LogFn(LogLevelDebug, "ip")
 
 const DefaultMtu = 1440
@@ -69,7 +66,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 
 // send from a raw socket
 // note `ipProtocol` is not supplied. The implementation must do a packet inspection to determine protocol
-type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, packet []byte)
+type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
 
 
 // receive into a raw socket
@@ -78,7 +75,7 @@ type ReceivePacketFunction func(source Path, ipProtocol IpProtocol, packet []byt
 
 type UserNatClient interface {
     // `SendPacketFunction`
-    SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte)
+    SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
     Close()
 }
 
@@ -160,8 +157,8 @@ func (self *LocalUserNat) SendPacketWithTimeout(source Path, provideMode protoco
 }
 
 // `SendPacketFunction`
-func (self *LocalUserNat) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
-    self.SendPacketWithTimeout(source, provideMode, packet, -1)
+func (self *LocalUserNat) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
+    return self.SendPacketWithTimeout(source, provideMode, packet, timeout)
 }
 
 // func (self *LocalUserNat) ReceiveN(source Path, provideMode protocol.ProvideMode, packet []byte, n int) {
@@ -1645,17 +1642,42 @@ func tcpFlagsString(tcp *layers.TCP) string {
 }
 
 
+func DefaultRemoteUserNatProviderSettings() *RemoteUserNatProviderSettings {
+    return &RemoteUserNatProviderSettings{
+        WriteTimeout: 30 * time.Second,
+    }
+}
+
+
+type RemoteUserNatProviderSettings struct {
+    WriteTimeout time.Duration
+}
+
+
 type RemoteUserNatProvider struct {
     client *Client
     localUserNat *LocalUserNat
     securityPolicy *SecurityPolicy
+    settings *RemoteUserNatProviderSettings
 }
 
-func NewRemoteUserNatProvider(client *Client, localUserNat *LocalUserNat) *RemoteUserNatProvider {
+func NewRemoteUserNatProviderWithDefaults(
+    client *Client,
+    localUserNat *LocalUserNat,
+) *RemoteUserNatProvider {
+    return NewRemoteUserNatProvider(client, localUserNat, DefaultRemoteUserNatProviderSettings())
+}
+
+func NewRemoteUserNatProvider(
+    client *Client,
+    localUserNat *LocalUserNat,
+    settings *RemoteUserNatProviderSettings,
+) *RemoteUserNatProvider {
     userNatProvider := &RemoteUserNatProvider{
         client: client,
         localUserNat: localUserNat,
         securityPolicy: DefaultSecurityPolicy(),
+        settings: settings,
     }
 
     localUserNat.AddReceivePacketCallback(userNatProvider.Receive)
@@ -1694,7 +1716,7 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
     success := self.client.SendWithTimeout(frame, source.ClientId, func(err error) {
         // TODO log
         ipLog("!! RETURN PACKET (%s)", err)
-    }, SendTimeout, opts...)
+    }, self.settings.WriteTimeout, opts...)
     if !success {
         // TODO log
         ipLog("!! RETURN PACKET NOT SENT")
@@ -1722,7 +1744,7 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
                 fmt.Printf("remote user nat provider r packet %s->\n", sourceId)
 
                 source := Path{ClientId: sourceId}
-                success := self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, SendTimeout)
+                success := self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, self.settings.WriteTimeout)
                 if !success {
                     // TODO log
                     fmt.Printf("!! FORWARD PACKET NOT SENT\n")
@@ -1783,7 +1805,7 @@ func NewRemoteUserNatClient(
 }
 
 // `SendPacketFunction`
-func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte) {
+func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
     // fmt.Printf("REMOTE USER NAT CLIENT SEND\n")
 
     minRelationship := max(provideMode, self.provideMode)
@@ -1796,7 +1818,7 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
             // drop
             // TODO log
             ipLog("NO DESTINATION (%s)", err)
-            return
+            return false
         }
 
         ipPacketToProvider := &protocol.IpPacketToProvider{
@@ -1809,7 +1831,7 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
             panic(err)
         }
 
-        fmt.Printf("remote user nat client s packet ->%s\n", destination.ClientId)
+        // fmt.Printf("remote user nat client s packet ->%s\n", destination.ClientId)
 
         // the sender will control transfer
         opts := []any{}
@@ -1820,10 +1842,13 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
         success := self.client.SendWithTimeout(frame, destination.ClientId, func(err error) {
             // TODO log if no ack
             ipLog("!! OUT PACKET (%s)", err)
-        }, SendTimeout, opts...)
+        }, timeout, opts...)
         if !success {
             ipLog("!! OUT PACKET NOT SENT")
         }
+        return success
+    default:
+        return false
     }
 }
 
@@ -1923,8 +1948,8 @@ const (
 
 
 type IpPath struct {
-    Protocol IpProtocol
     Version int
+    Protocol IpProtocol
     SourceIp net.IP
     SourcePort int
     DestinationIp net.IP
@@ -1943,8 +1968,8 @@ func ParseIpPath(ipPacket []byte) (*IpPath, error) {
             udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
             return &IpPath {
-                Protocol: IpProtocolUdp,
                 Version: int(ipVersion),
+                Protocol: IpProtocolUdp,
                 SourceIp: ipv4.SrcIP,
                 SourcePort: int(udp.SrcPort),
                 DestinationIp: ipv4.DstIP,
@@ -1955,8 +1980,8 @@ func ParseIpPath(ipPacket []byte) (*IpPath, error) {
             tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
             return &IpPath {
-                Protocol: IpProtocolUdp,
                 Version: int(ipVersion),
+                Protocol: IpProtocolTcp,
                 SourceIp: ipv4.SrcIP,
                 SourcePort: int(tcp.SrcPort),
                 DestinationIp: ipv4.DstIP,
@@ -1975,8 +2000,8 @@ func ParseIpPath(ipPacket []byte) (*IpPath, error) {
             udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
             return &IpPath {
-                Protocol: IpProtocolUdp,
                 Version: int(ipVersion),
+                Protocol: IpProtocolUdp,
                 SourceIp: ipv6.SrcIP,
                 SourcePort: int(udp.SrcPort),
                 DestinationIp: ipv6.DstIP,
@@ -1987,8 +2012,8 @@ func ParseIpPath(ipPacket []byte) (*IpPath, error) {
             tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
             return &IpPath {
-                Protocol: IpProtocolUdp,
                 Version: int(ipVersion),
+                Protocol: IpProtocolTcp,
                 SourceIp: ipv6.SrcIP,
                 SourcePort: int(tcp.SrcPort),
                 DestinationIp: ipv6.DstIP,
@@ -2007,11 +2032,15 @@ func ParseIpPath(ipPacket []byte) (*IpPath, error) {
 func (self *IpPath) ToIp4Path() Ip4Path {
     var sourceIp [4]byte
     if self.SourceIp != nil {
-        sourceIp = [4]byte(self.SourceIp)
+        if sourceIp4 := self.SourceIp.To4(); sourceIp4 != nil {
+            sourceIp = [4]byte(sourceIp4)
+        }
     }
     var destinationIp [4]byte
     if self.DestinationIp != nil {
-        destinationIp = [4]byte(self.DestinationIp)
+        if destinationIp4 := self.DestinationIp.To4(); destinationIp4 != nil {
+            destinationIp = [4]byte(destinationIp4)
+        }
     }
     return Ip4Path{
         Protocol: self.Protocol,
@@ -2025,11 +2054,15 @@ func (self *IpPath) ToIp4Path() Ip4Path {
 func (self *IpPath) ToIp6Path() Ip6Path {
     var sourceIp [16]byte
     if self.SourceIp != nil {
-        sourceIp = [16]byte(self.SourceIp)
+        if sourceIp6 := self.SourceIp.To16(); sourceIp6 != nil {
+            sourceIp = [16]byte(sourceIp6)
+        }
     }
     var destinationIp [16]byte
     if self.DestinationIp != nil {
-        destinationIp = [16]byte(self.DestinationIp)
+        if destinationIp6 := self.DestinationIp.To16(); destinationIp6 != nil {
+            destinationIp = [16]byte(destinationIp6)
+        }
     }
     return Ip6Path{
         Protocol: self.Protocol,
