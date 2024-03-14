@@ -10,6 +10,7 @@ import (
     "syscall"
     "fmt"
     "runtime/debug"
+    // "reflect"
     mathrand "math/rand"
 )
 
@@ -42,12 +43,17 @@ func (self *Monitor) NotifyAll() {
 // makes a copy of the list on update
 type CallbackList[T any] struct {
 	mutex sync.Mutex
+	// `callbacks` and `callbackIds` are parallel arrays
 	callbacks []T
+	callbackIds []int
+	nextCallbackId int
 }
 
 func NewCallbackList[T any]() *CallbackList[T] {
 	return &CallbackList[T]{
 		callbacks: []T{},
+		callbackIds: []int{},
+		nextCallbackId: 0,
 	}
 }
 
@@ -57,36 +63,41 @@ func (self *CallbackList[T]) Get() []T {
 	return self.callbacks
 }
 
-func (self *CallbackList[T]) Add(callback T) {
+func (self *CallbackList[T]) Add(callback T) int {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	i := slices.IndexFunc(self.callbacks, func(c T)(bool) {
-		return &c == &callback
-	})
-	if 0 <= i {
-		// already present
-		return
-	}
+	callbackId := self.nextCallbackId
+	self.nextCallbackId += 1
+
 	nextCallbacks := slices.Clone(self.callbacks)
 	nextCallbacks = append(nextCallbacks, callback)
 	self.callbacks = nextCallbacks
+	
+	nextCallbackIds := slices.Clone(self.callbackIds)
+	nextCallbackIds = append(nextCallbackIds, callbackId)
+	self.callbackIds = nextCallbackIds
+
+	return callbackId
 }
 
-func  (self *CallbackList[T]) Remove(callback T) {
+func  (self *CallbackList[T]) Remove(callbackId int) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	i := slices.IndexFunc(self.callbacks, func(c T)(bool) {
-		return &c == &callback
-	})
-	if i < 0 {
+	i, found := slices.BinarySearch(self.callbackIds, callbackId)
+	if !found {
 		// not present
 		return
 	}
+
 	nextCallbacks := slices.Clone(self.callbacks)
-	nextCallbacks = slices.Delete(nextCallbacks, i, i)
+	nextCallbacks = slices.Delete(nextCallbacks, i, i + 1)
 	self.callbacks = nextCallbacks
+
+	nextCallbackIds := slices.Clone(self.callbackIds)
+	nextCallbackIds = slices.Delete(nextCallbackIds, i, i + 1)
+	self.callbackIds = nextCallbackIds
 }
 
 
@@ -239,6 +250,10 @@ func (self *Event) SetOnSignals(signalValues ...syscall.Signal) func() {
 
 
 func WeightedShuffle[T comparable](values []T, weights map[T]float32) {
+	WeightedShuffleWithEntropy[T](values, weights, 0)
+}
+
+func WeightedShuffleWithEntropy[T comparable](values []T, weights map[T]float32, entropy float32) {
 	mathrand.Shuffle(len(values), func(i int, j int) {
         values[i], values[j] = values[j], values[i]
     })
@@ -253,9 +268,10 @@ func WeightedShuffle[T comparable](values []T, weights map[T]float32) {
             }
             r := mathrand.Float32()
             rnet := r * net
+            e := entropy * net
             net = 0
             for j := i; j < n; j += 1 {
-                net += weights[values[j]]
+                net += weights[values[j]] + e
                 if rnet < net {
                     return j
                 }

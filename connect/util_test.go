@@ -5,33 +5,160 @@ import (
     "slices"
     // "math"
     // "fmt"
+    "time"
+    "sync"
+    mathrand "math/rand"
 
     "github.com/go-playground/assert/v2"
 )
 
 
+func TestMonitor(t *testing.T) {
+	timeout := 1 * time.Second
+
+	monitor := NewMonitor()
+
+	for i := 0; i < 32; i += 1 {
+		update := monitor.NotifyChannel()
+		go monitor.NotifyAll()
+		select {
+		case <- update:
+		case <- time.After(timeout):
+			t.Fail()
+		}
+	}
+
+}
+
+
+func TestCallbackList(t *testing.T) {
+	callbacks := NewCallbackList[func(int)]()
+
+	n := 10
+	m := 100
+
+	testingCallbacks := []*testingCallback{}
+	for i := 0; i < n; i += 1 {
+		testingCallbacks = append(testingCallbacks, &testingCallback{})
+	}
+
+	testingCallbackIds := []int{}
+
+	assert.Equal(t, 0, len(callbacks.Get()))
+	for i := 0; i < n; i += 1 {
+		callbackId := callbacks.Add(testingCallbacks[i].Callback)
+		testingCallbackIds = append(testingCallbackIds, callbackId)
+		assert.Equal(t, i + 1, len(callbacks.Get()))
+	}
+	assert.Equal(t, n, len(callbacks.Get()))
+	// already added
+	// for i := 0; i < n; i += 1 {
+	// 	callbacks.Add(testingCallbacks[i].Callback)
+	// 	assert.Equal(t, n, len(callbacks.Get()))
+	// }
+
+	mathrand.Shuffle(len(testingCallbackIds), func(i int, j int) {
+		testingCallbackIds[i], testingCallbackIds[j] = testingCallbackIds[j], testingCallbackIds[i]
+	})
+
+	for i := 0; i < n; i += 1 {
+		callbacks.Remove(testingCallbackIds[i])
+		assert.Equal(t, n - 1 - i, len(callbacks.Get()))
+	}
+	assert.Equal(t, 0, len(callbacks.Get()))
+
+	for i := 0; i < n; i += 1 {
+		callbacks.Add(testingCallbacks[i].Callback)
+		assert.Equal(t, i + 1, len(callbacks.Get()))
+	}
+
+	for i := 0; i < m; i += 1 {
+		for _, callback := range callbacks.Get() {
+			callback(i)
+		}
+	}
+
+	for i := 0; i < n; i += 1 {
+		values := testingCallbacks[i].Values()
+		for j := 0; j < m; j += 1 {
+			assert.Equal(t, j, values[j])
+		}
+	}
+
+}
+
+type testingCallback struct {
+	stateLock sync.Mutex
+	values []int
+}
+
+func (self *testingCallback) Callback(value int) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.values = append(self.values, value)
+}
+
+func (self *testingCallback) Values() []int {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	valuesCopy := slices.Clone(self.values)
+	return valuesCopy
+}
+
+
 // FIXME
-// func TestMonitor() {
+func TestIdleCondition(t *testing.T) {
+	idleCondition := NewIdleCondition()
 
-// }
+	a := idleCondition.Checkpoint()
+	success := idleCondition.UpdateOpen()
+	assert.Equal(t, true, success)
+	success = idleCondition.Close(a)
+	assert.Equal(t, false, success)
+	success = idleCondition.UpdateOpen()
+	assert.Equal(t, true, success)
+	success = idleCondition.Close(a)
+	assert.Equal(t, false, success)
+	idleCondition.UpdateClose()
+	idleCondition.UpdateClose()
+	b := idleCondition.Checkpoint()
+	go func() {
+		success := idleCondition.Close(b)
+		assert.Equal(t, true, success)
+	}()
+	success = idleCondition.WaitForClose()
+	assert.Equal(t, true, success)
+
+}
 
 
 // FIXME
-// func TestCallbackList() {
+func TestEvent(t *testing.T) {
+	event := NewEvent()
+	go func() {
+		event.Set()
+	}()
+	success := event.WaitForSet(30 * time.Second)
+	assert.Equal(t, true, success)
+}
 
-// }
 
 
-// FIXME
-// func TestIdleCondition() {
+func TestMinTime(t *testing.T) {
+	a := time.Now()
+	n := 10
+	bs := make([]time.Time, n)
+	bs[0] = a
+	for i := 1; i < n; i += 1 {
+		bs[i] = bs[i - 1].Add(time.Second)
+	}
+	mathrand.Shuffle(len(bs), func(i int, j int) {
+		bs[i], bs[j] = bs[j], bs[i]
+	})
 
-// }
-
-
-// FIXME
-// func TestEvent() {
-
-// }
+	foundA := MinTime(bs[0], bs[1:]...)
+	assert.Equal(t, a, foundA)
+}
 
 
 func TestWeightedShuffle(t *testing.T) {

@@ -165,13 +165,16 @@ func (self *LocalUserNat) SendPacket(source Path, provideMode protocol.ProvideMo
 //     self.Receive(source, provideMode, packet[0:n])
 // }
 
-func (self *LocalUserNat) AddReceivePacketCallback(receiveCallback ReceivePacketFunction) {
-    self.receiveCallbacks.Add(receiveCallback)
+func (self *LocalUserNat) AddReceivePacketCallback(receiveCallback ReceivePacketFunction) func() {
+    callbackId := self.receiveCallbacks.Add(receiveCallback)
+    return func() {
+        self.receiveCallbacks.Remove(callbackId)
+    }
 }
 
-func (self *LocalUserNat) RemoveReceivePacketCallback(receiveCallback ReceivePacketFunction) {
-    self.receiveCallbacks.Remove(receiveCallback)
-}
+// func (self *LocalUserNat) RemoveReceivePacketCallback(receiveCallback ReceivePacketFunction) {
+//     self.receiveCallbacks.Remove(receiveCallback)
+// }
 
 // `ReceivePacketFunction`
 func (self *LocalUserNat) receive(source Path, ipProtocol IpProtocol, packet []byte) {
@@ -1659,6 +1662,8 @@ type RemoteUserNatProvider struct {
     localUserNat *LocalUserNat
     securityPolicy *SecurityPolicy
     settings *RemoteUserNatProviderSettings
+    localUserNatUnsub func()
+    clientUnsub func()
 }
 
 func NewRemoteUserNatProviderWithDefaults(
@@ -1680,8 +1685,10 @@ func NewRemoteUserNatProvider(
         settings: settings,
     }
 
-    localUserNat.AddReceivePacketCallback(userNatProvider.Receive)
-    client.AddReceiveCallback(userNatProvider.ClientReceive)
+    localUserNatUnsub := localUserNat.AddReceivePacketCallback(userNatProvider.Receive)
+    userNatProvider.localUserNatUnsub = localUserNatUnsub
+    clientUnsub := client.AddReceiveCallback(userNatProvider.ClientReceive)
+    userNatProvider.clientUnsub = clientUnsub
 
     return userNatProvider
 }
@@ -1757,8 +1764,10 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
 }
 
 func (self *RemoteUserNatProvider) Close() {
-    self.client.RemoveReceiveCallback(self.ClientReceive)
-    self.localUserNat.RemoveReceivePacketCallback(self.Receive)
+    // self.client.RemoveReceiveCallback(self.clientCallbackId)
+    // self.localUserNat.RemoveReceivePacketCallback(self.localUserNatCallbackId)
+    self.clientUnsub()
+    self.localUserNatUnsub()
 }
 
 
@@ -1772,6 +1781,7 @@ type RemoteUserNatClient struct {
     // the provide mode of the source packets
     // for locally generated packets this is `ProvideMode_Network`
     provideMode protocol.ProvideMode
+    clientUnsub func()
 }
 
 func NewRemoteUserNatClient(
@@ -1799,7 +1809,8 @@ func NewRemoteUserNatClient(
         provideMode: provideMode,
     }
 
-    client.AddReceiveCallback(userNatClient.ClientReceive)
+    clientUnsub := client.AddReceiveCallback(userNatClient.ClientReceive)
+    userNatClient.clientUnsub = clientUnsub
 
     return userNatClient, nil
 }
@@ -1873,7 +1884,7 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
             }
             ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
 
-            fmt.Printf("remote user nat client r packet %s<-\n", source)
+            // fmt.Printf("remote user nat client r packet %s<-\n", source)
 
             self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
         }
@@ -1881,7 +1892,8 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
 }
 
 func (self *RemoteUserNatClient) Close() {
-    self.client.RemoveReceiveCallback(self.ClientReceive)
+    // self.client.RemoveReceiveCallback(self.clientCallbackId)
+    self.clientUnsub()
 }
 
 

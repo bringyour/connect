@@ -9,6 +9,8 @@ import (
     "fmt"
     "slices"
     "math"
+    mathrand "math/rand"
+    "strings"
 
     "golang.org/x/exp/maps"
 
@@ -41,7 +43,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         WindowSizeMin: 4,
         WindowSizeMax: 32,
         // reconnects per source
-        WindowSizeReconnectScale: 4.0,
+        WindowSizeReconnectScale: 0.5,
         // ClientNackInitialLimit: 1,
         // ClientNackMaxLimit: 64 * 1024,
         // ClientNackScale: 4,
@@ -50,12 +52,14 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         WriteRetryTimeout: 200 * time.Millisecond,
         AckTimeout: 5 * time.Second,
         WindowResizeTimeout: 1 * time.Second,
-        StatsWindowGraceperiod: 30 * time.Second,
+        StatsWindowGraceperiod: 5 * time.Second,
+        StatsWindowEntropy: 0.05,
         WindowExpandTimeout: 2 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
         StatsWindowDuration: 120 * time.Second,
         StatsWindowBucketDuration: 10 * time.Second,
+        StatsSampleWeightsCount: 8,
     }
 }
 
@@ -75,11 +79,13 @@ type MultiClientSettings struct {
     AckTimeout time.Duration
     WindowResizeTimeout time.Duration
     StatsWindowGraceperiod time.Duration
+    StatsWindowEntropy float32
     WindowExpandTimeout time.Duration
     WindowEnumerateEmptyTimeout time.Duration
     WindowEnumerateErrorTimeout time.Duration
     StatsWindowDuration time.Duration
     StatsWindowBucketDuration time.Duration
+    StatsSampleWeightsCount int
 }
 
 
@@ -297,7 +303,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
         endTime := time.Now().Add(timeout)
 
         for {
-            orderedClients, removedClients := self.window.OrderedClients(self.settings.WindowExpandTimeout)
+            orderedClients, removedClients := self.window.OrderedClients()
             // fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
 
             for _, client := range removedClients {
@@ -767,7 +773,7 @@ func (self *multiClientWindow) clients() []*multiClientChannel {
     return maps.Values(self.destinationClients)
 }
 
-func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiClientChannel, []*multiClientChannel) {
+func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multiClientChannel) {
 
     clients := []*multiClientChannel{}
 
@@ -820,9 +826,55 @@ func (self *multiClientWindow) OrderedClients(timeout time.Duration) ([]*multiCl
         }
     }
 
-    WeightedShuffle(nonNegativeClients, weights)
+    self.statsSampleWeights(weights)
+
+    WeightedShuffleWithEntropy(nonNegativeClients, weights, self.settings.StatsWindowEntropy)
 
     return nonNegativeClients, removedClients
+}
+
+func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChannel]float32) {
+    // randonly sample log statistics for weights
+    if mathrand.Intn(self.settings.StatsSampleWeightsCount) == 0 {
+        // sample the weights
+        weightValues := maps.Values(weights)
+        slices.SortFunc(weightValues, func(a float32, b float32)(int) {
+            // descending
+            if a < b {
+                return 1
+            } else if b < a {
+                return -1
+            } else {
+                return 0
+            }
+        })
+        net := float32(0)
+        for _, weight := range weightValues {
+            net += weight
+        }
+        if 0 < net {
+            var sb strings.Builder
+            netThresh := float32(0.99)
+            netp := float32(0)
+            netCount := 0
+            for i, weight := range weightValues {
+                p := 100 * weight / net
+                netp += p
+                netCount += 1
+                if 0 < i {
+                    sb.WriteString(" ")
+                }
+                sb.WriteString(fmt.Sprintf("[%d]%.2f", i, p))
+                if netThresh * 100 <= netp {
+                    break
+                }
+            }
+
+            fmt.Printf("[multi] sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights) - netCount, 100 * (1 - netThresh))
+        } else {
+            fmt.Printf("[multi] sample weights: zero (%d in window)\n", len(weights))
+        }
+    }
 }
 
 
@@ -874,6 +926,9 @@ type clientWindowStats struct {
     ackByteCount ByteCount
     nackByteCount ByteCount
     duration time.Duration
+
+    // internal
+    bucketCount int
 }
 
 func (self *clientWindowStats) ByteCountPerSecond() ByteCount {
@@ -915,6 +970,8 @@ type multiClientChannel struct {
     // maxNackCount int
 
     // eventUpdate *Monitor
+
+    clientReceiveUnsub func()
 }
 
 func newMultiClientChannel(
@@ -961,7 +1018,9 @@ func newMultiClientChannel(
         // eventUpdate: NewMonitor(),
     }
 
-    client.AddReceiveCallback(clientChannel.clientReceive)
+    clientReceiveUnsub := client.AddReceiveCallback(clientChannel.clientReceive)
+    clientChannel.clientReceiveUnsub = clientReceiveUnsub
+
 
     return clientChannel, nil
 }
@@ -1053,6 +1112,8 @@ func (self *multiClientChannel) addSendNack(ackByteCount ByteCount) {
     eventBucket := self.eventBucket()
     eventBucket.nackCount += 1
     eventBucket.nackByteCount += ackByteCount
+
+    self.coalesceEventBuckets()
 }
 
 func (self *multiClientChannel) addSendAck(ackByteCount ByteCount) {
@@ -1067,6 +1128,8 @@ func (self *multiClientChannel) addSendAck(ackByteCount ByteCount) {
     eventBucket := self.eventBucket()
     eventBucket.ackCount += 1
     eventBucket.ackByteCount += ackByteCount
+
+    self.coalesceEventBuckets()
 }
 
 func (self *multiClientChannel) addReceiveAck(ackByteCount ByteCount) {
@@ -1079,6 +1142,8 @@ func (self *multiClientChannel) addReceiveAck(ackByteCount ByteCount) {
     eventBucket := self.eventBucket()
     eventBucket.ackCount += 1
     eventBucket.ackByteCount += ackByteCount
+
+    self.coalesceEventBuckets()
 }
 
 func (self *multiClientChannel) addSource(ipPath *IpPath) {
@@ -1121,6 +1186,8 @@ func (self *multiClientChannel) addSource(ipPath *IpPath) {
     default:
         panic(fmt.Errorf("Bad protocol version %d", source.Version))
     }
+
+    self.coalesceEventBuckets()
 }
 
 func (self *multiClientChannel) addError(err error) {
@@ -1133,97 +1200,109 @@ func (self *multiClientChannel) addError(err error) {
 
     eventBucket := self.eventBucket()
     eventBucket.errs = append(eventBucket.errs, err)
+
+    self.coalesceEventBuckets()
 }
 
-func (self *multiClientChannel) WindowStats() (stats *clientWindowStats, returnErr error) {
-    func() {
-        self.stateLock.Lock()
-        defer self.stateLock.Unlock()
-        
-        windowStart := time.Now().Add(-self.settings.StatsWindowDuration)
+func (self *multiClientChannel) coalesceEventBuckets() {
+    // must be called with `stateLock`
 
-        // remove events before the window start
-        i := 0
-        for i < len(self.eventBuckets) {
-            eventBucket := self.eventBuckets[i]
-            // fmt.Printf("[multi] event advance %v %s\n", event, windowStart)
-            if windowStart.Before(eventBucket.eventTime) {
-                break
-            }
+    windowStart := time.Now().Add(-self.settings.StatsWindowDuration)
 
-            self.packetStats.ackCount -= eventBucket.ackCount
-            self.packetStats.ackByteCount -= eventBucket.ackByteCount
+    // remove events before the window start
+    i := 0
+    for i < len(self.eventBuckets) {
+        eventBucket := self.eventBuckets[i]
+        // fmt.Printf("[multi] event advance %v %s\n", event, windowStart)
+        if windowStart.Before(eventBucket.eventTime) {
+            break
+        }
 
-            for ip4Path, _ := range eventBucket.ip4Paths {
-                source := ip4Path.Source()
-                destination := ip4Path.Destination()
-                
-                sourceCount, ok := self.ip4DestinationSourceCount[destination]
-                if ok {
-                    count := sourceCount[source]
-                    if count - 1 <= 0 {
-                        delete(sourceCount, source)
-                    } else {
-                        sourceCount[source] = count - 1
-                    }
-                    if len(sourceCount) == 0 {
-                        delete(self.ip4DestinationSourceCount, destination)
-                    }
+        self.packetStats.ackCount -= eventBucket.ackCount
+        self.packetStats.ackByteCount -= eventBucket.ackByteCount
+
+        for ip4Path, _ := range eventBucket.ip4Paths {
+            source := ip4Path.Source()
+            destination := ip4Path.Destination()
+            
+            sourceCount, ok := self.ip4DestinationSourceCount[destination]
+            if ok {
+                count := sourceCount[source]
+                if count - 1 <= 0 {
+                    delete(sourceCount, source)
+                } else {
+                    sourceCount[source] = count - 1
+                }
+                if len(sourceCount) == 0 {
+                    delete(self.ip4DestinationSourceCount, destination)
                 }
             }
+        }
 
-            for ip6Path, _ := range eventBucket.ip6Paths {
-                source := ip6Path.Source()
-                destination := ip6Path.Destination()
+        for ip6Path, _ := range eventBucket.ip6Paths {
+            source := ip6Path.Source()
+            destination := ip6Path.Destination()
 
-                sourceCount, ok := self.ip6DestinationSourceCount[destination]
-                if ok {
-                    count := sourceCount[source]
-                    if count - 1 <= 0 {
-                        delete(sourceCount, source)
-                    } else {
-                        sourceCount[source] = count - 1
-                    }
-                    if len(sourceCount) == 0 {
-                        delete(self.ip6DestinationSourceCount, destination)
-                    }
+            sourceCount, ok := self.ip6DestinationSourceCount[destination]
+            if ok {
+                count := sourceCount[source]
+                if count - 1 <= 0 {
+                    delete(sourceCount, source)
+                } else {
+                    sourceCount[source] = count - 1
+                }
+                if len(sourceCount) == 0 {
+                    delete(self.ip6DestinationSourceCount, destination)
                 }
             }
-
-            self.eventBuckets[i] = nil
-            i += 1
-        }
-        if 0 < i {
-            self.eventBuckets = self.eventBuckets[i:]
         }
 
+        self.eventBuckets[i] = nil
+        i += 1
+    }
+    if 0 < i {
+        self.eventBuckets = self.eventBuckets[i:]
+    }
+}
 
-        duration := time.Duration(0)
-        if 0 < len(self.eventBuckets) {
-            duration = time.Now().Sub(self.eventBuckets[0].createTime)
-        }
+func (self *multiClientChannel) WindowStats() (*clientWindowStats, error) {
+    return self.windowStatsWithCoalesce(true)
+}
+
+func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientWindowStats, error) {
+    self.stateLock.Lock()
+    defer self.stateLock.Unlock()
+    
+    if coalesce {
+        self.coalesceEventBuckets()
+    }
+
+    duration := time.Duration(0)
+    if 0 < len(self.eventBuckets) {
+        duration = time.Now().Sub(self.eventBuckets[0].createTime)
+    }
 
 
-        maxSourceCount := 0
-        for _, sourceCounts := range self.ip4DestinationSourceCount {
-            maxSourceCount = max(maxSourceCount, len(sourceCounts))
-        }
-        for _, sourceCounts := range self.ip6DestinationSourceCount {
-            maxSourceCount = max(maxSourceCount, len(sourceCounts))
-        }
+    maxSourceCount := 0
+    for _, sourceCounts := range self.ip4DestinationSourceCount {
+        maxSourceCount = max(maxSourceCount, len(sourceCounts))
+    }
+    for _, sourceCounts := range self.ip6DestinationSourceCount {
+        maxSourceCount = max(maxSourceCount, len(sourceCounts))
+    }
 
-        stats = &clientWindowStats{
-            sourceCount: maxSourceCount,
-            ackCount: self.packetStats.ackCount,
-            nackCount: self.packetStats.nackCount,
-            ackByteCount: self.packetStats.ackByteCount,
-            nackByteCount: self.packetStats.nackByteCount,
-            duration: duration,
-        }
-        returnErr = self.endErr
-    }()
+    stats := &clientWindowStats{
+        sourceCount: maxSourceCount,
+        ackCount: self.packetStats.ackCount,
+        nackCount: self.packetStats.nackCount,
+        ackByteCount: self.packetStats.ackByteCount,
+        nackByteCount: self.packetStats.nackByteCount,
+        duration: duration,
+        bucketCount: len(self.eventBuckets),
+    }
+    err := self.endErr
 
-    return
+    return stats, err
 }
 
 // `connect.ReceiveFunction`
@@ -1269,3 +1348,13 @@ func (self *multiClientChannel) Cancel() {
     self.cancel()
     self.client.Cancel()
 }
+
+func (self *multiClientChannel) Close() {
+    self.addError(errors.New("Done."))
+    self.cancel()
+    self.client.Close()
+
+    self.clientReceiveUnsub()
+}
+
+

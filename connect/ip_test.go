@@ -433,11 +433,11 @@ func testClient[P comparable](
 ) {
 	timeout := 30 * time.Second
 
-	m := 4
-	n := 4
-	repeatCount := 4
-	parallelCount := 4
-	echoCount := 0
+	m := 6
+	n := 6
+	repeatCount := 6
+	parallelCount := 6
+	echoCount := 2
 
 
 

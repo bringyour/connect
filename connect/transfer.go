@@ -394,21 +394,27 @@ func (self *Client) forward(sourceId Id, destinationId Id, transferFrameBytes []
 	}
 }
 
-func (self *Client) AddReceiveCallback(receiveCallback ReceiveFunction) {
-	self.receiveCallbacks.Add(receiveCallback)
+func (self *Client) AddReceiveCallback(receiveCallback ReceiveFunction) func() {
+	callbackId := self.receiveCallbacks.Add(receiveCallback)
+	return func() {
+		self.receiveCallbacks.Remove(callbackId)
+	}
 }
 
-func (self *Client) RemoveReceiveCallback(receiveCallback ReceiveFunction) {
-	self.receiveCallbacks.Remove(receiveCallback)
+// func (self *Client) RemoveReceiveCallback(receiveCallback ReceiveFunction) {
+// 	self.receiveCallbacks.Remove(receiveCallback)
+// }
+
+func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) func() {
+	callbackId := self.forwardCallbacks.Add(forwardCallback)
+	return func() {
+		self.forwardCallbacks.Remove(callbackId)
+	}
 }
 
-func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) {
-	self.forwardCallbacks.Add(forwardCallback)
-}
-
-func (self *Client) RemoveForwardCallback(forwardCallback ForwardFunction) {
-	self.forwardCallbacks.Remove(forwardCallback)
-}
+// func (self *Client) RemoveForwardCallback(forwardCallback ForwardFunction) {
+// 	self.forwardCallbacks.Remove(forwardCallback)
+// }
 
 func (self *Client) run() {
 	defer self.cancel()

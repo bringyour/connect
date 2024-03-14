@@ -3,8 +3,9 @@ package connect
 import (
 	"context"
     "testing"
-    // "time"
+    "time"
     // mathrand "math/rand"
+    "math"
     // "fmt"
     // "crypto/hmac"
 	// "crypto/sha256"
@@ -22,7 +23,7 @@ import (
 
 	// "google.golang.org/protobuf/proto"
 
-    // "github.com/go-playground/assert/v2"
+    "github.com/go-playground/assert/v2"
 
     // "bringyour.com/protocol"
 )
@@ -47,9 +48,7 @@ func TestMultiClientTcp6(t *testing.T) {
 
 
 
-func testingNewMultiClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
-
-	
+func testingNewMultiClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {	
 	generator := &TestMultiClientGenerator{
 		nextDestintationIds: func(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
 			next := map[Id]ByteCount{}
@@ -100,10 +99,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 		receivePacketCallback,
 	)
 
-	return multiClient, nil
-
-
-	
+	return multiClient, nil	
 }
 
 
@@ -128,5 +124,109 @@ func (self *TestMultiClientGenerator) RemoveClientArgs(args *MultiClientGenerato
 
 func (self *TestMultiClientGenerator) NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
 	return self.newClient(ctx, args, clientSettings)
+}
+
+
+func TestMultiClientChannelWindowStats(t *testing.T) {
+	// ensure that the bucket counts are bounded
+	// if this is broken, the coalesce logic is broken and there will be a memory issue
+
+	ctx := context.Background()
+
+	timeout := 10 * time.Second
+
+	m := 6
+	n := 6
+	repeatCount := 6
+	parallelCount := 6
+
+	generator := &TestMultiClientGenerator{
+		nextDestintationIds: func(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
+			// not used
+			return nil, nil
+		},
+	    newClientArgs: func()(*MultiClientGeneratorClientArgs, error) {
+	    	args := &MultiClientGeneratorClientArgs{
+	    		ClientId: NewId(),
+				ClientAuth: nil,
+			}
+			return args, nil
+	    },
+	    removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
+	    	// do nothing
+	    },
+	    newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
+	    	client := NewClientWithDefaults(ctx, args.ClientId)
+			return client, nil
+	    },
+	}
+
+	receivePacket := func(source Path, ipProtocol IpProtocol, packet []byte) {
+		// Do nothing
+	}
+
+	settings := DefaultMultiClientSettings()
+	settings.StatsWindowBucketDuration = 1 * time.Millisecond
+	settings.StatsWindowDuration = 10 * time.Millisecond
+
+	// the coalesce logic trims from the last event in a bucket
+	// if events are uniformly distributed in a bucket, this means there will be an extra bucket
+	maxBucketCount := 1 + int(math.Ceil(float64(settings.StatsWindowDuration) / float64(settings.StatsWindowBucketDuration)))
+
+	args, err := generator.NewClientArgs()
+	channelArgs := &multiClientChannelArgs{
+		MultiClientGeneratorClientArgs: *args,
+		DestinationId: NewId(),
+		EstimatedBytesPerSecond: 0,
+	}
+	assert.Equal(t, nil, err)
+	clientChannel, err := newMultiClientChannel(ctx, channelArgs, generator, receivePacket, settings)
+	assert.Equal(t, nil, err)
+
+	
+	cancelCtxs := []context.Context{}
+
+	for p := 0; p < parallelCount; p += 1 {
+		cancelCtx, cancel := context.WithCancel(ctx)
+		cancelCtxs = append(cancelCtxs, cancelCtx)
+		go func() {
+			defer cancel()
+			for endTime := time.Now().Add(timeout); time.Now().Before(endTime); {
+				for s := 0; s < m; s += 1 {
+					for i := 0; i < n; i += 1 {
+						for j := 0; j < n; j += 1 {
+							for k := 0; k < n; k += 1 {
+								for a := 0; a < repeatCount; a += 1 {
+									packet, _ := udp4Packet(s, i, j, k)
+									ipPath, err := ParseIpPath(packet)
+									assert.Equal(t, nil, err)
+
+									clientChannel.addSendNack(1)
+									clientChannel.addSendAck(1)
+									clientChannel.addReceiveAck(1)
+									clientChannel.addSource(ipPath)
+									
+								}
+							}
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	for _, cancelCtx := range cancelCtxs {
+		<- cancelCtx.Done()
+	}
+
+	stats, err := clientChannel.windowStatsWithCoalesce(false)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, maxBucketCount, stats.bucketCount)
+
+	stats, err = clientChannel.WindowStats()
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, maxBucketCount, stats.bucketCount)
 }
 
