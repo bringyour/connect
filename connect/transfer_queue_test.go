@@ -27,7 +27,7 @@ func TestTransferQueue(t *testing.T) {
 
 	size, byteSize := queue.QueueSize()
 	assert.Equal(t, 0, size)
-	assert.Equal(t, 0, byteSize)
+	assert.Equal(t, ByteCount(0), byteSize)
 
 	n := 100
 

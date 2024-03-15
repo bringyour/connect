@@ -6,6 +6,7 @@ import (
     "encoding/binary"
     "bytes"
     "time"
+    "slices"
 
     "github.com/go-playground/assert/v2"
 )
@@ -24,9 +25,9 @@ func TestMultiRoute(t *testing.T) {
 	defer cancel()
 
 	clientId := NewId()
-	client := NewClientWithDefaults(ctx, clientId)
+	// client := NewClientWithDefaults(ctx, clientId)
 
-	routeManager := client.RouteManager()
+	routeManager := NewRouteManager(ctx)
 
 
 	sendTransports := map[Transport][]Route{}
@@ -78,10 +79,39 @@ func TestMultiRoute(t *testing.T) {
 		}
 	}()
 
+	messages := [][]byte{}
+
 	for i := 0; i < burstSize; i += 1 {
 		b, err := multiRouteReader.Read(ctx, ReadTimeout)
 		assert.Equal(t, err, nil)
-		assert.Equal(t, messageBytes(i), b)
+		// assert.Equal(t, messageBytes(i), b)
+		messages = append(messages, b)
+	}
+
+	assert.Equal(t, burstSize, len(messages))
+
+	littleEndianCmp := func(a []byte, b []byte)(int) {
+		if len(a) < len(b) {
+			return -1
+		} else if len(b) < len(a) {
+			return 1
+		}
+
+		for i := len(a) - 1; 0 <= i; i -= 1 {
+			aValue := a[i]
+			bValue := b[i]
+			if aValue < bValue {
+				return -1
+			} else if bValue < aValue {
+				return 1
+			}
+		}
+
+		return 0
+	}
+	slices.SortStableFunc(messages, littleEndianCmp)
+	for i := 0; i < burstSize; i += 1 {
+		assert.Equal(t, messageBytes(i), messages[i])
 	}
 
 		

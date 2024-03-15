@@ -5,13 +5,14 @@ import (
 	// "log"
 	"fmt"
 	"encoding/hex"
+	"bytes"
 
 	"github.com/oklog/ulid/v2"
 )
 
 
 // use this type when counting bytes
-type ByteCount = int
+type ByteCount = int64
 
 func kib(c ByteCount) ByteCount {
 	c *= ByteCount(1024)
@@ -60,6 +61,30 @@ func (self Id) Bytes() []byte {
 
 func (self Id) String() string {
 	return encodeUuid(self)
+}
+
+
+func (self *Id) MarshalJSON() ([]byte, error) {
+	var buf [16]byte
+	copy(buf[0:16], self[0:16])
+	var buff bytes.Buffer
+	buff.WriteByte('"')
+	buff.WriteString(encodeUuid(buf))
+	buff.WriteByte('"')
+	b := buff.Bytes()
+	return b, nil
+}
+
+func (self *Id) UnmarshalJSON(src []byte) error {
+	if len(src) != 38 {
+		return fmt.Errorf("invalid length for UUID: %v", len(src))
+	}
+	buf, err := parseUuid(string(src[1 : len(src)-1]))
+	if err != nil {
+		return err
+	}
+	*self = buf
+	return nil
 }
 
 

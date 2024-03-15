@@ -69,7 +69,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 
 type ClientAuth struct {
     ByJwt string
-    ClientId Id
+    // ClientId Id
     InstanceId Id
     AppVersion string
 }
@@ -87,12 +87,15 @@ type PlatformTransport struct {
     auth *ClientAuth
     dialContextGen func()(DialContextFunc)
     settings *PlatformTransportSettings
+
+    routeManager *RouteManager
 }
 
 func NewPlatformTransportWithDefaults(
     ctx context.Context,
     platformUrl string,
     auth *ClientAuth,
+    routeManager *RouteManager,
 ) *PlatformTransport {
     settings := DefaultPlatformTransportSettings()
 
@@ -109,6 +112,7 @@ func NewPlatformTransportWithDefaults(
         auth,
         dialContextGen,
         settings,
+        routeManager,
     )
 }
 
@@ -118,6 +122,7 @@ func NewPlatformTransportWithExtender(
     platformUrl string,
     auth *ClientAuth,
     settings *PlatformTransportSettings,
+    routeManager *RouteManager,
 ) *PlatformTransport {
     return NewPlatformTransport(
         ctx,
@@ -125,6 +130,7 @@ func NewPlatformTransportWithExtender(
         auth,
         NewExtenderDialContextGenerator(extenderUrl, settings),
         settings,
+        routeManager,
     )
 }
 
@@ -134,6 +140,7 @@ func NewPlatformTransport(
     auth *ClientAuth,
     dialContextGen func()(DialContextFunc),
     settings *PlatformTransportSettings,
+    routeManager *RouteManager,
 ) *PlatformTransport {
     cancelCtx, cancel := context.WithCancel(ctx)
     transport := &PlatformTransport{
@@ -143,11 +150,13 @@ func NewPlatformTransport(
         auth: auth,
         dialContextGen: dialContextGen,
         settings: settings,
+        routeManager: routeManager,
     }
+    go transport.run()
     return transport
 }
 
-func (self *PlatformTransport) Run(routeManager *RouteManager) {
+func (self *PlatformTransport) run() {
     // connect and update route manager for this transport
     defer self.cancel()
 
@@ -226,12 +235,12 @@ func (self *PlatformTransport) Run(routeManager *RouteManager) {
             sendTransport := NewSendGatewayTransport()
             receiveTransport := NewReceiveGatewayTransport()
 
-            routeManager.UpdateTransport(sendTransport, []Route{send})
-            routeManager.UpdateTransport(receiveTransport, []Route{receive})
+            self.routeManager.UpdateTransport(sendTransport, []Route{send})
+            self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
             defer func() {
-                routeManager.RemoveTransport(sendTransport)
-                routeManager.RemoveTransport(receiveTransport)
+                self.routeManager.RemoveTransport(sendTransport)
+                self.routeManager.RemoveTransport(receiveTransport)
                 
                 handleCancel()
                 ws.Close()

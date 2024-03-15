@@ -62,17 +62,15 @@ type MultiRouteReader interface {
 
 type RouteManager struct {
 	ctx context.Context
-    client *Client
 
     mutex sync.Mutex
     writerMatchState *MatchState
     readerMatchState *MatchState
 }
 
-func NewRouteManager(ctx context.Context, client *Client) *RouteManager {
+func NewRouteManager(ctx context.Context) *RouteManager {
     return &RouteManager{
     	ctx: ctx,
-        client: client,
         writerMatchState: NewMatchState(ctx, true, Transport.MatchesSend),
         // `weightedRoutes=false` because unless there is a cpu limit this is not needed
         readerMatchState: NewMatchState(ctx, false, Transport.MatchesReceive),
@@ -495,36 +493,14 @@ func (self *MultiRouteSelector) GetActiveRoutes() []Route {
         }
     }
 
-    mathrand.Shuffle(len(activeRoutes), func(i int, j int) {
-        activeRoutes[i], activeRoutes[j] = activeRoutes[j], activeRoutes[i]
-    })
-
     if self.weightedRoutes {
         // prioritize the routes (weighted shuffle)
         // if all weights are equal, this is the same as a shuffle
-        n := len(activeRoutes)
-        for i := 0; i < n - 1; i += 1 {
-            j := func ()(int) {
-                var net float32
-                net = 0
-                for j := i; j < n; j += 1 {
-                    net += self.routeWeight[activeRoutes[j]]
-                }
-                r := mathrand.Float32()
-                rnet := r * net
-                net = 0
-                for j := i; j < n; j += 1 {
-                    net += self.routeWeight[activeRoutes[j]]
-                    if rnet < net {
-                        return j
-                    }
-                }
-                panic("Incorrect weights")
-            }()
-            t := activeRoutes[i]
-            activeRoutes[i] = activeRoutes[j]
-            activeRoutes[j] = t
-        }
+        WeightedShuffle(activeRoutes, self.routeWeight)
+    } else {
+        mathrand.Shuffle(len(activeRoutes), func(i int, j int) {
+            activeRoutes[i], activeRoutes[j] = activeRoutes[j], activeRoutes[i]
+        })
     }
 
     return activeRoutes
@@ -864,6 +840,53 @@ func (self *sendGatewayTransport) MatchesReceive(destinationId Id) bool {
 
 func (self *sendGatewayTransport) Downgrade(sourceId Id) {
 	// nothing to downgrade
+}
+
+
+// conforms to `Transport`
+type sendClientTransport struct {
+    transportId Id
+    destinationIds map[Id]bool
+}
+
+func NewSendClientTransport(destinationIds ...Id) *sendClientTransport {
+    destinationIds_ := map[Id]bool{}
+    for _, destinationId := range destinationIds {
+        destinationIds_[destinationId] = true
+    }
+    return &sendClientTransport{
+        transportId: NewId(),
+        destinationIds: destinationIds_,
+    }
+}
+
+func (self *sendClientTransport) TransportId() Id {
+    return self.transportId
+}
+
+func (self *sendClientTransport) Priority() int {
+    return 100
+}
+
+func (self *sendClientTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
+    return true
+}
+
+func (self *sendClientTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
+    // uniform weight
+    return 1.0 / float32(1 + len(remainingStats))
+}
+
+func (self *sendClientTransport) MatchesSend(destinationId Id) bool {
+    return self.destinationIds[destinationId]
+}
+
+func (self *sendClientTransport) MatchesReceive(destinationId Id) bool {
+    return false
+}
+
+func (self *sendClientTransport) Downgrade(sourceId Id) {
+    // nothing to downgrade
 }
 
 

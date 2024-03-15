@@ -49,6 +49,8 @@ type ContractManager struct {
 	sendNoContractClientIds map[Id]bool
 
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
+
+	clientUnsub func()
 }
 
 func NewContractManagerWithDefaults(ctx context.Context, client *Client) *ContractManager {
@@ -80,7 +82,8 @@ func NewContractManager(ctx context.Context, client *Client, contractManagerSett
 		contractErrorCallbacks: NewCallbackList[ContractErrorFunction](),
 	}
 
-	client.AddReceiveCallback(contractManager.receive)
+	clientUnsub := client.AddReceiveCallback(contractManager.receive)
+	contractManager.clientUnsub = clientUnsub
 
 	return contractManager
 }
@@ -89,13 +92,16 @@ func (self *ContractManager) StandardTransferByteCount() ByteCount {
 	return self.contractManagerSettings.StandardTransferByteCount
 }
 
-func (self *ContractManager) addContractErrorCallback(contractErrorCallback ContractErrorFunction) {
-	self.contractErrorCallbacks.Add(contractErrorCallback)
+func (self *ContractManager) addContractErrorCallback(contractErrorCallback ContractErrorFunction) func() {
+	callbackId := self.contractErrorCallbacks.Add(contractErrorCallback)
+	return func() {
+		self.contractErrorCallbacks.Remove(callbackId)
+	}
 }
 
-func (self *ContractManager) removeContractErrorCallback(contractErrorCallback ContractErrorFunction) {
-	self.contractErrorCallbacks.Remove(contractErrorCallback)
-}
+// func (self *ContractManager) removeContractErrorCallback(contractErrorCallback ContractErrorFunction) {
+// 	self.contractErrorCallbacks.Remove(contractErrorCallback)
+// }
 
 // ReceiveFunction
 func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
@@ -351,7 +357,8 @@ func (self *ContractManager) Complete(contractId Id, ackedByteCount ByteCount, u
 func (self *ContractManager) Close() {
 	// FIXME close known pending contracts
 	// pending contracts in flight will just timeout on the platform
-	self.client.RemoveReceiveCallback(self.receive)
+	// self.client.RemoveReceiveCallback(self.receive)
+	self.clientUnsub()
 }
 
 

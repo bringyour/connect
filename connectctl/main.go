@@ -531,17 +531,17 @@ func send(opts docopt.Opts) {
     defer client.Close()
 
 
-    client.SetInstanceId(instanceId)
+    // client.SetInstanceId(instanceId)
     
 
-    routeManager := connect.NewRouteManager(client)
-    contractManager := connect.NewContractManagerWithDefaults(client)
-    client.Setup(routeManager, contractManager)
-    go client.Run()
+    // routeManager := connect.NewRouteManager(client)
+    // contractManager := connect.NewContractManagerWithDefaults(client)
+    // client.Setup(routeManager, contractManager)
+    // go client.Run()
 
     auth := &connect.ClientAuth{
         ByJwt: jwt,
-        InstanceId: client.InstanceId(),
+        InstanceId: instanceId,
         AppVersion: fmt.Sprintf("connectctl %s", ConnectCtlVersion),
     }
     for i := 0; i < transportCount; i += 1 {
@@ -549,16 +549,17 @@ func send(opts docopt.Opts) {
             cancelCtx,
             fmt.Sprintf("%s/", connectUrl),
             auth,
+            client.RouteManager(),
         )
         defer platformTransport.Close()
-        go platformTransport.Run(routeManager)
+        // go platformTransport.Run(routeManager)
     }
 
 
     provideModes := map[protocol.ProvideMode]bool{
         protocol.ProvideMode_Network: true,
     }
-    contractManager.SetProvideModes(provideModes)
+    client.ContractManager().SetProvideModes(provideModes)
 
 
     // FIXME break into 2k chunks?
@@ -664,24 +665,24 @@ func sink(opts docopt.Opts) {
     )
     defer client.Close()
 
-    client.SetInstanceId(instanceId)
+    // client.SetInstanceId(instanceId)
 
-    routeManager := connect.NewRouteManager(client)
-    contractManager := connect.NewContractManagerWithDefaults(client)
+    // routeManager := connect.NewRouteManager(client)
+    // contractManager := connect.NewContractManagerWithDefaults(client)
 
-    client.Setup(routeManager, contractManager)
-    go client.Run()
+    // client.Setup(routeManager, contractManager)
+    // go client.Run()
 
 
     provideModes := map[protocol.ProvideMode]bool{
         protocol.ProvideMode_Network: true,
     }
-    contractManager.SetProvideModes(provideModes)
+    client.ContractManager().SetProvideModes(provideModes)
 
 
     auth := &connect.ClientAuth{
         ByJwt: jwt,
-        InstanceId: client.InstanceId(),
+        InstanceId: instanceId,
         AppVersion: fmt.Sprintf("connectctl %s", ConnectCtlVersion),
     }
     for i := 0; i < transportCount; i += 1 {
@@ -689,9 +690,10 @@ func sink(opts docopt.Opts) {
             cancelCtx,
             fmt.Sprintf("%s/", connectUrl),
             auth,
+            client.RouteManager(),
         )
         defer platformTransport.Close()
-        go platformTransport.Run(routeManager)
+        // go platformTransport.Run(routeManager)
     }
 
     type Receive struct {

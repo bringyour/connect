@@ -470,7 +470,7 @@ paths:
     /network/find-locations:
         post:
             description: |
-                Search for locations and groups that match a query,
+                Search for locations, groups, and devices that match a query,
                 regardless of whether an providers are active.
             operationId: Network Find Locations
             security: []
@@ -501,13 +501,55 @@ paths:
                 content:
                     application/json:
                         schema:
-                            $ref: "#/components/schemas/FindActiveProvidersArgs"
+                            $ref: "#/components/schemas/FindProvidersArgs"
             responses:
                 "200":
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/FindActiveProvidersResult"
+                                $ref: "#/components/schemas/FindProvidersResult"
+
+    /network/find-providers2:
+        post:
+            description: |
+                Randomly sample providers for locations, groups, or devices,
+                which are active and in good health.
+                This allows random iteration by using the exclude input to mark
+                visited providers.
+            operationId: Network Find Providers 2
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/FindProviders2Args"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/FindProviders2Result"
+
+    /network/create-provider-spec:
+        post:
+            description: |
+                Create a spec object for `find-providers2` using a description
+                of the intended use of the network.
+            operationId: Network Find Providers Spec
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/CreateProviderSpecArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/CreateProviderSpecResult"
 
     /wallet/balance:
         get:
@@ -1366,6 +1408,11 @@ components:
                 device_spec:
                     description: If this is a new device, sets the device spec.
                     type: string
+                derived_client_id:
+                    description: udid. Optional. |
+                        The client that the new client is derived from. 
+                        If this is called with a client jwt, the derived client id is inferred from the jwt.
+                    type: string
 
         AuthNetworkClientResult:
             type: object
@@ -1540,6 +1587,11 @@ components:
         FindLocationsResult:
             type: object
             properties:
+                # specs can be directly passed to `find-providers2` to enumerate clients for this result
+                specs:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/ProviderSpec"
                 groups:
                     type: array
                     items:
@@ -1593,8 +1645,18 @@ components:
                                 type: integer
                             match_distance:
                                 type: integer
+                devices:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            client_id:
+                                description: udid
+                                type: string
+                            device_name:
+                                type: string
 
-        FindActiveProvidersArgs:
+        FindProvidersArgs:
             type: object
             properties:
                 location_id:
@@ -1611,7 +1673,7 @@ components:
                         description: udid
                         type: string
 
-        FindActiveProvidersResult:
+        FindProvidersResult:
             type: object
             properties:
                 client_ids:
@@ -1619,6 +1681,64 @@ components:
                     items:
                         description: udid
                         type: string
+
+        ProviderSpec:
+            type: object
+            properties:
+                location_id:
+                    description: udid
+                    type: string
+                location_group_id:
+                    description: udid
+                    type: string
+                client_id:
+                    description: udid
+
+        FindProviders2Args:
+            type: object
+            properties:
+                # specs are unioned (or)
+                specs:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/ProviderSpec"
+                count:
+                    type: integer
+                exclude_client_ids:
+                    type: array
+                    items:
+                        description: udid
+                        type: string
+
+        FindProviders2Result:
+            type: object
+            properties:
+                providers:
+                    type: array
+                    items:
+                        type: object
+                        properites:
+                            client_id:
+                                description: udid
+                                type: string
+                            estimated_bytes_per_second:
+                                type: integer
+
+        CreateProviderSpecArgs:
+            type: object
+            properties:
+                query:
+                    description: description of the intended use of the connection
+                    type: string
+
+        CreateProviderSpecResult:
+            type: object
+            properties:
+                # specs are unioned (or)
+                specs:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/ProviderSpec"
 
         WalletBalanceResult:
             type: object

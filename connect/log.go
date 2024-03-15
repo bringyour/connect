@@ -8,7 +8,7 @@ import (
 
 
 // Logging convention in the `connect` package and generally for BringYour network components:
-// Info: 
+// Info:
 //     essential events for abnormal behavior. This level should be silent on normal operation,
 //     with the exception of one time (infrequent) initialization data that is useful for monitoring
 //     this includes:
@@ -19,12 +19,16 @@ import (
 //     this includes:
 //     - unexpected panics even if handled and suppressed for partial operation
 // Debug:
+//     [glog V(1)]
 //     key events for trace debuggung and statistics
 //     this includes:
 //     - key system events with ids that can be used to filter
 //     - frequent events - e.g. send, retry, forward, receive, ack - 
 //       should be summarized as statistics printed every "n seconds" 
 //       rather than logging each individual data point
+//     [glog V(2)]
+//     specific use-case logging
+
 
 
 const LogLevelUrgent = 0
