@@ -5,29 +5,9 @@ import (
     "fmt"
     "os"
     "syscall"
-    // "os/exec"
-    // "path/filepath"
-    // "encoding/json"
-    // "time"
-    // "strings"
-    // "math"
-    // "reflect"
-    // "sort"
-    // "syscall"
-    // "os/signal"
-    // "errors"
-    // "regexp"
-    // "io"
     "net/http"
-    // "log"
     "encoding/json"
-    // "encoding/base64"
-    // "bytes"
     "errors"
-
-    // "golang.org/x/exp/maps"
-
-    // gojwt "github.com/golang-jwt/jwt/v5"
 
     "golang.org/x/term"
 
@@ -133,7 +113,7 @@ func provide(opts docopt.Opts) {
     // go platformTransport.Run(connectClient.RouteManager())
 
     localUserNat := connect.NewLocalUserNatWithDefaults(ctx)
-    remoteUserNatProvider := connect.NewRemoteUserNatProvider(connectClient, localUserNat)
+    remoteUserNatProvider := connect.NewRemoteUserNatProviderWithDefaults(connectClient, localUserNat)
 
     provideModes := map[protocol.ProvideMode]bool{
         protocol.ProvideMode_Public: true,
