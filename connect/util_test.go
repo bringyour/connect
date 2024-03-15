@@ -3,10 +3,10 @@ package connect
 import (
     "testing"
     "slices"
-    // "math"
-    // "fmt"
     "time"
     "sync"
+    "fmt"
+    // "math"
     mathrand "math/rand"
 
     "github.com/go-playground/assert/v2"
@@ -51,11 +51,7 @@ func TestCallbackList(t *testing.T) {
 		assert.Equal(t, i + 1, len(callbacks.Get()))
 	}
 	assert.Equal(t, n, len(callbacks.Get()))
-	// already added
-	// for i := 0; i < n; i += 1 {
-	// 	callbacks.Add(testingCallbacks[i].Callback)
-	// 	assert.Equal(t, n, len(callbacks.Get()))
-	// }
+	// note callbacks can be added multiple times
 
 	mathrand.Shuffle(len(testingCallbackIds), func(i int, j int) {
 		testingCallbackIds[i], testingCallbackIds[j] = testingCallbackIds[j], testingCallbackIds[i]
@@ -106,7 +102,6 @@ func (self *testingCallback) Values() []int {
 }
 
 
-// FIXME
 func TestIdleCondition(t *testing.T) {
 	idleCondition := NewIdleCondition()
 
@@ -132,7 +127,6 @@ func TestIdleCondition(t *testing.T) {
 }
 
 
-// FIXME
 func TestEvent(t *testing.T) {
 	event := NewEvent()
 	go func() {
@@ -141,7 +135,6 @@ func TestEvent(t *testing.T) {
 	success := event.WaitForSet(30 * time.Second)
 	assert.Equal(t, true, success)
 }
-
 
 
 func TestMinTime(t *testing.T) {
@@ -184,11 +177,11 @@ func TestWeightedShuffle(t *testing.T) {
 		}
 	}
 
-	values := []int{}
+	orderedValues := []int{}
 	for i := 0; i < n; i += 1 {
-		values = append(values, i)
+		orderedValues = append(orderedValues, i)
 	}
-	slices.SortFunc(values, func(a int, b int)(int) {
+	slices.SortFunc(orderedValues, func(a int, b int)(int) {
 		if netIndexes[a] < netIndexes[b] {
 			return -1
 		} else if netIndexes[b] < netIndexes[a] {
@@ -200,11 +193,76 @@ func TestWeightedShuffle(t *testing.T) {
 
 	errorThreshold := 2 * n / k
 	for i := 0; i < n; i += 1 {
-		e := i - values[i]
+		e := i - orderedValues[i]
 		if -errorThreshold <= e && e <= errorThreshold {
 			e = 0
 		}
 		assert.Equal(t, 0, e)
+	}
+}
+
+
+func TestWeightedShuffleWithEntropy(t *testing.T) {
+	// as entropy approaches 1, the weighted shuffle should become uniform
+	
+	k := 64
+	n := 256
+
+	orderedEntropies := []float32{
+		0.0,
+		0.5,
+		1.0,
+	}
+
+	for entropyIndex, entropy := range orderedEntropies {
+		netIndexes := map[int]int64{}
+
+		for i := 0; i < n * k; i += 1 {
+			values := []int{}
+			weights := map[int]float32{}
+			for j := 0; j < n; j += 1 {
+				values = append(values, j)
+				weights[j] = float32(n - j)
+			}
+
+			WeightedShuffleWithEntropy(values, weights, entropy)
+			for index, value := range values {
+				netIndexes[value] += int64(index)
+			}
+		}
+
+		testError := func(testEntropy float32, expected bool) {
+			// n * k * ((1-e)*n + e*n/k)
+			// == n^2 * ((1-e)*k+e)
+			errorThreshold := int64(float32(n) * float32(n) * ((1 - testEntropy) * float32(k) + testEntropy))
+			failed := false
+			for i := 1; i < n; i += 1 {
+				a := i / 2
+				b := n - (i + 1) / 2
+				e := netIndexes[a] - netIndexes[b]
+				if -errorThreshold <= e && e <= errorThreshold {
+					e = 0
+				}
+				if expected {
+					// all must pass
+					assert.Equal(t, int64(0), e)
+				} else if int64(0) != e {
+					failed = true
+				}
+			}
+			if !expected {
+				// at least one of the comparisons must have failed
+				// not all must fail
+				assert.Equal(t, true, failed)
+			}
+		}
+
+		fmt.Printf("[entropy]%d\n", entropyIndex)
+		testError(entropy, true)
+		// the test should fail at the next entropy index (tigher error bound)
+		if entropyIndex + 1 < len(orderedEntropies) {
+			testError(orderedEntropies[entropyIndex + 1], false)
+		}
 	}
 }
 

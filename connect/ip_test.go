@@ -4,23 +4,13 @@ import (
 	"context"
     "testing"
     "time"
-    // mathrand "math/rand"
-    // "fmt"
-    // "crypto/hmac"
-	// "crypto/sha256"
-	// "sync"
-	// "slices"
-	// "bytes"
 	"encoding/binary"
 	"net"
 	"reflect"
-	// "fmt"
 	"sync"
 
 	"github.com/google/gopacket"
     "github.com/google/gopacket/layers"
-
-	// "google.golang.org/protobuf/proto"
 
     "github.com/go-playground/assert/v2"
 
@@ -28,27 +18,121 @@ import (
 )
 
 
-
-
-// test ippath parsing
-
-// FIXME
-// TestUdp6Path
-// TestTcp6Path
-
-
 type PacketGeneratorFunction func(int, int, int, int)([]byte, []byte)
 
 
+func TestUdp4Path(t *testing.T) {
+	packet, _ := udp4Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolUdp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 4,
+		Protocol: IpProtocolUdp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip4Path := ipPath.ToIp4Path()
+	assert.Equal(t, Ip4Path{
+		Protocol: IpProtocolUdp,
+	    SourceIp: [4]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [4]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4()),
+	    DestinationPort: 443,
+	}, ip4Path)
+}
+
+
+func TestTcp4Path(t *testing.T) {
+	packet, _ := tcp4Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolTcp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 4,
+		Protocol: IpProtocolTcp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip4Path := ipPath.ToIp4Path()
+	assert.Equal(t, Ip4Path{
+		Protocol: IpProtocolTcp,
+	    SourceIp: [4]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [4]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4()),
+	    DestinationPort: 443,
+	}, ip4Path)
+}
+
+
+func TestUdp6Path(t *testing.T) {
+	packet, _ := udp6Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolUdp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 6,
+		Protocol: IpProtocolUdp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip6Path := ipPath.ToIp6Path()
+	assert.Equal(t, Ip6Path{
+		Protocol: IpProtocolUdp,
+	    SourceIp: [16]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [16]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16()),
+	    DestinationPort: 443,
+	}, ip6Path)
+}
+
+
+func TestTcp6Path(t *testing.T) {
+	packet, _ := tcp6Packet(1, 1, 1, 1)
+	ipPath, err := ParseIpPath(packet)
+	assert.Equal(t, nil, err)
+
+	assert.Equal(t, IpProtocolTcp, ipPath.Protocol)
+
+	assert.Equal(t, &IpPath{
+		Version: 6,
+		Protocol: IpProtocolTcp,
+	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16(),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16(),
+	    DestinationPort: 443,
+	}, ipPath)
+
+	ip6Path := ipPath.ToIp6Path()
+	assert.Equal(t, Ip6Path{
+		Protocol: IpProtocolTcp,
+	    SourceIp: [16]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16()),
+	    SourcePort: 40000 + 1,
+	    DestinationIp: [16]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16()),
+	    DestinationPort: 443,
+	}, ip6Path)
+}
+
+
+
 func udp4Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
-
-	// b := &bytes.Buffer{}
-	// binary.Write(b, binary.LittleEndian, s)
-	// payload = b.Bytes()
-
 	payload = make([]byte, 4)
     binary.LittleEndian.PutUint32(payload, uint32(s))
-
 
 	sourceIp := net.IPv4(72, 0, 0, 1)
 	sourcePort := layers.UDPPort(40000 + s)
@@ -90,14 +174,8 @@ func udp4Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
 
 
 func tcp4Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
-
-	// b := &bytes.Buffer{}
-	// binary.Write(b, binary.LittleEndian, s)
-	// payload = b.Bytes()
-
 	payload = make([]byte, 4)
     binary.LittleEndian.PutUint32(payload, uint32(s))
-
 
 	sourceIp := net.IPv4(72, 0, 0, 1)
 	sourcePort := layers.TCPPort(40000 + s)
@@ -142,14 +220,8 @@ func tcp4Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
 
 
 func udp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
-
-	// b := &bytes.Buffer{}
-	// binary.Write(b, binary.LittleEndian, s)
-	// payload = b.Bytes()
-
 	payload = make([]byte, 4)
     binary.LittleEndian.PutUint32(payload, uint32(s))
-
 
 	sourceIp := net.IPv4(72, 0, 0, 1).To16()
 	sourcePort := layers.UDPPort(40000 + s)
@@ -190,16 +262,9 @@ func udp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
 }
 
 
-
 func tcp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
-
-	// b := &bytes.Buffer{}
-	// binary.Write(b, binary.LittleEndian, s)
-	// payload = b.Bytes()
-
 	payload = make([]byte, 4)
     binary.LittleEndian.PutUint32(payload, uint32(s))
-
 
 	sourceIp := net.IPv4(72, 0, 0, 1).To16()
 	sourcePort := layers.TCPPort(40000 + s)
@@ -243,148 +308,20 @@ func tcp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
 }
 
 
-func TestUdp4Path(t *testing.T) {
-
-
-
-	packet, _ := udp4Packet(1, 1, 1, 1)
-	ipPath, err := ParseIpPath(packet)
-	assert.Equal(t, nil, err)
-
-	assert.Equal(t, IpProtocolUdp, ipPath.Protocol)
-
-	assert.Equal(t, &IpPath{
-		Version: 4,
-		Protocol: IpProtocolUdp,
-	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4(),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4(),
-	    DestinationPort: 443,
-	}, ipPath)
-
-	ip4Path := ipPath.ToIp4Path()
-	assert.Equal(t, Ip4Path{
-		Protocol: IpProtocolUdp,
-	    SourceIp: [4]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4()),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: [4]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4()),
-	    DestinationPort: 443,
-	}, ip4Path)
-
-
-}
-
-
-func TestTcp4Path(t *testing.T) {
-
-
-
-	packet, _ := tcp4Packet(1, 1, 1, 1)
-	ipPath, err := ParseIpPath(packet)
-	assert.Equal(t, nil, err)
-
-	assert.Equal(t, IpProtocolTcp, ipPath.Protocol)
-
-	assert.Equal(t, &IpPath{
-		Version: 4,
-		Protocol: IpProtocolTcp,
-	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4(),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4(),
-	    DestinationPort: 443,
-	}, ipPath)
-
-	ip4Path := ipPath.ToIp4Path()
-	assert.Equal(t, Ip4Path{
-		Protocol: IpProtocolTcp,
-	    SourceIp: [4]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To4()),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: [4]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To4()),
-	    DestinationPort: 443,
-	}, ip4Path)
-
-
-}
-
-
-
-func TestUdp6Path(t *testing.T) {
-
-
-
-	packet, _ := udp6Packet(1, 1, 1, 1)
-	ipPath, err := ParseIpPath(packet)
-	assert.Equal(t, nil, err)
-
-	assert.Equal(t, IpProtocolUdp, ipPath.Protocol)
-
-	assert.Equal(t, &IpPath{
-		Version: 6,
-		Protocol: IpProtocolUdp,
-	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16(),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16(),
-	    DestinationPort: 443,
-	}, ipPath)
-
-	ip6Path := ipPath.ToIp6Path()
-	assert.Equal(t, Ip6Path{
-		Protocol: IpProtocolUdp,
-	    SourceIp: [16]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16()),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: [16]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16()),
-	    DestinationPort: 443,
-	}, ip6Path)
-
-
-}
-
-
-func TestTcp6Path(t *testing.T) {
-
-
-
-	packet, _ := tcp6Packet(1, 1, 1, 1)
-	ipPath, err := ParseIpPath(packet)
-	assert.Equal(t, nil, err)
-
-	assert.Equal(t, IpProtocolTcp, ipPath.Protocol)
-
-	assert.Equal(t, &IpPath{
-		Version: 6,
-		Protocol: IpProtocolTcp,
-	    SourceIp: net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16(),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16(),
-	    DestinationPort: 443,
-	}, ipPath)
-
-	ip6Path := ipPath.ToIp6Path()
-	assert.Equal(t, Ip6Path{
-		Protocol: IpProtocolTcp,
-	    SourceIp: [16]byte(net.IPv4(byte(72), byte(0), byte(0), byte(1)).To16()),
-	    SourcePort: 40000 + 1,
-	    DestinationIp: [16]byte(net.IPv4(byte(72), byte(1 + 1), byte(1 + 1), byte(1 + 1)).To16()),
-	    DestinationPort: 443,
-	}, ip6Path)
-
-
-}
-
-
-// FIXME TestClientTcp
-
 func TestClientUdp4(t *testing.T) {
 	testClient(t, testingNewClient, udp4Packet, (*IpPath).ToIp4Path)
 }
+
 
 func TestClientTcp4(t *testing.T) {
 	testClient(t, testingNewClient, tcp4Packet, (*IpPath).ToIp4Path)
 }
 
+
 func TestClientUdp6(t *testing.T) {
 	testClient(t, testingNewClient, udp6Packet, (*IpPath).ToIp6Path)
 }
+
 
 func TestClientTcp6(t *testing.T) {
 	testClient(t, testingNewClient, tcp6Packet, (*IpPath).ToIp6Path)
@@ -392,7 +329,6 @@ func TestClientTcp6(t *testing.T) {
 
 
 func testingNewClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
-
 	client := NewClientWithDefaults(ctx, NewId())
 
 	routesSend := []Route{
@@ -420,9 +356,7 @@ func testingNewClient(ctx context.Context, providerClient *Client, receivePacket
 		},
 		protocol.ProvideMode_Network,
 	)
-	
 }
-
 
 
 func testClient[P comparable](
@@ -431,6 +365,20 @@ func testClient[P comparable](
 	packetGenerator PacketGeneratorFunction,
 	toComparableIpPath func(*IpPath)(P),
 ) {
+	// runs a send-receive test on the `UserNatClient` produced by `userNatClientGenerator`
+	// this is a multi-threaded stress test that is meant to stress the buffers and routing
+
+
+	// n destinations
+	// all have the same receiver callback, put into a channel of messages
+	// echo the received packet
+
+	// create fake packets for all iterations of i,j,k in a range
+	// retransmit some packets by increasing source port s
+	// make sure all packets are received
+	// make sure all packets are echoed back
+
+
 	timeout := 30 * time.Second
 
 	m := 6
@@ -438,7 +386,6 @@ func testClient[P comparable](
 	repeatCount := 6
 	parallelCount := 6
 	echoCount := 2
-
 
 
 	// each packet gets echoed back
@@ -449,31 +396,14 @@ func testClient[P comparable](
 	cReceiveCount := 0
 
 
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// n destinations
-	// all have the same receiver callback, put into a channel of messages
-	// echo the received packet
-
-	// create fake ip4 packets to 72.i.j.k for all iterations of i,j,k in a range
-	// randomly retransmit some packets by increasing source port
-	// make sure all packets are received
-	// make sure all packets are echoed back
-
-	
-
 
 	clientId := NewId()
 	providerClientId := NewId()
 
 
 	providerClient := NewClientWithDefaults(ctx, providerClientId)
-
-
-
-
 
 
 	type receivePacket struct {
@@ -503,9 +433,6 @@ func testClient[P comparable](
 
 	natClient, err := userNatClientGenerator(ctx, providerClient, receivePacketCallback)
 	assert.Equal(t, err, nil)
-
-
-
 
 
 	providerClient.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
@@ -554,9 +481,6 @@ func testClient[P comparable](
 
         }
 	})
-
-
-
 
 
 	for p := 0; p < parallelCount; p += 1 {
@@ -619,17 +543,8 @@ func testClient[P comparable](
 	            payload = tcp.Payload
 			}
 
-
-			// fmt.Printf("GOT %d PAYLOAD %v (%d)\n", ipPath.Protocol, payload, len(payload))
-
-
-			
-				// ip4Path := ipPath.ToIp4Path()
 			comparableIpPath := toComparableIpPath(ipPath)
-
-
 			comparableIpPathPayloads[comparableIpPath] = append(comparableIpPathPayloads[comparableIpPath], payload)
-
 
 			sources, ok := comparableIpPathSources[comparableIpPath]
 			if !ok {
@@ -656,12 +571,9 @@ func testClient[P comparable](
 
 					payloads := comparableIpPathPayloads[comparableIpPath]
 
-					// fmt.Printf("PAYLOADS %v <> %v\n", payload, payloads)
-
 					count := 0
 					for _, b := range payloads {
 						e := reflect.DeepEqual(b, payload)
-						// fmt.Printf("DEEP EQUAL %v (%d %T) <> %v (%d %T) %t\n", b, len(b), b, payload, len(payload), payload, e)
 						if e {
 							count += 1
 						}
@@ -680,8 +592,6 @@ func testClient[P comparable](
 			}
 		}
 	}
-
-
 }
 
 

@@ -4,48 +4,31 @@ import (
 	"context"
     "testing"
     "time"
-    // mathrand "math/rand"
     "math"
-    // "fmt"
-    // "crypto/hmac"
-	// "crypto/sha256"
-	// "sync"
-	"slices"
-	// "bytes"
-	// "encoding/binary"
-	// "net"
-	// "reflect"
-	// "fmt"
-	// "sync"
-
-	// "github.com/google/gopacket"
-    // "github.com/google/gopacket/layers"
-
-	// "google.golang.org/protobuf/proto"
+    "slices"
 
     "github.com/go-playground/assert/v2"
-
-    // "bringyour.com/protocol"
 )
-
 
 
 func TestMultiClientUdp4(t *testing.T) {
 	testClient(t, testingNewMultiClient, udp4Packet, (*IpPath).ToIp4Path)
 }
 
+
 func TestMultiClientTcp4(t *testing.T) {
 	testClient(t, testingNewMultiClient, tcp4Packet, (*IpPath).ToIp4Path)
 }
+
 
 func TestMultiClientUdp6(t *testing.T) {
 	testClient(t, testingNewMultiClient, udp6Packet, (*IpPath).ToIp6Path)
 }
 
+
 func TestMultiClientTcp6(t *testing.T) {
 	testClient(t, testingNewMultiClient, tcp6Packet, (*IpPath).ToIp6Path)
 }
-
 
 
 func testingNewMultiClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {	
@@ -166,8 +149,8 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	}
 
 	settings := DefaultMultiClientSettings()
-	settings.StatsWindowBucketDuration = 1 * time.Millisecond
-	settings.StatsWindowDuration = 10 * time.Millisecond
+	settings.StatsWindowBucketDuration = 100 * time.Millisecond
+	settings.StatsWindowDuration = 1 * time.Second
 
 	// the coalesce logic trims from the last event in a bucket
 	// if events are uniformly distributed in a bucket, this means there will be an extra bucket

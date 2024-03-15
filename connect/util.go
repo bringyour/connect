@@ -268,10 +268,9 @@ func WeightedShuffleWithEntropy[T comparable](values []T, weights map[T]float32,
             }
             r := mathrand.Float32()
             rnet := r * net
-            e := entropy * net
-            net = 0
+            net = entropy * net
             for j := i; j < n; j += 1 {
-                net += weights[values[j]] + e
+                net += weights[values[j]]
                 if rnet < net {
                     return j
                 }
