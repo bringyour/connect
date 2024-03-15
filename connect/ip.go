@@ -36,6 +36,22 @@ const TcpHeaderSizeWithoutExtensions = 20
 const debugVerifyHeaders = false
 
 
+// send from a raw socket
+// note `ipProtocol` is not supplied. The implementation must do a packet inspection to determine protocol
+type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
+
+
+// receive into a raw socket
+type ReceivePacketFunction func(source Path, ipProtocol IpProtocol, packet []byte)
+
+
+type UserNatClient interface {
+    // `SendPacketFunction`
+    SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
+    Close()
+}
+
+
 func DefaultUdpBufferSettings() *UdpBufferSettings {
     return &UdpBufferSettings{
         ReadTimeout: 120 * time.Second,
@@ -61,22 +77,6 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
         WindowSize: int(mib(1)),
     }
     return tcpBufferSettings
-}
-
-
-// send from a raw socket
-// note `ipProtocol` is not supplied. The implementation must do a packet inspection to determine protocol
-type SendPacketFunction func(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
-
-
-// receive into a raw socket
-type ReceivePacketFunction func(source Path, ipProtocol IpProtocol, packet []byte)
-
-
-type UserNatClient interface {
-    // `SendPacketFunction`
-    SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
-    Close()
 }
 
 
