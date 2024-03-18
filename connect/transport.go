@@ -32,17 +32,6 @@ const TransportBufferSize = 1
 // add the source ip as the X-Extender header
 
 
-const DefaultHttpConnectTimeout = 2 * time.Second
-const DefaultWsHandshakeTimeout = 2 * time.Second
-const DefaultAuthTimeout = 2 * time.Second
-const DefaultReconnectTimeout = 2 * time.Second
-const DefaultPingTimeout = 5 * time.Second
-const DefaultWriteTimeout = 5 * time.Second
-const DefaultReadTimeout = 2 * DefaultPingTimeout
-
-const TransportDrainTimeout = 30 * time.Second
-
-
 type PlatformTransportSettings struct {
     HttpConnectTimeout time.Duration
     WsHandshakeTimeout time.Duration
@@ -51,18 +40,21 @@ type PlatformTransportSettings struct {
     PingTimeout time.Duration
     WriteTimeout time.Duration
     ReadTimeout time.Duration
+    TransportDrainTimeout time.Duration
 }
 
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
+    pingTimeout := 5 * time.Second
     return &PlatformTransportSettings{
-        HttpConnectTimeout: DefaultHttpConnectTimeout,
-        WsHandshakeTimeout: DefaultWsHandshakeTimeout,
-        AuthTimeout: DefaultAuthTimeout,
-        ReconnectTimeout: DefaultReconnectTimeout,
-        PingTimeout: DefaultPingTimeout,
-        WriteTimeout: DefaultWriteTimeout,
-        ReadTimeout: DefaultReadTimeout,
+        HttpConnectTimeout: 2 * time.Second,
+        WsHandshakeTimeout: 2 * time.Second,
+        AuthTimeout: 2 * time.Second,
+        ReconnectTimeout: 2 * time.Second,
+        PingTimeout: pingTimeout,
+        WriteTimeout: 5 * time.Second,
+        ReadTimeout: 2 * pingTimeout,
+        TransportDrainTimeout: 30 * time.Second,
     }
 }
 
@@ -247,7 +239,7 @@ func (self *PlatformTransport) run() {
 
                 go func() {
                     select {
-                    case <- time.After(TransportDrainTimeout):
+                    case <- time.After(self.settings.TransportDrainTimeout):
                     }
 
                     close(send)
