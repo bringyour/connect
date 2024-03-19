@@ -135,6 +135,14 @@ func (self *ContractManager) error(contractError protocol.ContractError) {
 	}
 }
 
+// clients must enable `ProvideMode_Stream` to allow return traffic
+func (self *ContractManager) SetProvideModesWithReturnTraffic(provideModes map[protocol.ProvideMode]bool) {
+	updatedProvideModes := map[protocol.ProvideMode]bool{}
+	maps.Copy(updatedProvideModes, provideModes)
+	updatedProvideModes[protocol.ProvideMode_Stream] = true
+	self.SetProvideModes(updatedProvideModes)
+}
+
 func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMode]bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -211,12 +219,6 @@ func (self *ContractManager) AddNoContractPeer(clientId Id) {
 }
 
 func (self *ContractManager) SendNoContract(destinationId Id) bool {
-	// FIXME
-	if true {
-		return true
-	}
-
-
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -227,12 +229,6 @@ func (self *ContractManager) SendNoContract(destinationId Id) bool {
 }
 
 func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
-	// FIXME
-	if true {
-		return true
-	}
-
-
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -336,11 +332,12 @@ func (self *ContractManager) closeContractQueue(destinationId Id) {
 	}
 }
 
-func (self *ContractManager) CreateContract(destinationId Id) {
+func (self *ContractManager) CreateContract(destinationId Id, companionContract bool) {
 	// look at destinationContracts and last contract to get previous contract id
 	createContract := &protocol.CreateContract{
 		DestinationId: destinationId.Bytes(),
 		TransferByteCount: uint64(self.contractManagerSettings.StandardTransferByteCount),
+		Companion: companionContract,
 	}
 	self.client.SendControl(RequireToFrame(createContract), nil)
 }

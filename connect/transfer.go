@@ -98,6 +98,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		// this includes transport reconnections
 		WriteTimeout: 30 * time.Second,
 		ResendQueueMaxByteCount: mib(1),
+		ContractFillFraction: 0.5,
 	}
 }
 
@@ -177,19 +178,41 @@ type TransferOptions struct {
 	// in this case, the ack callback is called on send, and no retry is done
 	// when false, items may arrive out of order amongst un-acked sequence neighbors
 	Ack bool
+	// use a companion contract
+	// a companion contract replies to an existing contract
+	// using this option limits the destination to clients that have an active contract to the sender
+	CompanionContract bool
 }
 
 func DefaultTransferOpts() TransferOptions {
 	return TransferOptions{
 		Ack: true,
+		CompanionContract: false,
 	}
 }
 
-func NoAck() TransferOptions {
-	return TransferOptions{
+
+type transferOptionsSetAck struct {
+	Ack bool
+}
+
+func NoAck() transferOptionsSetAck {
+	return transferOptionsSetAck{
 		Ack: false,
 	}
 }
+
+
+type transferOptionsSetCompanionContract struct {
+	CompanionContract bool
+}
+
+func CompanionContract() transferOptionsSetCompanionContract {
+	return transferOptionsSetCompanionContract{
+		CompanionContract: true,
+	}
+}
+
 
 
 type ClientSettings struct {
@@ -324,6 +347,10 @@ func (self *Client) SendWithTimeout(
 		switch v := opt.(type) {
 		case TransferOptions:
 			transferOpts = v
+		case transferOptionsSetAck:
+			transferOpts.Ack = v.Ack
+		case transferOptionsSetCompanionContract:
+			transferOpts.CompanionContract = v.CompanionContract
 		}
 	}
 
@@ -587,11 +614,11 @@ func (self *Client) run() {
 	}
 }
 
-func (self *Client) ResendQueueSize(destinationId Id) (int, ByteCount, Id) {
+func (self *Client) ResendQueueSize(destinationId Id, companionContract bool) (int, ByteCount, Id) {
 	if self.sendBuffer == nil {
 		return 0, 0, Id{}
 	} else {
-		return self.sendBuffer.ResendQueueSize(destinationId)
+		return self.sendBuffer.ResendQueueSize(destinationId, companionContract)
 	}
 }
 
@@ -649,8 +676,16 @@ type SendBufferSettings struct {
 	WriteTimeout time.Duration
 
 	ResendQueueMaxByteCount ByteCount
+
+	// as this ->1, there is more risk that noack messages will get dropped due to out of sync contracts
+	ContractFillFraction float32
 }
 
+
+type sendSequenceId struct {
+	DestinationId Id
+	CompanionContract bool
+}
 
 type SendBuffer struct {
 	ctx context.Context
@@ -661,8 +696,7 @@ type SendBuffer struct {
 	sendBufferSettings *SendBufferSettings
 
 	mutex sync.Mutex
-	// destination id -> send sequence
-	sendSequences map[Id]*SendSequence
+	sendSequences map[sendSequenceId]*SendSequence
 }
 
 func NewSendBuffer(ctx context.Context,
@@ -676,22 +710,27 @@ func NewSendBuffer(ctx context.Context,
 		routeManager: routeManager,
 		contractManager: contractManager,
 		sendBufferSettings: sendBufferSettings,
-		sendSequences: map[Id]*SendSequence{},
+		sendSequences: map[sendSequenceId]*SendSequence{},
 	}
 }
 
 func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
+	sendSequenceId := sendSequenceId{
+		DestinationId: sendPack.DestinationId,
+		CompanionContract: sendPack.TransferOptions.CompanionContract,
+	}
+
 	initSendSequence := func(skip *SendSequence)(*SendSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
-		sendSequence, ok := self.sendSequences[sendPack.DestinationId]
+		sendSequence, ok := self.sendSequences[sendSequenceId]
 		if ok {
 			if skip == nil || skip != sendSequence {
 				return sendSequence
 			} else {
 				sendSequence.Close()
-				delete(self.sendSequences, sendPack.DestinationId)
+				delete(self.sendSequences, sendSequenceId)
 			}
 		}
 		sendSequence = NewSendSequence(
@@ -700,18 +739,19 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 			self.routeManager,
 			self.contractManager,
 			sendPack.DestinationId,
+			sendPack.TransferOptions.CompanionContract,
 			self.sendBufferSettings,
 		)
-		self.sendSequences[sendPack.DestinationId] = sendSequence
+		self.sendSequences[sendSequenceId] = sendSequence
 		go func() {
 			sendSequence.Run()
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
 			// clean up
-			if sendSequence == self.sendSequences[sendPack.DestinationId] {
+			if sendSequence == self.sendSequences[sendSequenceId] {
 				sendSequence.Close()
-				delete(self.sendSequences, sendPack.DestinationId)
+				delete(self.sendSequences, sendSequenceId)
 			}
 		}()
 		return sendSequence
@@ -726,24 +766,41 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 	}
 }
 
-func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duration) error {
-	self.mutex.Lock()
-	sendSequence, ok := self.sendSequences[sourceId]
-	if !ok {
-		// sequence gone, ignore
-		return nil
+func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duration) (returnErr error) {
+	sendSequence := func(companionContract bool)(*SendSequence) {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+		return self.sendSequences[sendSequenceId{
+			DestinationId: sourceId,
+			CompanionContract: companionContract,
+		}]
 	}
-	self.mutex.Unlock()
 
-	return sendSequence.Ack(ack, timeout)
+	if seq := sendSequence(false); seq != nil {
+		if err := seq.Ack(ack, timeout); err != nil {
+			returnErr = err
+		}
+	}
+	if seq := sendSequence(true); seq != nil {
+		if err := seq.Ack(ack, timeout); err != nil {
+			returnErr = err
+		}
+	}
+	return
 }
 
-func (self *SendBuffer) ResendQueueSize(destinationId Id) (int, ByteCount, Id) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
+func (self *SendBuffer) ResendQueueSize(destinationId Id, companionContract bool) (int, ByteCount, Id) {
+	sendSequence := func()(*SendSequence) {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+		return self.sendSequences[sendSequenceId{
+			DestinationId: destinationId,
+			CompanionContract: companionContract,
+		}]
+	}
 
-	if sendSequence, ok := self.sendSequences[destinationId]; ok {
-		return sendSequence.ResendQueueSize()
+	if seq := sendSequence(); seq != nil {
+		return seq.ResendQueueSize()
 	}
 	return 0, 0, Id{}
 }
@@ -780,6 +837,7 @@ type SendSequence struct {
 	contractManager *ContractManager
 
 	destinationId Id
+	companionContract bool
 	sequenceId Id
 
 	sendBufferSettings *SendBufferSettings
@@ -805,6 +863,7 @@ func NewSendSequence(
 		routeManager *RouteManager,
 		contractManager *ContractManager,
 		destinationId Id,
+		companionContract bool,
 		sendBufferSettings *SendBufferSettings) *SendSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
@@ -816,6 +875,7 @@ func NewSendSequence(
 		routeManager: routeManager,
 		contractManager: contractManager,
 		destinationId: destinationId,
+		companionContract: companionContract,
 		sequenceId: NewId(),
 		sendBufferSettings: sendBufferSettings,
 		sendContract: nil,
@@ -1045,7 +1105,6 @@ func (self *SendSequence) Run() {
 
 				item.sendCount += 1
 				// linear backoff
-				// FIXME use constant backoff
 				// itemResendTimeout := self.sendBufferSettings.ResendInterval
 				itemResendTimeout := time.Duration(float64(self.sendBufferSettings.ResendInterval) * (1 + self.sendBufferSettings.ResendBackoffScale * float64(item.sendCount)))
 				if itemResendTimeout < itemAckTimeout {
@@ -1177,7 +1236,11 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	}
 
 	next := func(contract *protocol.Contract)(bool) {
-		sendContract, err := newSequenceContract(contract, self.sendBufferSettings.MinMessageByteCount)
+		sendContract, err := newSequenceContract(
+			contract,
+			self.sendBufferSettings.MinMessageByteCount,
+			self.sendBufferSettings.ContractFillFraction,
+		)
 		if err != nil {
 			// malformed, drop
 			return false
@@ -1228,7 +1291,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 			return false
 		}
 
-		self.contractManager.CreateContract(self.destinationId)
+		self.contractManager.CreateContract(self.destinationId, self.companionContract)
 
 		if self.sendBufferSettings.ContractRetryInterval < timeout {
 			timeout = self.sendBufferSettings.ContractRetryInterval
@@ -1771,24 +1834,18 @@ func (self *ReceiveSequence) Run() {
 				if self.nextSequenceNumber == item.sequenceNumber {
 					// this item is the head of sequence
 					transferLog("[%s] Receive next in sequence %d: %s", self.clientId.String(), item.sequenceNumber, item.frames)
-
-					self.nextSequenceNumber = item.sequenceNumber + 1	
-				
 				
 					if err := self.registerContracts(item); err != nil {
 						return
 					}
 					transferLog("[%s] Receive head of sequence %d.", self.clientId.String(), item.sequenceNumber)
 					if self.updateContract(item) {
+						self.nextSequenceNumber = item.sequenceNumber + 1
 						self.receiveHead(item)
 					} else {
-						transferLog("!! EXIT M")
-						// no contract
-						// close the sequence
-						self.peerAudit.Update(func(a *PeerAudit) {
-							a.discard(item.messageByteCount)
-						})
-						return
+						// no valid contract
+						// drop the message and let the client send a contract at the head
+						fmt.Printf("Dropped head waiting for contract.\n")
 					}
 				} else {
 					// this item is a resend of a previous item
@@ -2197,11 +2254,6 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 }
 
 func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
-	// FIXME
-	if true {
-		return nil
-	}
-
 	for _, frame := range item.frames {
 		if frame.MessageType == protocol.MessageType_TransferContract {
 			// close out the previous contract
@@ -2226,8 +2278,6 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 				return err
 			}
 
-			// FIXME
-			/*
 			// check the hmac with the local provider secret key
 			if !self.contractManager.Verify(
 					contract.StoredContractHmac,
@@ -2239,11 +2289,14 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 				self.peerAudit.Update(func(a *PeerAudit) {
 					a.badContract()
 				})
-				return
+				return nil
 			}
-			*/
 
-			self.receiveContract, err = newSequenceContract(&contract, self.receiveBufferSettings.MinMessageByteCount)
+			self.receiveContract, err = newSequenceContract(
+				&contract,
+				self.receiveBufferSettings.MinMessageByteCount,
+				1.0,
+			)
 			if err != nil {
 				transferLog("!! EXIT K")
 				// bad contract
@@ -2319,6 +2372,7 @@ func newReceiveQueue() *receiveQueue {
 type sequenceContract struct {
 	contractId Id
 	transferByteCount ByteCount
+	effectiveTransferByteCount ByteCount
 	provideMode protocol.ProvideMode
 
 	minUpdateByteCount ByteCount
@@ -2330,7 +2384,7 @@ type sequenceContract struct {
 	unackedByteCount ByteCount
 }
 
-func newSequenceContract(contract *protocol.Contract, minUpdateByteCount ByteCount) (*sequenceContract, error) {
+func newSequenceContract(contract *protocol.Contract, minUpdateByteCount ByteCount, contractFillFraction float32) (*sequenceContract, error) {
 	storedContract := &protocol.StoredContract{}
 	err := proto.Unmarshal(contract.StoredContractBytes, storedContract)
 	if err != nil {
@@ -2355,6 +2409,7 @@ func newSequenceContract(contract *protocol.Contract, minUpdateByteCount ByteCou
 	return &sequenceContract{
 		contractId: contractId,
 		transferByteCount: ByteCount(storedContract.TransferByteCount),
+		effectiveTransferByteCount: ByteCount(float32(storedContract.TransferByteCount) * contractFillFraction),
 		provideMode: contract.ProvideMode,
 		minUpdateByteCount: minUpdateByteCount,
 		sourceId: sourceId,
@@ -2371,7 +2426,7 @@ func (self *sequenceContract) update(byteCount ByteCount) bool {
 	} else {
 		roundedByteCount = byteCount
 	}
-	if self.transferByteCount < self.ackedByteCount + self.unackedByteCount + roundedByteCount {
+	if self.effectiveTransferByteCount < self.ackedByteCount + self.unackedByteCount + roundedByteCount {
 		// doesn't fit in contract
 		return false
 	}
@@ -2619,7 +2674,6 @@ type PeerAudit struct {
     DiscardedCount int
     BadMessageByteCount ByteCount
     BadMessageCount int
-    // FIXME rename to Transfer*
     SendByteCount ByteCount
     SendCount int
     ResendByteCount ByteCount

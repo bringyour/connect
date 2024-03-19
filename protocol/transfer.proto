@@ -153,6 +153,8 @@ message CreateContract {
     // ulid
     bytes destination_id = 1;
     uint64 transfer_byte_count = 2;
+    // restrict the contract to a companion of an existing open contract
+    bool companion = 3;
 }
 
 

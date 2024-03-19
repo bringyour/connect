@@ -65,10 +65,14 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 			client.RouteManager().UpdateTransport(transportSend, routesSend)
 			client.RouteManager().UpdateTransport(transportReceive, routesReceive)
 
+			client.ContractManager().AddNoContractPeer(providerClient.ClientId())
+
 			providerTransportSend := NewSendClientTransport(args.ClientId)
 			providerTransportReceive := NewReceiveGatewayTransport()
 			providerClient.RouteManager().UpdateTransport(providerTransportReceive, routesSend)
 			providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
+
+			providerClient.ContractManager().AddNoContractPeer(client.ClientId())
 			
 
 			return client, nil

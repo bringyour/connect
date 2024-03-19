@@ -96,8 +96,10 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	b.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 		for _, frame := range frames {
-			v := RequireFromFrame(frame).(*protocol.SimpleMessage)
-			receives <- v
+			switch v := RequireFromFrame(frame).(type) {
+			case *protocol.SimpleMessage:
+				receives <- v
+			}
 		}
 	})
 

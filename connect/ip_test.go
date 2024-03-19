@@ -343,10 +343,14 @@ func testingNewClient(ctx context.Context, providerClient *Client, receivePacket
 	client.RouteManager().UpdateTransport(transportSend, routesSend)
 	client.RouteManager().UpdateTransport(transportReceive, routesReceive)
 
+	client.ContractManager().AddNoContractPeer(providerClient.ClientId())
+
 	providerTransportSend := NewSendClientTransport(client.ClientId())
 	providerTransportReceive := NewReceiveGatewayTransport()
 	providerClient.RouteManager().UpdateTransport(providerTransportReceive, routesSend)
 	providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
+
+	providerClient.ContractManager().AddNoContractPeer(client.ClientId())
 
 	return NewRemoteUserNatClient(
 		client,
