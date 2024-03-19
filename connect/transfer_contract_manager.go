@@ -22,14 +22,35 @@ import (
 
 
 func DefaultContractManagerSettings() *ContractManagerSettings {
+	// NETWORK EVENT: enable contracts 2024-01-01-00:00:00Z
+	networkEventTimeEnableContracts, err := time.Parse(time.RFC3339, "2024-04-01T00:00:00Z")
+	if err != nil {
+		panic(err)
+	}
 	return &ContractManagerSettings{
 		StandardTransferByteCount: gib(8),
+
+		NetworkEventTimeEnableContracts: networkEventTimeEnableContracts,
 	}
+}
+
+func DefaultContractManagerSettingsNoNetworkEvents() *ContractManagerSettings {
+	settings := DefaultContractManagerSettings()
+	settings.NetworkEventTimeEnableContracts = time.Time{}
+	return settings
 }
 
 
 type ContractManagerSettings struct {
 	StandardTransferByteCount ByteCount
+
+	// enable contracts on the network
+	// this can be removed after wide adoption
+	NetworkEventTimeEnableContracts time.Time
+}
+
+func (self *ContractManagerSettings) ContractsEnabled() bool {
+	return self.NetworkEventTimeEnableContracts.Before(time.Now())
 }
 
 
@@ -37,7 +58,7 @@ type ContractManager struct {
 	ctx context.Context
 	client *Client
 
-	contractManagerSettings *ContractManagerSettings
+	settings *ContractManagerSettings
 
 	mutex sync.Mutex
 
@@ -57,7 +78,7 @@ func NewContractManagerWithDefaults(ctx context.Context, client *Client) *Contra
 	return NewContractManager(ctx, client, DefaultContractManagerSettings())
 }
 
-func NewContractManager(ctx context.Context, client *Client, contractManagerSettings *ContractManagerSettings) *ContractManager {
+func NewContractManager(ctx context.Context, client *Client, settings *ContractManagerSettings) *ContractManager {
 	// at a minimum 
 	// - messages to/from the platform (ControlId) do not need a contract
 	//   this is because the platform is needed to create contracts
@@ -74,7 +95,7 @@ func NewContractManager(ctx context.Context, client *Client, contractManagerSett
 	contractManager := &ContractManager{
 		ctx: ctx,
 		client: client,
-		contractManagerSettings: contractManagerSettings,
+		settings: settings,
 		provideSecretKeys: map[protocol.ProvideMode][]byte{},
 		destinationContracts: map[Id]*ContractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
@@ -89,7 +110,7 @@ func NewContractManager(ctx context.Context, client *Client, contractManagerSett
 }
 
 func (self *ContractManager) StandardTransferByteCount() ByteCount {
-	return self.contractManagerSettings.StandardTransferByteCount
+	return self.settings.StandardTransferByteCount
 }
 
 func (self *ContractManager) addContractErrorCallback(contractErrorCallback ContractErrorFunction) func() {
@@ -219,6 +240,10 @@ func (self *ContractManager) AddNoContractPeer(clientId Id) {
 }
 
 func (self *ContractManager) SendNoContract(destinationId Id) bool {
+	if !self.settings.ContractsEnabled() {
+		return true
+	}
+
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -229,6 +254,10 @@ func (self *ContractManager) SendNoContract(destinationId Id) bool {
 }
 
 func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
+	if !self.settings.ContractsEnabled() {
+		return true
+	}
+
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -336,7 +365,7 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 	// look at destinationContracts and last contract to get previous contract id
 	createContract := &protocol.CreateContract{
 		DestinationId: destinationId.Bytes(),
-		TransferByteCount: uint64(self.contractManagerSettings.StandardTransferByteCount),
+		TransferByteCount: uint64(self.settings.StandardTransferByteCount),
 		Companion: companionContract,
 	}
 	self.client.SendControl(RequireToFrame(createContract), nil)
