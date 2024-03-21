@@ -1340,6 +1340,9 @@ components:
                     properties:
                         by_jwt:
                             type: string
+                        network_id:
+                            description: uuid
+                            type: string
                         network_name:
                             type: string
                 verification_required:

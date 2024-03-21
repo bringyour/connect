@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/rand"
 	"fmt"
+	"slices"
 
 	"golang.org/x/exp/maps"
 
@@ -23,14 +24,15 @@ import (
 
 func DefaultContractManagerSettings() *ContractManagerSettings {
 	// NETWORK EVENT: enable contracts 2024-01-01-00:00:00Z
-	networkEventTimeEnableContracts, err := time.Parse(time.RFC3339, "2024-04-01T00:00:00Z")
-	if err != nil {
-		panic(err)
-	}
+	// networkEventTimeEnableContracts, err := time.Parse(time.RFC3339, "2024-04-01T00:00:00Z")
+	// if err != nil {
+	// 	panic(err)
+	// }
 	return &ContractManagerSettings{
-		StandardTransferByteCount: gib(8),
+		StandardTransferByteCount: gib(1),
 
-		NetworkEventTimeEnableContracts: networkEventTimeEnableContracts,
+		// NetworkEventTimeEnableContracts: networkEventTimeEnableContracts,
+		NetworkEventTimeEnableContracts: time.Time{},
 	}
 }
 
@@ -64,7 +66,7 @@ type ContractManager struct {
 
 	provideSecretKeys map[protocol.ProvideMode][]byte
 
-	destinationContracts map[Id]*ContractQueue
+	destinationContracts map[Id]*contractQueue
 	
 	receiveNoContractClientIds map[Id]bool
 	sendNoContractClientIds map[Id]bool
@@ -97,7 +99,7 @@ func NewContractManager(ctx context.Context, client *Client, settings *ContractM
 		client: client,
 		settings: settings,
 		provideSecretKeys: map[protocol.ProvideMode][]byte{},
-		destinationContracts: map[Id]*ContractQueue{},
+		destinationContracts: map[Id]*contractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds: sendNoContractClientIds,
 		contractErrorCallbacks: NewCallbackList[ContractErrorFunction](),
@@ -274,7 +276,7 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 	enterTime := time.Now()
 	for {
 		notify := contractQueue.updateMonitor.NotifyChannel()
-		contract := contractQueue.poll()
+		contract := contractQueue.Poll()
 
 		if contract != nil {
 			return contract
@@ -329,20 +331,20 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	contractQueue := self.openContractQueue(destinationId)
 	defer self.closeContractQueue(destinationId)
 
-	contractQueue.add(contract)
+	contractQueue.Add(contract, &storedContract)
 	return nil
 }
 
-func (self *ContractManager) openContractQueue(destinationId Id) *ContractQueue {
+func (self *ContractManager) openContractQueue(destinationId Id) *contractQueue {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	contractQueue, ok := self.destinationContracts[destinationId]
 	if !ok {
-		contractQueue = NewContractQueue()
+		contractQueue = newContractQueue()
 		self.destinationContracts[destinationId] = contractQueue
 	}
-	contractQueue.open()
+	contractQueue.Open()
 
 	return contractQueue
 }
@@ -355,18 +357,22 @@ func (self *ContractManager) closeContractQueue(destinationId Id) {
 	if !ok {
 		panic("Open and close must be equally paired")
 	}
-	contractQueue.close()
-	if contractQueue.empty() {
+	contractQueue.Close()
+	if contractQueue.Empty() {
 		delete(self.destinationContracts, destinationId)
 	}
 }
 
 func (self *ContractManager) CreateContract(destinationId Id, companionContract bool) {
 	// look at destinationContracts and last contract to get previous contract id
+	contractQueue := self.openContractQueue(destinationId)
+	defer self.closeContractQueue(destinationId)
+
 	createContract := &protocol.CreateContract{
 		DestinationId: destinationId.Bytes(),
 		TransferByteCount: uint64(self.settings.StandardTransferByteCount),
 		Companion: companionContract,
+		HaveContractIds: contractQueue.AddedContractIdBytes(),
 	}
 	self.client.SendControl(RequireToFrame(createContract), nil)
 }
@@ -388,35 +394,38 @@ func (self *ContractManager) Close() {
 }
 
 
-type ContractQueue struct {
+type contractQueue struct {
 	updateMonitor *Monitor
 
 	mutex sync.Mutex
 	openCount int
 	contracts []*protocol.Contract
+	// remember all added contract ids
+	addedContractIdBytes [][]byte
 }
 
-func NewContractQueue() *ContractQueue {
-	return &ContractQueue{
+func newContractQueue() *contractQueue {
+	return &contractQueue{
 		updateMonitor: NewMonitor(),
 		openCount: 0,
 		contracts: []*protocol.Contract{},
+		addedContractIdBytes: [][]byte{},
 	}
 }
 
-func (self *ContractQueue) open() {
+func (self *contractQueue) Open() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	self.openCount += 1
 }
 
-func (self *ContractQueue) close() {
+func (self *contractQueue) Close() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	self.openCount -= 1
 }
 
-func (self *ContractQueue) poll() *protocol.Contract {
+func (self *contractQueue) Poll() *protocol.Contract {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -430,18 +439,26 @@ func (self *ContractQueue) poll() *protocol.Contract {
 	return contract
 }
 
-func (self *ContractQueue) add(contract *protocol.Contract) {
+func (self *contractQueue) Add(contract *protocol.Contract, storedContract *protocol.StoredContract) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	self.contracts = append(self.contracts, contract)
+	self.addedContractIdBytes = append(self.addedContractIdBytes, storedContract.ContractId)
 
 	self.updateMonitor.NotifyAll()
 }
 
-func (self *ContractQueue) empty() bool {
+func (self *contractQueue) Empty() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	return 0 == self.openCount && 0 == len(self.contracts)
+}
+
+func (self *contractQueue) AddedContractIdBytes() [][]byte {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return slices.Clone(self.addedContractIdBytes)
 }

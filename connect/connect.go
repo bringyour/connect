@@ -15,18 +15,15 @@ import (
 type ByteCount = int64
 
 func kib(c ByteCount) ByteCount {
-	c *= ByteCount(1024)
-	return c
+	return c * ByteCount(1024)
 }
 
 func mib(c ByteCount) ByteCount {
-	c *= ByteCount(1024 * 1024)
-	return c
+	return c * ByteCount(1024 * 1024)
 }
 
 func gib(c ByteCount) ByteCount {
-	c *= ByteCount(1024 * 1024 * 1024)
-	return c
+	return c * ByteCount(1024 * 1024 * 1024)
 }
 
 
