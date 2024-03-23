@@ -156,7 +156,7 @@ message CreateContract {
     // restrict the contract to a companion of an existing open contract
     bool companion = 3;
     // ulids
-    repeated bytes have_contract_ids = 4;
+    repeated bytes used_contract_ids = 4;
 }
 
 

@@ -262,6 +262,9 @@ func NewClient(ctx context.Context, clientId Id, clientSettings *ClientSettings)
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
 
+	fmt.Printf("CREATE CLIENT CONTRACT MANAGER size=%d\n", clientSettings.ContractManagerSettings.StandardContractTransferByteCount)
+
+
 	routeManager := NewRouteManager(ctx)
 	contractManager := NewContractManager(ctx, client, clientSettings.ContractManagerSettings)
 
@@ -652,6 +655,14 @@ func (self *Client) Cancel() {
 	self.forwardBuffer.Cancel()
 }
 
+func (self *Client) Flush() {
+	self.sendBuffer.Flush()
+	self.receiveBuffer.Flush()
+	self.forwardBuffer.Flush()
+
+	self.contractManager.Flush()
+}
+
 
 type SendBufferSettings struct {
 	ContractTimeout time.Duration
@@ -826,6 +837,18 @@ func (self *SendBuffer) Cancel() {
 	}
 }
 
+func (self *SendBuffer) Flush() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// cancel all open sequences
+	for sendSequenceId, sendSequence := range self.sendSequences {
+		if sendSequenceId.DestinationId != ControlId {
+			sendSequence.Cancel()
+		}
+	}
+}
+
 
 type SendSequence struct {
 	ctx context.Context
@@ -842,8 +865,11 @@ type SendSequence struct {
 
 	sendBufferSettings *SendBufferSettings
 
+	// the head contract. this contract is also in `openSendContracts`
 	sendContract *sequenceContract
-	sendContracts map[Id]*sequenceContract
+	// contracts are closed when the data are acked
+	// these contracts are waiting for acks to close
+	openSendContracts map[Id]*sequenceContract
 
 	packs chan *SendPack
 	acks chan *protocol.Ack
@@ -879,7 +905,7 @@ func NewSendSequence(
 		sequenceId: NewId(),
 		sendBufferSettings: sendBufferSettings,
 		sendContract: nil,
-		sendContracts: map[Id]*sequenceContract{},
+		openSendContracts: map[Id]*sequenceContract{},
 		packs: make(chan *SendPack, sendBufferSettings.SequenceBufferSize),
 		acks: make(chan *protocol.Ack, sendBufferSettings.AckBufferSize),
 		resendQueue: newResendQueue(),
@@ -987,8 +1013,9 @@ func (self *SendSequence) Run() {
 		self.cancel()
 
 		// close contract
-		for _, sendContract := range self.sendContracts {
-			self.contractManager.Complete(
+		for _, sendContract := range self.openSendContracts {
+			fmt.Printf("COMPLETE CONTRACT SEND 3\n")
+			self.contractManager.CompleteContract(
 				sendContract.contractId,
 				sendContract.ackedByteCount,
 				sendContract.unackedByteCount,
@@ -1012,6 +1039,10 @@ func (self *SendSequence) Run() {
 				}
 			}
 		}()
+
+		// used contracts were closed above
+		// the contract queue can be safely closed
+		self.contractManager.CloseContractQueue(self.destinationId)
 	}()
 
 	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.destinationId)
@@ -1176,13 +1207,8 @@ func (self *SendSequence) Run() {
 				// note messages of `size < MinMessageByteCount` get counted as `MinMessageByteCount` against the contract
 				if self.updateContract(sendPack.MessageByteCount) {
 					transferLog("[%s] Have contract, sending -> %s: %s", self.clientId.String(), self.destinationId.String(), sendPack.Frame)
-					item := self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack)
-					// fmt.Printf("buffer send write message %s->\n", self.clientId)
-					if err := self.multiRouteWriter.Write(self.ctx, item.transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
-						transferLog("!! WRITE TIMEOUT B\n")
-					} else {
-						transferLog("WROTE FRAME\n")
-					}
+					self.send(sendPack.Frame, sendPack.AckCallback, sendPack.Ack)
+					// ignore the error since there will be a retry
 				} else {
 					// no contract
 					// close the sequence
@@ -1211,17 +1237,8 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	if self.contractManager.SendNoContract(self.destinationId) {
 		return true
 	}
-	if self.sendContract != nil {
-		if self.sendContract.update(messageByteCount) {
-			return true
-		} else {
-			self.contractManager.Complete(
-				self.sendContract.contractId,
-				self.sendContract.ackedByteCount,
-				self.sendContract.unackedByteCount,
-			)
-			self.sendContract = nil
-		}
+	if self.sendContract != nil && self.sendContract.update(messageByteCount) {
+		return true
 	}
 	// new contract
 
@@ -1229,14 +1246,16 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	// this is needed because the size of the contract pack is counted against the contract
 	maxContractMessageByteCount := ByteCount(256)
 
-	if self.contractManager.StandardTransferByteCount() < messageByteCount + maxContractMessageByteCount {
+	effectiveContractTransferByteCount := ByteCount(float32(self.contractManager.StandardContractTransferByteCount()) * self.sendBufferSettings.ContractFillFraction)
+	if effectiveContractTransferByteCount < messageByteCount + maxContractMessageByteCount {
 		// this pack does not fit into a standard contract
 		// TODO allow requesting larger contracts
-		return false
+		panic("Message too large for contract. It can never be sent.")
 	}
 
-	next := func(contract *protocol.Contract)(bool) {
-		sendContract, err := newSequenceContract(
+	// sends the 
+	setNextContract := func(contract *protocol.Contract)(bool) {
+		nextSendContract, err := newSequenceContract(
 			contract,
 			self.sendBufferSettings.MinMessageByteCount,
 			self.sendBufferSettings.ContractFillFraction,
@@ -1252,36 +1271,41 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 			panic("Bad estimate for contract max size could result in infinite contract retries.")
 		}
 
-		if sendContract.update(ByteCount(len(contractMessageBytes))) && sendContract.update(messageByteCount) {
-			transferLog("[%s] Send contract %s -> %s", self.clientId.String(), sendContract.contractId.String(), self.destinationId.String())
-			self.sendContract = sendContract
-			self.sendContracts[sendContract.contractId] = sendContract
+		if nextSendContract.update(ByteCount(len(contractMessageBytes))) && nextSendContract.update(messageByteCount) {
+			transferLog("[%s] Send contract %s -> %s", self.clientId.String(), nextSendContract.contractId.String(), self.destinationId.String())
+
+			self.setContract(nextSendContract)
 
 			// append the contract to the sequence
-			item := self.send(&protocol.Frame{
+			self.send(&protocol.Frame{
 				MessageType: protocol.MessageType_TransferContract,
 				MessageBytes: contractMessageBytes,
 			}, func(error){}, true)
-			if err := self.multiRouteWriter.Write(self.ctx, item.transferFrameBytes, self.sendBufferSettings.WriteTimeout); err != nil {
-				transferLog("!! WRITE TIMEOUT C\n")
-			} else {
-				transferLog("WROTE CONTRACT\n")
-			}
 
 			return true
 		} else {
 			// this contract doesn't fit the message
-			// just close it since it was never send to the other side
-			self.contractManager.Complete(sendContract.contractId, 0, 0)
+			// the contract was requested with the correct size, so this is an error somewhere
+			// just close it and let the platform time out the other side
+			fmt.Printf("COMPLETE CONTRACT SEND 4\n")
+			self.contractManager.CompleteContract(nextSendContract.contractId, 0, 0)
 			return false
 		}
 	}
 
-	if nextContract := self.contractManager.TakeContract(self.ctx, self.destinationId, 0); nextContract != nil {
-		// async queue up the next contract
-		if next(nextContract) {
+	nextContract := func(timeout time.Duration)(bool) {
+		if contract := self.contractManager.TakeContract(self.ctx, self.destinationId, timeout); contract != nil && setNextContract(contract) {
+			// async queue up the next contract
+			self.contractManager.CreateContract(self.destinationId, self.companionContract)
+
 			return true
+		} else {
+			return false
 		}
+	}
+
+	if nextContract(0) {
+		return true
 	}
 
 	endTime := time.Now().Add(self.sendBufferSettings.ContractTimeout)
@@ -1291,22 +1315,37 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 			return false
 		}
 
+		// async queue up the next contract
 		self.contractManager.CreateContract(self.destinationId, self.companionContract)
 
-		if self.sendBufferSettings.ContractRetryInterval < timeout {
-			timeout = self.sendBufferSettings.ContractRetryInterval
-		}
-
-		if nextContract := self.contractManager.TakeContract(self.ctx, self.destinationId, timeout); nextContract != nil {
-			// async queue up the next contract
-			if next(nextContract) {
-				return true
-			}
+		if nextContract(min(timeout, self.sendBufferSettings.ContractRetryInterval)) {
+			return true
 		}
 	}
 }
 
-func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, ack bool) *sendItem {
+func (self *SendSequence) setContract(nextSendContract *sequenceContract) {
+	// do not close the current contract unless it has no pending data
+	// the contract is stracked in `openSendContracts` and will be closed on ack
+	if self.sendContract != nil && self.sendContract.unackedByteCount == 0 {
+		fmt.Printf("COMPLETE CONTRACT SEND 1\n")
+		self.contractManager.CompleteContract(
+			self.sendContract.contractId,
+			self.sendContract.ackedByteCount,
+			self.sendContract.unackedByteCount,
+		)
+		delete(self.openSendContracts, self.sendContract.contractId)
+		self.sendContract = nil
+	}
+	self.openSendContracts[nextSendContract.contractId] = nextSendContract
+	self.sendContract = nextSendContract
+}
+
+func (self *SendSequence) send(
+	frame *protocol.Frame,
+	ackCallback AckFunction,
+	ack bool,
+) {
 	sendTime := time.Now()
 	messageId := NewId()
 	
@@ -1373,10 +1412,16 @@ func (self *SendSequence) send(frame *protocol.Frame, ackCallback AckFunction, a
 		self.resendQueue.Add(item)
 	} else {
 		// immediately ack
+		self.ackItem(item)
 		ackCallback(nil)
 	}
 
-	return item
+	// ignore the write error
+	self.multiRouteWriter.Write(
+		self.ctx,
+		item.transferFrameBytes,
+		self.sendBufferSettings.WriteTimeout,
+	)
 }
 
 func (self *SendSequence) setHead(transferFrameBytes []byte) ([]byte, error) {
@@ -1445,21 +1490,27 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 		}
 		implicitItem.ackCallback(nil)
 
-		if implicitItem.contractId != nil {
-			itemSendContract := self.sendContracts[*implicitItem.contractId]
-			itemSendContract.ack(implicitItem.messageByteCount)
-			// not current and closed
-			if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
-				self.contractManager.Complete(
-					itemSendContract.contractId,
-					itemSendContract.ackedByteCount,
-					itemSendContract.unackedByteCount,
-				)
-			}
-		}
+		self.ackItem(implicitItem)
 		self.sendItems[i] = nil
 	}
 	self.sendItems = self.sendItems[i:]
+}
+
+func (self *SendSequence) ackItem(item *sendItem) {
+	if item.contractId != nil {
+		itemSendContract := self.openSendContracts[*item.contractId]
+		itemSendContract.ack(item.messageByteCount)
+		// not current and closed
+		if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
+			fmt.Printf("COMPLETE CONTRACT SEND 2\n")
+			self.contractManager.CompleteContract(
+				itemSendContract.contractId,
+				itemSendContract.ackedByteCount,
+				itemSendContract.unackedByteCount,
+			)
+			delete(self.openSendContracts, itemSendContract.contractId)
+		}
+	}
 }
 
 func (self *SendSequence) Close() {
@@ -1655,6 +1706,18 @@ func (self *ReceiveBuffer) Cancel() {
 	}
 }
 
+func (self *ReceiveBuffer) Flush() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// cancel all open sequences
+	for receiveSequenceId, receiveSequence := range self.receiveSequences {
+		if receiveSequenceId.SourceId != ControlId {
+			receiveSequence.Cancel()
+		}
+	}
+}
+
 
 type ReceiveSequence struct {
 	ctx context.Context
@@ -1671,6 +1734,7 @@ type ReceiveSequence struct {
 	receiveBufferSettings *ReceiveBufferSettings
 
 	receiveContract *sequenceContract
+	usedContractIds map[Id]bool
 
 	packs chan *ReceivePack
 
@@ -1704,6 +1768,7 @@ func NewReceiveSequence(
 		sequenceId: sequenceId,
 		receiveBufferSettings: receiveBufferSettings,
 		receiveContract: nil,
+		usedContractIds: map[Id]bool{},
 		packs: make(chan *ReceivePack, receiveBufferSettings.SequenceBufferSize),
 		receiveQueue: newReceiveQueue(),
 		nextSequenceNumber: 0,
@@ -1759,11 +1824,13 @@ func (self *ReceiveSequence) Run() {
 
 		// close contract
 		if self.receiveContract != nil {
-			self.contractManager.Complete(
+			fmt.Printf("COMPLETE CONTRACT RECEIVE 1 (%s)\n", self.receiveContract.contractId)
+			self.contractManager.CompleteContract(
 				self.receiveContract.contractId,
 				self.receiveContract.ackedByteCount,
 				self.receiveContract.unackedByteCount,
 			)
+			self.receiveContract = nil
 		}
 
 		// drain the buffer
@@ -1845,6 +1912,7 @@ func (self *ReceiveSequence) Run() {
 					} else {
 						// no valid contract
 						// drop the message and let the client send a contract at the head
+						// FIXME send a "needs contract" ack
 						fmt.Printf("Dropped head waiting for contract.\n")
 					}
 				} else {
@@ -2236,6 +2304,7 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 	})
 	var provideMode protocol.ProvideMode
 	if self.receiveContract != nil {
+		self.receiveContract.ack(item.messageByteCount)
 		provideMode = self.receiveContract.provideMode
 	} else {
 		// no contract peers are considered in network
@@ -2256,15 +2325,6 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 	for _, frame := range item.frames {
 		if frame.MessageType == protocol.MessageType_TransferContract {
-			// close out the previous contract
-			if self.receiveContract != nil {
-				self.contractManager.Complete(
-					self.receiveContract.contractId,
-					self.receiveContract.ackedByteCount,
-					self.receiveContract.unackedByteCount,
-				)
-				self.receiveContract = nil
-			}
 
 			var contract protocol.Contract
 			err := proto.Unmarshal(frame.MessageBytes, &contract)
@@ -2283,6 +2343,7 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 					contract.StoredContractHmac,
 					contract.StoredContractBytes,
 					contract.ProvideMode) {
+				fmt.Printf("CONTRACT VERIFICATION FAILED (%s)\n", contract.ProvideMode)
 				transferLog("!! EXIT J")
 				// bad contract
 				// close sequence
@@ -2292,7 +2353,7 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 				return nil
 			}
 
-			self.receiveContract, err = newSequenceContract(
+			nextReceiveContract, err := newSequenceContract(
 				&contract,
 				self.receiveBufferSettings.MinMessageByteCount,
 				1.0,
@@ -2306,8 +2367,38 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 				})
 				return err
 			}
+
+			if err := self.setContract(nextReceiveContract); err != nil {
+				// the next contract has already been used
+				// bad contract
+				// close sequence
+				self.peerAudit.Update(func(a *PeerAudit) {
+					a.badContract()
+				})
+				return err
+			}
 		}
 	}
+	return nil
+}
+
+func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) error {
+	// close out the previous contract
+	if self.receiveContract != nil {
+		fmt.Printf("COMPLETE CONTRACT RECEIVE 2\n")
+		self.contractManager.CompleteContract(
+			self.receiveContract.contractId,
+			self.receiveContract.ackedByteCount,
+			self.receiveContract.unackedByteCount,
+		)
+		self.receiveContract = nil
+	}
+	// track all the contracts used to avoid reusing contracts
+	if self.usedContractIds[nextReceiveContract.contractId] {
+		return errors.New("Already used contract.")
+	}
+	self.usedContractIds[nextReceiveContract.contractId] = true
+	self.receiveContract = nextReceiveContract
 	return nil
 }
 
@@ -2426,11 +2517,14 @@ func (self *sequenceContract) update(byteCount ByteCount) bool {
 	} else {
 		roundedByteCount = byteCount
 	}
+
 	if self.effectiveTransferByteCount < self.ackedByteCount + self.unackedByteCount + roundedByteCount {
 		// doesn't fit in contract
+		fmt.Printf("DEBIT CONTRACT (%s) FAILED +%d->%d (%d/%d total %.1f%% full)\n", self.contractId.String(), roundedByteCount, self.ackedByteCount + self.unackedByteCount + roundedByteCount, self.ackedByteCount + self.unackedByteCount, self.effectiveTransferByteCount, 100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount))
 		return false
 	}
 	self.unackedByteCount += roundedByteCount
+	fmt.Printf("DEBIT CONTRACT (%s) PASSED +%d->%d (%d/%d total %.1f%% full)\n", self.contractId.String(), roundedByteCount, self.ackedByteCount + self.unackedByteCount, self.ackedByteCount + self.unackedByteCount, self.effectiveTransferByteCount, 100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount))
 	return true
 }
 
@@ -2544,6 +2638,18 @@ func (self *ForwardBuffer) Cancel() {
 	// cancel all open sequences
 	for _, forwardSequence := range self.forwardSequences {
 		forwardSequence.Cancel()
+	}
+}
+
+func (self *ForwardBuffer) Flush() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// cancel all open sequences
+	for destinationId, forwardSequence := range self.forwardSequences {
+		if destinationId != ControlId {
+			forwardSequence.Cancel()
+		}
 	}
 }
 
