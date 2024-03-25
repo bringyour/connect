@@ -1744,7 +1744,9 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
     fmt.Printf("remote user nat provider s packet ->%s\n", source.ClientId)
 
     // fmt.Printf("SEND PROTOCOL %s\n", ipProtocol)
-    opts := []any{}
+    opts := []any{
+        CompanionContract(),
+    }
     switch ipProtocol {
     case IpProtocolUdp:
         opts = append(opts, NoAck())

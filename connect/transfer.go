@@ -79,6 +79,13 @@ func DefaultClientSettings() *ClientSettings {
 }
 
 
+func DefaultClientSettingsNoNetworkEvents() *ClientSettings {
+	clientSettings := DefaultClientSettings()
+	clientSettings.ContractManagerSettings = DefaultContractManagerSettingsNoNetworkEvents()
+	return clientSettings
+}
+
+
 func DefaultSendBufferSettings() *SendBufferSettings {
 	return &SendBufferSettings{
 		ContractTimeout: 30 * time.Second,
@@ -1253,6 +1260,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	// sends the 
 	setNextContract := func(contract *protocol.Contract)(bool) {
 		nextSendContract, err := newSequenceContract(
+			"s",
 			contract,
 			self.sendBufferSettings.MinMessageByteCount,
 			self.sendBufferSettings.ContractFillFraction,
@@ -2351,6 +2359,7 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 			}
 
 			nextReceiveContract, err := newSequenceContract(
+				"r",
 				&contract,
 				self.receiveBufferSettings.MinMessageByteCount,
 				1.0,
@@ -2400,12 +2409,14 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 }
 
 func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
+	// always use a contract if present
+	// the sender may send contracts even if `receiveNoContract` is set locally
+	if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
+		return true
+	}
 	// `receiveNoContract` is a mutual configuration 
 	// both sides must configure themselves to require no contract from each other
 	if self.contractManager.ReceiveNoContract(self.sourceId) {
-		return true
-	}
-	if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
 		return true
 	}
 	return false
@@ -2458,6 +2469,7 @@ func newReceiveQueue() *receiveQueue {
 
 
 type sequenceContract struct {
+	tag string
 	contractId Id
 	transferByteCount ByteCount
 	effectiveTransferByteCount ByteCount
@@ -2472,7 +2484,7 @@ type sequenceContract struct {
 	unackedByteCount ByteCount
 }
 
-func newSequenceContract(contract *protocol.Contract, minUpdateByteCount ByteCount, contractFillFraction float32) (*sequenceContract, error) {
+func newSequenceContract(tag string, contract *protocol.Contract, minUpdateByteCount ByteCount, contractFillFraction float32) (*sequenceContract, error) {
 	storedContract := &protocol.StoredContract{}
 	err := proto.Unmarshal(contract.StoredContractBytes, storedContract)
 	if err != nil {
@@ -2495,6 +2507,7 @@ func newSequenceContract(contract *protocol.Contract, minUpdateByteCount ByteCou
 	}
 
 	return &sequenceContract{
+		tag: tag,
 		contractId: contractId,
 		transferByteCount: ByteCount(storedContract.TransferByteCount),
 		effectiveTransferByteCount: ByteCount(float32(storedContract.TransferByteCount) * contractFillFraction),
@@ -2517,17 +2530,18 @@ func (self *sequenceContract) update(byteCount ByteCount) bool {
 
 	if self.effectiveTransferByteCount < self.ackedByteCount + self.unackedByteCount + roundedByteCount {
 		// doesn't fit in contract
-		fmt.Printf("DEBIT CONTRACT (%s) FAILED +%d->%d (%d/%d total %.1f%% full)\n", self.contractId.String(), roundedByteCount, self.ackedByteCount + self.unackedByteCount + roundedByteCount, self.ackedByteCount + self.unackedByteCount, self.effectiveTransferByteCount, 100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount))
+		fmt.Printf("[%s]DEBIT CONTRACT (%s) FAILED +%d->%d (%d/%d total %.1f%% full)\n", self.tag, self.contractId.String(), roundedByteCount, self.ackedByteCount + self.unackedByteCount + roundedByteCount, self.ackedByteCount + self.unackedByteCount, self.effectiveTransferByteCount, 100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount))
 		return false
 	}
 	self.unackedByteCount += roundedByteCount
-	fmt.Printf("DEBIT CONTRACT (%s) PASSED +%d->%d (%d/%d total %.1f%% full)\n", self.contractId.String(), roundedByteCount, self.ackedByteCount + self.unackedByteCount, self.ackedByteCount + self.unackedByteCount, self.effectiveTransferByteCount, 100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount))
+	fmt.Printf("[%s]DEBIT CONTRACT (%s) PASSED +%d->%d (%d/%d total %.1f%% full)\n", self.tag, self.contractId.String(), roundedByteCount, self.ackedByteCount + self.unackedByteCount, self.ackedByteCount + self.unackedByteCount, self.effectiveTransferByteCount, 100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount))
 	return true
 }
 
 func (self *sequenceContract) ack(byteCount ByteCount) {
 	if self.unackedByteCount < byteCount {
-		panic("Bad accounting.")
+		// debug.PrintStack()
+		panic(fmt.Errorf("Bad accounting %d <> %d", self.unackedByteCount, byteCount))
 	}
 	self.unackedByteCount -= byteCount
 	self.ackedByteCount += byteCount

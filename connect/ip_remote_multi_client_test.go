@@ -50,8 +50,9 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 	    removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
 	    	// do nothing
 	    },
+	    newClientSettings: DefaultClientSettings,
 	    newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-	    	client := NewClientWithDefaults(ctx, args.ClientId)
+	    	client := NewClient(ctx, args.ClientId, clientSettings)
 
 	    	routesSend := []Route{
 				make(chan []byte),
@@ -94,6 +95,7 @@ type TestMultiClientGenerator struct {
 	nextDestintationIds func(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
     newClientArgs func()(*MultiClientGeneratorClientArgs, error)
     removeClientArgs func(args *MultiClientGeneratorClientArgs)
+    newClientSettings func() (*ClientSettings)
     newClient func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
 
@@ -107,6 +109,10 @@ func (self *TestMultiClientGenerator) NewClientArgs() (*MultiClientGeneratorClie
 
 func (self *TestMultiClientGenerator) RemoveClientArgs(args *MultiClientGeneratorClientArgs) {
 	self.removeClientArgs(args)
+}
+
+func (self *TestMultiClientGenerator) NewClientSettings() *ClientSettings {
+	return self.newClientSettings()
 }
 
 func (self *TestMultiClientGenerator) NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
@@ -142,8 +148,9 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	    removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
 	    	// do nothing
 	    },
+	    newClientSettings: DefaultClientSettings,
 	    newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-	    	client := NewClientWithDefaults(ctx, args.ClientId)
+	    	client := NewClient(ctx, args.ClientId, clientSettings)
 			return client, nil
 	    },
 	}

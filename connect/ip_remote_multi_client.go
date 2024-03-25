@@ -34,6 +34,7 @@ type MultiClientGenerator interface {
     // client id, client auth
     NewClientArgs() (*MultiClientGeneratorClientArgs, error)
     RemoveClientArgs(args *MultiClientGeneratorClientArgs)
+    NewClientSettings() *ClientSettings
     NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
 
@@ -384,8 +385,30 @@ type ApiMultiClientGenerator struct {
     deviceDescription string
     deviceSpec string
     appVersion string
+    clientSettingsGenerator func()(*ClientSettings)
 
     api *BringYourApi
+}
+
+func NewApiMultiClientGeneratorWithDefaults(
+    specs []*ProviderSpec,
+    apiUrl string,
+    byJwt string,
+    platformUrl string,
+    deviceDescription string,
+    deviceSpec string,
+    appVersion string,
+) *ApiMultiClientGenerator {
+    return NewApiMultiClientGenerator(
+        specs,
+        apiUrl,
+        byJwt,
+        platformUrl,
+        deviceDescription,
+        deviceSpec,
+        appVersion,
+        DefaultClientSettings,
+    )
 }
 
 func NewApiMultiClientGenerator(
@@ -396,6 +419,7 @@ func NewApiMultiClientGenerator(
     deviceDescription string,
     deviceSpec string,
     appVersion string,
+    clientSettingsGenerator func()(*ClientSettings),
 ) *ApiMultiClientGenerator {
     api := NewBringYourApi(apiUrl)
     api.SetByJwt(byJwt)
@@ -408,6 +432,7 @@ func NewApiMultiClientGenerator(
         deviceDescription: deviceDescription,
         deviceSpec: deviceSpec,
         appVersion: appVersion,
+        clientSettingsGenerator: clientSettingsGenerator,
         api: api,
     }
 }
@@ -482,6 +507,10 @@ func (self *ApiMultiClientGenerator) RemoveClientArgs(args *MultiClientGenerator
     }))
 }
 
+func (self *ApiMultiClientGenerator) NewClientSettings() *ClientSettings {
+    return self.clientSettingsGenerator()
+}
+
 func (self *ApiMultiClientGenerator) NewClient(
     ctx context.Context,
     args *MultiClientGeneratorClientArgs,
@@ -499,6 +528,8 @@ func (self *ApiMultiClientGenerator) NewClient(
         args.ClientAuth,
         client.RouteManager(),
     )
+    // enable return traffic for this client
+    client.ContractManager().SetProvideModesWithReturnTraffic(map[protocol.ProvideMode]bool{})
     return client, nil
 }
 
@@ -983,7 +1014,7 @@ func newMultiClientChannel(
 ) (*multiClientChannel, error) {
     cancelCtx, cancel := context.WithCancel(ctx)
 
-    clientSettings := DefaultClientSettings()
+    clientSettings := generator.NewClientSettings()
     clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
     
     client, err := generator.NewClient(
