@@ -411,13 +411,18 @@ func (self *UdpBuffer[BufferId]) udpSend(
     ipVersion int,
     udp *layers.UDP,
 ) {
-    initSequence := func()(*UdpSequence) {
+    initSequence := func(skip *UdpSequence)(*UdpSequence) {
         self.mutex.Lock()
         defer self.mutex.Unlock()
 
         sequence, ok := self.sequences[bufferId]
         if ok {
-            return sequence
+            if skip == nil || skip != sequence {
+                return sequence
+            } else {
+                sequence.Close()
+                delete(self.sequences, bufferId)
+            }
         }
         sequence = NewUdpSequence(
             self.ctx,
@@ -444,12 +449,10 @@ func (self *UdpBuffer[BufferId]) udpSend(
         return sequence
     }
 
-    if !initSequence().send(provideMode, udp) {
+    sequence := initSequence(nil)
+    if success := sequence.send(provideMode, udp); !success {
         // sequence closed
-        self.mutex.Lock()
-        delete(self.sequences, bufferId)
-        self.mutex.Unlock()
-        initSequence().send(provideMode, udp)
+        initSequence(sequence).send(provideMode, udp)
     }
 }
 
@@ -908,8 +911,10 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 
         if sequence, ok := self.sequences[bufferId]; ok {
             return sequence
-        } else if tcp.SYN {
-            sequence = NewTcpSequence(
+        }
+
+        if tcp.SYN {
+            sequence := NewTcpSequence(
                 self.ctx,
                 self.receiveCallback,
                 source,
@@ -1065,10 +1070,15 @@ func (self *TcpSequence) Run() {
     // send a final FIN+ACK
     defer func() {
         self.log("[final]FIN")
-        self.mutex.Lock()
-        packet, err := self.FinAck()
-        self.receiveSeq += 1
-        self.mutex.Unlock()
+        var packet []byte
+        var err error
+        func() {
+            self.mutex.Lock()
+            defer self.mutex.Unlock()
+
+            packet, err = self.FinAck()
+            self.receiveSeq += 1
+        }()
         if err == nil {
             self.log("[final]send FIN+ACK (%d)", self.sendSeq)
             receive(packet)
@@ -1086,18 +1096,23 @@ func (self *TcpSequence) Run() {
             if sendItem.tcp.SYN {
                 self.log("[init]SYN")
 
-                self.mutex.Lock()
-                // sendSeq is the next expected sequence number
-                // SYN and FIN consume one
-                self.sendSeq = sendItem.tcp.Seq + 1
-                // start the send seq at send seq
-                // this is arbitrary, and since there is no transport security risk back to sender is fine
-                self.receiveSeq = sendItem.tcp.Seq
-                self.receiveSeqAck = sendItem.tcp.Seq
-                self.receiveWindowSize = sendItem.tcp.Window
-                packet, err := self.SynAck()
-                self.receiveSeq += 1
-                self.mutex.Unlock()
+                var packet []byte
+                var err error
+                func() {
+                    self.mutex.Lock()
+                    defer self.mutex.Unlock()
+
+                    // sendSeq is the next expected sequence number
+                    // SYN and FIN consume one
+                    self.sendSeq = sendItem.tcp.Seq + 1
+                    // start the send seq at send seq
+                    // this is arbitrary, and since there is no transport security risk back to sender is fine
+                    self.receiveSeq = sendItem.tcp.Seq
+                    self.receiveSeqAck = sendItem.tcp.Seq
+                    self.receiveWindowSize = sendItem.tcp.Window
+                    packet, err = self.SynAck()
+                    self.receiveSeq += 1
+                }()
                 if err == nil {
                     self.log("[init]receive SYN+ACK")
                     receive(packet)
@@ -1132,9 +1147,10 @@ func (self *TcpSequence) Run() {
     receiveAckCond := sync.NewCond(&self.mutex)
     defer func() {
         self.mutex.Lock()
+        defer self.mutex.Unlock()
+
         receiveActive = false
         receiveAckCond.Broadcast()
-        self.mutex.Unlock()
     }()
 
     go func() {
@@ -1163,24 +1179,29 @@ func (self *TcpSequence) Run() {
             if 0 < n {
                 // since the transfer from local to remove is lossless and preserves order,
                 // do not worry about retransmits
-                self.mutex.Lock()
-                packets, err := self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
-                if 1 < len(packets) {
-                    fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
-                }
-                self.log("[f%d]receive(%d %d %d)", forwardIter, n, len(packets), self.receiveSeq)
+                var packets [][]byte
+                var err error
+                func() {
+                    self.mutex.Lock()
+                    defer self.mutex.Unlock()
 
-                // fmt.Printf("[multi] Receive window %d <> %d\n", uint32(self.receiveWindowSize), self.receiveSeq - self.receiveSeqAck + uint32(n))
-                for uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
-                    if !receiveActive {
-                        return
+                    packets, err = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
+                    if 1 < len(packets) {
+                        fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
                     }
-                    fmt.Printf("[multi] Receive window wait\n")
-                    receiveAckCond.Wait()
-                }
+                    self.log("[f%d]receive(%d %d %d)", forwardIter, n, len(packets), self.receiveSeq)
 
-                self.receiveSeq += uint32(n)
-                self.mutex.Unlock()
+                    // fmt.Printf("[multi] Receive window %d <> %d\n", uint32(self.receiveWindowSize), self.receiveSeq - self.receiveSeqAck + uint32(n))
+                    for uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
+                        if !receiveActive {
+                            return
+                        }
+                        fmt.Printf("[multi] Receive window wait\n")
+                        receiveAckCond.Wait()
+                    }
+
+                    self.receiveSeq += uint32(n)
+                }()
 
                 if err == nil {
                     for _, packet := range packets { 
@@ -1218,20 +1239,23 @@ func (self *TcpSequence) Run() {
             drop := false
             seq := 0
             
-            self.mutex.Lock()
-            if self.sendSeq != sendItem.tcp.Seq {
-                // a retransmit
-                // since the transfer from local to remote is lossless and preserves order,
-                // the packet is already pending. Ignore.
-                drop = true
-            } else if sendItem.tcp.ACK {
-                // acks are reliably delivered (see above)
-                // we do not need to resend receive packets on missing acks
-                self.receiveWindowSize = sendItem.tcp.Window
-                self.receiveSeqAck = sendItem.tcp.Ack
-                receiveAckCond.Broadcast()
-            }
-            self.mutex.Unlock()
+            func() {
+                self.mutex.Lock()
+                defer self.mutex.Unlock()
+
+                if self.sendSeq != sendItem.tcp.Seq {
+                    // a retransmit
+                    // since the transfer from local to remote is lossless and preserves order,
+                    // the packet is already pending. Ignore.
+                    drop = true
+                } else if sendItem.tcp.ACK {
+                    // acks are reliably delivered (see above)
+                    // we do not need to resend receive packets on missing acks
+                    self.receiveWindowSize = sendItem.tcp.Window
+                    self.receiveSeqAck = sendItem.tcp.Ack
+                    receiveAckCond.Broadcast()
+                }
+            }()
 
             if drop {
                 continue
@@ -1282,10 +1306,15 @@ func (self *TcpSequence) Run() {
 
 
             if 0 < seq {
-                self.mutex.Lock()
-                self.sendSeq += uint32(seq)
-                packet, err := self.PureAck()
-                self.mutex.Unlock()
+                var packet []byte
+                var err error
+                func() {
+                    self.mutex.Lock()
+                    defer self.mutex.Unlock()
+
+                    self.sendSeq += uint32(seq)
+                    packet, err = self.PureAck()
+                }()
                 if err == nil {
                     receive(packet)
                 }

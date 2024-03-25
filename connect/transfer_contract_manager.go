@@ -123,8 +123,6 @@ func NewContractManager(ctx context.Context, client *Client, settings *ContractM
 		client.ClientId(): true,
 	}
 
-	fmt.Printf("CREATE CONTRACT MANAGER size=%d\n", settings.StandardContractTransferByteCount)
-
 	contractManager := &ContractManager{
 		ctx: ctx,
 		client: client,

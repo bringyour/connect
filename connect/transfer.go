@@ -262,9 +262,6 @@ func NewClient(ctx context.Context, clientId Id, clientSettings *ClientSettings)
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
 	}
 
-	fmt.Printf("CREATE CLIENT CONTRACT MANAGER size=%d\n", clientSettings.ContractManagerSettings.StandardContractTransferByteCount)
-
-
 	routeManager := NewRouteManager(ctx)
 	contractManager := NewContractManager(ctx, client, clientSettings.ContractManagerSettings)
 
