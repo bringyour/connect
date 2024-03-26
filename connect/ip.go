@@ -1192,10 +1192,7 @@ func (self *TcpSequence) Run() {
                     self.log("[f%d]receive(%d %d %d)", forwardIter, n, len(packets), self.receiveSeq)
 
                     // fmt.Printf("[multi] Receive window %d <> %d\n", uint32(self.receiveWindowSize), self.receiveSeq - self.receiveSeqAck + uint32(n))
-                    for uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
-                        if !receiveActive {
-                            return
-                        }
+                    for receiveActive && uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
                         fmt.Printf("[multi] Receive window wait\n")
                         receiveAckCond.Wait()
                     }

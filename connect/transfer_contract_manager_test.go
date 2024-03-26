@@ -4,7 +4,7 @@ import (
 	"context"
     "testing"
     "time"
-    mathrand "math/rand"
+    // mathrand "math/rand"
     "crypto/hmac"
 	"crypto/sha256"
 
@@ -22,7 +22,7 @@ func TestTakeContract(t *testing.T) {
 
 	k := 4
 	n := 64
-	contractReturnP := float32(0.5)
+	// contractReturnP := float32(0.5)
 	timeout := 30 * time.Second
 
 	
@@ -84,17 +84,17 @@ func TestTakeContract(t *testing.T) {
 			for i := 0; i < n; {
 
 				if contract := contractManager.TakeContract(ctx, destinationId, timeout); contract != nil {
-					if mathrand.Float32() < contractReturnP {
-						// put back
-						contractManager.ReturnContract(ctx, destinationId, contract)
-					} else {
+					// if mathrand.Float32() < contractReturnP {
+					// 	// put back
+					// 	contractManager.ReturnContract(ctx, destinationId, contract)
+					// } else {
 						select {
 						case contracts <- contract:
 						case <- time.After(timeout):
 							t.FailNow()
 						}
 						i += 1
-					}
+					// }
 				}
 
 			}

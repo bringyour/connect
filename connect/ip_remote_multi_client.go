@@ -51,7 +51,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         // SendTimeout: 60 * time.Second,
         // WriteTimeout: 30 * time.Second,
         WriteRetryTimeout: 200 * time.Millisecond,
-        AckTimeout: 5 * time.Second,
+        AckTimeout: 30 * time.Second,
         WindowResizeTimeout: 1 * time.Second,
         StatsWindowGraceperiod: 5 * time.Second,
         StatsWindowEntropy: 0.25,

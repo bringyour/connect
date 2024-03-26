@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	// "slices"
+	// "runtime/debug"
 
 	"golang.org/x/exp/maps"
 
@@ -158,17 +159,23 @@ func (self *ContractManager) addContractErrorCallback(contractErrorCallback Cont
 
 // ReceiveFunction
 func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+	// for _, frame := range frames {
+	// 	fmt.Printf("CONTRACT MANAGER RECEIVE %s-> %s\n", sourceId.String(), frame.MessageType)
+	// }
 	switch sourceId {
 	case ControlId:
 		for _, frame := range frames {
 			if message, err := FromFrame(frame); err == nil {
 				switch v := message.(type) {
 				case *protocol.CreateContractResult:
+					// fmt.Printf("GOT CONTRACT RESULT %s\n", v)
 					if contractError := v.Error; contractError != nil {
+						// fmt.Printf("CONTRACT ERROR %s\n", contractError)
 						self.error(*contractError)
 					} else if contract := v.Contract; contract != nil {
 						err := self.addContract(contract)
 						if err != nil {
+							// fmt.Printf("GOT CONTRACT ERROR %s\n", err)
 							panic(err)
 						}
 					}
@@ -340,6 +347,7 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 	}
 }
 
+/*
 // must be called for a contract that was previously taken
 func (self *ContractManager) ReturnContract(ctx context.Context, destinationId Id, contract *protocol.Contract) {
 	contractQueue := self.openContractQueue(destinationId)
@@ -347,6 +355,7 @@ func (self *ContractManager) ReturnContract(ctx context.Context, destinationId I
 
 	contractQueue.Push(contract)
 }
+*/
 
 func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	var storedContract protocol.StoredContract
@@ -378,7 +387,12 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 		contractQueue := self.openContractQueue(destinationId)
 		defer self.closeContractQueue(destinationId)
 
-		contractQueue.Add(contract, &storedContract)
+		success := contractQueue.Add(contract, &storedContract)
+		if success {
+			fmt.Printf("CONTRACT ADDED (%s)\n", contractId.String())
+		} else {
+			fmt.Printf("CONTRACT NOT ADDED (%s)\n", contractId.String())
+		}
 	}()
 
 	func() {
@@ -480,19 +494,13 @@ func (self *ContractManager) ResetLocalStats() {
 	self.localStats = NewContractManagerStats()
 }
 
-func (self *ContractManager) CloseContractQueue(destinationId Id) {
-	contractQueue := self.openContractQueue(destinationId)
-	contractQueue.SetDone()
-	defer self.closeContractQueue(destinationId)
-}
-
 func (self *ContractManager) Close() {
-	// pending contracts in flight will just timeout on the platform
-	// self.client.RemoveReceiveCallback(self.receive)
+	// debug.PrintStack()
 	self.clientUnsub()
+	// pending contracts in flight will just timeout on the platform
 }
 
-func (self *ContractManager) Flush() []Id {
+func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 	// close queued contracts
 	contracts := func()([]*protocol.Contract) {
 		self.mutex.Lock()
@@ -500,17 +508,26 @@ func (self *ContractManager) Flush() []Id {
 
 		contracts := []*protocol.Contract{}
 		for _, contractQueue := range self.destinationContracts {
-			for {
-				if contract := contractQueue.Poll(); contract == nil {
-					break
-				} else {
-					contracts = append(contracts, contract)
-				}
+			for _, contract := range contractQueue.Flush(resetUsedContractIds) {
+				contracts = append(contracts, contract)
 			}
 		}
 		return contracts
 	}()
 
+	return self.closeContracts(contracts)
+}
+
+func (self *ContractManager) FlushContractQueue(destinationId Id, resetUsedContractIds bool) []Id {
+	contractQueue := self.openContractQueue(destinationId)
+	defer self.closeContractQueue(destinationId)
+
+	contracts := contractQueue.Flush(resetUsedContractIds)
+
+	return self.closeContracts(contracts)
+}
+
+func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id {
 	contractIds := []Id{}
 	for _, contract := range contracts {
 		var storedContract protocol.StoredContract
@@ -530,18 +547,16 @@ type contractQueue struct {
 
 	mutex sync.Mutex
 	openCount int
-	contracts []*protocol.Contract
+	contracts map[Id]*protocol.Contract
 	// remember all added contract ids
 	usedContractIds map[Id]bool
-
-	done bool
 }
 
 func newContractQueue() *contractQueue {
 	return &contractQueue{
 		updateMonitor: NewMonitor(),
 		openCount: 0,
-		contracts: []*protocol.Contract{},
+		contracts: map[Id]*protocol.Contract{},
 		usedContractIds: map[Id]bool{},
 	}
 }
@@ -549,12 +564,14 @@ func newContractQueue() *contractQueue {
 func (self *contractQueue) Open() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
+
 	self.openCount += 1
 }
 
 func (self *contractQueue) Close() {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
+
 	self.openCount -= 1
 }
 
@@ -566,18 +583,22 @@ func (self *contractQueue) Poll() *protocol.Contract {
 		return nil
 	}
 
-	contract := self.contracts[0]
-	self.contracts[0] = nil
-	self.contracts = self.contracts[1:]
+	contractIds := maps.Keys(self.contracts)
+	// choose arbitrarily
+	contractId := contractIds[0]
+	contract := self.contracts[contractId]
+	delete(self.contracts, contractId)
 	return contract
 }
 
+/*
 func (self *contractQueue) Push(contract *protocol.Contract) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	self.contracts = append([]*protocol.Contract{contract}, self.contracts...)
 }
+*/
 
 func (self *contractQueue) Add(contract *protocol.Contract, storedContract *protocol.StoredContract) bool {
 	self.mutex.Lock()
@@ -588,16 +609,23 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 		return false
 	}
 
-	if !self.usedContractIds[contractId] {
-		self.usedContractIds[contractId] = true
-		self.contracts = append(self.contracts, contract)
+	self.contracts[contractId] = contract
+	self.usedContractIds[contractId] = true
+	self.updateMonitor.NotifyAll()
+	return true
+}
 
-		self.updateMonitor.NotifyAll()
-		return true
+func (self *contractQueue) Flush(removeUsedContractIds bool) []*protocol.Contract {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	contracts := maps.Values(self.contracts)
+	self.contracts = map[Id]*protocol.Contract{}
+	if removeUsedContractIds {
+		self.usedContractIds = map[Id]bool{}
 	}
-	// else contract already used
 
-	return false
+	return contracts
 }
 
 func (self *contractQueue) Done() bool {
@@ -608,18 +636,7 @@ func (self *contractQueue) Done() bool {
 		return false
 	}
 
-	if self.done {
-		return true
-	}
-
 	return 0 == len(self.contracts) && 0 == len(self.usedContractIds)
-}
-
-func (self *contractQueue) SetDone() {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-	
-	self.done = true
 }
 
 func (self *contractQueue) UsedContractIdBytes() [][]byte {

@@ -39,7 +39,7 @@ const LogLevelDebug = 100
 var GlobalLogLevel = LogLevelUrgent
 
 
-var logger = log.New(os.Stderr, "", log.Ldate | log.Ltime | log.Lshortfile)
+var logger = log.New(os.Stdout, "", log.Ldate | log.Ltime | log.Lshortfile)
 
 func Logger() *log.Logger {
     return logger
