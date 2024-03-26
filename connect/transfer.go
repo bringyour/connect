@@ -7,7 +7,7 @@ import (
 	"errors"
 	"math"
 	"fmt"
-	"runtime/debug"
+	// "runtime/debug"
 
 	"google.golang.org/protobuf/proto"
 
@@ -356,12 +356,9 @@ func (self *Client) SendWithTimeout(
 
 	safeAckCallback := func(err error) {
 		if ackCallback != nil {
-			defer func() {
-				if r := recover(); r != nil {
-					debug.PrintStack()
-				}
-			}()
-			ackCallback(err)
+			HandleError(func() {
+				ackCallback(err)
+			})
 		}
 	}
 
@@ -388,20 +385,16 @@ func (self *Client) SendWithTimeout(
 
 	if sendPack.DestinationId == self.clientId {
 		// loopback
-		func() {
-			defer func() {
-				if err := recover(); err != nil {
-					debug.PrintStack()
-					sendPack.AckCallback(err.(error))
-				}
-			}()
+		HandleError(func() {
 			self.receive(
 				self.clientId,
 				[]*protocol.Frame{sendPack.Frame},
 				protocol.ProvideMode_Network,
 			)
 			sendPack.AckCallback(nil)
-		}()
+		}, func(err error) {
+			sendPack.AckCallback(err)
+		})
 		return true
 	} else {
 		success, err := self.sendBuffer.Pack(sendPack, timeout)
@@ -428,28 +421,18 @@ func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) 
 func (self *Client) receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	// transferLog("!! DISPATCH RECEIVE")
 	for _, receiveCallback := range self.receiveCallbacks.Get() {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					debug.PrintStack()
-				}
-			}()
+		HandleError(func() {
 			receiveCallback(sourceId, frames, provideMode)
-		}()
+		})
 	}
 }
 
 // ForwardFunction
 func (self *Client) forward(sourceId Id, destinationId Id, transferFrameBytes []byte) {
 	for _, forwardCallback := range self.forwardCallbacks.Get() {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					debug.PrintStack()
-				}
-			}()
+		HandleError(func() {
 			forwardCallback(sourceId, destinationId, transferFrameBytes)
-		}()
+		})
 	}
 }
 
@@ -1041,11 +1024,6 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) error {
 
 func (self *SendSequence) Run() {
 	defer func() {
-		if r := recover(); r != nil {
-			debug.PrintStack()
-			// fmt.Printf("ERROR: %s\n", r)
-		}
-
 		fmt.Printf("[%s] Send sequence exit -> %s\n", self.clientId.String(), self.destinationId.String())
 
 		self.cancel()
@@ -1950,7 +1928,7 @@ func (self *ReceiveSequence) Run() {
 					transferLog("[%s] Receive next in sequence %d: %s", self.clientId.String(), item.sequenceNumber, item.frames)
 				
 					if err := self.registerContracts(item); err != nil {
-						fmt.Printf("EXIT 21\n")
+						fmt.Printf("EXIT 21 %s\n", err)
 						return
 					}
 					transferLog("[%s] Receive head of sequence %d.", self.clientId.String(), item.sequenceNumber)

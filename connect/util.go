@@ -10,6 +10,8 @@ import (
     "syscall"
     "fmt"
     "runtime/debug"
+    "strings"
+    "encoding/json"
     // "reflect"
     mathrand "math/rand"
 )
@@ -283,15 +285,38 @@ func WeightedShuffleWithEntropy[T comparable](values []T, weights map[T]float32,
 }
 
 
-func HandleError(do func(), handlers ...func()) {
+func HandleError(do func(), handlers ...any) {
     defer func() {
         if r := recover(); r != nil {
-        	debug.PrintStack()
-            fmt.Printf("Unexpected error: %v\n", r)
+        	fmt.Printf("Unexpected error: %s\n", ErrorJson(r, debug.Stack()))
+        	err, ok := r.(error)
+        	if !ok {
+        		err = fmt.Errorf("%s", r)
+        	}
             for _, handler := range handlers {
-                handler()
+            	switch v := handler.(type) {
+            	case func():
+            		v()
+            	case func(error):
+            		v(err)
+            	}
             }
         }
     }()
     do()
 }
+
+
+func ErrorJson(err any, stack []byte) string {
+    stackLines := []string{}
+    for _, line := range strings.Split(string(stack), "\n") {
+        stackLines = append(stackLines, strings.TrimSpace(line))
+    }
+    errorJson, _ := json.Marshal(map[string]any{
+        "error": fmt.Sprintf("%s", err),
+        "stack": stackLines,
+    })
+    return string(errorJson)
+}
+
+

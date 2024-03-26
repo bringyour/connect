@@ -387,12 +387,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 		contractQueue := self.openContractQueue(destinationId)
 		defer self.closeContractQueue(destinationId)
 
-		success := contractQueue.Add(contract, &storedContract)
-		if success {
-			fmt.Printf("CONTRACT ADDED (%s)\n", contractId.String())
-		} else {
-			fmt.Printf("CONTRACT NOT ADDED (%s)\n", contractId.String())
-		}
+		contractQueue.Add(contract, &storedContract)
 	}()
 
 	func() {
@@ -600,19 +595,27 @@ func (self *contractQueue) Push(contract *protocol.Contract) {
 }
 */
 
-func (self *contractQueue) Add(contract *protocol.Contract, storedContract *protocol.StoredContract) bool {
+func (self *contractQueue) Add(contract *protocol.Contract, storedContract *protocol.StoredContract) error {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	contractId, err := IdFromBytes(storedContract.ContractId)
 	if err != nil {
-		return false
+		return err
 	}
 
-	self.contracts[contractId] = contract
-	self.usedContractIds[contractId] = true
-	self.updateMonitor.NotifyAll()
-	return true
+	if self.usedContractIds[contractId] {
+		// update contract
+		if _, ok := self.contracts[contractId]; ok {
+			self.contracts[contractId] = contract
+			self.updateMonitor.NotifyAll()
+		}
+	} else {
+		self.usedContractIds[contractId] = true
+		self.contracts[contractId] = contract
+		self.updateMonitor.NotifyAll()
+	}
+	return nil
 }
 
 func (self *contractQueue) Flush(removeUsedContractIds bool) []*protocol.Contract {
