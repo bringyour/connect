@@ -50,7 +50,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
         HttpConnectTimeout: 2 * time.Second,
         WsHandshakeTimeout: 2 * time.Second,
         AuthTimeout: 2 * time.Second,
-        ReconnectTimeout: 2 * time.Second,
+        ReconnectTimeout: 5 * time.Second,
         PingTimeout: pingTimeout,
         WriteTimeout: 5 * time.Second,
         ReadTimeout: 2 * pingTimeout,
@@ -64,6 +64,14 @@ type ClientAuth struct {
     // ClientId Id
     InstanceId Id
     AppVersion string
+}
+
+func (self *ClientAuth) ClientId() (Id, error) {
+    byJwt, err := ParseByJwtUnverified(self.ByJwt)
+    if err != nil {
+        return Id{}, err
+    }
+    return byJwt.ClientId, nil
 }
 
 
@@ -152,6 +160,8 @@ func (self *PlatformTransport) run() {
     // connect and update route manager for this transport
     defer self.cancel()
 
+    clientId, _ := self.auth.ClientId()
+
     authBytes, err := EncodeFrame(&protocol.Auth{
         ByJwt: self.auth.ByJwt,
         AppVersion: self.auth.AppVersion,
@@ -216,7 +226,7 @@ func (self *PlatformTransport) run() {
             }
         }
 
-        func() {
+        Trace(fmt.Sprintf("[t]connect %s", clientId.String()), func() {
             handleCtx, handleCancel := context.WithCancel(self.ctx)
 
             send := make(chan []byte, TransportBufferSize)
@@ -263,16 +273,20 @@ func (self *PlatformTransport) run() {
                         // transportLog("!!!! WRITE MESSAGE %s\n", message)
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
+                            // note that for websocket a dealine timeout cannot be recovered
                             // fmt.Printf("ws write error\n")
                             transportLog("Write message error %s\n", err)
                             return
                         }
+                        fmt.Printf("[ts] %s->\n", clientId.String())
                     case <- time.After(self.settings.PingTimeout):
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, make([]byte, 0)); err != nil {
+                            // note that for websocket a dealine timeout cannot be recovered
                             transportLog("Write ping error %s\n", err)
                             return
                         }
+                        // fmt.Printf("[ts]ping %s->\n", clientId.String())
                     }
                 }
             }()
@@ -304,8 +318,11 @@ func (self *PlatformTransport) run() {
                     case websocket.BinaryMessage:
                         if 0 == len(message) {
                             // ping
+                            // fmt.Printf("[tr]ping %s<-\n", clientId.String())
                             continue
                         }
+
+                        fmt.Printf("[tr] %s<-\n", clientId.String())
 
                         // fmt.Printf("transport read message ->%s\n", self.auth.ClientId)
 
@@ -314,7 +331,7 @@ func (self *PlatformTransport) run() {
                             return
                         case receive <- message:
                             // fmt.Printf("transport wrote message to channel ->%s\n", self.auth.ClientId)
-                        case <- time.After(self.settings.WriteTimeout):
+                        case <- time.After(self.settings.ReadTimeout):
                             transportLog("TIMEOUT J\n")
                         }
                     }
@@ -325,7 +342,7 @@ func (self *PlatformTransport) run() {
             case <- handleCtx.Done():
                 return
             }  
-        }()
+        })
 
         select {
         case <- self.ctx.Done():
@@ -427,6 +444,7 @@ func (self *wsForwardingConn) Write(b []byte) (int, error) {
     self.ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
     err := self.ws.WriteMessage(websocket.BinaryMessage, b)
     if err != nil {
+        // note that for websocket a dealine timeout cannot be recovered
         transportLog("!! TIMEOUT TB\n")
         return 0, err
     }

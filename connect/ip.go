@@ -179,7 +179,9 @@ func (self *LocalUserNat) AddReceivePacketCallback(receiveCallback ReceivePacket
 // `ReceivePacketFunction`
 func (self *LocalUserNat) receive(source Path, ipProtocol IpProtocol, packet []byte) {
     for _, receiveCallback := range self.receiveCallbacks.Get() {
-        receiveCallback(source, ipProtocol, packet)
+        HandleError(func() {
+            receiveCallback(source, ipProtocol, packet)
+        })
     }
 }
 
@@ -1914,7 +1916,9 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
 
             // fmt.Printf("remote user nat client r packet %s<-\n", source)
 
-            self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
+            HandleError(func() {
+                self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)
+            })
         }
     }
 }
