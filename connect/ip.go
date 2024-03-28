@@ -11,6 +11,7 @@ import (
     "errors"
     mathrand "math/rand"
     "math"
+    "io"
 
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
@@ -229,7 +230,7 @@ func (self *LocalUserNat) Run() {
                     udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send udp4 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[unpr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := udp4Buffer.send(
                                 sendPacket.source,
@@ -246,7 +247,7 @@ func (self *LocalUserNat) Run() {
                     tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send tcp4 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[unpr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := tcp4Buffer.send(
                                 sendPacket.source,
@@ -270,7 +271,7 @@ func (self *LocalUserNat) Run() {
                     udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send udp6 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[unpr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := udp6Buffer.send(
                                 sendPacket.source,
@@ -287,7 +288,7 @@ func (self *LocalUserNat) Run() {
                     tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send tcp6 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[unpr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := tcp6Buffer.send(
                                 sendPacket.source,
@@ -605,7 +606,7 @@ func (self *UdpSequence) Run() {
     defer func() {
         self.cancel()
 
-        close(self.sendItems)
+        // close(self.sendItems)
         // drain and drop
         func() {
             for {
@@ -1040,6 +1041,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
     }
     if sequence := initSequence(); sequence == nil {
         // sequence does not exist and not a syn packet, drop
+        fmt.Printf("[unpr]tcp4 drop no syn (%s)\n", tcpFlagsString(tcp))
         return false, nil
     } else {
         return sequence.send(sendItem, timeout)
@@ -1156,7 +1158,7 @@ func (self *TcpSequence) Run() {
     defer func() {
         self.cancel()
 
-        close(self.sendItems)
+        // close(self.sendItems)
 
         // drain and drop
         func() {
@@ -1175,21 +1177,27 @@ func (self *TcpSequence) Run() {
     receive := func(packet []byte) {
         self.receiveCallback(self.source, IpProtocolTcp, packet)
     }
+
+    closed := false
     // send a final FIN+ACK
     defer func() {
-        self.log("[final]FIN")
-        var packet []byte
-        var err error
-        func() {
-            self.mutex.Lock()
-            defer self.mutex.Unlock()
+        if closed {
+            fmt.Printf("[r]closed gracefully\n")
+        } else {
+            fmt.Printf("[r]closed unexpected sending RST\n")
+            self.log("[final]RST")
+            var packet []byte
+            var err error
+            func() {
+                self.mutex.Lock()
+                defer self.mutex.Unlock()
 
-            packet, err = self.FinAck()
-            self.receiveSeq += 1
-        }()
-        if err == nil {
-            self.log("[final]send FIN+ACK (%d)", self.sendSeq)
-            receive(packet)
+                packet, err = self.RstAck()
+            }()
+            if err == nil {
+                self.log("[final]send RST (%d)", self.sendSeq)
+                receive(packet)
+            }
         }
     }()
 
@@ -1251,13 +1259,11 @@ func (self *TcpSequence) Run() {
 
     self.log("[init]connect success")
 
-    receiveActive := true
     receiveAckCond := sync.NewCond(&self.mutex)
     defer func() {
         self.mutex.Lock()
         defer self.mutex.Unlock()
 
-        receiveActive = false
         receiveAckCond.Broadcast()
     }()
 
@@ -1288,21 +1294,30 @@ func (self *TcpSequence) Run() {
                 // since the transfer from local to remove is lossless and preserves order,
                 // do not worry about retransmits
                 var packets [][]byte
-                var err error
+                var packetsErr error
                 func() {
                     self.mutex.Lock()
                     defer self.mutex.Unlock()
 
-                    packets, err = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
+                    packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
+                    if packetsErr != nil {
+                        return
+                    }
+                    
                     if 1 < len(packets) {
                         fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
                     }
                     self.log("[f%d]receive(%d %d %d)", forwardIter, n, len(packets), self.receiveSeq)
 
                     // fmt.Printf("[multi] Receive window %d <> %d\n", uint32(self.receiveWindowSize), self.receiveSeq - self.receiveSeqAck + uint32(n))
-                    for receiveActive && uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
+                    for uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
                         fmt.Printf("[multi] Receive window wait\n")
                         receiveAckCond.Wait()
+                        select {
+                        case <- self.ctx.Done():
+                            return
+                        default:
+                        }
                     }
 
                     self.receiveSeq += uint32(n)
@@ -1314,7 +1329,7 @@ func (self *TcpSequence) Run() {
                 default:
                 }
 
-                if err == nil {
+                if packetsErr != nil {
                     for _, packet := range packets { 
                         receive(packet)
                     }
@@ -1324,7 +1339,26 @@ func (self *TcpSequence) Run() {
             }
             
             if err != nil {
-                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                if err == io.EOF {
+                    // closed (FIN)
+                    // propagate the FIN and close the sequence
+                    self.log("[final]FIN")
+                    var packet []byte
+                    var err error
+                    func() {
+                        self.mutex.Lock()
+                        defer self.mutex.Unlock()
+
+                        packet, err = self.FinAck()
+                        self.receiveSeq += 1
+                    }()
+                    if err == nil {
+                        closed = true
+                        self.log("[final]send FIN+ACK (%d)", self.sendSeq)
+                        receive(packet)
+                    }
+                    return
+                } else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
                     if readTimeout.Before(time.Now()) {
                         fmt.Printf("[f%d]timeout\n", forwardIter)
                         return
@@ -1435,7 +1469,8 @@ func (self *TcpSequence) Run() {
 
 
             if sendItem.tcp.FIN {
-                return
+                // close the socket to propage the FIN and close the sequence
+                socket.Close()
             }
 
             if sendItem.tcp.RST {
@@ -1548,6 +1583,60 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
     return packet, nil
 }
 
+func (self *ConnectionState) PureAck() ([]byte, error) {
+    headerSize := 0
+    var ip gopacket.NetworkLayer
+    switch self.ipVersion {
+    case 4:
+        ip = &layers.IPv4{
+            Version: 4,
+            TTL: 64,
+            SrcIP: self.destinationIp,
+            DstIP: self.sourceIp,
+            Protocol: layers.IPProtocolTCP,
+        }
+        headerSize += Ipv4HeaderSizeWithoutExtensions
+    case 6:
+        ip = &layers.IPv6{
+            Version: 6,
+            HopLimit: 64,
+            SrcIP: self.destinationIp,
+            DstIP: self.sourceIp,
+            NextHeader: layers.IPProtocolTCP,
+        }
+        headerSize += Ipv6HeaderSize
+    }
+
+    tcp := layers.TCP{
+        SrcPort: self.destinationPort,
+        DstPort: self.sourcePort,
+        Seq: self.receiveSeq,
+        Ack: self.sendSeq,
+        ACK: true,
+        Window: self.windowSize,
+    }
+    tcp.SetNetworkLayerForChecksum(ip)
+    headerSize += TcpHeaderSizeWithoutExtensions
+
+    options := gopacket.SerializeOptions{
+        ComputeChecksums: true,
+        FixLengths: true,
+    }
+
+    buffer := gopacket.NewSerializeBufferExpectedSize(headerSize, 0)
+
+    err := gopacket.SerializeLayers(buffer, options,
+        ip.(gopacket.SerializableLayer),
+        &tcp,
+    )
+
+    if err != nil {
+        return nil, err
+    }
+    packet := buffer.Bytes()
+    return packet, nil
+}
+
 func (self *ConnectionState) FinAck() ([]byte, error) {
     headerSize := 0
     var ip gopacket.NetworkLayer
@@ -1603,7 +1692,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
     return packet, nil
 }
 
-func (self *ConnectionState) PureAck() ([]byte, error) {
+func (self *ConnectionState) RstAck() ([]byte, error) {
     headerSize := 0
     var ip gopacket.NetworkLayer
     switch self.ipVersion {
@@ -1633,6 +1722,7 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
         Seq: self.receiveSeq,
         Ack: self.sendSeq,
         ACK: true,
+        RST: true,
         Window: self.windowSize,
     }
     tcp.SetNetworkLayerForChecksum(ip)

@@ -26,7 +26,10 @@ import (
 type ContractManagerStats struct {
 	ContractOpenCount int64
 	ContractCloseCount int64
+	// contract id -> byte count
 	ContractOpenByteCounts map[Id]ByteCount
+	// contract id -> destination id
+	ContractOpenDestinationIds map[Id]Id
 	ContractCloseByteCount ByteCount
 	ReceiveContractCloseByteCount ByteCount
 }
@@ -36,6 +39,7 @@ func NewContractManagerStats() *ContractManagerStats{
 		ContractOpenCount: 0,
 		ContractCloseCount: 0,
 		ContractOpenByteCounts: map[Id]ByteCount{},
+		ContractOpenDestinationIds: map[Id]Id{},
 		ContractCloseByteCount: 0,
 		ReceiveContractCloseByteCount: 0,
 	}
@@ -395,6 +399,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 
 		self.localStats.ContractOpenCount += 1
 		self.localStats.ContractOpenByteCounts[contractId] = ByteCount(storedContract.TransferByteCount)
+		self.localStats.ContractOpenDestinationIds[contractId] = destinationId
 	}()
 
 	return nil
@@ -453,19 +458,34 @@ func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount Byte
 	}
 	self.client.SendControl(RequireToFrame(closeContract), nil)
 
+	opened := false
+	var destinationId Id
+
 	func() {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
 		if _, ok := self.localStats.ContractOpenByteCounts[contractId]; ok {
 			// opened via the contract manager
+			opened = true
+			destinationId = self.localStats.ContractOpenDestinationIds[contractId]
 			self.localStats.ContractCloseCount += 1
 			delete(self.localStats.ContractOpenByteCounts, contractId)
+			delete(self.localStats.ContractOpenDestinationIds, contractId)
 			self.localStats.ContractCloseByteCount += ackedByteCount
 		} else {
 			self.localStats.ReceiveContractCloseByteCount += ackedByteCount
 		}
 	}()
+
+	if opened {
+		contractQueue := self.openContractQueue(destinationId)
+		defer self.closeContractQueue(destinationId)
+
+		// the contract is partially closed on the platform now
+		// it can be safely removed from the local used list
+		contractQueue.RemoveUsedContract(contractId)
+	}
 }
 
 func (self *ContractManager) LocalStats() *ContractManagerStats {
@@ -476,6 +496,7 @@ func (self *ContractManager) LocalStats() *ContractManagerStats {
 		ContractOpenCount: self.localStats.ContractOpenCount,
 		ContractCloseCount: self.localStats.ContractCloseCount,
 		ContractOpenByteCounts: maps.Clone(self.localStats.ContractOpenByteCounts),
+		ContractOpenDestinationIds: maps.Clone(self.localStats.ContractOpenDestinationIds),
 		ContractCloseByteCount: self.localStats.ContractCloseByteCount,
 		ReceiveContractCloseByteCount: self.localStats.ReceiveContractCloseByteCount,
 	}
@@ -615,6 +636,13 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 		self.updateMonitor.NotifyAll()
 	}
 	return nil
+}
+
+func (self *contractQueue) RemoveUsedContract(contractId Id) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	delete(self.usedContractIds, contractId)
 }
 
 func (self *contractQueue) Flush(removeUsedContractIds bool) []*protocol.Contract {

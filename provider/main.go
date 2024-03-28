@@ -112,7 +112,7 @@ func provide(opts docopt.Opts) {
     connect.NewPlatformTransportWithDefaults(ctx, connectUrl, auth, connectClient.RouteManager())
     // go platformTransport.Run(connectClient.RouteManager())
 
-    localUserNat := connect.NewLocalUserNatWithDefaults(ctx)
+    localUserNat := connect.NewLocalUserNatWithDefaults(ctx, clientId.String())
     remoteUserNatProvider := connect.NewRemoteUserNatProviderWithDefaults(connectClient, localUserNat)
 
     provideModes := map[protocol.ProvideMode]bool{

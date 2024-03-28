@@ -1395,7 +1395,8 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 					self.sendBufferSettings.ContractFillFraction,
 				)
 				if err != nil {
-					// malformed, drop
+					// malformed
+					fmt.Printf("[s]next contract malformed = %s\n", err)
 					return false
 				}
 
@@ -1422,7 +1423,6 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 					// this contract doesn't fit the message
 					// the contract was requested with the correct size, so this is an error somewhere
 					// just close it and let the platform time out the other side
-					fmt.Printf("COMPLETE CONTRACT SEND 4\n")
 					self.contractManager.CompleteContract(nextSendContract.contractId, 0, 0)
 					return false
 				}
@@ -1895,7 +1895,7 @@ type ReceiveSequence struct {
 	receiveBufferSettings *ReceiveBufferSettings
 
 	receiveContract *sequenceContract
-	usedContractIds map[Id]bool
+	// usedContractIds map[Id]bool
 
 	packs chan *ReceivePack
 
@@ -1930,7 +1930,7 @@ func NewReceiveSequence(
 		sequenceId: sequenceId,
 		receiveBufferSettings: receiveBufferSettings,
 		receiveContract: nil,
-		usedContractIds: map[Id]bool{},
+		// usedContractIds: map[Id]bool{},
 		packs: make(chan *ReceivePack, receiveBufferSettings.SequenceBufferSize),
 		receiveQueue: newReceiveQueue(),
 		nextSequenceNumber: 0,
@@ -2591,11 +2591,14 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 		)
 		self.receiveContract = nil
 	}
+	// FIXME this needs to be done with some kind of async verification to the control
+	/*
 	// track all the contracts used to avoid reusing contracts
 	if self.usedContractIds[nextReceiveContract.contractId] {
 		return errors.New("Already used contract.")
 	}
 	self.usedContractIds[nextReceiveContract.contractId] = true
+	*/
 	self.receiveContract = nextReceiveContract
 	return nil
 }
