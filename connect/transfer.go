@@ -10,6 +10,7 @@ import (
 	// "runtime/debug"
 	"runtime"
 	"reflect"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -601,8 +602,7 @@ func (self *Client) run() {
 				TraceWithReturn(
 					fmt.Sprintf("[cr]ack %s %s<-%s", self.clientTag, destinationId.String(), sourceId.String()),
 					func()(bool) {
-						err := self.sendBuffer.Ack(sourceId, ack, self.clientSettings.BufferTimeout)
-						return err == nil
+						return self.sendBuffer.Ack(sourceId, ack, self.clientSettings.BufferTimeout)
 					},
 				)
 			case protocol.MessageType_TransferPack:
@@ -876,7 +876,7 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 	}
 }
 
-func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duration) (returnErr error) {
+func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duration) bool {
 	sendSequence := func(companionContract bool)(*SendSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
@@ -885,24 +885,25 @@ func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duratio
 			CompanionContract: companionContract,
 		}]
 	}
-
-	found := false
+	
+	anyFound := false
+	anySuccess := false
 	if seq := sendSequence(false); seq != nil {
-		found = true
-		if err := seq.Ack(ack, timeout); err != nil {
-			returnErr = err
+		anyFound = true
+		if success, err := seq.Ack(ack, timeout); success && err == nil {
+			anySuccess = true
 		}
 	}
 	if seq := sendSequence(true); seq != nil {
-		found = true
-		if err := seq.Ack(ack, timeout); err != nil {
-			returnErr = err
+		anyFound = true
+		if success, err := seq.Ack(ack, timeout); success && err == nil {
+			anySuccess = true
 		}
 	}
-	if !found {
-		fmt.Printf("[sb]ack sequence does not exist\n")
+	if !anyFound {
+		fmt.Printf("[sb]ack miss sequence does not exist\n")
 	}
-	return
+	return anySuccess
 }
 
 func (self *SendBuffer) ResendQueueSize(destinationId Id, companionContract bool) (int, ByteCount, Id) {
@@ -1035,6 +1036,12 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	}
 	defer self.idleCondition.UpdateClose()
 
+	select {
+	case <- self.ctx.Done():
+		return false, errors.New("Done.")
+	default:
+	}
+
 	if timeout < 0 {
 		select {
 		case <- self.ctx.Done():
@@ -1071,40 +1078,46 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	}
 }
 
-func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) error {
+func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, error) {
 	sequenceId, err := IdFromBytes(ack.SequenceId)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if self.sequenceId != sequenceId {
 		// ack is for a different send sequence that no longer exists
-		return nil
+		return false, nil
+	}
+
+	select {
+	case <- self.ctx.Done():
+		return false, errors.New("Done.")
+	default:
 	}
 
 	if timeout < 0 {
 		select {
 		case <- self.ctx.Done():
-			return errors.New("Done.")
+			return false, errors.New("Done.")
 		case self.acks <- ack:
-			return nil
+			return true, nil
 		}
 	} else if timeout == 0 {
 		select {
 		case <- self.ctx.Done():
-			return errors.New("Done.")
+			return false, errors.New("Done.")
 		case self.acks <- ack:
-			return nil
+			return true, nil
 		default:
-			return nil
+			return false, nil
 		}
 	} else {
 		select {
 		case <- self.ctx.Done():
-			return errors.New("Done.")
+			return false, errors.New("Done.")
 		case self.acks <- ack:
-			return nil
+			return true, nil
 		case <- time.After(timeout):
-			return nil
+			return false, nil
 		}
 	}
 }
@@ -1158,14 +1171,15 @@ func (self *SendSequence) Run() {
 		func() {
 			for {
 				select {
-				case <- self.ctx.Done():
-					return
 				case ack, ok := <- self.acks:
 					if !ok {
 						return
 					}
+					fmt.Printf("[s]ack 01 %s->%s\n", self.clientTag, self.destinationId.String())
 					if messageId, err := IdFromBytes(ack.MessageId); err == nil {
 						self.receiveAck(messageId, ack.Selective)
+					} else {
+						fmt.Printf("[s]ack bad message %s->%s = %s\n", self.clientTag, self.destinationId.String(), err)
 					}
 				default:
 					return
@@ -1280,8 +1294,11 @@ func (self *SendSequence) Run() {
 					fmt.Printf("EXIT 05\n")
 					return
 				}
+				fmt.Printf("[s]ack 02 %s->%s\n", self.clientTag, self.destinationId.String())
 				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
 					self.receiveAck(messageId, ack.Selective)
+				} else {
+					fmt.Printf("[s]ack bad message %s->%s = %s\n", self.clientTag, self.destinationId.String(), err)
 				}
 			case <- time.After(timeout):
 				if 0 == self.resendQueue.Len() {
@@ -1304,8 +1321,11 @@ func (self *SendSequence) Run() {
 					fmt.Printf("EXIT 08\n")
 					return
 				}
+				fmt.Printf("[s]ack 03 %s->%s\n", self.clientTag, self.destinationId.String())
 				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
 					self.receiveAck(messageId, ack.Selective)
+				} else {
+					fmt.Printf("[s]ack bad message %s->%s = %s\n", self.clientTag, self.destinationId.String(), err)
 				}
 			case sendPack, ok := <- self.packs:
 				if !ok {
@@ -1930,6 +1950,12 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 	}
 	defer self.idleCondition.UpdateClose()
 
+	select {
+	case <- self.ctx.Done():
+		return false, errors.New("Done.")
+	default:
+	}
+
 	if timeout < 0 {
 		select {
 		case <- self.ctx.Done():
@@ -2055,9 +2081,10 @@ func (self *ReceiveSequence) Run() {
 						self.receiveHead(item)
 					} else {
 						// no valid contract
-						// drop the message and let the client send a contract at the head
+						// FIXME drop the message and let the client send a contract at the head
 						// FIXME send a "needs contract" ack
 						fmt.Printf("[r]drop head no contract %s<-%s\n", self.clientTag, self.sourceId.String())
+						return
 					}
 				} else {
 					// this item is a resend of a previous item
@@ -2336,18 +2363,18 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	}
 
 
-	if item := self.receiveQueue.RemoveBySequenceNumber(sequenceNumber); item != nil {
+	if removedItem := self.receiveQueue.RemoveBySequenceNumber(sequenceNumber); removedItem != nil {
 		transferLog("!!!! 2")
 		self.peerAudit.Update(func(a *PeerAudit) {
-			a.resend(item.messageByteCount)
+			a.resend(removedItem.messageByteCount)
 		})
 	}
 
 	// replace with the latest value (check both messageId and sequenceNumber)
-	if item := self.receiveQueue.RemoveByMessageId(messageId); item != nil {
+	if removedItem := self.receiveQueue.RemoveByMessageId(messageId); removedItem != nil {
 		transferLog("!!!! 1")
 		self.peerAudit.Update(func(a *PeerAudit) {
-			a.resend(item.messageByteCount)
+			a.resend(removedItem.messageByteCount)
 		})
 	}
 
@@ -2368,10 +2395,10 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 				return true, nil
 			} else {
 				// no valid contract
-				// drop the message and let the client send a contract at the head
+				// FIXME drop the message and let the client send a contract at the head
 				// FIXME send a "needs contract" ack
 				fmt.Printf("[r]drop queue head no contract %s<-%s\n", self.clientTag, self.sourceId.String())
-				return false, nil
+				return false, errors.New("No contract")
 			}
 		} else {
 			fmt.Printf("[r]drop (past sequence number %d <> %d ack=%t) %s<-%s\n", sequenceNumber, self.nextSequenceNumber, item.ack, self.clientTag, self.sourceId.String())
@@ -2451,15 +2478,23 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 		return true, nil
 	} else {
 		// no valid contract
-		// drop the message and let the client send a contract at the head
-		// FIXME send a "needs contract" ack
+		// drop the message. since this is a nack it will not block the sequence
 		fmt.Printf("[r]drop nack no contract %s<-%s\n", self.clientTag, self.sourceId.String())
 		return false, nil
 	}
 }
 
 func (self *ReceiveSequence) receiveHead(item *receiveItem) {
-	fmt.Printf("[r]head %d %s<-%s\n", item.sequenceNumber, self.clientTag, self.sourceId.String())
+	frameMessageTypes := []string{}
+	for _, frame := range item.frames {
+		frameMessageTypes = append(frameMessageTypes, fmt.Sprintf("%v", frame.MessageType))
+	}
+	frameMessageTypesStr := strings.Join(frameMessageTypes, ", ")
+	if item.ack {
+		fmt.Printf("[r]head %d (%s) %s<-%s\n", item.sequenceNumber, frameMessageTypesStr, self.clientTag, self.sourceId.String())
+	} else {
+		fmt.Printf("[r]head nack (%s) %s<-%s\n", frameMessageTypesStr, self.clientTag, self.sourceId.String())
+	}
 	// fmt.Printf("[%d] receive\n", item.sequenceNumber)
 	self.peerAudit.Update(func(a *PeerAudit) {
 		a.received(item.messageByteCount)
@@ -2876,6 +2911,12 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 		return false, nil
 	}
 	defer self.idleCondition.UpdateClose()
+
+	select {
+	case <- self.ctx.Done():
+		return false, errors.New("Done.")
+	default:
+	}
 
 	if timeout < 0 {
 		select {

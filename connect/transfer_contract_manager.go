@@ -60,7 +60,6 @@ func DefaultContractManagerSettings() *ContractManagerSettings {
 		StandardContractTransferByteCount: mib(32),
 
 		NetworkEventTimeEnableContracts: networkEventTimeEnableContracts,
-		// NetworkEventTimeEnableContracts: time.Time{},
 	}
 }
 

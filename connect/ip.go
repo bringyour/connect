@@ -64,6 +64,7 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
     }
 }
 
+
 func DefaultTcpBufferSettings() *TcpBufferSettings {
     tcpBufferSettings := &TcpBufferSettings{
         ConnectTimeout: 60 * time.Second,
@@ -80,35 +81,53 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 }
 
 
+func DefaultLocalUserNatSettings() *LocalUserNatSettings {
+    return &LocalUserNatSettings{
+        SendBufferSize: 32,
+        BufferTimeout: 5 * time.Second,
+        UdpBufferSettings: DefaultUdpBufferSettings(),
+        TcpBufferSettings: DefaultTcpBufferSettings(),
+    }
+}
+
+
+type LocalUserNatSettings struct {
+    SendBufferSize int
+    BufferTimeout time.Duration
+    UdpBufferSettings *UdpBufferSettings
+    TcpBufferSettings *TcpBufferSettings
+}
+
+
 // forwards packets using user space sockets
 // this assumes transfer between the packet source and this is lossless and in order,
 // so the protocol stack implementations do not implement any retransmit logic
 type LocalUserNat struct {
     ctx context.Context
     cancel context.CancelFunc
+    clientTag string
 
     sendPackets chan *SendPacket
 
-    udpBufferSettings *UdpBufferSettings
-    tcpBufferSettings *TcpBufferSettings
+    settings *LocalUserNatSettings
 
     // receive callback
     receiveCallbacks *CallbackList[ReceivePacketFunction]
 }
 
-func NewLocalUserNatWithDefaults(ctx context.Context) *LocalUserNat {
-    return NewLocalUserNat(ctx, 32)
+func NewLocalUserNatWithDefaults(ctx context.Context, clientTag string) *LocalUserNat {
+    return NewLocalUserNat(ctx, clientTag, DefaultLocalUserNatSettings())
 }
 
-func NewLocalUserNat(ctx context.Context, sendBufferSize int) *LocalUserNat {
+func NewLocalUserNat(ctx context.Context, clientTag string, settings *LocalUserNatSettings) *LocalUserNat {
     cancelCtx, cancel := context.WithCancel(ctx)
 
     localUserNat := &LocalUserNat{
         ctx: cancelCtx,
         cancel: cancel,
-        sendPackets: make(chan *SendPacket, sendBufferSize),
-        udpBufferSettings: DefaultUdpBufferSettings(),
-        tcpBufferSettings: DefaultTcpBufferSettings(),
+        clientTag: clientTag,
+        sendPackets: make(chan *SendPacket, settings.SendBufferSize),
+        settings: settings,
         receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
     }
     go localUserNat.Run()
@@ -188,10 +207,10 @@ func (self *LocalUserNat) receive(source Path, ipProtocol IpProtocol, packet []b
 func (self *LocalUserNat) Run() {
     defer self.cancel()
 
-    udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.udpBufferSettings)
-    udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.udpBufferSettings)
-    tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.tcpBufferSettings)
-    tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.tcpBufferSettings)
+    udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
+    udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
+    tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+    tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
 
     for {
         select {
@@ -209,21 +228,35 @@ func (self *LocalUserNat) Run() {
                     udp := layers.UDP{}
                     udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-                    udp4Buffer.send(
-                        sendPacket.source,
-                        sendPacket.provideMode,
-                        &ipv4,
-                        &udp,
+                    TraceWithReturn(
+                        fmt.Sprintf("[unpr]send udp4 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        func()(bool) {
+                            success, err := udp4Buffer.send(
+                                sendPacket.source,
+                                sendPacket.provideMode,
+                                &ipv4,
+                                &udp,
+                                self.settings.BufferTimeout,
+                            )
+                            return success && err == nil
+                        },
                     )
                 case layers.IPProtocolTCP:
                     tcp := layers.TCP{}
                     tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-                    tcp4Buffer.send(
-                        sendPacket.source,
-                        sendPacket.provideMode,
-                        &ipv4,
-                        &tcp,
+                    TraceWithReturn(
+                        fmt.Sprintf("[unpr]send tcp4 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        func()(bool) {
+                            success, err := tcp4Buffer.send(
+                                sendPacket.source,
+                                sendPacket.provideMode,
+                                &ipv4,
+                                &tcp,
+                                self.settings.BufferTimeout,
+                            )
+                            return success && err == nil
+                        },
                     )
                 default:
                     // no support for this protocol, drop
@@ -236,21 +269,35 @@ func (self *LocalUserNat) Run() {
                     udp := layers.UDP{}
                     udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
-                    udp6Buffer.send(
-                        sendPacket.source,
-                        sendPacket.provideMode,
-                        &ipv6,
-                        &udp,
+                    TraceWithReturn(
+                        fmt.Sprintf("[unpr]send udp6 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        func()(bool) {
+                            success, err := udp6Buffer.send(
+                                sendPacket.source,
+                                sendPacket.provideMode,
+                                &ipv6,
+                                &udp,
+                                self.settings.BufferTimeout,
+                            )
+                            return success && err == nil
+                        },
                     )
                 case layers.IPProtocolTCP:
                     tcp := layers.TCP{}
                     tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
-                    tcp6Buffer.send(
-                        sendPacket.source,
-                        sendPacket.provideMode,
-                        &ipv6,
-                        &tcp,
+                    TraceWithReturn(
+                        fmt.Sprintf("[unpr]send tcp6 %s<-%s\n", self.clientTag, sendPacket.source.ClientId.String()),
+                        func()(bool) {
+                            success, err := tcp6Buffer.send(
+                                sendPacket.source,
+                                sendPacket.provideMode,
+                                &ipv6,
+                                &tcp,
+                                self.settings.BufferTimeout,
+                            )
+                            return success && err == nil
+                        },
                     )
                 default:
                     // no support for this protocol, drop
@@ -338,14 +385,14 @@ func NewUdp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Udp4Buffer) send(source Path, provideMode protocol.ProvideMode,
-        ipv4 *layers.IPv4, udp *layers.UDP) {
+        ipv4 *layers.IPv4, udp *layers.UDP, timeout time.Duration) (bool, error) {
     bufferId := NewBufferId4(
         source,
         ipv4.SrcIP, int(udp.SrcPort),
         ipv4.DstIP, int(udp.DstPort),
     )
 
-    self.udpSend(
+    return self.udpSend(
         bufferId,
         ipv4.SrcIP,
         ipv4.DstIP,
@@ -353,6 +400,7 @@ func (self *Udp4Buffer) send(source Path, provideMode protocol.ProvideMode,
         provideMode,
         4,
         udp,
+        timeout,
     )
 }
 
@@ -374,14 +422,14 @@ func NewUdp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Udp6Buffer) send(source Path, provideMode protocol.ProvideMode,
-        ipv6 *layers.IPv6, udp *layers.UDP) {
+        ipv6 *layers.IPv6, udp *layers.UDP, timeout time.Duration) (bool, error) {
     bufferId := NewBufferId6(
         source,
         ipv6.SrcIP, int(udp.SrcPort),
         ipv6.DstIP, int(udp.DstPort),
     )
 
-    self.udpSend(
+    return self.udpSend(
         bufferId,
         ipv6.SrcIP,
         ipv6.DstIP,
@@ -389,6 +437,7 @@ func (self *Udp6Buffer) send(source Path, provideMode protocol.ProvideMode,
         provideMode,
         6,
         udp,
+        timeout,
     )
 }
 
@@ -412,7 +461,8 @@ func (self *UdpBuffer[BufferId]) udpSend(
     provideMode protocol.ProvideMode,
     ipVersion int,
     udp *layers.UDP,
-) {
+    timeout time.Duration,
+) (bool, error) {
     initSequence := func(skip *UdpSequence)(*UdpSequence) {
         self.mutex.Lock()
         defer self.mutex.Unlock()
@@ -451,10 +501,16 @@ func (self *UdpBuffer[BufferId]) udpSend(
         return sequence
     }
 
+    sendItem := &UdpSendItem{
+        provideMode: provideMode,
+        udp: udp,
+    } 
     sequence := initSequence(nil)
-    if success := sequence.send(provideMode, udp); !success {
+    if success, err := sequence.send(sendItem, timeout); err == nil {
+        return success, nil
+    } else {
         // sequence closed
-        initSequence(sequence).send(provideMode, udp)
+        return initSequence(sequence).send(sendItem, timeout)
     }
 }
 
@@ -505,24 +561,44 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
     }
 }
 
-func (self *UdpSequence) send(provideMode protocol.ProvideMode, udp *layers.UDP) (success bool) {
+func (self *UdpSequence) send(sendItem *UdpSendItem, timeout time.Duration) (bool, error) {
     if !self.idleCondition.UpdateOpen() {
-        success = false
-        return
+        return false, nil
     }
     defer self.idleCondition.UpdateClose()
-    defer func() {
-        // this means there was some error in sequence processing
-        if err := recover(); err != nil {
-            success = false
-        }
-    }()
-    self.sendItems <- &UdpSendItem{
-        provideMode: provideMode,
-        udp: udp,
+
+    select {
+    case <- self.ctx.Done():
+        return false, errors.New("Done.")
+    default:
     }
-    success = true
-    return
+
+    if timeout < 0 {
+        select {
+        case <- self.ctx.Done():
+            return false, errors.New("Done.")
+        case self.sendItems <- sendItem:
+            return true, nil
+        }
+    } else if timeout == 0 {
+        select {
+        case <- self.ctx.Done():
+            return false, errors.New("Done.")
+        case self.sendItems <- sendItem:
+            return true, nil
+        default:
+            return false, nil
+        }
+    } else {
+        select {
+        case <- self.ctx.Done():
+            return false, errors.New("Done.")
+        case self.sendItems <- sendItem:
+            return true, nil
+        case <- time.After(timeout):
+            return false, nil
+        }
+    }
 }
 
 func (self *UdpSequence) Run() {
@@ -820,14 +896,14 @@ func NewTcp4Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Tcp4Buffer) send(source Path, provideMode protocol.ProvideMode, 
-        ipv4 *layers.IPv4, tcp *layers.TCP) {
+        ipv4 *layers.IPv4, tcp *layers.TCP, timeout time.Duration) (bool, error) {
     bufferId := NewBufferId4(
         source,
         ipv4.SrcIP, int(tcp.SrcPort),
         ipv4.DstIP, int(tcp.DstPort),
     )
 
-    self.tcpSend(
+    return self.tcpSend(
         bufferId,
         ipv4.SrcIP,
         ipv4.DstIP,
@@ -835,6 +911,7 @@ func (self *Tcp4Buffer) send(source Path, provideMode protocol.ProvideMode,
         provideMode,
         4,
         tcp,
+        timeout,
     )
 }
 
@@ -860,14 +937,14 @@ func NewTcp6Buffer(ctx context.Context, receiveCallback ReceivePacketFunction,
 }
 
 func (self *Tcp6Buffer) send(source Path, provideMode protocol.ProvideMode, 
-        ipv6 *layers.IPv6, tcp *layers.TCP) {
+        ipv6 *layers.IPv6, tcp *layers.TCP, timeout time.Duration) (bool, error) {
     bufferId := NewBufferId6(
         source,
         ipv6.SrcIP, int(tcp.SrcPort),
         ipv6.DstIP, int(tcp.DstPort),
     )
 
-    self.tcpSend(
+    return self.tcpSend(
         bufferId,
         ipv6.SrcIP,
         ipv6.DstIP,
@@ -875,6 +952,7 @@ func (self *Tcp6Buffer) send(source Path, provideMode protocol.ProvideMode,
         provideMode,
         6,
         tcp,
+        timeout,
     )
 }
 
@@ -898,7 +976,8 @@ func (self *TcpBuffer[BufferId]) tcpSend(
     provideMode protocol.ProvideMode,
     ipVersion int,
     tcp *layers.TCP,
-) {
+    timeout time.Duration,
+) (bool, error) {
     initSequence := func()(*TcpSequence) {
         self.mutex.Lock()
         defer self.mutex.Unlock()
@@ -955,8 +1034,15 @@ func (self *TcpBuffer[BufferId]) tcpSend(
             return nil
         }
     }
-    if sequence := initSequence(); sequence != nil {
-        sequence.send(provideMode, tcp)
+    sendItem := &TcpSendItem{
+        provideMode: provideMode,
+        tcp: tcp,
+    }
+    if sequence := initSequence(); sequence == nil {
+        // sequence does not exist and not a syn packet, drop
+        return false, nil
+    } else {
+        return sequence.send(sendItem, timeout)
     }
 }
 
@@ -1026,24 +1112,44 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
     }
 }
 
-func (self *TcpSequence) send(provideMode protocol.ProvideMode, tcp *layers.TCP) (success bool) {
+func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (bool, error) {
     if !self.idleCondition.UpdateOpen() {
-        success = false
-        return
+        return false, nil
     }
     defer self.idleCondition.UpdateClose()
-    defer func() {
-        // this means there was some error in sequence processing
-        if err := recover(); err != nil {
-            success = false
-        }
-    }()
-    self.sendItems <- &TcpSendItem{
-        provideMode: provideMode,
-        tcp: tcp,
+
+    select {
+    case <- self.ctx.Done():
+        return false, errors.New("Done.")
+    default:
     }
-    success = true
-    return
+
+    if timeout < 0 {
+        select {
+        case <- self.ctx.Done():
+            return false, errors.New("Done.")
+        case self.sendItems <- sendItem:
+            return true, nil
+        }
+    } else if timeout == 0 {
+        select {
+        case <- self.ctx.Done():
+            return false, errors.New("Done.")
+        case self.sendItems <- sendItem:
+            return true, nil
+        default:
+            return false, nil
+        }
+    } else {
+        select {
+        case <- self.ctx.Done():
+            return false, errors.New("Done.")
+        case self.sendItems <- sendItem:
+            return true, nil
+        case <- time.After(timeout):
+            return false, nil
+        }
+    }
 }
 
 func (self *TcpSequence) Run() {
@@ -1201,6 +1307,12 @@ func (self *TcpSequence) Run() {
 
                     self.receiveSeq += uint32(n)
                 }()
+
+                select {
+                case <- self.ctx.Done():
+                    return
+                default:
+                }
 
                 if err == nil {
                     for _, packet := range packets { 
@@ -1724,7 +1836,8 @@ func NewRemoteUserNatProvider(
 // `ReceivePacketFunction`
 func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, packet []byte) {
     if self.client.ClientId() == source.ClientId {
-        // locally generated traffic
+        // locally generated traffic should use a separate local user nat
+        fmt.Printf("drop remote user nat provider s packet ->%s\n", source.ClientId)
         return
     }
 
@@ -1737,10 +1850,11 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
     }
     frame, err := ToFrame(ipPacketFromProvider)
     if err != nil {
+        fmt.Printf("drop remote user nat provider s packet ->%s = %s\n", source.ClientId, err)
         panic(err)
     }
 
-    fmt.Printf("remote user nat provider s packet ->%s\n", source.ClientId)
+    // fmt.Printf("remote user nat provider s packet ->%s\n", source.ClientId)
 
     // fmt.Printf("SEND PROTOCOL %s\n", ipProtocol)
     opts := []any{
@@ -1750,14 +1864,18 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
     case IpProtocolUdp:
         opts = append(opts, NoAck())
     }
-    success := self.client.SendWithTimeout(frame, source.ClientId, func(err error) {
-        // TODO log
-        ipLog("!! RETURN PACKET (%s)", err)
-    }, self.settings.WriteTimeout, opts...)
-    if !success {
-        // TODO log
-        ipLog("!! RETURN PACKET NOT SENT")
-    }
+    TraceWithReturn(
+        fmt.Sprintf("[unps] %s->%s", self.client.ClientTag(), source.ClientId.String()),
+        func()(bool) {
+            return self.client.SendWithTimeout(
+                frame,
+                source.ClientId,
+                func(err error) {},
+                self.settings.WriteTimeout,
+                opts...,
+            )
+        },
+    )
 }
 
 // `connect.ReceiveFunction`
@@ -1778,14 +1896,13 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
             ipLog("CLIENT RECEIVE %d -> %s", len(packet), r)
             switch r {
             case SecurityPolicyResultAllow:
-                fmt.Printf("remote user nat provider r packet %s->\n", sourceId)
-
                 source := Path{ClientId: sourceId}
-                success := self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, self.settings.WriteTimeout)
-                if !success {
-                    // TODO log
-                    fmt.Printf("!! FORWARD PACKET NOT SENT\n")
-                }
+                TraceWithReturn(
+                    fmt.Sprintf("[unpr] %s<-%s", self.client.ClientTag(), sourceId.String()),
+                    func()(bool) {
+                        return self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, self.settings.WriteTimeout)
+                    },
+                )
             case SecurityPolicyResultIncident:
                 self.client.ReportAbuse(sourceId)
             }
