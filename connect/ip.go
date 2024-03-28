@@ -1303,7 +1303,7 @@ func (self *TcpSequence) Run() {
                     if packetsErr != nil {
                         return
                     }
-                    
+
                     if 1 < len(packets) {
                         fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
                     }
@@ -1329,7 +1329,7 @@ func (self *TcpSequence) Run() {
                 default:
                 }
 
-                if packetsErr != nil {
+                if packetsErr == nil {
                     for _, packet := range packets { 
                         receive(packet)
                     }
