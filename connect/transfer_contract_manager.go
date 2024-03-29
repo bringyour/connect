@@ -5,8 +5,8 @@ import (
 	"time"
 	"sync"
 	"errors"
-	"crypto/hmac"
-	"crypto/sha256"
+	// "crypto/hmac"
+	// "crypto/sha256"
 	"crypto/rand"
 	"fmt"
 	// "slices"
@@ -176,11 +176,12 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 						// fmt.Printf("CONTRACT ERROR %s\n", contractError)
 						self.error(*contractError)
 					} else if contract := v.Contract; contract != nil {
-						err := self.addContract(contract)
-						if err != nil {
-							// fmt.Printf("GOT CONTRACT ERROR %s\n", err)
-							panic(err)
-						}
+						TraceWithReturn(
+							"[contract]add",
+							func()(error) {
+								return self.addContract(contract)
+							},
+						)
 					}
 				}
 			}
@@ -240,12 +241,18 @@ func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMo
 	provide := &protocol.Provide{
 		Keys: provideKeys,
 	}
-	self.client.SendControl(RequireToFrame(provide), func(err error) {
-		transferLog("Set provide complete (%s)", err)
-	})
+	// go func() {
+		// FIXME convert to api
+		// FIXME or have another client that is only for sending to control id
+		self.client.SendControlWithTimeout(RequireToFrame(provide), func(err error) {}, 1 * time.Second)
+	// }()
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
+	// FIXME
+	return true
+
+	/*
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -258,6 +265,7 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 	mac := hmac.New(sha256.New, provideSecretKey)
 	expectedHmac := mac.Sum(storedContractBytes)
 	return hmac.Equal(storedContractHmac, expectedHmac)
+	*/
 }
 
 func (self *ContractManager) GetProvideSecretKey(provideMode protocol.ProvideMode) ([]byte, bool) {
@@ -348,6 +356,7 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 			}
 		}
 	}
+	
 }
 
 /*
@@ -428,12 +437,13 @@ func (self *ContractManager) closeContractQueue(destinationId Id) {
 		panic("Open and close must be equally paired")
 	}
 	contractQueue.Close()
-	if contractQueue.Done() {
+	if contractQueue.IsDone() {
 		delete(self.destinationContracts, destinationId)
 	}
 }
 
 func (self *ContractManager) CreateContract(destinationId Id, companionContract bool) {
+	
 	// look at destinationContracts and last contract to get previous contract id
 	contractQueue := self.openContractQueue(destinationId)
 	defer self.closeContractQueue(destinationId)
@@ -445,18 +455,26 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 		Companion: companionContract,
 		UsedContractIds: contractQueue.UsedContractIdBytes(),
 	}
-	self.client.SendControl(RequireToFrame(createContract), nil)
+	// FIXME use API
+	// go func() {
+		self.client.SendControlWithTimeout(RequireToFrame(createContract), nil, 1 * time.Second)
+	// }()
+
+
 }
 
 func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount ByteCount, unackedByteCount ByteCount) {
 	fmt.Printf("COMPLETE CONTRACT\n")
-
+	
 	closeContract := &protocol.CloseContract{
 		ContractId: contractId.Bytes(),
 		AckedByteCount: uint64(ackedByteCount),
 		UnackedByteCount: uint64(unackedByteCount),
 	}
-	self.client.SendControl(RequireToFrame(closeContract), nil)
+	// FIXME use API
+	// go func() {
+		self.client.SendControlWithTimeout(RequireToFrame(closeContract), nil, 1 * time.Second)
+	// }()
 
 	opened := false
 	var destinationId Id
@@ -486,6 +504,7 @@ func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount Byte
 		// it can be safely removed from the local used list
 		contractQueue.RemoveUsedContract(contractId)
 	}
+	
 }
 
 func (self *ContractManager) LocalStats() *ContractManagerStats {
@@ -625,12 +644,14 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 	}
 
 	if self.usedContractIds[contractId] {
+		fmt.Printf("[contract]add already used %s\n", contractId.String())
 		// update contract
 		if _, ok := self.contracts[contractId]; ok {
 			self.contracts[contractId] = contract
 			self.updateMonitor.NotifyAll()
 		}
 	} else {
+		fmt.Printf("[contract]add %s\n", contractId.String())
 		self.usedContractIds[contractId] = true
 		self.contracts[contractId] = contract
 		self.updateMonitor.NotifyAll()
@@ -658,7 +679,7 @@ func (self *contractQueue) Flush(removeUsedContractIds bool) []*protocol.Contrac
 	return contracts
 }
 
-func (self *contractQueue) Done() bool {
+func (self *contractQueue) IsDone() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 

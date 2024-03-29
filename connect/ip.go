@@ -55,9 +55,9 @@ type UserNatClient interface {
 
 func DefaultUdpBufferSettings() *UdpBufferSettings {
     return &UdpBufferSettings{
-        ReadTimeout: 120 * time.Second,
+        ReadTimeout: 30 * time.Second,
         WriteTimeout: 30 * time.Second,
-        IdleTimeout: 300 * time.Second,
+        IdleTimeout: 60 * time.Second,
         Mtu: DefaultMtu,
         // avoid fragmentation
         ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
@@ -69,9 +69,9 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
 func DefaultTcpBufferSettings() *TcpBufferSettings {
     tcpBufferSettings := &TcpBufferSettings{
         ConnectTimeout: 60 * time.Second,
-        ReadTimeout: 120 * time.Second,
+        ReadTimeout: 30 * time.Second,
         WriteTimeout: 30 * time.Second,
-        IdleTimeout: 300 * time.Second,
+        IdleTimeout: 60 * time.Second,
         ChannelBufferSize: 32,
         Mtu: DefaultMtu,
         // avoid fragmentation
