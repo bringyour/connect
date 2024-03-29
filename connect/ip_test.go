@@ -8,6 +8,7 @@ import (
 	"net"
 	"reflect"
 	"sync"
+	"fmt"
 
 	"github.com/google/gopacket"
     "github.com/google/gopacket/layers"
@@ -456,9 +457,8 @@ func testClient[P comparable](
 		        panic(err)
 		    }
 
-		    providerClient.SendWithTimeout(frame, sourceId, func(err error) {
-		        // ignore
-		    }, timeout)
+		    success := providerClient.SendWithTimeout(frame, sourceId, func(err error) {}, -1)
+		    assert.Equal(t, true, success)
 
 		    cMutex.Lock()
 			cSendCount += 1
@@ -479,7 +479,10 @@ func testClient[P comparable](
 	            receivePackets <- receivePacket
 
 	            for i := 0; i < echoCount; i += 1 {
-		            echo(packet)
+	            	// do not make a blocking call back into the client from the receiver
+	            	// this could deadlock the client depending on whether other messages are
+	            	// queued to this receiver
+		            go echo(packet)
 		        }
 	        }
 
@@ -496,14 +499,16 @@ func testClient[P comparable](
 						for k := 0; k < n; k += 1 {
 							for a := 0; a < repeatCount; a += 1 {
 								packet, _ := packetGenerator(s, i, j, k)
-								success := natClient.SendPacket(source, protocol.ProvideMode_Network, packet, timeout)
-
-								if success {
-									cMutex.Lock()
-									cSendCount += 1
-									// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
-									cMutex.Unlock()
+								success := natClient.SendPacket(source, protocol.ProvideMode_Network, packet, -1)
+								if !success {
+									fmt.Printf("[TIMEOUT]%T\n", natClient)
 								}
+								assert.Equal(t, true, success)
+
+								cMutex.Lock()
+								cSendCount += 1
+								// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
+								cMutex.Unlock()
 							}
 						}
 					}

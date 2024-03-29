@@ -5,8 +5,8 @@ import (
 	"time"
 	"sync"
 	"errors"
-	// "crypto/hmac"
-	// "crypto/sha256"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/rand"
 	"fmt"
 	// "slices"
@@ -241,18 +241,15 @@ func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMo
 	provide := &protocol.Provide{
 		Keys: provideKeys,
 	}
-	// go func() {
-		// FIXME convert to api
-		// FIXME or have another client that is only for sending to control id
-		self.client.SendControlWithTimeout(RequireToFrame(provide), func(err error) {}, 1 * time.Second)
-	// }()
+	// best practice to make async sends into the client while being called from a client loop
+	go self.client.SendControlWithTimeout(
+		RequireToFrame(provide),
+		func(err error) {},
+		self.client.settings.ControlWriteTimeout,
+	)
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
-	// FIXME
-	return true
-
-	/*
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -265,7 +262,6 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 	mac := hmac.New(sha256.New, provideSecretKey)
 	expectedHmac := mac.Sum(storedContractBytes)
 	return hmac.Equal(storedContractHmac, expectedHmac)
-	*/
 }
 
 func (self *ContractManager) GetProvideSecretKey(provideMode protocol.ProvideMode) ([]byte, bool) {
@@ -455,12 +451,13 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 		Companion: companionContract,
 		UsedContractIds: contractQueue.UsedContractIdBytes(),
 	}
-	// FIXME use API
-	// go func() {
-		self.client.SendControlWithTimeout(RequireToFrame(createContract), nil, 1 * time.Second)
-	// }()
 
-
+	// best practice to make async sends into the client while being called from a client loop
+	go self.client.SendControlWithTimeout(
+		RequireToFrame(createContract),
+		nil,
+		self.client.settings.ControlWriteTimeout,
+	)
 }
 
 func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount ByteCount, unackedByteCount ByteCount) {
@@ -471,10 +468,12 @@ func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount Byte
 		AckedByteCount: uint64(ackedByteCount),
 		UnackedByteCount: uint64(unackedByteCount),
 	}
-	// FIXME use API
-	// go func() {
-		self.client.SendControlWithTimeout(RequireToFrame(closeContract), nil, 1 * time.Second)
-	// }()
+	// best practice to make async sends into the client while being called from a client loop
+	go self.client.SendControlWithTimeout(
+		RequireToFrame(closeContract),
+		nil,
+		self.client.settings.ControlWriteTimeout,
+	)
 
 	opened := false
 	var destinationId Id

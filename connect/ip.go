@@ -61,7 +61,7 @@ func DefaultUdpBufferSettings() *UdpBufferSettings {
         Mtu: DefaultMtu,
         // avoid fragmentation
         ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
-        ChannelBufferSize: 32,
+        SendBufferSize: 32,
     }
 }
 
@@ -72,7 +72,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
         ReadTimeout: 30 * time.Second,
         WriteTimeout: 30 * time.Second,
         IdleTimeout: 60 * time.Second,
-        ChannelBufferSize: 32,
+        SendBufferSize: 32,
         Mtu: DefaultMtu,
         // avoid fragmentation
         ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
@@ -365,7 +365,7 @@ type UdpBufferSettings struct {
     IdleTimeout time.Duration
     Mtu int
     ReadBufferSize int
-    ChannelBufferSize int
+    SendBufferSize int
 }
 
 
@@ -555,7 +555,7 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         ctx: cancelCtx,
         cancel: cancel,
         receiveCallback: receiveCallback,
-        sendItems: make(chan *UdpSendItem, udpBufferSettings.ChannelBufferSize),
+        sendItems: make(chan *UdpSendItem, udpBufferSettings.SendBufferSize),
         udpBufferSettings: udpBufferSettings,
         idleCondition: NewIdleCondition(),
         StreamState: streamState,
@@ -871,7 +871,7 @@ type TcpBufferSettings struct {
     // WritePollTimeout time.Duration
     IdleTimeout time.Duration
     ReadBufferSize int
-    ChannelBufferSize int
+    SendBufferSize int
     Mtu int
     // the window size is the max amount of packet data in memory for each sequence
     // TODO currently we do not enable window scale
@@ -1108,7 +1108,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         cancel: cancel,
         receiveCallback: receiveCallback,
         tcpBufferSettings: tcpBufferSettings,
-        sendItems: make(chan *TcpSendItem, tcpBufferSettings.ChannelBufferSize),
+        sendItems: make(chan *TcpSendItem, tcpBufferSettings.SendBufferSize),
         idleCondition: NewIdleCondition(),
         ConnectionState: connectionState,
     }
@@ -2087,13 +2087,7 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
         case IpProtocolUdp:
             opts = append(opts, NoAck())
         }
-        success := self.client.SendWithTimeout(frame, destination.ClientId, func(err error) {
-            // TODO log if no ack
-            ipLog("!! OUT PACKET (%s)", err)
-        }, timeout, opts...)
-        if !success {
-            ipLog("!! OUT PACKET NOT SENT")
-        }
+        success := self.client.SendWithTimeout(frame, destination.ClientId, func(err error) {}, timeout, opts...)
         return success
     default:
         return false

@@ -50,6 +50,8 @@ message Pack {
     // use true when there is an external transfer control
     // default to false for backward compatibility
     bool nack = 6;
+
+    optional Frame contract_frame = 7;
 }
 
 

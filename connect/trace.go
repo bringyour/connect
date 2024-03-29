@@ -18,23 +18,22 @@ import (
 
 
 func IsDoneError(r any) bool {
+    isDoneMessage := func(message string)(bool) {
+        switch message {
+        case "Done":
+            return true
+        default:
+            return false
+        }
+    }
     switch v := r.(type) {
     case error:
-        switch v.Error() {
-        case "Done":
-            return true
-        default:
-            return false
-        }
+        return isDoneMessage(v.Error())
     case string:
-        switch v {
-        case "Done":
-            return true
-        default:
-            return false
-        }
-    } 
-    return false
+        return isDoneMessage(v)
+    default:
+        return false
+    }
 }
 
 
@@ -71,7 +70,7 @@ func ErrorJson(err any, stack []byte) string {
         stackLines = append(stackLines, strings.TrimSpace(line))
     }
     errorJson, _ := json.Marshal(map[string]any{
-        "error": fmt.Sprintf("%s", err),
+        "error": fmt.Sprintf("%T=%s", err, err),
         "stack": stackLines,
     })
     return string(errorJson)

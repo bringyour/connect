@@ -296,12 +296,17 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
 
     success := false
     self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
-        if update.client != nil {
-            success = update.client.Send(parsedPacket, timeout)
-            return
-        }
+        enterTime := time.Now()
 
-        endTime := time.Now().Add(timeout)
+        if update.client != nil {
+            var err error
+            success, err = update.client.SendDetailed(parsedPacket, timeout)
+            if err == nil {
+                return
+            }
+            // find a new client
+            update.client = nil
+        }
 
         for {
             orderedClients, removedClients := self.window.OrderedClients()
@@ -321,23 +326,36 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 }
             }
 
-            timeout := endTime.Sub(time.Now())
+            if 0 <= timeout {
+                remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
 
-            if timeout <= 0 {
-                // drop
-                fmt.Printf("DROPPED ONE\n")
-                success = false
-                return
+                if remainingTimeout <= 0 {
+                    // drop
+                    fmt.Printf("DROPPED ONE\n")
+                    success = false
+                    return
+                }
+
+                select {
+                case <- self.ctx.Done():
+                    fmt.Printf("DROPPED ONE DONE\n")
+                    success = false
+                    return
+                case <- time.After(min(remainingTimeout, self.settings.WriteRetryTimeout)):
+                    // retry
+                }
+            } else {
+                select {
+                case <- self.ctx.Done():
+                    fmt.Printf("DROPPED ONE DONE\n")
+                    success = false
+                    return
+                case <- time.After(self.settings.WriteRetryTimeout):
+                    // retry
+                }
             }
 
-            select {
-            case <- self.ctx.Done():
-                fmt.Printf("DROPPED ONE DONE\n")
-                success = false
-                return
-            case <- time.After(min(timeout, self.settings.WriteRetryTimeout)):
-                // retry
-            }
+            
         }
     })
     return success
@@ -651,7 +669,7 @@ func (self *multiClientWindow) resize() {
         select {
         case <- self.ctx.Done():
             return
-        default:
+        case <- time.After(self.settings.WindowResizeTimeout):
         }
 
         clients := []*multiClientChannel{}
@@ -710,35 +728,57 @@ func (self *multiClientWindow) resize() {
             n := len(clients) - targetWindowSize
             fmt.Printf("[multi] Collapse -%d ->%d\n", n, targetWindowSize)
 
-            for _, client := range clients[targetWindowSize:] {
-                client.Cancel()
-            }
-            clients = clients[:targetWindowSize]
+            func() {
+                self.stateLock.Lock()
+                defer self.stateLock.Unlock()
+
+                for _, client := range clients[targetWindowSize:] {
+                    client.Cancel()
+                }
+                clients = clients[:targetWindowSize]
+
+                destinationClients := map[Id]*multiClientChannel{}
+                for _, client := range clients {
+                    destinationClients[client.DestinationId()] = client
+                }
+                self.destinationClients = destinationClients
+            }()
+
+            
         } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
             // optimize by removing unused from q4
 
             n := 0
 
-            q4Clients := clients[q3 + 1:]
-            clients = clients[:q3 + 1]
-            for _, client := range q4Clients {
-                if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
-                    client.Cancel()
-                    // removedClients = append(removedClients, client)
-                    n += 1
-                } else {
-                    clients = append(clients, client)
+            func() {
+                self.stateLock.Lock()
+                defer self.stateLock.Unlock()
+
+                q4Clients := clients[q3 + 1:]
+                clients = clients[:q3 + 1]
+                for _, client := range q4Clients {
+                    if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
+                        client.Cancel()
+                        // removedClients = append(removedClients, client)
+                        n += 1
+                    } else {
+                        clients = append(clients, client)
+                    }
                 }
-            }
+
+                destinationClients := map[Id]*multiClientChannel{}
+                for _, client := range clients {
+                    destinationClients[client.DestinationId()] = client
+                }
+                self.destinationClients = destinationClients
+            }()
 
             if 0 < n {
                 fmt.Printf("[multi] Optimize -%d\n", n)
             }
         }
 
-        select {
-        case <- time.After(self.settings.WindowResizeTimeout):
-        }
+        
     }
 }
 
@@ -1057,6 +1097,11 @@ func newMultiClientChannel(
 }
 
 func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Duration) bool {
+    success, err := self.SendDetailed(parsedPacket, timeout)
+    return success && err == nil
+}
+
+func (self *multiClientChannel) SendDetailed(parsedPacket *parsedPacket, timeout time.Duration) (bool, error) {
     // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
     ipPacketToProvider := &protocol.IpPacketToProvider{
         IpPacket: &protocol.IpPacket{
@@ -1065,7 +1110,7 @@ func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Du
     }
     if frame, err := ToFrame(ipPacketToProvider); err != nil {
         self.addError(err)
-        return false
+        return false, err
     } else {
         packetByteCount := ByteCount(len(parsedPacket.packet))
         self.addSendNack(packetByteCount)
@@ -1086,14 +1131,13 @@ func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Du
         case IpProtocolUdp:
             opts = append(opts, NoAck())
         }
-        success := self.client.SendWithTimeout(
+        return self.client.SendWithTimeoutDetailed(
             frame,
             self.args.DestinationId,
             ackCallback,
             timeout,
             opts...,
         )
-        return success
     }
 }
 

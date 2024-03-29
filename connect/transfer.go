@@ -103,8 +103,8 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		IdleTimeout: 60 * time.Second,
 		// pause on resend for selectively acked messaged
 		SelectiveAckTimeout: 5 * time.Second,
-		SequenceBufferSize: 0,
-		AckBufferSize: 0,
+		SequenceBufferSize: 32,
+		AckBufferSize: 32,
 		MinMessageByteCount: ByteCount(1),
 		// this includes transport reconnections
 		WriteTimeout: 30 * time.Second,
@@ -116,10 +116,11 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 
 func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 	return &ReceiveBufferSettings {
-		GapTimeout: 120 * time.Second,
+		GapTimeout: 60 * time.Second,
+		// the receive idle timeout should be a bit longer than the send idle timeout
 		IdleTimeout: 120 * time.Second,
-		SequenceBufferSize: 0,
-		AckBufferSize: 0,
+		SequenceBufferSize: 32,
+		AckBufferSize: 32,
 		AckCompressTimeout: 10 * time.Millisecond,
 		MinMessageByteCount: ByteCount(1),
 		ResendAbuseThreshold: 4,
@@ -135,7 +136,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 func DefaultForwardBufferSettings() *ForwardBufferSettings {
 	return &ForwardBufferSettings {
 		IdleTimeout: 300 * time.Second,
-		SequenceBufferSize: 0,
+		SequenceBufferSize: 32,
 		WriteTimeout: 1 * time.Second,
 	}
 }
@@ -332,21 +333,26 @@ func (self *Client) ReportAbuse(sourceId Id) {
 }
 
 func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.Duration) bool {
+	success, err := self.ForwardWithTimeoutDetailed(transferFrameBytes, timeout)
+	return success && err == nil
+}
+
+func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeout time.Duration) (bool, error) {
 	select {
 	case <- self.ctx.Done():
-		return false
+		return false, errors.New("Done")
 	default:
 	}
 
 	var filteredTransferFrame protocol.FilteredTransferFrame
 	if err := proto.Unmarshal(transferFrameBytes, &filteredTransferFrame); err != nil {
 		// bad protobuf
-		return false
+		return false, err
 	}
 	destinationId, err := IdFromBytes(filteredTransferFrame.TransferPath.DestinationId)
 	if err != nil {
 		// bad protobuf
-		return false
+		return false, err
 	}
 
 	forwardPack := &ForwardPack{
@@ -354,11 +360,7 @@ func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.D
 		TransferFrameBytes: transferFrameBytes,
 	}
 
-	success, err := self.forwardBuffer.Pack(forwardPack, self.settings.BufferTimeout)
-	if err != nil {
-		return false
-	}
-	return success
+	return self.forwardBuffer.Pack(forwardPack, timeout)
 }
 
 func (self *Client) Forward(transferFrameBytes []byte) bool {
@@ -372,9 +374,20 @@ func (self *Client) SendWithTimeout(
 	timeout time.Duration,
 	opts ...any,
 ) bool {
+	success, err := self.SendWithTimeoutDetailed(frame, destinationId, ackCallback, timeout, opts...)
+	return success && err == nil
+}
+
+func (self *Client) SendWithTimeoutDetailed(
+	frame *protocol.Frame,
+	destinationId Id,
+	ackCallback AckFunction,
+	timeout time.Duration,
+	opts ...any,
+) (bool, error) {
 	select {
 	case <- self.ctx.Done():
-		return false
+		return false, errors.New("Done")
 	default:
 	}
 
@@ -409,19 +422,34 @@ func (self *Client) SendWithTimeout(
 
 	if sendPack.DestinationId == self.clientId {
 		// loopback
-		select {
-		case <- self.ctx.Done():
-			return false
-		case self.loopback <- sendPack:
-			return true
+		if timeout < 0 {
+			select {
+			case <- self.ctx.Done():
+				return false, errors.New("Done")
+			case self.loopback <- sendPack:
+				return true, nil
+			}
+		} else if timeout == 0 {
+			select {
+			case <- self.ctx.Done():
+				return false, errors.New("Done")
+			case self.loopback <- sendPack:
+				return true, nil
+			default:
+				return false, nil
+			}
+		} else {
+			select {
+			case <- self.ctx.Done():
+				return false, errors.New("Done")
+			case self.loopback <- sendPack:
+				return true, nil
+			case <- time.After(timeout):
+				return false, nil
+			}
 		}
 	} else {
-		success, err := self.sendBuffer.Pack(sendPack, timeout)
-		if err != nil {
-			fmt.Printf("SEND ERROR = %s\n", err)
-			return false
-		}
-		return success
+		return self.sendBuffer.Pack(sendPack, timeout)
 	}
 }
 
@@ -622,7 +650,7 @@ func (self *Client) run() {
 					// bad protobuf
 					continue
 				}
-				messageByteCount := FramesMessageByteCount(pack.Frames)
+				messageByteCount := MessageByteCount(pack.Frames)
 				TraceWithReturn(
 					fmt.Sprintf("[cr]pack %s %s<-%s", self.clientTag, destinationId.String(), sourceId.String()),
 					func()(bool) {
@@ -677,7 +705,7 @@ func (self *Client) run() {
 						})
 						continue
 					}
-					messageByteCount := FramesMessageByteCount(pack.Frames)
+					messageByteCount := MessageByteCount(pack.Frames)
 					transferLog("[%s] Forward pack %s ->: %s (%d)", self.clientTag, sourceId.String(), pack.Frames, messageByteCount)
 				default:
 					transferLog("[%s] Forward unknown -> %s: %s", self.clientTag, sourceId.String(), frame)
@@ -851,7 +879,7 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 		)
 		self.sendSequences[sendSequenceId] = sendSequence
 		go func() {
-			sendSequence.Run()
+			HandleError(sendSequence.Run)
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
@@ -1171,11 +1199,12 @@ func (self *SendSequence) Run() {
 	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.destinationId)
 	defer self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
 
+	// compress the pending acks
 	ackMonitor := NewMonitor()
-	var ackLock sync.Mutex
-	// FIXME compress this in memory to have one per message id, where non-selective takes precedence
-	// FIXME only allow acks for message ids in the resend queue
-	var pendingAcks []*protocol.Ack
+	ackLock := sync.Mutex{}
+	var headAck *receiveAck
+	ackUpdateCount := 0
+	selectiveAcks := map[Id]uint64{}
 
 	go func() {
 		for {
@@ -1189,8 +1218,28 @@ func (self *SendSequence) Run() {
 				func() {
 					ackLock.Lock()
 					defer ackLock.Unlock()
-					pendingAcks = append(pendingAcks, ack)
-					ackMonitor.NotifyAll()
+
+					if messageId, err := IdFromBytes(ack.MessageId); err == nil {
+						if sequenceNumber, ok := self.resendQueue.ContainsMessageId(messageId); ok {
+							if headAck == nil || headAck.sequenceNumber < sequenceNumber {
+								if ack.Selective {
+									selectiveAcks[messageId] = sequenceNumber
+								} else {
+									ackUpdateCount += 1
+									headAck = &receiveAck{
+										messageId: messageId,
+										sequenceNumber: sequenceNumber,
+										selective: false,
+									}
+									// no need to clean up `selectiveAcks` here
+									// selective acks with sequence number <= head are ignored in a final pass during apply
+								}
+
+								ackMonitor.NotifyAll()
+							}
+							// else past the head
+						}
+					}
 				}()
 			}
 		}
@@ -1220,20 +1269,37 @@ func (self *SendSequence) Run() {
 		}()
 		*/
 
+		var ackNotify <-chan struct{}
+		var applyHeadAck *receiveAck
+		var applyAckUpdateCount int
+		var applySelectiveAcks map[Id]uint64
 		func() {
 			ackLock.Lock()
 			defer ackLock.Unlock()
 
-			for _, ack := range pendingAcks {
-				fmt.Printf("[s]ack 01 %s->%s\n", self.clientTag, self.destinationId.String())
-				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
-					self.receiveAck(messageId, ack.Selective)
-				} else {
-					fmt.Printf("[s]ack bad message %s->%s = %s\n", self.clientTag, self.destinationId.String(), err)
+			ackNotify = ackMonitor.NotifyChannel()
+			applyHeadAck = headAck
+			applyAckUpdateCount = ackUpdateCount
+			applySelectiveAcks = selectiveAcks
+
+			// keep the head ack in place as a filter
+			ackUpdateCount = 0
+			selectiveAcks = map[Id]uint64{}
+		}()
+		// apply the acks
+		if 0 < applyAckUpdateCount {
+			self.receiveAck(applyHeadAck.messageId, false)
+
+			for messageId, sequenceNumber := range applySelectiveAcks {
+				if applyHeadAck.sequenceNumber < sequenceNumber {
+					self.receiveAck(messageId, true)
 				}
 			}
-			pendingAcks = nil
-		}()
+		} else {
+			for messageId, _ := range applySelectiveAcks {
+				self.receiveAck(messageId, true)
+			}
+		}
 
 
 		sendTime := time.Now()
@@ -1291,19 +1357,21 @@ func (self *SendSequence) Run() {
 				// fmt.Printf("buffer resend write message %s->\n", self.clientId)
 				// a := time.Now()
 				fmt.Printf("[s]resend %d %s->%s\n", item.sequenceNumber, self.clientTag, self.destinationId.String())
-				err := TraceWithReturn(fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId.String()), func()(error) {
+				TraceWithReturn(fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId.String()), func()(error) {
 					return self.multiRouteWriter.Write(self.ctx, transferFrameBytes, self.sendBufferSettings.WriteTimeout)
 					
 				})
+				/*
 				if err != nil {
 					transferLog("!! WRITE TIMEOUT A\n")
-						// d := time.Now().Sub(a)
-						// fmt.Printf("buffer resend write message %s-> (%s) %.2fms\n", self.clientId, err, float64(d) / float64(time.Millisecond))
-					} else {
-						transferLog("WROTE RESEND: %s, %s -> messageId=%s clientId=%s sequenceId=%s\n", item.messageType, self.clientTag, item.messageId.String(), self.destinationId.String(), self.sequenceId.String())
-						// d := time.Now().Sub(a)
-						// fmt.Printf("buffer resend write message %s-> %.2fms\n", self.clientId, float64(d) / float64(time.Millisecond))
-					}
+					// d := time.Now().Sub(a)
+					// fmt.Printf("buffer resend write message %s-> (%s) %.2fms\n", self.clientId, err, float64(d) / float64(time.Millisecond))
+				} else {
+					transferLog("WROTE RESEND: %s, %s -> messageId=%s clientId=%s sequenceId=%s\n", item.messageType, self.clientTag, item.messageId.String(), self.destinationId.String(), self.sequenceId.String())
+					// d := time.Now().Sub(a)
+					// fmt.Printf("buffer resend write message %s-> %.2fms\n", self.clientId, float64(d) / float64(time.Millisecond))
+				}
+				*/
 
 				item.sendCount += 1
 				// linear backoff
@@ -1319,8 +1387,7 @@ func (self *SendSequence) Run() {
 		}
 
 		checkpointId := self.idleCondition.Checkpoint()
-		ackNotify := ackMonitor.NotifyChannel()
-
+		
 		// approximate since this cannot consider the next message byte size
 		canQueue := func()(bool) {
 	        // always allow at least one item in the resend queue
@@ -1493,7 +1560,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 					return false
 				}
 
-				contractMessageBytes, _ := proto.Marshal(contract)
+				// contractMessageBytes, _ := proto.Marshal(contract)
 
 				// if maxContractMessageByteCount < ByteCount(len(contractMessageBytes)) {
 				// 	panic("Bad estimate for contract max size could result in infinite contract retries.")
@@ -1508,10 +1575,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 					self.setContract(nextSendContract)
 
 					// append the contract to the sequence
-					self.send(&protocol.Frame{
-						MessageType: protocol.MessageType_TransferContract,
-						MessageBytes: contractMessageBytes,
-					}, func(error){}, true)
+					self.sendWithSetContract(nil, func(error){}, true, true)
 
 					return true
 				} else {
@@ -1586,6 +1650,15 @@ func (self *SendSequence) send(
 	ackCallback AckFunction,
 	ack bool,
 ) {
+	self.sendWithSetContract(frame, ackCallback, ack, false)
+}
+
+func (self *SendSequence) sendWithSetContract(
+	frame *protocol.Frame,
+	ackCallback AckFunction,
+	ack bool,
+	setContract bool,
+) {
 	sendTime := time.Now()
 	messageId := NewId()
 	
@@ -1605,12 +1678,27 @@ func (self *SendSequence) send(
 		sequenceNumber = 0
 	}
 
+	var contractFrame *protocol.Frame
+	if (head || setContract) && self.sendContract != nil {
+		contractMessageBytes, _ := proto.Marshal(self.sendContract.contract)
+		contractFrame =  &protocol.Frame{
+			MessageType: protocol.MessageType_TransferContract,
+			MessageBytes: contractMessageBytes,
+		}
+	}
+
+	frames := []*protocol.Frame{}
+	if frame != nil {
+		frames = append(frames, frame)
+	}
+
 	pack := &protocol.Pack{
 		MessageId: messageId.Bytes(),
 		SequenceId: self.sequenceId.Bytes(),
 		SequenceNumber: sequenceNumber,
 		Head: head,
-		Frames: []*protocol.Frame{frame},
+		Frames: frames,
+		ContractFrame: contractFrame,
 		Nack: !ack,
 	}
 
@@ -1630,7 +1718,7 @@ func (self *SendSequence) send(
 
 	transferFrameBytes, _ := proto.Marshal(transferFrame)
 
-	messageByteCount := FramesMessageByteCount(pack.Frames)
+	messageByteCount := MessageByteCount(pack.Frames)
 
 	item := &sendItem{
 		transferItem: transferItem{
@@ -1643,10 +1731,11 @@ func (self *SendSequence) send(
 		resendTime: sendTime.Add(self.sendBufferSettings.ResendInterval),
 		sendCount: 1,
 		head: head,
+		hasContractFrame: (contractFrame != nil),
 		transferFrameBytes: transferFrameBytes,
 		ackCallback: ackCallback,
 		// selectiveAckEnd: time.Time{},
-		messageType: frame.MessageType,
+		// messageType: frame.MessageType,
 	}
 
 	if ack {
@@ -1684,22 +1773,12 @@ func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
 
 	pack.Head = true
 	// attach the contract frame to the head
-	if item.contractId != nil {
-		// check if the item already has an embedded contract
-		hasContractFrame := false
-		for _, frame := range pack.Frames {
-			if frame.MessageType == protocol.MessageType_TransferContract {
-				hasContractFrame = true
-				break
-			}
-		}
-		if !hasContractFrame {
-			sendContract := self.openSendContracts[*item.contractId]
-			contractMessageBytes, _ := proto.Marshal(sendContract.contract)
-			pack.Frames = append(pack.Frames, &protocol.Frame{
-				MessageType: protocol.MessageType_TransferContract,
-				MessageBytes: contractMessageBytes,
-			})
+	if item.contractId != nil && !item.hasContractFrame {
+		sendContract := self.openSendContracts[*item.contractId]
+		contractMessageBytes, _ := proto.Marshal(sendContract.contract)
+		pack.ContractFrame =  &protocol.Frame{
+			MessageType: protocol.MessageType_TransferContract,
+			MessageBytes: contractMessageBytes,
 		}
 	}
 
@@ -1803,19 +1882,25 @@ func (self *SendSequence) Cancel() {
 	self.cancel()
 }
 
+type receiveAck struct {
+	sequenceNumber uint64
+	messageId Id
+	selective bool
+}
 
 type sendItem struct {
 	transferItem
 
 	contractId *Id
 	head bool
+	hasContractFrame bool
 	sendTime time.Time
 	resendTime time.Time
 	sendCount int
 	transferFrameBytes []byte
 	ackCallback AckFunction
 
-	messageType protocol.MessageType
+	// messageType protocol.MessageType
 }
 
 
@@ -1925,7 +2010,7 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 		)
 		self.receiveSequences[receiveSequenceId] = receiveSequence
 		go func() {
-			receiveSequence.Run()
+			HandleError(receiveSequence.Run)
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
@@ -2205,9 +2290,7 @@ func (self *ReceiveSequence) Run() {
 						self.nextSequenceNumber = self.nextSequenceNumber + 1
 						self.receiveHead(item)
 					} else {
-						// no valid contract
-						// FIXME drop the message and let the client send a contract at the head
-						// FIXME send a "needs contract" ack
+						// no valid contract. it should have been attached to the head
 						fmt.Printf("[r]drop head no contract %s<-%s\n", self.clientTag, self.sourceId.String())
 						return
 					}
@@ -2470,6 +2553,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		contractId: contractId,
 		receiveTime: receiveTime,
 		frames: receivePack.Pack.Frames,
+		contractFrame: receivePack.Pack.ContractFrame,
 		receiveCallback: receivePack.ReceiveCallback,
 		head: receivePack.Pack.Head,
 		ack: !receivePack.Pack.Nack,
@@ -2521,9 +2605,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 				self.receiveHead(item)
 				return true, nil
 			} else {
-				// no valid contract
-				// FIXME drop the message and let the client send a contract at the head
-				// FIXME send a "needs contract" ack
+				// no valid contract. it should have been attached to the head
 				fmt.Printf("[r]drop queue head no contract %s<-%s\n", self.clientTag, self.sourceId.String())
 				return false, errors.New("No contract")
 			}
@@ -2592,6 +2674,7 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 		contractId: contractId,
 		receiveTime: receiveTime,
 		frames: receivePack.Pack.Frames,
+		contractFrame: receivePack.Pack.ContractFrame,
 		receiveCallback: receivePack.ReceiveCallback,
 		head: receivePack.Pack.Head,
 		ack: !receivePack.Pack.Nack,
@@ -2647,63 +2730,63 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 }
 
 func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
-	for _, frame := range item.frames {
-		if frame.MessageType == protocol.MessageType_TransferContract {
-
-			var contract protocol.Contract
-			err := proto.Unmarshal(frame.MessageBytes, &contract)
-			if err != nil {
-				transferLog("!! EXIT I")
-				// bad message
-				// close sequence
-				self.peerAudit.Update(func(a *PeerAudit) {
-					a.badMessage(item.messageByteCount)
-				})
-				return err
-			}
-
-			// check the hmac with the local provider secret key
-			if !self.contractManager.Verify(
-					contract.StoredContractHmac,
-					contract.StoredContractBytes,
-					contract.ProvideMode) {
-				fmt.Printf("CONTRACT VERIFICATION FAILED (%s)\n", contract.ProvideMode)
-				transferLog("!! EXIT J")
-				// bad contract
-				// close sequence
-				self.peerAudit.Update(func(a *PeerAudit) {
-					a.badContract()
-				})
-				return nil
-			}
-
-			nextReceiveContract, err := newSequenceContract(
-				"r",
-				&contract,
-				self.receiveBufferSettings.MinMessageByteCount,
-				1.0,
-			)
-			if err != nil {
-				transferLog("!! EXIT K")
-				// bad contract
-				// close sequence
-				self.peerAudit.Update(func(a *PeerAudit) {
-					a.badContract()
-				})
-				return err
-			}
-
-			if err := self.setContract(nextReceiveContract); err != nil {
-				// the next contract has already been used
-				// bad contract
-				// close sequence
-				self.peerAudit.Update(func(a *PeerAudit) {
-					a.badContract()
-				})
-				return err
-			}
-		}
+	if item.contractFrame == nil {
+		return nil
 	}
+
+	var contract protocol.Contract
+	err := proto.Unmarshal(item.contractFrame.MessageBytes, &contract)
+	if err != nil {
+		transferLog("!! EXIT I")
+		// bad message
+		// close sequence
+		self.peerAudit.Update(func(a *PeerAudit) {
+			a.badMessage(item.messageByteCount)
+		})
+		return err
+	}
+
+	// check the hmac with the local provider secret key
+	if !self.contractManager.Verify(
+			contract.StoredContractHmac,
+			contract.StoredContractBytes,
+			contract.ProvideMode) {
+		fmt.Printf("CONTRACT VERIFICATION FAILED (%s)\n", contract.ProvideMode)
+		transferLog("!! EXIT J")
+		// bad contract
+		// close sequence
+		self.peerAudit.Update(func(a *PeerAudit) {
+			a.badContract()
+		})
+		return nil
+	}
+
+	nextReceiveContract, err := newSequenceContract(
+		"r",
+		&contract,
+		self.receiveBufferSettings.MinMessageByteCount,
+		1.0,
+	)
+	if err != nil {
+		transferLog("!! EXIT K")
+		// bad contract
+		// close sequence
+		self.peerAudit.Update(func(a *PeerAudit) {
+			a.badContract()
+		})
+		return err
+	}
+
+	if err := self.setContract(nextReceiveContract); err != nil {
+		// the next contract has already been used
+		// bad contract
+		// close sequence
+		self.peerAudit.Update(func(a *PeerAudit) {
+			a.badContract()
+		})
+		return err
+	}
+
 	return nil
 }
 
@@ -2778,6 +2861,7 @@ type receiveItem struct {
 	head bool
 	receiveTime time.Time
 	frames []*protocol.Frame
+	contractFrame *protocol.Frame
 	receiveCallback ReceiveFunction
 	ack bool
 }
@@ -2939,7 +3023,7 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 		)
 		self.forwardSequences[forwardPack.DestinationId] = forwardSequence
 		go func() {
-			forwardSequence.Run()
+			HandleError(forwardSequence.Run)
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
@@ -3241,28 +3325,39 @@ func (self *SequencePeerAudit) Complete() {
 	    ResendCount: uint64(self.peerAudit.ResendCount),
 	})
 
-	self.client.SendControlWithTimeout(frame, func(err error){}, self.client.settings.ControlWriteTimeout)
+	// best practice to make async sends into the client while being called from a client loop
+	go self.client.SendControlWithTimeout(
+		frame,
+		func(err error){},
+		self.client.settings.ControlWriteTimeout,
+	)
 	self.peerAudit = nil
 }
 
 
-// FIXME rename to MessageByteCount
-func FramesMessageByteCount(frames []*protocol.Frame) ByteCount {
+// contract frames are not counted towards the message byte count
+// this is required since contracts can be attached post-hoc
+func MessageByteCount(frames []*protocol.Frame) ByteCount {
+	// messageByteCount := ByteCount(0)
+	// for _, frame := range frames {
+	// 	if frame.MessageType != protocol.MessageType_TransferContract {
+	// 		messageByteCount += ByteCount(len(frame.MessageBytes))
+	// 	}
+	// }
+	// return messageByteCount
 	messageByteCount := ByteCount(0)
 	for _, frame := range frames {
-		if frame.MessageType != protocol.MessageType_TransferContract {
-			messageByteCount += ByteCount(len(frame.MessageBytes))
-		}
+		messageByteCount += ByteCount(len(frame.MessageBytes))
 	}
 	return messageByteCount
 }
 
-func MessageFrames(frames []*protocol.Frame) []*protocol.Frame {
-	messages := []*protocol.Frame{}
-	for _, frame := range frames {
-		if frame.MessageType != protocol.MessageType_TransferContract {
-			messages = append(messages, frame)
-		}
-	}
-	return messages
-}
+// func MessageFrames(frames []*protocol.Frame) []*protocol.Frame {
+// 	messages := []*protocol.Frame{}
+// 	for _, frame := range frames {
+// 		if frame.MessageType != protocol.MessageType_TransferContract {
+// 			messages = append(messages, frame)
+// 		}
+// 	}
+// 	return messages
+// }
