@@ -6,6 +6,7 @@ import (
     "time"
     "math"
     "slices"
+    "sync"
 
     "github.com/go-playground/assert/v2"
 )
@@ -31,7 +32,12 @@ func TestMultiClientTcp6(t *testing.T) {
 }
 
 
-func testingNewMultiClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {	
+func testingNewMultiClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
+
+	mutex := sync.Mutex{}
+	unsubs := map[*Client]func(){}
+
+
 	generator := &TestMultiClientGenerator{
 		nextDestintationIds: func(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
 			next := map[Id]ByteCount{}
@@ -49,6 +55,19 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 	    },
 	    removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
 	    	// do nothing
+	    },
+	    removeClientWithArgs: func(client *Client, args *MultiClientGeneratorClientArgs) {
+	    	var unsub func()
+	    	var ok bool
+	    	func() {
+				unsub, ok = unsubs[client]
+				if ok {
+					delete(unsubs, client)
+				}
+			}()
+			if ok {
+				unsub()
+			}
 	    },
 	    newClientSettings: DefaultClientSettings,
 	    newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
@@ -74,7 +93,19 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 			providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
 
 			providerClient.ContractManager().AddNoContractPeer(client.ClientId())
+
+			unsub := func() {
+				client.RouteManager().RemoveTransport(transportSend)
+				client.RouteManager().RemoveTransport(transportReceive)
+				providerClient.RouteManager().RemoveTransport(providerTransportReceive)
+				providerClient.RouteManager().RemoveTransport(providerTransportSend)
+			}
 			
+			func() {
+				mutex.Lock()
+				defer mutex.Unlock()
+				unsubs[client] = unsub
+			}()
 
 			return client, nil
 	    },
@@ -95,6 +126,7 @@ type TestMultiClientGenerator struct {
 	nextDestintationIds func(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
     newClientArgs func()(*MultiClientGeneratorClientArgs, error)
     removeClientArgs func(args *MultiClientGeneratorClientArgs)
+    removeClientWithArgs func(client *Client, args *MultiClientGeneratorClientArgs)
     newClientSettings func() (*ClientSettings)
     newClient func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
@@ -109,6 +141,10 @@ func (self *TestMultiClientGenerator) NewClientArgs() (*MultiClientGeneratorClie
 
 func (self *TestMultiClientGenerator) RemoveClientArgs(args *MultiClientGeneratorClientArgs) {
 	self.removeClientArgs(args)
+}
+
+func (self *TestMultiClientGenerator) RemoveClientWithArgs(client *Client, args *MultiClientGeneratorClientArgs) {
+	self.removeClientWithArgs(client, args)
 }
 
 func (self *TestMultiClientGenerator) NewClientSettings() *ClientSettings {

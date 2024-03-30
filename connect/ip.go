@@ -12,6 +12,7 @@ import (
     mathrand "math/rand"
     "math"
     "io"
+    "slices"
 
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
@@ -25,8 +26,13 @@ import (
 // implements user-space NAT (UNAT) and packet inspection
 // The UNAT emulates a raw socket using user-space sockets.
 
+const ULIMIT = 128
+
 
 var ipLog = LogFn(LogLevelDebug, "ip")
+
+// use 0 for deadlock testing
+const DefaultIpBufferSize = 32
 
 const DefaultMtu = 1440
 const Ipv4HeaderSizeWithoutExtensions = 20
@@ -56,12 +62,12 @@ type UserNatClient interface {
 func DefaultUdpBufferSettings() *UdpBufferSettings {
     return &UdpBufferSettings{
         ReadTimeout: 30 * time.Second,
-        WriteTimeout: 30 * time.Second,
+        WriteTimeout: 15 * time.Second,
         IdleTimeout: 60 * time.Second,
         Mtu: DefaultMtu,
         // avoid fragmentation
-        ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
-        SendBufferSize: 32,
+        ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
+        SequenceBufferSize: DefaultIpBufferSize,
     }
 }
 
@@ -70,12 +76,12 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
     tcpBufferSettings := &TcpBufferSettings{
         ConnectTimeout: 60 * time.Second,
         ReadTimeout: 30 * time.Second,
-        WriteTimeout: 30 * time.Second,
+        WriteTimeout: 15 * time.Second,
         IdleTimeout: 60 * time.Second,
-        SendBufferSize: 32,
+        SequenceBufferSize: DefaultIpBufferSize,
         Mtu: DefaultMtu,
         // avoid fragmentation
-        ReadBufferSize: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
+        ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
         WindowSize: int(mib(1)),
     }
     return tcpBufferSettings
@@ -84,7 +90,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 
 func DefaultLocalUserNatSettings() *LocalUserNatSettings {
     return &LocalUserNatSettings{
-        SendBufferSize: 32,
+        SequenceBufferSize: DefaultIpBufferSize,
         BufferTimeout: 5 * time.Second,
         UdpBufferSettings: DefaultUdpBufferSettings(),
         TcpBufferSettings: DefaultTcpBufferSettings(),
@@ -93,7 +99,7 @@ func DefaultLocalUserNatSettings() *LocalUserNatSettings {
 
 
 type LocalUserNatSettings struct {
-    SendBufferSize int
+    SequenceBufferSize int
     BufferTimeout time.Duration
     UdpBufferSettings *UdpBufferSettings
     TcpBufferSettings *TcpBufferSettings
@@ -127,7 +133,7 @@ func NewLocalUserNat(ctx context.Context, clientTag string, settings *LocalUserN
         ctx: cancelCtx,
         cancel: cancel,
         clientTag: clientTag,
-        sendPackets: make(chan *SendPacket, settings.SendBufferSize),
+        sendPackets: make(chan *SendPacket, settings.SequenceBufferSize),
         settings: settings,
         receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
     }
@@ -230,7 +236,7 @@ func (self *LocalUserNat) Run() {
                     udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[lnr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := udp4Buffer.send(
                                 sendPacket.source,
@@ -247,7 +253,7 @@ func (self *LocalUserNat) Run() {
                     tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[lnr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := tcp4Buffer.send(
                                 sendPacket.source,
@@ -271,7 +277,7 @@ func (self *LocalUserNat) Run() {
                     udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[lnr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := udp6Buffer.send(
                                 sendPacket.source,
@@ -288,7 +294,7 @@ func (self *LocalUserNat) Run() {
                     tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                        fmt.Sprintf("[lnr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
                         func()(bool) {
                             success, err := tcp6Buffer.send(
                                 sendPacket.source,
@@ -364,8 +370,8 @@ type UdpBufferSettings struct {
     WriteTimeout time.Duration
     IdleTimeout time.Duration
     Mtu int
-    ReadBufferSize int
-    SendBufferSize int
+    ReadBufferByteCount int
+    SequenceBufferSize int
 }
 
 
@@ -477,6 +483,59 @@ func (self *UdpBuffer[BufferId]) udpSend(
                 delete(self.sequences, bufferId)
             }
         }
+
+        // enforce at most one connection from the source to the destination
+        for _, sequence := range self.sequences {
+            if sequence.source == source && sequence.destinationIp.Equal(destinationIp) && sequence.destinationPort == udp.DstPort {
+                fmt.Printf(
+                    "[lnr]udp limit one ->%s\n",
+                    net.JoinHostPort(
+                        destinationIp.String(),
+                        strconv.Itoa(int(udp.DstPort)),
+                    ),
+                )
+                sequence.Cancel()
+            }
+        }
+        // limit the total connections per source to avoid blowing up the ulimit
+        sourceSequences := []*UdpSequence{}
+        for _, sequence := range self.sequences {
+            if sequence.source == source {
+                sourceSequences = append(sourceSequences, sequence)
+            }
+        }
+        if n := len(sourceSequences) - ULIMIT; 0 < n {
+            // order by last activity time
+            sourceSequencesLastActivityTimes := map[*UdpSequence]time.Time{}
+            for _, sourceSequence := range sourceSequences {
+                sourceSequencesLastActivityTimes[sourceSequence] = sourceSequence.LastActivityTime()
+            }
+            slices.SortFunc(sourceSequences, func(a *UdpSequence, b *UdpSequence)(int) {
+                lastActivityTimeA := sourceSequencesLastActivityTimes[a]
+                lastActivityTimeB := sourceSequencesLastActivityTimes[b]
+                if lastActivityTimeA.Before(lastActivityTimeB) {
+                    return -1
+                } else if lastActivityTimeB.Before(lastActivityTimeA) {
+                    return 1
+                } else {
+                    return 0
+                }
+            })
+            for i := 0; i < n; i += 1 {
+                sourceSequence := sourceSequences[i]
+                fmt.Printf(
+                    "[lnr]udp limit source %s->%s\n",
+                    source,
+                    net.JoinHostPort(
+                        sourceSequence.destinationIp.String(),
+                        strconv.Itoa(int(sourceSequence.destinationPort)),
+                    ),
+                )
+                sourceSequence.Cancel()
+            }
+        }
+
+
         sequence = NewUdpSequence(
             self.ctx,
             self.receiveCallback,
@@ -496,6 +555,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
             defer self.mutex.Unlock()
             // clean up
             if sequence == self.sequences[bufferId] {
+                sequence.Close()
                 delete(self.sequences, bufferId)
             }
         }()
@@ -545,6 +605,7 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         sourcePort: sourcePort,
         destinationIp: destinationIp,
         destinationPort: destinationPort,
+        lastActivityTime: time.Now(),
     }
     return &UdpSequence{
         log: SubLogFn(LogLevelDebug, ipLog, fmt.Sprintf(
@@ -555,7 +616,7 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         ctx: cancelCtx,
         cancel: cancel,
         receiveCallback: receiveCallback,
-        sendItems: make(chan *UdpSendItem, udpBufferSettings.SendBufferSize),
+        sendItems: make(chan *UdpSendItem, udpBufferSettings.SequenceBufferSize),
         udpBufferSettings: udpBufferSettings,
         idleCondition: NewIdleCondition(),
         StreamState: streamState,
@@ -603,22 +664,7 @@ func (self *UdpSequence) send(sendItem *UdpSendItem, timeout time.Duration) (boo
 }
 
 func (self *UdpSequence) Run() {
-    defer func() {
-        self.cancel()
-
-        // close(self.sendItems)
-        // drain and drop
-        func() {
-            for {
-                select {
-                case _, ok := <- self.sendItems:
-                    if !ok {
-                        return
-                    }
-                }
-            }
-        }()
-    }()
+    defer self.cancel()
 
     receive := func(packet []byte) {
         self.receiveCallback(self.source, IpProtocolUdp, packet)
@@ -630,17 +676,18 @@ func (self *UdpSequence) Run() {
         self.DestinationAuthority(),
     )
     if err != nil {
+        fmt.Printf("[init]udp connect error = %s\n", err)
         return
     }
     defer socket.Close()
+    self.UpdateLastActivityTime()
     self.log("[init]connect success")
 
     go func() {
         defer self.cancel()
 
-        buffer := make([]byte, self.udpBufferSettings.ReadBufferSize)
+        buffer := make([]byte, self.udpBufferSettings.ReadBufferByteCount)
 
-        readTimeout := time.Now().Add(self.udpBufferSettings.ReadTimeout)
         for forwardIter := 0; ; forwardIter += 1 {
             select {
             case <- self.ctx.Done():
@@ -648,36 +695,37 @@ func (self *UdpSequence) Run() {
             default:
             }
 
+
+            readTimeout := time.Now().Add(self.udpBufferSettings.ReadTimeout)
             socket.SetReadDeadline(readTimeout)
             n, err := socket.Read(buffer)
 
-            if err == nil {
-                self.log("[f%d]send(%d)", forwardIter, n)
-            } else {
-                fmt.Printf("[f%d]send(%d err=%s)\n", forwardIter, n, err)
+            if err != nil {
+                fmt.Printf("[f%d]udp receive err = %s\n", forwardIter, err)
             }
 
             if 0 < n {
-                packets, err := self.DataPackets(buffer, n, self.udpBufferSettings.Mtu)
-                if err != nil {
+                self.UpdateLastActivityTime()
+
+                packets, packetsErr := self.DataPackets(buffer, n, self.udpBufferSettings.Mtu)
+                if packetsErr != nil {
                     return
                 }
                 if 1 < len(packets) {
                     fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
                 }
                 for _, packet := range packets {
-                    self.log("[f%d]receive (%d)", forwardIter, len(packet))
+                    fmt.Printf("[f%d]udp receive %d\n", forwardIter, len(packet))
                     receive(packet)
                 }
-                readTimeout = time.Now().Add(self.udpBufferSettings.ReadTimeout)
             }
 
             if err != nil {
-                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                    if readTimeout.Before(time.Now()) {
-                        self.log("[f%d]timeout")
-                        return
-                    }
+                if err == io.EOF {
+                    return
+                } else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                    self.log("[f%d]timeout")
+                    return
                 } else {
                     // some other error
                     return
@@ -686,61 +734,77 @@ func (self *UdpSequence) Run() {
         }
     }()
 
-    for sendIter := 0; ; sendIter += 1 {
-        checkpointId := self.idleCondition.Checkpoint()
-        select {
-        case <- self.ctx.Done():
-            return
-        case sendItem := <- self.sendItems:
-            writeTimeout := time.Now().Add(self.udpBufferSettings.WriteTimeout)
+    go func() {
+        for sendIter := 0; ; sendIter += 1 {
+            checkpointId := self.idleCondition.Checkpoint()
+            select {
+            case <- self.ctx.Done():
+                return
+            case sendItem := <- self.sendItems:
+                writeEndTime := time.Now().Add(self.udpBufferSettings.WriteTimeout)
 
-            payload := sendItem.udp.Payload
+                payload := sendItem.udp.Payload
 
-            self.log("[r%d]receive(%d)", sendIter, len(payload))
+                for i := 0; i < len(payload); {
+                    select {
+                    case <- self.ctx.Done():
+                        return
+                    default:
+                    }
 
-            for 0 < len(payload) {
-                select {
-                case <- self.ctx.Done():
-                    return
-                default:
-                }
+                    socket.SetWriteDeadline(writeEndTime)
+                    n, err := socket.Write(payload[i:])
 
-                socket.SetWriteDeadline(writeTimeout)
-                n, err := socket.Write(payload)
+                    if err == nil {
+                        fmt.Printf("[f%d]udp forward %d\n", sendIter, n)
+                    } else {
+                        fmt.Printf("[f%d]udp forward %d err = %s", sendIter, n, err)
+                    }
 
-                if err == nil {
-                    self.log("[r%d]forward (%d)", sendIter, n)
-                } else {
-                    self.log("[r%d]forward (%d err=%s)", sendIter, n, err)
-                }
+                    if 0 < n {
+                        self.UpdateLastActivityTime()
 
-                payload = payload[n:]
+                        j := i
+                        i += n
+                        fmt.Printf("[f%d]udp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+                    }
 
-                if err != nil {
-                    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                        if writeTimeout.Before(time.Now()) {
+
+                    if err != nil {
+                        if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                            return
+                        } else {
+                            // some other error
                             return
                         }
-                    } else {
-                        // some other error
-                        return
                     }
                 }
+            case <- time.After(self.udpBufferSettings.IdleTimeout):
+                if self.idleCondition.Close(checkpointId) {
+                    // close the sequence
+                    return
+                }
+                // else there pending updates
             }
-        case <- time.After(self.udpBufferSettings.IdleTimeout):
-            if self.idleCondition.Close(checkpointId) {
-                // close the sequence
-                self.log("[r%d]timeout", sendIter)
-                return
-            }
-            // else there pending updates
         }
+    }()
+
+    select {
+    case <- self.ctx.Done():
     }
+}
+
+func (self *UdpSequence) Cancel() {
+    self.cancel()
 }
 
 func (self *UdpSequence) Close() {
     self.cancel()
 }
+
+
+
+
 
 type UdpSendItem struct {
     source Path
@@ -755,6 +819,9 @@ type StreamState struct {
     sourcePort layers.UDPPort
     destinationIp net.IP
     destinationPort layers.UDPPort
+
+    mutex sync.Mutex
+    lastActivityTime time.Time
 }
 
 func (self *StreamState) SourceAuthority() string {
@@ -862,6 +929,18 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
     }
 }
 
+func (self *StreamState) LastActivityTime() time.Time {
+    self.mutex.Lock()
+    defer self.mutex.Unlock()
+    return self.lastActivityTime
+}
+
+func (self *StreamState) UpdateLastActivityTime() {
+    self.mutex.Lock()
+    defer self.mutex.Unlock()
+    self.lastActivityTime = time.Now()
+}
+
 
 type TcpBufferSettings struct {
     ConnectTimeout time.Duration
@@ -870,8 +949,8 @@ type TcpBufferSettings struct {
     // ReadPollTimeout time.Duration
     // WritePollTimeout time.Duration
     IdleTimeout time.Duration
-    ReadBufferSize int
-    SendBufferSize int
+    ReadBufferByteCount int
+    SequenceBufferSize int
     Mtu int
     // the window size is the max amount of packet data in memory for each sequence
     // TODO currently we do not enable window scale
@@ -914,6 +993,10 @@ func (self *Tcp4Buffer) send(source Path, provideMode protocol.ProvideMode,
         tcp,
         timeout,
     )
+}
+
+func (self *TcpSequence) Cancel() {
+    self.cancel()
 }
 
 func (self *TcpSequence) Close() {
@@ -995,6 +1078,58 @@ func (self *TcpBuffer[BufferId]) tcpSend(
             return sequence
         }
 
+        // enforce at most one connection from the source to the destination
+        for _, sequence := range self.sequences {
+            if sequence.source == source && sequence.destinationIp.Equal(destinationIp) && sequence.destinationPort == tcp.DstPort {
+                fmt.Printf(
+                    "[lnr]tcp limit one %s ->%s\n",
+                    source,
+                    net.JoinHostPort(
+                        destinationIp.String(),
+                        strconv.Itoa(int(tcp.DstPort)),
+                    ),
+                )
+                sequence.Cancel()
+            }
+        }
+        // limit the total connections per source to avoid blowing up the ulimit
+        sourceSequences := []*TcpSequence{}
+        for _, sequence := range self.sequences {
+            if sequence.source == source {
+                sourceSequences = append(sourceSequences, sequence)
+            }
+        }
+        if n := len(sourceSequences) - ULIMIT; 0 < n {
+            // order by last activity time
+            sourceSequencesLastActivityTimes := map[*TcpSequence]time.Time{}
+            for _, sourceSequence := range sourceSequences {
+                sourceSequencesLastActivityTimes[sourceSequence] = sourceSequence.LastActivityTime()
+            }
+            slices.SortFunc(sourceSequences, func(a *TcpSequence, b *TcpSequence)(int) {
+                lastActivityTimeA := sourceSequencesLastActivityTimes[a]
+                lastActivityTimeB := sourceSequencesLastActivityTimes[b]
+                if lastActivityTimeA.Before(lastActivityTimeB) {
+                    return -1
+                } else if lastActivityTimeB.Before(lastActivityTimeA) {
+                    return 1
+                } else {
+                    return 0
+                }
+            })
+            for i := 0; i < n; i += 1 {
+                sourceSequence := sourceSequences[i]
+                fmt.Printf(
+                    "[lnr]tcp limit source %s->%s\n",
+                    source,
+                    net.JoinHostPort(
+                        sourceSequence.destinationIp.String(),
+                        strconv.Itoa(int(sourceSequence.destinationPort)),
+                    ),
+                )
+                sourceSequence.Cancel()
+            }
+        }
+
         if tcp.SYN {
             sequence := NewTcpSequence(
                 self.ctx,
@@ -1015,23 +1150,14 @@ func (self *TcpBuffer[BufferId]) tcpSend(
                 defer self.mutex.Unlock()
                 // clean up
                 if sequence == self.sequences[bufferId] {
+                    sequence.Close()
                     delete(self.sequences, bufferId)
                 }
             }()
             return sequence
         } else {
             // drop the packet; only create a new sequence on SYN
-            ipLog("TcpBuffer drop (%s %s %s)",
-                net.JoinHostPort(
-                    sourceIp.String(),
-                    strconv.Itoa(int(tcp.SrcPort)),
-                ),
-                net.JoinHostPort(
-                    destinationIp.String(),
-                    strconv.Itoa(int(tcp.DstPort)),
-                ),
-                tcpFlagsString(tcp),
-            )
+            fmt.Printf("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
             return nil
         }
     }
@@ -1041,7 +1167,6 @@ func (self *TcpBuffer[BufferId]) tcpSend(
     }
     if sequence := initSequence(); sequence == nil {
         // sequence does not exist and not a syn packet, drop
-        fmt.Printf("[unpr]tcp4 drop no syn (%s)\n", tcpFlagsString(tcp))
         return false, nil
     } else {
         return sequence.send(sendItem, timeout)
@@ -1097,6 +1222,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         destinationPort: destinationPort,
         // the window size starts at the fixed value
         windowSize: windowSize,
+        lastActivityTime: time.Now(),
     }
     return &TcpSequence{
         log: SubLogFn(LogLevelDebug, ipLog, fmt.Sprintf(
@@ -1108,7 +1234,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         cancel: cancel,
         receiveCallback: receiveCallback,
         tcpBufferSettings: tcpBufferSettings,
-        sendItems: make(chan *TcpSendItem, tcpBufferSettings.SendBufferSize),
+        sendItems: make(chan *TcpSendItem, tcpBufferSettings.SequenceBufferSize),
         idleCondition: NewIdleCondition(),
         ConnectionState: connectionState,
     }
@@ -1155,24 +1281,7 @@ func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (boo
 }
 
 func (self *TcpSequence) Run() {
-    defer func() {
-        self.cancel()
-
-        // close(self.sendItems)
-
-        // drain and drop
-        func() {
-            for {
-                select {
-                case _, ok := <- self.sendItems:
-                    if !ok {
-                        return
-                    }
-                }
-            }
-        }()
-    }()
-
+    defer self.cancel()
 
     receive := func(packet []byte) {
         self.receiveCallback(self.source, IpProtocolTcp, packet)
@@ -1249,14 +1358,15 @@ func (self *TcpSequence) Run() {
         self.tcpBufferSettings.ConnectTimeout,
     )
     if err != nil {
-        self.log("[init]connect error (%s)", err)
+        fmt.Printf("[init]tcp connect error = %s\n", err)
         return
     }
     defer socket.Close()
 
     tcpSocket := socket.(*net.TCPConn)
     tcpSocket.SetNoDelay(false)
-
+    
+    self.UpdateLastActivityTime()
     self.log("[init]connect success")
 
     receiveAckCond := sync.NewCond(&self.mutex)
@@ -1270,9 +1380,9 @@ func (self *TcpSequence) Run() {
     go func() {
         defer self.cancel()
 
-        buffer := make([]byte, self.tcpBufferSettings.ReadBufferSize)
+        buffer := make([]byte, self.tcpBufferSettings.ReadBufferByteCount)
         
-        readTimeout := time.Now().Add(self.tcpBufferSettings.ReadTimeout)
+        
         for forwardIter := 0; ; forwardIter += 1 {
             select {
             case <- self.ctx.Done():
@@ -1280,17 +1390,18 @@ func (self *TcpSequence) Run() {
             default:
             }
 
+            readTimeout := time.Now().Add(self.tcpBufferSettings.ReadTimeout)
             socket.SetReadDeadline(readTimeout)
             
             n, err := socket.Read(buffer)
 
-            if err == nil {
-                self.log("[f%d]send(%d)", forwardIter, n)
-            } else {
-                fmt.Printf("[f%d]send(%d) (err=%s)\n", forwardIter, n, err)
+            if err != nil {
+                fmt.Printf("[f%d]tcp receive err = %s\n", forwardIter, err)
             }
 
             if 0 < n {
+                self.UpdateLastActivityTime()
+
                 // since the transfer from local to remove is lossless and preserves order,
                 // do not worry about retransmits
                 var packets [][]byte
@@ -1307,11 +1418,11 @@ func (self *TcpSequence) Run() {
                     if 1 < len(packets) {
                         fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
                     }
-                    self.log("[f%d]receive(%d %d %d)", forwardIter, n, len(packets), self.receiveSeq)
+                    fmt.Printf("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
 
                     // fmt.Printf("[multi] Receive window %d <> %d\n", uint32(self.receiveWindowSize), self.receiveSeq - self.receiveSeqAck + uint32(n))
                     for uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
-                        fmt.Printf("[multi] Receive window wait\n")
+                        fmt.Printf("[f%d]tcp receive window wait\n", forwardIter)
                         receiveAckCond.Wait()
                         select {
                         case <- self.ctx.Done():
@@ -1323,19 +1434,19 @@ func (self *TcpSequence) Run() {
                     self.receiveSeq += uint32(n)
                 }()
 
+                if packetsErr != nil {
+                    return
+                }
+
                 select {
                 case <- self.ctx.Done():
                     return
                 default:
                 }
 
-                if packetsErr == nil {
-                    for _, packet := range packets { 
-                        receive(packet)
-                    }
+                for _, packet := range packets { 
+                    receive(packet)
                 }
-                
-                readTimeout = time.Now().Add(self.tcpBufferSettings.ReadTimeout)
             }
             
             if err != nil {
@@ -1359,10 +1470,8 @@ func (self *TcpSequence) Run() {
                     }
                     return
                 } else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                    if readTimeout.Before(time.Now()) {
-                        fmt.Printf("[f%d]timeout\n", forwardIter)
-                        return
-                    }
+                    fmt.Printf("[f%d]timeout\n", forwardIter)
+                    return
                 } else {
                     // some other error
                     return
@@ -1371,122 +1480,130 @@ func (self *TcpSequence) Run() {
         }
     }()
 
-    for sendIter := 0; ; sendIter += 1 {
-        checkpointId := self.idleCondition.Checkpoint()
-        select {
-        case <- self.ctx.Done():
-            return
-        case sendItem := <- self.sendItems:
-            if "ACK" != tcpFlagsString(sendItem.tcp) {
-                fmt.Printf("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
-            }
-
-            drop := false
-            seq := 0
-            
-            func() {
-                self.mutex.Lock()
-                defer self.mutex.Unlock()
-
-                if self.sendSeq != sendItem.tcp.Seq {
-                    // a retransmit
-                    // since the transfer from local to remote is lossless and preserves order,
-                    // the packet is already pending. Ignore.
-                    drop = true
-                } else if sendItem.tcp.ACK {
-                    // acks are reliably delivered (see above)
-                    // we do not need to resend receive packets on missing acks
-                    self.receiveWindowSize = sendItem.tcp.Window
-                    self.receiveSeqAck = sendItem.tcp.Ack
-                    receiveAckCond.Broadcast()
-                }
-            }()
-
-            if drop {
-                continue
-            }
-
-            if sendItem.tcp.FIN {
-                self.log("[r%d]FIN", sendIter)
-                seq += 1
-            }
-
-            writeTimeout := time.Now().Add(self.tcpBufferSettings.WriteTimeout)
-
-            payload := sendItem.tcp.Payload
-            seq += len(payload)
-            for i := 0; i < len(payload); {
-                select {
-                case <- self.ctx.Done():
-                    return
-                default:
+    go func() {
+        for sendIter := 0; ; sendIter += 1 {
+            checkpointId := self.idleCondition.Checkpoint()
+            select {
+            case <- self.ctx.Done():
+                return
+            case sendItem := <- self.sendItems:
+                if "ACK" != tcpFlagsString(sendItem.tcp) {
+                    fmt.Printf("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
                 }
 
-                socket.SetWriteDeadline(writeTimeout)
-                n, err := socket.Write(payload[i:])
-
-                if err == nil {
-                    self.log("[r%d]forward(%d)", sendIter, n)
-                } else {
-                    fmt.Printf("[r%d]forward(%d err=%s)\n", sendIter, n, err)
-                }
-
-                if 0 < n {
-                    j := i
-                    i += n
-                    fmt.Printf("[r%d]forward(%d/%d -> %d/%d +%d)\n", sendIter, j, len(payload), i, len(payload), n)
-                }
-
-                if err != nil {
-                    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                        if writeTimeout.Before(time.Now()) {
-                            return
-                        }
-                    } else {
-                        // some other error
-                        return
-                    }
-                }
-            }
-
-
-            if 0 < seq {
-                var packet []byte
-                var err error
+                drop := false
+                seq := 0
+                
                 func() {
                     self.mutex.Lock()
                     defer self.mutex.Unlock()
 
-                    self.sendSeq += uint32(seq)
-                    packet, err = self.PureAck()
+                    if self.sendSeq != sendItem.tcp.Seq {
+                        // a retransmit
+                        // since the transfer from local to remote is lossless and preserves order,
+                        // the packet is already pending. Ignore.
+                        drop = true
+                    } else if sendItem.tcp.ACK {
+                        // acks are reliably delivered (see above)
+                        // we do not need to resend receive packets on missing acks
+                        if self.receiveSeqAck < sendItem.tcp.Ack {
+                            self.receiveWindowSize = sendItem.tcp.Window
+                            self.receiveSeqAck = sendItem.tcp.Ack
+                            receiveAckCond.Broadcast()
+                        }
+                    }
                 }()
-                if err == nil {
-                    receive(packet)
+
+                if drop {
+                    continue
                 }
+
+                if sendItem.tcp.FIN {
+                    self.log("[r%d]FIN", sendIter)
+                    seq += 1
+                }
+
+                writeEndTime := time.Now().Add(self.tcpBufferSettings.WriteTimeout)
+
+                payload := sendItem.tcp.Payload
+                seq += len(payload)
+                for i := 0; i < len(payload); {
+                    select {
+                    case <- self.ctx.Done():
+                        return
+                    default:
+                    }
+
+                    socket.SetWriteDeadline(writeEndTime)
+                    n, err := socket.Write(payload[i:])
+
+                    if err == nil {
+                        fmt.Printf("[f%d]tcp forward %d\n", sendIter, n)
+                    } else {
+                        fmt.Printf("[f%d]tcp forward %d err=%s\n", sendIter, n, err)
+                    }
+
+                    if 0 < n {
+                        self.UpdateLastActivityTime()
+
+                        j := i
+                        i += n
+                        fmt.Printf("[f%d]tcp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+                    }
+
+                    if err != nil {
+                        if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                            return
+                        } else {
+                            // some other error
+                            return
+                        }
+                    }
+                }
+
+
+                if 0 < seq {
+                    var packet []byte
+                    var err error
+                    func() {
+                        self.mutex.Lock()
+                        defer self.mutex.Unlock()
+
+                        self.sendSeq += uint32(seq)
+                        packet, err = self.PureAck()
+                    }()
+                    if err == nil {
+                        receive(packet)
+                    }
+                }
+
+                
+
+
+                if sendItem.tcp.FIN {
+                    // close the socket to propage the FIN and close the sequence
+                    socket.Close()
+                }
+
+                if sendItem.tcp.RST {
+                    // a RST typically appears for a bad TCP segment
+                    self.log("[r%d]RST", sendIter)
+                    return
+                }
+
+            case <- time.After(self.tcpBufferSettings.IdleTimeout):
+                if self.idleCondition.Close(checkpointId) {
+                    // close the sequence
+                    self.log("[r%d]timeout", sendIter)
+                    return
+                }
+                // else there pending updates
             }
-
-            
-
-
-            if sendItem.tcp.FIN {
-                // close the socket to propage the FIN and close the sequence
-                socket.Close()
-            }
-
-            if sendItem.tcp.RST {
-                // a RST typically appears for a bad TCP segment
-                self.log("[r%d]RST", sendIter)
-                return
-            }
-
-        case <- time.After(self.tcpBufferSettings.IdleTimeout):
-            if self.idleCondition.Close(checkpointId) {
-                // close the sequence
-                self.log("[r%d]timeout", sendIter)
-                return
-            }
-            // else there pending updates
         }
+    }()
+
+    select {
+    case <- self.ctx.Done():
     }
 }
 
@@ -1510,6 +1627,8 @@ type ConnectionState struct {
     receiveSeqAck uint32
     receiveWindowSize uint16
     windowSize uint16
+
+    lastActivityTime time.Time
 }
 
 func (self *ConnectionState) SourceAuthority() string {
@@ -1839,6 +1958,18 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
         }
         return packets, nil
     }
+}
+
+func (self *ConnectionState) LastActivityTime() time.Time {
+    self.mutex.Lock()
+    defer self.mutex.Unlock()
+    return self.lastActivityTime
+}
+
+func (self *ConnectionState) UpdateLastActivityTime() {
+    self.mutex.Lock()
+    defer self.mutex.Unlock()
+    self.lastActivityTime = time.Now()
 }
 
 
