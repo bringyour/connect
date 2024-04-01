@@ -56,7 +56,7 @@ func (self *ContractManagerStats) ContractOpenByteCount() ByteCount {
 
 func DefaultContractManagerSettings() *ContractManagerSettings {
 	// NETWORK EVENT: enable contracts 2024-01-01-00:00:00Z
-	networkEventTimeEnableContracts, err := time.Parse(time.RFC3339, "2024-04-01T00:00:00Z")
+	networkEventTimeEnableContracts, err := time.Parse(time.RFC3339, "2024-04-08T00:00:00Z")
 	if err != nil {
 		panic(err)
 	}
@@ -105,8 +105,6 @@ type ContractManager struct {
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
 
 	localStats *ContractManagerStats
-
-	clientUnsub func()
 }
 
 func NewContractManagerWithDefaults(ctx context.Context, client *Client) *ContractManager {
@@ -139,9 +137,6 @@ func NewContractManager(ctx context.Context, client *Client, settings *ContractM
 		localStats: NewContractManagerStats(),
 	}
 
-	clientUnsub := client.AddReceiveCallback(contractManager.receive)
-	contractManager.clientUnsub = clientUnsub
-
 	return contractManager
 }
 
@@ -161,7 +156,7 @@ func (self *ContractManager) addContractErrorCallback(contractErrorCallback Cont
 // }
 
 // ReceiveFunction
-func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	// for _, frame := range frames {
 	// 	fmt.Printf("CONTRACT MANAGER RECEIVE %s-> %s\n", sourceId.String(), frame.MessageType)
 	// }
@@ -174,7 +169,12 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 					// fmt.Printf("GOT CONTRACT RESULT %s\n", v)
 					if contractError := v.Error; contractError != nil {
 						// fmt.Printf("CONTRACT ERROR %s\n", contractError)
-						self.error(*contractError)
+						Trace(
+							fmt.Sprintf("[contract]error = %s", contractError.String()),
+							func() {
+								self.contractError(*contractError)
+							},
+						)
 					} else if contract := v.Contract; contract != nil {
 						TraceWithReturn(
 							"[contract]add",
@@ -182,6 +182,8 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 								return self.addContract(contract)
 							},
 						)
+					} else {
+						fmt.Printf("[contract]unknown result")
 					}
 				}
 			}
@@ -190,7 +192,7 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 }
 
 // ContractErrorFunction
-func (self *ContractManager) error(contractError protocol.ContractError) {
+func (self *ContractManager) contractError(contractError protocol.ContractError) {
 	for _, contractErrorCallback := range self.contractErrorCallbacks.Get() {
 		func() {
 			defer recover()
@@ -241,11 +243,10 @@ func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMo
 	provide := &protocol.Provide{
 		Keys: provideKeys,
 	}
-	// best practice to make async sends into the client while being called from a client loop
-	go self.client.SendControlWithTimeout(
+	self.client.SendControlWithTimeout(
 		RequireToFrame(provide),
 		func(err error) {},
-		self.client.settings.ControlWriteTimeout,
+		-1,
 	)
 }
 
@@ -438,7 +439,7 @@ func (self *ContractManager) closeContractQueue(destinationId Id) {
 	}
 }
 
-func (self *ContractManager) CreateContract(destinationId Id, companionContract bool) {
+func (self *ContractManager) CreateContract(destinationId Id, companionContract bool, timeout time.Duration) {
 	
 	// look at destinationContracts and last contract to get previous contract id
 	contractQueue := self.openContractQueue(destinationId)
@@ -451,12 +452,10 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 		Companion: companionContract,
 		UsedContractIds: contractQueue.UsedContractIdBytes(),
 	}
-
-	// best practice to make async sends into the client while being called from a client loop
-	go self.client.SendControlWithTimeout(
+	self.client.SendControlWithTimeout(
 		RequireToFrame(createContract),
 		nil,
-		self.client.settings.ControlWriteTimeout,
+		timeout,
 	)
 }
 
@@ -468,11 +467,10 @@ func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount Byte
 		AckedByteCount: uint64(ackedByteCount),
 		UnackedByteCount: uint64(unackedByteCount),
 	}
-	// best practice to make async sends into the client while being called from a client loop
-	go self.client.SendControlWithTimeout(
+	self.client.SendControlWithTimeout(
 		RequireToFrame(closeContract),
 		nil,
-		self.client.settings.ControlWriteTimeout,
+		-1,
 	)
 
 	opened := false
@@ -525,12 +523,6 @@ func (self *ContractManager) ResetLocalStats() {
 	defer self.mutex.Unlock()
 
 	self.localStats = NewContractManagerStats()
-}
-
-func (self *ContractManager) Close() {
-	// debug.PrintStack()
-	self.clientUnsub()
-	// pending contracts in flight will just timeout on the platform
 }
 
 func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {

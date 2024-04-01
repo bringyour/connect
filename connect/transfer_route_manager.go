@@ -134,10 +134,6 @@ func (self *RouteManager) getTransportStats(transport Transport) (writerStats *R
     return
 }
 
-func (self *RouteManager) Close() {
-    // transports close individually and remove themselves via `updateTransport`
-}
-
 
 type MatchState struct {
 	ctx context.Context

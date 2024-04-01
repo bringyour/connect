@@ -5,7 +5,7 @@ import (
 	"time"
 	"sync"
 	"errors"
-	"math"
+	// "math"
 	"fmt"
 	// "runtime/debug"
 	"runtime"
@@ -50,6 +50,9 @@ var transferLog = LogFn(LogLevelInfo, "transfer")
 
 const DebugForwardMessages = true
 
+// use 0 for deadlock testing
+const DefaultTransferBufferSize = 32
+
 
 type AckFunction = func(err error)
 // provideMode is the mode of where these frames are from: network, friends and family, public
@@ -70,8 +73,8 @@ var DirectStreamId = Id{}
 
 func DefaultClientSettings() *ClientSettings {
 	return &ClientSettings{
-		SendBufferSize: 32,
-		ForwardBufferSize: 32,
+		SendBufferSize: DefaultTransferBufferSize,
+		ForwardBufferSize: DefaultTransferBufferSize,
 		ReadTimeout: 30 * time.Second,
 		BufferTimeout: 30 * time.Second,
 		ControlWriteTimeout: 30 * time.Second,
@@ -103,8 +106,8 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		IdleTimeout: 60 * time.Second,
 		// pause on resend for selectively acked messaged
 		SelectiveAckTimeout: 5 * time.Second,
-		SequenceBufferSize: 32,
-		AckBufferSize: 32,
+		SequenceBufferSize: DefaultTransferBufferSize,
+		AckBufferSize: DefaultTransferBufferSize,
 		MinMessageByteCount: ByteCount(1),
 		// this includes transport reconnections
 		WriteTimeout: 30 * time.Second,
@@ -119,8 +122,8 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		GapTimeout: 60 * time.Second,
 		// the receive idle timeout should be a bit longer than the send idle timeout
 		IdleTimeout: 120 * time.Second,
-		SequenceBufferSize: 32,
-		AckBufferSize: 32,
+		SequenceBufferSize: DefaultTransferBufferSize,
+		AckBufferSize: DefaultTransferBufferSize,
 		AckCompressTimeout: 10 * time.Millisecond,
 		MinMessageByteCount: ByteCount(1),
 		ResendAbuseThreshold: 4,
@@ -136,7 +139,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 func DefaultForwardBufferSettings() *ForwardBufferSettings {
 	return &ForwardBufferSettings {
 		IdleTimeout: 300 * time.Second,
-		SequenceBufferSize: 32,
+		SequenceBufferSize: DefaultTransferBufferSize,
 		WriteTimeout: 1 * time.Second,
 	}
 }
@@ -261,6 +264,8 @@ type Client struct {
 	sendBuffer *SendBuffer
 	receiveBuffer *ReceiveBuffer
 	forwardBuffer *ForwardBuffer
+
+	contractManagerUnsub func()
 }
 
 func NewClientWithDefaults(ctx context.Context, clientId Id) *Client {
@@ -292,6 +297,8 @@ func NewClientWithTag(
 
 	routeManager := NewRouteManager(ctx, clientTag)
 	contractManager := NewContractManager(ctx, client, settings.ContractManagerSettings)
+
+	client.contractManagerUnsub = client.AddReceiveCallback(contractManager.Receive)
 
 	client.initBuffers(routeManager, contractManager)
 
@@ -756,6 +763,11 @@ func (self *Client) Done() <-chan struct{} {
 	return self.ctx.Done()
 }
 
+func (self *Client) Ctx() context.Context {
+	return self.ctx
+}
+
+// this does not need to be called if `Cancel` is called
 func (self *Client) Close() {
 	fmt.Printf("CLOSE 32\n")
 	self.cancel()
@@ -764,8 +776,10 @@ func (self *Client) Close() {
 	self.receiveBuffer.Close()
 	self.forwardBuffer.Close()
 
-	self.routeManager.Close()
-	self.contractManager.Close()
+	// self.routeManager.Close()
+	// self.contractManager.Close()
+
+	self.contractManagerUnsub()
 }
 
 func (self *Client) Cancel() {
@@ -864,7 +878,7 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 			if skip == nil || skip != sendSequence {
 				return sendSequence
 			} else {
-				sendSequence.Close()
+				sendSequence.Cancel()
 				delete(self.sendSequences, sendSequenceId)
 			}
 		}
@@ -883,9 +897,9 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
+			sendSequence.Close()
 			// clean up
 			if sendSequence == self.sendSequences[sendSequenceId] {
-				sendSequence.Close()
 				delete(self.sendSequences, sendSequenceId)
 			}
 		}()
@@ -1591,7 +1605,11 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				return TraceWithReturn("[s]next contract", func()(bool) {
 					if contract := self.contractManager.TakeContract(self.ctx, self.destinationId, timeout); contract != nil && setNextContract(contract) {
 						// async queue up the next contract
-						self.contractManager.CreateContract(self.destinationId, self.companionContract)
+						self.contractManager.CreateContract(
+							self.destinationId,
+							self.companionContract,
+							self.client.settings.ControlWriteTimeout,
+						)
 
 						return true
 					} else {
@@ -1618,7 +1636,11 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				}
 
 				// async queue up the next contract
-				self.contractManager.CreateContract(self.destinationId, self.companionContract)
+				self.contractManager.CreateContract(
+					self.destinationId,
+					self.companionContract,
+					self.client.settings.ControlWriteTimeout,
+				)
 
 				if nextContract(min(timeout, self.sendBufferSettings.CreateContractRetryInterval)) {
 					return true
@@ -1738,22 +1760,27 @@ func (self *SendSequence) sendWithSetContract(
 		// messageType: frame.MessageType,
 	}
 
-	if ack {
-		self.sendItems = append(self.sendItems, item)
-		self.resendQueue.Add(item)
-	} else {
-		// immediately ack
-		self.ackItem(item)
-	}
 
-	// ignore the write error
-	TraceWithReturn(fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId.String()), func()(error) {
+	err := TraceWithReturn(fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId.String()), func()(error) {
 		return self.multiRouteWriter.Write(
 			self.ctx,
 			item.transferFrameBytes,
 			self.sendBufferSettings.WriteTimeout,
 		)
 	})
+
+	if ack {
+		self.sendItems = append(self.sendItems, item)
+		self.resendQueue.Add(item)
+		// ignore the write error since the item will be resent
+	} else {
+		// immediately ack
+		if err == nil {
+			self.ackItem(item)
+		} else {
+			item.ackCallback(err)
+		}
+	}
 }
 
 func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
@@ -1995,7 +2022,7 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 			if skip == nil || skip != receiveSequence {
 				return receiveSequence
 			} else {
-				receiveSequence.Close()
+				receiveSequence.Cancel()
 				delete(self.receiveSequences, receiveSequenceId)
 			}
 		}
@@ -2014,9 +2041,9 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
+			receiveSequence.Close()
 			// clean up
 			if receiveSequence == self.receiveSequences[receiveSequenceId] {
-				receiveSequence.Close()
 				delete(self.receiveSequences, receiveSequenceId)
 			}
 		}()
@@ -3009,7 +3036,7 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 			if skip == nil || skip != forwardSequence {
 				return forwardSequence
 			} else {
-				forwardSequence.Close()
+				forwardSequence.Cancel()
 				delete(self.forwardSequences, forwardPack.DestinationId)
 			}
 		}
@@ -3027,9 +3054,9 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
+			forwardSequence.Close()
 			// clean up
 			if forwardSequence == self.forwardSequences[forwardPack.DestinationId] {
-				forwardSequence.Close()
 				delete(self.forwardSequences, forwardPack.DestinationId)
 			}
 		}()
@@ -3309,8 +3336,8 @@ func (self *SequencePeerAudit) Complete() {
 	if self.peerAudit == nil {
 		return
 	}
-
-	frame := RequireToFrame(&protocol.PeerAudit{
+	/*
+	peerAudit := &protocol.PeerAudit{
 		PeerId: self.peerId.Bytes(),
 		Duration: uint64(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
 		Abuse: self.peerAudit.Abuse,
@@ -3323,14 +3350,14 @@ func (self *SequencePeerAudit) Complete() {
 	    SendCount: uint64(self.peerAudit.SendCount),
 	    ResendByteCount: uint64(self.peerAudit.ResendByteCount),
 	    ResendCount: uint64(self.peerAudit.ResendCount),
-	})
-
-	// best practice to make async sends into the client while being called from a client loop
-	go self.client.SendControlWithTimeout(
-		frame,
+	}
+	// FIXME send out of band
+	self.client.SendControlWithTimeout(
+		RequireToFrame(peerAudit),
 		func(err error){},
-		self.client.settings.ControlWriteTimeout,
+		-1,
 	)
+	*/
 	self.peerAudit = nil
 }
 
