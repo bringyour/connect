@@ -249,7 +249,6 @@ func (self *PlatformTransport) run() {
 
                 go func() {
                     select {
-                    case <- handleCtx.Done():
                     case <- time.After(self.settings.TransportDrainTimeout):
                     }
 

@@ -19,26 +19,6 @@ import (
 )
 
 
-func TestClientUdp4(t *testing.T) {
-	testClient(t, testingNewClient, udp4Packet, (*IpPath).ToIp4Path)
-}
-
-
-func TestClientTcp4(t *testing.T) {
-	testClient(t, testingNewClient, tcp4Packet, (*IpPath).ToIp4Path)
-}
-
-
-func TestClientUdp6(t *testing.T) {
-	testClient(t, testingNewClient, udp6Packet, (*IpPath).ToIp6Path)
-}
-
-
-func TestClientTcp6(t *testing.T) {
-	testClient(t, testingNewClient, tcp6Packet, (*IpPath).ToIp6Path)
-}
-
-
 type PacketGeneratorFunction func(int, int, int, int)([]byte, []byte)
 
 
@@ -329,6 +309,26 @@ func tcp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
 }
 
 
+func TestClientUdp4(t *testing.T) {
+	testClient(t, testingNewClient, udp4Packet, (*IpPath).ToIp4Path)
+}
+
+
+func TestClientTcp4(t *testing.T) {
+	testClient(t, testingNewClient, tcp4Packet, (*IpPath).ToIp4Path)
+}
+
+
+func TestClientUdp6(t *testing.T) {
+	testClient(t, testingNewClient, udp6Packet, (*IpPath).ToIp6Path)
+}
+
+
+func TestClientTcp6(t *testing.T) {
+	testClient(t, testingNewClient, tcp6Packet, (*IpPath).ToIp6Path)
+}
+
+
 func testingNewClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
 	client := NewClientWithDefaults(ctx, NewId())
 
@@ -522,7 +522,6 @@ func testClient[P comparable](
 	comparableIpPathSources := map[P]map[Id]bool{}
 
 	for i := 0; i < totalCount; i += 1 {
-		fmt.Printf("[testr]%d/%d (%.2f%%)\n", i, totalCount, 100 * float32(i) / float32(totalCount))
 		select {
 		case receivePacket := <- receivePackets:
 			// fmt.Printf("Receive %d/%d (%.2f%%)\n", i + 1, totalCount, 100.0 * float32(i + 1) / float32(totalCount))

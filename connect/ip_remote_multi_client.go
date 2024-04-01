@@ -28,16 +28,12 @@ import (
 // net frame count statistics (acks - nacks)
 
 
-// for each `NewClientArgs`, 
-//   `RemoveClientWithArgs` will be called if a client was created for the args,
-//   else `RemoveClientArgs`
 type MultiClientGenerator interface {
     // client id -> estimated byte count per second
     NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
     // client id, client auth
     NewClientArgs() (*MultiClientGeneratorClientArgs, error)
     RemoveClientArgs(args *MultiClientGeneratorClientArgs)
-    RemoveClientWithArgs(client *Client, args *MultiClientGeneratorClientArgs)
     NewClientSettings() *ClientSettings
     NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
@@ -529,10 +525,6 @@ func (self *ApiMultiClientGenerator) RemoveClientArgs(args *MultiClientGenerator
     }))
 }
 
-func (self *ApiMultiClientGenerator) RemoveClientWithArgs(client *Client, args *MultiClientGeneratorClientArgs) {
-    self.RemoveClientArgs(args)
-}
-
 func (self *ApiMultiClientGenerator) NewClientSettings() *ClientSettings {
     return self.clientSettingsGenerator()
 }
@@ -549,7 +541,7 @@ func (self *ApiMultiClientGenerator) NewClient(
     client := NewClient(ctx, byJwt.ClientId, clientSettings)
     // fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
     NewPlatformTransportWithDefaults(
-        client.Ctx(),
+        ctx,
         self.platformUrl,
         args.ClientAuth,
         client.RouteManager(),
@@ -642,14 +634,11 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
         }
 
         // remove destinations that are already in the window
-        func() {
-            self.stateLock.Lock()
-            defer self.stateLock.Unlock()
-            for destinationId, _ := range self.destinationClients {
-                delete(destinationIdEstimatedBytesPerSecond, destinationId)
-            }
-        }()
-        
+        self.stateLock.Lock()
+        for destinationId, _ := range self.destinationClients {
+            delete(destinationIdEstimatedBytesPerSecond, destinationId)
+        }
+        self.stateLock.Unlock()
         
         // fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
         
@@ -810,12 +799,9 @@ func (self *multiClientWindow) expand(n int) {
         case args := <- self.clientChannelArgs:
             fmt.Printf("[multi] Expand new client\n")
 
-            var ok bool
-            func() {
-                self.stateLock.Lock()
-                defer self.stateLock.Unlock()
-                _, ok = self.destinationClients[args.DestinationId]
-            }()
+            self.stateLock.Lock()
+            _, ok := self.destinationClients[args.DestinationId]
+            self.stateLock.Unlock()
 
             if ok {
                 // already have a client in the window for this destination
@@ -829,11 +815,18 @@ func (self *multiClientWindow) expand(n int) {
                     self.settings,
                 )
                 if err == nil {
-                    func () {
-                        self.stateLock.Lock()
-                        defer self.stateLock.Unlock()
-                        self.destinationClients[args.DestinationId] = client
-                    }()
+                    go HandleError(func() {
+                        select {
+                        case <- self.ctx.Done():
+                        case <- client.Done():
+                        }
+                        client.Cancel()
+                        self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
+                    }, self.cancel)
+
+                    self.stateLock.Lock()
+                    self.destinationClients[args.DestinationId] = client
+                    self.stateLock.Unlock()
                 } else {
                     self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
                 }
@@ -878,15 +871,13 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
     }
 
     if 0 < len(removedClients) {
-        func() {
-            self.stateLock.Lock()
-            defer self.stateLock.Unlock()
-            for _, client := range removedClients {
-                // fmt.Printf("[multi] Remove client.\n")
-                client.Cancel()
-                delete(self.destinationClients, client.DestinationId())
-            }
-        }()
+        self.stateLock.Lock()
+        for _, client := range removedClients {
+            // fmt.Printf("[multi] Remove client.\n")
+            client.Cancel()
+            delete(self.destinationClients, client.DestinationId())
+        }
+        self.stateLock.Unlock()
 
         // self.windowUpdate.NotifyAll()
     }
@@ -1074,14 +1065,6 @@ func newMultiClientChannel(
     if err != nil {
         return nil, err
     }
-    go HandleError(func() {
-        select {
-        case <- cancelCtx.Done():
-        case <- client.Done():
-        }
-        client.Cancel()
-        generator.RemoveClientWithArgs(client, &args.MultiClientGeneratorClientArgs)
-    }, cancel)
 
     sourceFilter := map[Path]bool{
         Path{ClientId:args.DestinationId}: true,

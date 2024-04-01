@@ -134,7 +134,6 @@ func (self *RouteManager) getTransportStats(transport Transport) (writerStats *R
     return
 }
 
-// optional
 func (self *RouteManager) Close() {
     // transports close individually and remove themselves via `updateTransport`
 }

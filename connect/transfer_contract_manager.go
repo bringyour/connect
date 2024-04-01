@@ -241,10 +241,11 @@ func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMo
 	provide := &protocol.Provide{
 		Keys: provideKeys,
 	}
-	self.client.SendControlWithTimeout(
+	// best practice to make async sends into the client while being called from a client loop
+	go self.client.SendControlWithTimeout(
 		RequireToFrame(provide),
 		func(err error) {},
-		-1,
+		self.client.settings.ControlWriteTimeout,
 	)
 }
 
@@ -437,7 +438,7 @@ func (self *ContractManager) closeContractQueue(destinationId Id) {
 	}
 }
 
-func (self *ContractManager) CreateContract(destinationId Id, companionContract bool, timeout time.Duration) {
+func (self *ContractManager) CreateContract(destinationId Id, companionContract bool) {
 	
 	// look at destinationContracts and last contract to get previous contract id
 	contractQueue := self.openContractQueue(destinationId)
@@ -450,10 +451,12 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 		Companion: companionContract,
 		UsedContractIds: contractQueue.UsedContractIdBytes(),
 	}
-	self.client.SendControlWithTimeout(
+
+	// best practice to make async sends into the client while being called from a client loop
+	go self.client.SendControlWithTimeout(
 		RequireToFrame(createContract),
 		nil,
-		timeout,
+		self.client.settings.ControlWriteTimeout,
 	)
 }
 
@@ -465,10 +468,11 @@ func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount Byte
 		AckedByteCount: uint64(ackedByteCount),
 		UnackedByteCount: uint64(unackedByteCount),
 	}
-	self.client.SendControlWithTimeout(
+	// best practice to make async sends into the client while being called from a client loop
+	go self.client.SendControlWithTimeout(
 		RequireToFrame(closeContract),
 		nil,
-		-1,
+		self.client.settings.ControlWriteTimeout,
 	)
 
 	opened := false
@@ -523,8 +527,8 @@ func (self *ContractManager) ResetLocalStats() {
 	self.localStats = NewContractManagerStats()
 }
 
-// optional
 func (self *ContractManager) Close() {
+	// debug.PrintStack()
 	self.clientUnsub()
 	// pending contracts in flight will just timeout on the platform
 }
