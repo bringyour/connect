@@ -5,7 +5,7 @@ import (
 	"time"
 	"sync"
 	"errors"
-	"math"
+	// "math"
 	"fmt"
 	// "runtime/debug"
 	"runtime"
@@ -1754,22 +1754,27 @@ func (self *SendSequence) sendWithSetContract(
 		// messageType: frame.MessageType,
 	}
 
-	if ack {
-		self.sendItems = append(self.sendItems, item)
-		self.resendQueue.Add(item)
-	} else {
-		// immediately ack
-		self.ackItem(item)
-	}
 
-	// ignore the write error
-	TraceWithReturn(fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId.String()), func()(error) {
+	err := TraceWithReturn(fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId.String()), func()(error) {
 		return self.multiRouteWriter.Write(
 			self.ctx,
 			item.transferFrameBytes,
 			self.sendBufferSettings.WriteTimeout,
 		)
 	})
+
+	if ack {
+		self.sendItems = append(self.sendItems, item)
+		self.resendQueue.Add(item)
+		// ignore the write error since the item will be resent
+	} else {
+		// immediately ack
+		if err == nil {
+			self.ackItem(item)
+		} else {
+			item.ackCallback(err)
+		}
+	}
 }
 
 func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
@@ -3326,25 +3331,26 @@ func (self *SequencePeerAudit) Complete() {
 		return
 	}
 
-	peerAudit := &protocol.PeerAudit{
-		PeerId: self.peerId.Bytes(),
-		Duration: uint64(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
-		Abuse: self.peerAudit.Abuse,
-		BadContractCount: uint64(self.peerAudit.BadContractCount),
-	    DiscardedByteCount: uint64(self.peerAudit.DiscardedByteCount),
-	    DiscardedCount: uint64(self.peerAudit.DiscardedCount),
-	    BadMessageByteCount: uint64(self.peerAudit.BadMessageByteCount),
-	    BadMessageCount: uint64(self.peerAudit.BadMessageCount),
-	    SendByteCount: uint64(self.peerAudit.SendByteCount),
-	    SendCount: uint64(self.peerAudit.SendCount),
-	    ResendByteCount: uint64(self.peerAudit.ResendByteCount),
-	    ResendCount: uint64(self.peerAudit.ResendCount),
-	}
-	self.client.SendControlWithTimeout(
-		RequireToFrame(peerAudit),
-		func(err error){},
-		-1,
-	)
+	// peerAudit := &protocol.PeerAudit{
+	// 	PeerId: self.peerId.Bytes(),
+	// 	Duration: uint64(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
+	// 	Abuse: self.peerAudit.Abuse,
+	// 	BadContractCount: uint64(self.peerAudit.BadContractCount),
+	//     DiscardedByteCount: uint64(self.peerAudit.DiscardedByteCount),
+	//     DiscardedCount: uint64(self.peerAudit.DiscardedCount),
+	//     BadMessageByteCount: uint64(self.peerAudit.BadMessageByteCount),
+	//     BadMessageCount: uint64(self.peerAudit.BadMessageCount),
+	//     SendByteCount: uint64(self.peerAudit.SendByteCount),
+	//     SendCount: uint64(self.peerAudit.SendCount),
+	//     ResendByteCount: uint64(self.peerAudit.ResendByteCount),
+	//     ResendCount: uint64(self.peerAudit.ResendCount),
+	// }
+	// FIXME
+	// self.client.SendControlWithTimeout(
+	// 	RequireToFrame(peerAudit),
+	// 	func(err error){},
+	// 	-1,
+	// )
 	self.peerAudit = nil
 }
 

@@ -139,6 +139,7 @@ func NewContractManager(ctx context.Context, client *Client, settings *ContractM
 		localStats: NewContractManagerStats(),
 	}
 
+	// FIXME move this sub into the client
 	clientUnsub := client.AddReceiveCallback(contractManager.receive)
 	contractManager.clientUnsub = clientUnsub
 
@@ -174,7 +175,12 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 					// fmt.Printf("GOT CONTRACT RESULT %s\n", v)
 					if contractError := v.Error; contractError != nil {
 						// fmt.Printf("CONTRACT ERROR %s\n", contractError)
-						self.error(*contractError)
+						Trace(
+							fmt.Sprintf("[contract]error = %s", contractError.String()),
+							func() {
+								self.contractError(*contractError)
+							},
+						)
 					} else if contract := v.Contract; contract != nil {
 						TraceWithReturn(
 							"[contract]add",
@@ -182,6 +188,8 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 								return self.addContract(contract)
 							},
 						)
+					} else {
+						fmt.Printf("[contract]unknown result")
 					}
 				}
 			}
@@ -190,7 +198,7 @@ func (self *ContractManager) receive(sourceId Id, frames []*protocol.Frame, prov
 }
 
 // ContractErrorFunction
-func (self *ContractManager) error(contractError protocol.ContractError) {
+func (self *ContractManager) contractError(contractError protocol.ContractError) {
 	for _, contractErrorCallback := range self.contractErrorCallbacks.Get() {
 		func() {
 			defer recover()

@@ -12,7 +12,7 @@ import (
     mathrand "math/rand"
     "math"
     "io"
-    "slices"
+    // "slices"
 
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
@@ -484,6 +484,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
             }
         }
 
+        /*
         // enforce at most one connection from the source to the destination
         for _, sequence := range self.sequences {
             if sequence.source == source && sequence.destinationIp.Equal(destinationIp) && sequence.destinationPort == udp.DstPort {
@@ -497,6 +498,8 @@ func (self *UdpBuffer[BufferId]) udpSend(
                 sequence.Cancel()
             }
         }
+        */
+        /*
         // limit the total connections per source to avoid blowing up the ulimit
         sourceSequences := []*UdpSequence{}
         for _, sequence := range self.sequences {
@@ -534,6 +537,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
                 sourceSequence.Cancel()
             }
         }
+        */
 
 
         sequence = NewUdpSequence(
@@ -1066,33 +1070,38 @@ func (self *TcpBuffer[BufferId]) tcpSend(
         self.mutex.Lock()
         defer self.mutex.Unlock()
 
-        // new sequence
+        
         if tcp.SYN {
+            // new sequence
             if sequence, ok := self.sequences[bufferId]; ok {
                 sequence.Close()
                 delete(self.sequences, bufferId)
             }
-        }
-
-        if sequence, ok := self.sequences[bufferId]; ok {
-            return sequence
+        } else {
+            if sequence, ok := self.sequences[bufferId]; ok {
+                return sequence
+            }
+            // drop the packet; only create a new sequence on SYN
+            fmt.Printf("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
+            return nil
         }
 
         // enforce at most one connection from the source to the destination
-        for _, sequence := range self.sequences {
-            if sequence.source == source && sequence.destinationIp.Equal(destinationIp) && sequence.destinationPort == tcp.DstPort {
-                fmt.Printf(
-                    "[lnr]tcp limit one %s ->%s\n",
-                    source,
-                    net.JoinHostPort(
-                        destinationIp.String(),
-                        strconv.Itoa(int(tcp.DstPort)),
-                    ),
-                )
-                sequence.Cancel()
-            }
-        }
+        // for _, sequence := range self.sequences {
+        //     if sequence.source == source && sequence.destinationIp.Equal(destinationIp) && sequence.destinationPort == tcp.DstPort {
+        //         fmt.Printf(
+        //             "[lnr]tcp limit one %s ->%s\n",
+        //             source,
+        //             net.JoinHostPort(
+        //                 destinationIp.String(),
+        //                 strconv.Itoa(int(tcp.DstPort)),
+        //             ),
+        //         )
+        //         sequence.Cancel()
+        //     }
+        // }
         // limit the total connections per source to avoid blowing up the ulimit
+        /*
         sourceSequences := []*TcpSequence{}
         for _, sequence := range self.sequences {
             if sequence.source == source {
@@ -1129,37 +1138,32 @@ func (self *TcpBuffer[BufferId]) tcpSend(
                 sourceSequence.Cancel()
             }
         }
+        */
 
-        if tcp.SYN {
-            sequence := NewTcpSequence(
-                self.ctx,
-                self.receiveCallback,
-                source,
-                ipVersion,
-                sourceIp,
-                tcp.SrcPort,
-                destinationIp,
-                tcp.DstPort,
-                self.tcpBufferSettings,
-            )
-            self.sequences[bufferId] = sequence
-            go func() {
-                sequence.Run()
+        sequence := NewTcpSequence(
+            self.ctx,
+            self.receiveCallback,
+            source,
+            ipVersion,
+            sourceIp,
+            tcp.SrcPort,
+            destinationIp,
+            tcp.DstPort,
+            self.tcpBufferSettings,
+        )
+        self.sequences[bufferId] = sequence
+        go func() {
+            sequence.Run()
 
-                self.mutex.Lock()
-                defer self.mutex.Unlock()
-                // clean up
-                if sequence == self.sequences[bufferId] {
-                    sequence.Close()
-                    delete(self.sequences, bufferId)
-                }
-            }()
-            return sequence
-        } else {
-            // drop the packet; only create a new sequence on SYN
-            fmt.Printf("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
-            return nil
-        }
+            self.mutex.Lock()
+            defer self.mutex.Unlock()
+            // clean up
+            if sequence == self.sequences[bufferId] {
+                sequence.Close()
+                delete(self.sequences, bufferId)
+            }
+        }()
+        return sequence
     }
     sendItem := &TcpSendItem{
         provideMode: provideMode,
@@ -2084,19 +2088,39 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
     switch ipProtocol {
     case IpProtocolUdp:
         opts = append(opts, NoAck())
+        TraceWithReturn(
+            fmt.Sprintf("[unps]udp %s->%s", self.client.ClientTag(), source.ClientId.String()),
+            func()(bool) {
+                ack := make(chan error)
+                sent := self.client.SendWithTimeout(
+                    frame,
+                    source.ClientId,
+                    func(err error) {ack <- err},
+                    self.settings.WriteTimeout,
+                    opts...,
+                )
+                if !sent {
+                    return false
+                }
+                err := <- ack
+                return err == nil
+            },
+        )
+    case IpProtocolTcp:
+        TraceWithReturn(
+            fmt.Sprintf("[unps]tcp %s->%s", self.client.ClientTag(), source.ClientId.String()),
+            func()(bool) {
+                return self.client.SendWithTimeout(
+                    frame,
+                    source.ClientId,
+                    func(err error) {},
+                    self.settings.WriteTimeout,
+                    opts...,
+                )
+            },
+        )
     }
-    TraceWithReturn(
-        fmt.Sprintf("[unps] %s->%s", self.client.ClientTag(), source.ClientId.String()),
-        func()(bool) {
-            return self.client.SendWithTimeout(
-                frame,
-                source.ClientId,
-                func(err error) {},
-                self.settings.WriteTimeout,
-                opts...,
-            )
-        },
-    )
+
 }
 
 // `connect.ReceiveFunction`
