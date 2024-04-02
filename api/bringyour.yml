@@ -1023,6 +1023,28 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/DeviceSetProvideResult"
 
+    /connect/control:
+        post:
+            description: |
+                Out-of-band control messages for the connect protocol.
+                Blocking request-response control messages need to be handled out-of-band
+                to resolve the possibility of dedlocks in the client sequence.
+            operationId: Connect Control
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/ConnectControlArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/ConnectControlResult"
+
 components:
     securitySchemes:
         BearerAuth:
@@ -2410,3 +2432,29 @@ components:
                         message:
                             type: string
 
+        ConnectControlArgs:
+            type: object
+            properties:
+                pack:
+                    description: |
+                        base64 encoded connect protobuf `Pack` processed as control messages.
+                        As an inline message, these would be sent to the control id.
+                    type: array
+                    items:
+                        type: string
+
+        ConnectControlResult:
+            type: object
+            properties:
+                pack:
+                    description: |
+                        base64 encoded connect `Pack` resulting from processing the control messages.
+                        As an inline message, this is what would be sent from the control id after processing the control messages.
+                    type: array
+                    items:
+                        type: string
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string

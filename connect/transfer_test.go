@@ -61,7 +61,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
     }
 
 
-	a := NewClientWithDefaults(ctx, aClientId)
+	a := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
 	aRouteManager := a.RouteManager()
 	aContractManager := a.ContractManager()
 	// aRouteManager := NewRouteManager(a)
@@ -76,7 +76,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
     aContractManager.SetProvideModes(provideModes)
 
 
-	b := NewClientWithDefaults(ctx, bClientId)
+	b := NewClientWithDefaults(ctx, bClientId, NewNoContractClientOob())
 	bRouteManager := b.RouteManager()
 	bContractManager := b.ContractManager()
 	// bRouteManager := NewRouteManager(b)
@@ -176,7 +176,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	aRouteManager.RemoveTransport(aReceiveTransport)
 
 
-	a2 := NewClientWithDefaults(ctx, aClientId)
+	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
 	a2RouteManager := a2.RouteManager()
 	a2ContractManager := a2.ContractManager()
 	// a2RouteManager := NewRouteManager(a2)

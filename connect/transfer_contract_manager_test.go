@@ -28,7 +28,7 @@ func TestTakeContract(t *testing.T) {
 	
 	ctx := context.Background()
 	clientId := NewId()
-	client := NewClientWithDefaults(ctx, clientId)
+	client := NewClientWithDefaults(ctx, clientId, NewNoContractClientOob())
 	contractManager := client.ContractManager()
 	
 	destinationId := NewId()
@@ -75,7 +75,7 @@ func TestTakeContract(t *testing.T) {
 			assert.Equal(t, nil, err)
 
 
-			contractManager.receive(ControlId, []*protocol.Frame{frame}, protocol.ProvideMode_Network)
+			contractManager.Receive(ControlId, []*protocol.Frame{frame}, protocol.ProvideMode_Network)
 		}
 	}()
 

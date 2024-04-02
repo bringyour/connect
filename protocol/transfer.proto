@@ -162,6 +162,15 @@ message CreateContract {
 }
 
 
+// sent in-band after an out-of-band contract creation to make sure traffic is permitted from source to destination
+message CreateContractHole {
+    // ulid
+    bytes destination_id = 1;
+    // ulid
+    bytes contract_id = 2;
+}
+
+
 enum ContractError {
     NoPermission = 0;
     InsufficientBalance = 1;

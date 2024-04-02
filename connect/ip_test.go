@@ -330,7 +330,7 @@ func tcp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
 
 
 func testingNewClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
-	client := NewClientWithDefaults(ctx, NewId())
+	client := NewClientWithDefaults(ctx, NewId(), NewNoContractClientOob())
 
 	routesSend := []Route{
 		make(chan []byte),
@@ -408,7 +408,7 @@ func testClient[P comparable](
 	providerClientId := NewId()
 
 
-	providerClient := NewClientWithDefaults(ctx, providerClientId)
+	providerClient := NewClientWithDefaults(ctx, providerClientId, NewNoContractClientOob())
 
 
 	type receivePacket struct {

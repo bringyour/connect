@@ -5,7 +5,7 @@ import (
 	"time"
 	"sync"
 	"errors"
-	// "math"
+	"math"
 	"fmt"
 	// "runtime/debug"
 	"runtime"
@@ -251,6 +251,7 @@ type Client struct {
 
 	clientId Id
 	clientTag string
+	clientOob OutOfBandControl
 
 	settings *ClientSettings
 
@@ -268,19 +269,34 @@ type Client struct {
 	contractManagerUnsub func()
 }
 
-func NewClientWithDefaults(ctx context.Context, clientId Id) *Client {
-	return NewClient(ctx, clientId, DefaultClientSettings())
+func NewClientWithDefaults(
+	ctx context.Context,
+	clientId Id,
+	clientOob OutOfBandControl,
+) *Client {
+	return NewClient(
+		ctx,
+		clientId,
+		clientOob,
+		DefaultClientSettings(),
+	)
 }
 
-func NewClient(ctx context.Context, clientId Id, settings *ClientSettings) *Client {
+func NewClient(
+	ctx context.Context,
+	clientId Id,
+	clientOob OutOfBandControl,
+	settings *ClientSettings,
+) *Client {
 	clientTag := clientId.String()
-	return NewClientWithTag(ctx, clientId, clientTag, settings)
+	return NewClientWithTag(ctx, clientId, clientTag, clientOob, settings)
 }
 
 func NewClientWithTag(
 	ctx context.Context,
 	clientId Id,
 	clientTag string,
+	clientOob OutOfBandControl,
 	settings *ClientSettings,
 ) *Client {
 	cancelCtx, cancel := context.WithCancel(ctx)
@@ -289,6 +305,7 @@ func NewClientWithTag(
 		cancel: cancel,
 		clientId: clientId,
 		clientTag: clientTag,
+		clientOob: clientOob,
 		settings: settings,
 		receiveCallbacks: NewCallbackList[ReceiveFunction](),
 		forwardCallbacks: NewCallbackList[ForwardFunction](),
@@ -296,7 +313,7 @@ func NewClientWithTag(
 	}
 
 	routeManager := NewRouteManager(ctx, clientTag)
-	contractManager := NewContractManager(ctx, client, settings.ContractManagerSettings)
+	contractManager := NewContractManager(ctx, client, clientOob, settings.ContractManagerSettings)
 
 	client.contractManagerUnsub = client.AddReceiveCallback(contractManager.Receive)
 
@@ -3336,7 +3353,7 @@ func (self *SequencePeerAudit) Complete() {
 	if self.peerAudit == nil {
 		return
 	}
-	/*
+
 	peerAudit := &protocol.PeerAudit{
 		PeerId: self.peerId.Bytes(),
 		Duration: uint64(math.Ceil((self.peerAudit.lastModifiedTime.Sub(self.peerAudit.startTime)).Seconds())),
@@ -3351,13 +3368,7 @@ func (self *SequencePeerAudit) Complete() {
 	    ResendByteCount: uint64(self.peerAudit.ResendByteCount),
 	    ResendCount: uint64(self.peerAudit.ResendCount),
 	}
-	// FIXME send out of band
-	self.client.SendControlWithTimeout(
-		RequireToFrame(peerAudit),
-		func(err error){},
-		-1,
-	)
-	*/
+	self.client.SendControl(RequireToFrame(peerAudit), func(err error){})
 	self.peerAudit = nil
 }
 

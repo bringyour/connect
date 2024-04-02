@@ -398,6 +398,33 @@ func (self *BringYourApi) FindProviders2Sync(findProviders2 *FindProviders2Args)
 }
 
 
+
+type ConnectControlCallback apiCallback[*ConnectControlResult]
+
+type ConnectControlArgs struct {
+	Pack string `json:"pack"`
+}
+
+type ConnectControlResult struct {
+	Pack string `json:"pack"`
+}
+
+type ConnectControlError struct {
+	Message string `json:"message"`
+}
+
+func (self *BringYourApi) ConnectControl(connectControl *ConnectControlArgs, callback ConnectControlCallback) {
+	go post(
+		self.ctx,
+		fmt.Sprintf("%s/connect/control", self.apiUrl),
+		connectControl,
+		self.byJwt,
+		&ConnectControlResult{},
+		callback,
+	)
+}
+
+
 func post[R any](ctx context.Context, url string, args any, byJwt string, result R, callback apiCallback[R]) (R, error) {
 	var requestBodyBytes []byte
 	if args == nil {

@@ -90,6 +90,7 @@ func (self *ContractManagerSettings) ContractsEnabled() bool {
 type ContractManager struct {
 	ctx context.Context
 	client *Client
+	clientOob OutOfBandControl
 
 	settings *ContractManagerSettings
 
@@ -107,11 +108,16 @@ type ContractManager struct {
 	localStats *ContractManagerStats
 }
 
-func NewContractManagerWithDefaults(ctx context.Context, client *Client) *ContractManager {
-	return NewContractManager(ctx, client, DefaultContractManagerSettings())
+func NewContractManagerWithDefaults(ctx context.Context, client *Client, clientOob OutOfBandControl) *ContractManager {
+	return NewContractManager(ctx, client, clientOob, DefaultContractManagerSettings())
 }
 
-func NewContractManager(ctx context.Context, client *Client, settings *ContractManagerSettings) *ContractManager {
+func NewContractManager(
+	ctx context.Context,
+	client *Client,
+	clientOob OutOfBandControl,
+	settings *ContractManagerSettings,
+) *ContractManager {
 	// at a minimum 
 	// - messages to/from the platform (ControlId) do not need a contract
 	//   this is because the platform is needed to create contracts
@@ -128,6 +134,7 @@ func NewContractManager(ctx context.Context, client *Client, settings *ContractM
 	contractManager := &ContractManager{
 		ctx: ctx,
 		client: client,
+		clientOob: clientOob,
 		settings: settings,
 		provideSecretKeys: map[protocol.ProvideMode][]byte{},
 		destinationContracts: map[Id]*contractQueue{},
@@ -162,33 +169,41 @@ func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, prov
 	// }
 	switch sourceId {
 	case ControlId:
-		for _, frame := range frames {
-			if message, err := FromFrame(frame); err == nil {
-				switch v := message.(type) {
-				case *protocol.CreateContractResult:
-					// fmt.Printf("GOT CONTRACT RESULT %s\n", v)
-					if contractError := v.Error; contractError != nil {
-						// fmt.Printf("CONTRACT ERROR %s\n", contractError)
-						Trace(
-							fmt.Sprintf("[contract]error = %s", contractError.String()),
-							func() {
-								self.contractError(*contractError)
-							},
-						)
-					} else if contract := v.Contract; contract != nil {
-						TraceWithReturn(
-							"[contract]add",
-							func()(error) {
-								return self.addContract(contract)
-							},
-						)
-					} else {
-						fmt.Printf("[contract]unknown result")
-					}
+		contracts, contractErrors := parseControlContractFrames(frames)
+		for _, contract := range contracts {
+			TraceWithReturn(
+				"[contract]add",
+				func()(error) {
+					return self.addContract(contract)
+				},
+			)
+		}
+		for _, contractError := range contractErrors {
+			Trace(
+				fmt.Sprintf("[contract]error = %s", contractError.String()),
+				func() {
+					self.contractError(contractError)
+				},
+			)
+		}
+	}
+}
+
+// frames are verified before calling to be from source ControlId
+func parseControlContractFrames(frames []*protocol.Frame) (contracts []*protocol.Contract, contractErrors []protocol.ContractError) {
+	for _, frame := range frames {
+		if message, err := FromFrame(frame); err == nil {
+			switch v := message.(type) {
+			case *protocol.CreateContractResult:
+				if contractError := v.Error; contractError != nil {
+					contractErrors = append(contractErrors, *contractError)
+				} else if contract := v.Contract; contract != nil {
+					contracts = append(contracts, contract)
 				}
 			}
 		}
 	}
+	return
 }
 
 // ContractErrorFunction
@@ -243,11 +258,7 @@ func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMo
 	provide := &protocol.Provide{
 		Keys: provideKeys,
 	}
-	self.client.SendControlWithTimeout(
-		RequireToFrame(provide),
-		func(err error) {},
-		-1,
-	)
+	self.client.SendControl(RequireToFrame(provide), func(err error){})
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
@@ -452,10 +463,47 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 		Companion: companionContract,
 		UsedContractIds: contractQueue.UsedContractIdBytes(),
 	}
-	self.client.SendControlWithTimeout(
-		RequireToFrame(createContract),
-		nil,
-		timeout,
+	self.clientOob.SendControl(
+		[]*protocol.Frame{RequireToFrame(createContract)},
+		func(resultFrames []*protocol.Frame, err error) {
+			if err == nil {
+				contracts, contractErrors := parseControlContractFrames(resultFrames)
+				if 0 < len(contracts) {
+					// add a control hole to the client sequence before adding the contract
+					
+					for _, contract := range contracts {
+						var storedContract protocol.StoredContract
+						if err := proto.Unmarshal(contract.StoredContractBytes, &storedContract); err == nil {
+							createContractHole := &protocol.CreateContractHole{
+								ContractId: storedContract.ContractId,
+								DestinationId: storedContract.DestinationId,
+							}
+							self.client.SendControl(
+								RequireToFrame(createContractHole),
+								func(err error){},
+							)
+						}
+
+						TraceWithReturn(
+							"[contract]add",
+							func()(error) {
+								return self.addContract(contract)
+							},
+						)
+					}
+				}
+				for _, contractError := range contractErrors {
+						Trace(
+							fmt.Sprintf("[contract]error = %s", contractError.String()),
+							func() {
+								self.contractError(contractError)
+							},
+						)
+					}
+			} else {
+				fmt.Printf("[contract]oob err = %s\n", err)
+			}
+		},
 	)
 }
 
@@ -467,11 +515,7 @@ func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount Byte
 		AckedByteCount: uint64(ackedByteCount),
 		UnackedByteCount: uint64(unackedByteCount),
 	}
-	self.client.SendControlWithTimeout(
-		RequireToFrame(closeContract),
-		nil,
-		-1,
-	)
+	self.client.SendControl(RequireToFrame(closeContract), func(err error){})
 
 	opened := false
 	var destinationId Id
