@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 	"sync"
-	"errors"
+	// "errors"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/rand"
@@ -400,8 +400,8 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 		return err
 	}
 
-	if self.client.ClientId() != sourceId {
-		return errors.New("Contract source must be this client.")
+	if sourceId != self.client.ClientId() {
+		return fmt.Errorf("Contract source must be this client: %s<>%s", sourceId.String(), self.client.ClientId().String())
 	}
 
 	destinationId, err := IdFromBytes(storedContract.DestinationId)

@@ -439,7 +439,6 @@ type ApiMultiClientGenerator struct {
     clientSettingsGenerator func()(*ClientSettings)
     settings *ApiMultiClientGeneratorSettings
 
-    clientOob OutOfBandControl
     api *BringYourApi
 }
 
@@ -479,8 +478,6 @@ func NewApiMultiClientGenerator(
     api := NewBringYourApi(apiUrl)
     api.SetByJwt(byJwt)
 
-    clientOob := NewApiOutOfBandControlWithApi(api)
-
     return &ApiMultiClientGenerator{
         specs: specs,
         apiUrl: apiUrl,
@@ -491,7 +488,6 @@ func NewApiMultiClientGenerator(
         appVersion: appVersion,
         clientSettingsGenerator: clientSettingsGenerator,
         settings: settings,
-        clientOob: clientOob,
         api: api,
     }
 }
@@ -583,7 +579,8 @@ func (self *ApiMultiClientGenerator) NewClient(
     if err != nil {
         return nil, err
     }
-    client := NewClient(ctx, byJwt.ClientId, self.clientOob, clientSettings)
+    clientOob := NewApiOutOfBandControl(ctx, args.ClientAuth.ByJwt, self.apiUrl)
+    client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings)
     // fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
     NewPlatformTransportWithDefaults(
         client.Ctx(),

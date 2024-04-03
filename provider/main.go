@@ -93,7 +93,8 @@ func provide(opts docopt.Opts) {
 
     instanceId := connect.NewId()
 
-    connectClient := connect.NewClientWithDefaults(ctx, clientId)
+    clientOob := connect.NewApiOutOfBandControl(ctx, byClientJwt, apiUrl)
+    connectClient := connect.NewClientWithDefaults(ctx, clientId, clientOob)
 
     // routeManager := connect.NewRouteManager(connectClient)
     // contractManager := connect.NewContractManagerWithDefaults(connectClient)
