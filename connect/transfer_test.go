@@ -65,7 +65,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsA.SendBufferSettings.SequenceBufferSize = 0
 	clientSettingsA.SendBufferSettings.AckBufferSize = 0
 	clientSettingsA.ReceiveBufferSettings.SequenceBufferSize = 0
-	clientSettingsA.ReceiveBufferSettings.AckBufferSize = 0
+	// clientSettingsA.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsA.ForwardBufferSettings.SequenceBufferSize = 0
 	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA)
 	aRouteManager := a.RouteManager()
@@ -86,7 +86,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsB.SendBufferSettings.SequenceBufferSize = 0
 	clientSettingsB.SendBufferSettings.AckBufferSize = 0
 	clientSettingsB.ReceiveBufferSettings.SequenceBufferSize = 0
-	clientSettingsB.ReceiveBufferSettings.AckBufferSize = 0
+	// clientSettingsB.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsB.ForwardBufferSettings.SequenceBufferSize = 0
 	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB)
 	bRouteManager := b.RouteManager()

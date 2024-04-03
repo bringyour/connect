@@ -413,7 +413,7 @@ func testClient[P comparable](
 	settings.SendBufferSettings.SequenceBufferSize = 0
 	settings.SendBufferSettings.AckBufferSize = 0
 	settings.ReceiveBufferSettings.SequenceBufferSize = 0
-	settings.ReceiveBufferSettings.AckBufferSize = 0
+	// settings.ReceiveBufferSettings.AckBufferSize = 0
 	settings.ForwardBufferSettings.SequenceBufferSize = 0
 	providerClient := NewClient(ctx, providerClientId, NewNoContractClientOob(), settings)
 

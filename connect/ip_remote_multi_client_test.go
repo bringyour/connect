@@ -74,7 +74,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 			settings.SendBufferSettings.SequenceBufferSize = 0
 			settings.SendBufferSettings.AckBufferSize = 0
 			settings.ReceiveBufferSettings.SequenceBufferSize = 0
-			settings.ReceiveBufferSettings.AckBufferSize = 0
+			// settings.ReceiveBufferSettings.AckBufferSize = 0
 			settings.ForwardBufferSettings.SequenceBufferSize = 0
 			return settings
 	    },

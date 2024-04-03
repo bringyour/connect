@@ -123,7 +123,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		// the receive idle timeout should be a bit longer than the send idle timeout
 		IdleTimeout: 120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
-		AckBufferSize: DefaultTransferBufferSize,
+		// AckBufferSize: DefaultTransferBufferSize,
 		AckCompressTimeout: 10 * time.Millisecond,
 		MinMessageByteCount: ByteCount(1),
 		ResendAbuseThreshold: 4,
@@ -1234,14 +1234,10 @@ func (self *SendSequence) Run() {
 	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.destinationId)
 	defer self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
 
-	// compress the pending acks
-	ackMonitor := NewMonitor()
-	ackLock := sync.Mutex{}
-	var headAck *receiveAck
-	ackUpdateCount := 0
-	selectiveAcks := map[Id]uint64{}
-
+	ackWindow := newSequenceAckWindow()
 	go func() {
+		defer self.cancel()
+
 		for {
 			select {
 			case <- self.ctx.Done():
@@ -1250,90 +1246,28 @@ func (self *SendSequence) Run() {
 				if !ok {
 					return
 				}
-				func() {
-					ackLock.Lock()
-					defer ackLock.Unlock()
-
-					if messageId, err := IdFromBytes(ack.MessageId); err == nil {
-						if sequenceNumber, ok := self.resendQueue.ContainsMessageId(messageId); ok {
-							if headAck == nil || headAck.sequenceNumber < sequenceNumber {
-								if ack.Selective {
-									selectiveAcks[messageId] = sequenceNumber
-								} else {
-									ackUpdateCount += 1
-									headAck = &receiveAck{
-										messageId: messageId,
-										sequenceNumber: sequenceNumber,
-										selective: false,
-									}
-									// no need to clean up `selectiveAcks` here
-									// selective acks with sequence number <= head are ignored in a final pass during apply
-								}
-
-								ackMonitor.NotifyAll()
-							}
-							// else past the head
+				if messageId, err := IdFromBytes(ack.MessageId); err == nil {
+					if sequenceNumber, ok := self.resendQueue.ContainsMessageId(messageId); ok {
+						ack := &sequenceAck{
+							messageId: messageId,
+							sequenceNumber: sequenceNumber,
+							selective: ack.Selective,
 						}
+						ackWindow.Update(ack)
 					}
-				}()
+				}
 			}
 		}
 	}()
 
 	for {
-
-		// drain all pending acks before processing the resend queue
-		/*
-		func() {
-			for {
-				select {
-				case ack, ok := <- self.acks:
-					if !ok {
-						return
-					}
-					fmt.Printf("[s]ack 01 %s->%s\n", self.clientTag, self.destinationId.String())
-					if messageId, err := IdFromBytes(ack.MessageId); err == nil {
-						self.receiveAck(messageId, ack.Selective)
-					} else {
-						fmt.Printf("[s]ack bad message %s->%s = %s\n", self.clientTag, self.destinationId.String(), err)
-					}
-				default:
-					return
-				}
-			}
-		}()
-		*/
-
-		var ackNotify <-chan struct{}
-		var applyHeadAck *receiveAck
-		var applyAckUpdateCount int
-		var applySelectiveAcks map[Id]uint64
-		func() {
-			ackLock.Lock()
-			defer ackLock.Unlock()
-
-			ackNotify = ackMonitor.NotifyChannel()
-			applyHeadAck = headAck
-			applyAckUpdateCount = ackUpdateCount
-			applySelectiveAcks = selectiveAcks
-
-			// keep the head ack in place as a filter
-			ackUpdateCount = 0
-			selectiveAcks = map[Id]uint64{}
-		}()
 		// apply the acks
-		if 0 < applyAckUpdateCount {
-			self.receiveAck(applyHeadAck.messageId, false)
-
-			for messageId, sequenceNumber := range applySelectiveAcks {
-				if applyHeadAck.sequenceNumber < sequenceNumber {
-					self.receiveAck(messageId, true)
-				}
-			}
-		} else {
-			for messageId, _ := range applySelectiveAcks {
-				self.receiveAck(messageId, true)
-			}
+		ackSnapshot := ackWindow.Snapshot(true)
+		if 0 < ackSnapshot.ackUpdateCount {
+			self.receiveAck(ackSnapshot.headAck.messageId, false)
+		}
+		for messageId, _ := range ackSnapshot.selectiveAcks {
+			self.receiveAck(messageId, true)
 		}
 
 
@@ -1451,7 +1385,7 @@ func (self *SendSequence) Run() {
 			// 	} else {
 			// 		fmt.Printf("[s]ack bad message %s->%s = %s\n", self.clientTag, self.destinationId.String(), err)
 			// 	}
-			case <- ackNotify:
+			case <- ackSnapshot.ackNotify:
 			case <- time.After(timeout):
 				if 0 == self.resendQueue.Len() {
 					// idle timeout
@@ -1479,7 +1413,7 @@ func (self *SendSequence) Run() {
 			// 	} else {
 			// 		fmt.Printf("[s]ack bad message %s->%s = %s\n", self.clientTag, self.destinationId.String(), err)
 			// 	}
-			case <- ackNotify:
+			case <- ackSnapshot.ackNotify:
 			case sendPack, ok := <- self.packs:
 				if !ok {
 					fmt.Printf("EXIT 09\n")
@@ -1935,12 +1869,6 @@ func (self *SendSequence) Cancel() {
 	self.cancel()
 }
 
-type receiveAck struct {
-	sequenceNumber uint64
-	messageId Id
-	selective bool
-}
-
 type sendItem struct {
 	transferItem
 
@@ -1980,7 +1908,7 @@ type ReceiveBufferSettings struct {
 	IdleTimeout time.Duration
 
 	SequenceBufferSize int
-	AckBufferSize int
+	// AckBufferSize int
 
 	AckCompressTimeout time.Duration
 
@@ -2169,7 +2097,7 @@ type ReceiveSequence struct {
 
 	peerAudit *SequencePeerAudit
 
-	sendAcks chan *sendAck
+	ackWindow *sequenceAckWindow
 }
 
 func NewReceiveSequence(
@@ -2198,7 +2126,7 @@ func NewReceiveSequence(
 		receiveQueue: newReceiveQueue(),
 		nextSequenceNumber: 0,
 		idleCondition: NewIdleCondition(),
-		sendAcks: make(chan *sendAck, receiveBufferSettings.AckBufferSize),
+		ackWindow: newSequenceAckWindow(),
 	}
 }
 
@@ -2294,7 +2222,81 @@ func (self *ReceiveSequence) Run() {
 		self.receiveBufferSettings.MaxPeerAuditDuration,
 	)
 
-	go self.compressAndSendAcks()
+	// compress and send acks
+	go func() {
+		defer self.cancel()
+
+		fmt.Printf("[r]OPEN MULTI ROUTE WRITER %s -> %s\n", self.clientId, self.sourceId)
+		multiRouteWriter := self.routeManager.OpenMultiRouteWriter(self.sourceId)
+		defer self.routeManager.CloseMultiRouteWriter(multiRouteWriter)
+
+		writeAck := func(sendAck *sequenceAck) {
+			ack := &protocol.Ack{
+				MessageId: sendAck.messageId.Bytes(),
+				SequenceId: self.sequenceId.Bytes(),
+				Selective: sendAck.selective,
+			}
+
+			ackBytes, _ := proto.Marshal(ack)
+
+			transferFrame := &protocol.TransferFrame{
+				TransferPath: &protocol.TransferPath{
+					DestinationId: self.sourceId.Bytes(),
+					SourceId: self.clientId.Bytes(),
+					StreamId: DirectStreamId.Bytes(),
+				},
+				Frame: &protocol.Frame{
+					MessageType: protocol.MessageType_TransferAck,
+					MessageBytes: ackBytes,
+				},
+			}
+
+			transferFrameBytes, _ := proto.Marshal(transferFrame)
+
+			// fmt.Printf("buffer write ack %s->\n", self.clientId)
+			TraceWithReturn(fmt.Sprintf("[r]multi route write (ack %d) %s->%s", sendAck.sequenceNumber, self.clientTag, self.sourceId.String()), func()(error) {
+				return multiRouteWriter.Write(self.ctx, transferFrameBytes, self.receiveBufferSettings.WriteTimeout)
+			})
+		}
+
+		for {
+			select {
+			case <- self.ctx.Done():
+				return
+			default:
+			}
+
+			ackSnapshot := self.ackWindow.Snapshot(false)
+			if ackSnapshot.ackUpdateCount == 0 {
+				// wait for one ack
+				select {
+				case <- self.ctx.Done():
+					return
+				case <- ackSnapshot.ackNotify:
+				}
+			}
+
+			if 0 < self.receiveBufferSettings.AckCompressTimeout {
+				select {
+				case <- self.ctx.Done():
+					return
+				case <- time.After(self.receiveBufferSettings.AckCompressTimeout):
+				}
+			}
+
+			ackSnapshot = self.ackWindow.Snapshot(true)
+			if 0 < ackSnapshot.ackUpdateCount {
+				writeAck(ackSnapshot.headAck)
+			}
+			for messageId, sequenceNumber := range ackSnapshot.selectiveAcks {
+				writeAck(&sequenceAck{
+					messageId: messageId,
+					sequenceNumber: sequenceNumber,
+					selective: true,
+				})
+			}
+		}
+	}()
 
 	for {
 		receiveTime := time.Now()
@@ -2452,141 +2454,12 @@ func (self *ReceiveSequence) Run() {
 }
 
 func (self *ReceiveSequence) sendAck(sequenceNumber uint64, messageId Id, selective bool) {
-	sendAck := &sendAck{
+	ack := &sequenceAck{
 		sequenceNumber: sequenceNumber,
 		messageId: messageId,
 		selective: selective,
 	}
-	select {
-	case self.sendAcks <- sendAck:
-	default:
-		// drop the ack
-		// the ack will be resent when the source resends
-	}
-}
-
-func (self *ReceiveSequence) compressAndSendAcks() {
-	defer self.cancel()
-
-	fmt.Printf("[r]OPEN MULTI ROUTE WRITER %s -> %s\n", self.clientId, self.sourceId)
-	multiRouteWriter := self.routeManager.OpenMultiRouteWriter(self.sourceId)
-	defer self.routeManager.CloseMultiRouteWriter(multiRouteWriter)
-
-	writeAck := func(sendAck *sendAck) {
-		ack := &protocol.Ack{
-			MessageId: sendAck.messageId.Bytes(),
-			SequenceId: self.sequenceId.Bytes(),
-			Selective: sendAck.selective,
-		}
-
-		ackBytes, _ := proto.Marshal(ack)
-
-		transferFrame := &protocol.TransferFrame{
-			TransferPath: &protocol.TransferPath{
-				DestinationId: self.sourceId.Bytes(),
-				SourceId: self.clientId.Bytes(),
-				StreamId: DirectStreamId.Bytes(),
-			},
-			Frame: &protocol.Frame{
-				MessageType: protocol.MessageType_TransferAck,
-				MessageBytes: ackBytes,
-			},
-		}
-
-		transferFrameBytes, _ := proto.Marshal(transferFrame)
-
-		// fmt.Printf("buffer write ack %s->\n", self.clientId)
-		err := TraceWithReturn(fmt.Sprintf("[r]multi route write (ack %d) %s->%s", sendAck.sequenceNumber, self.clientTag, self.sourceId.String()), func()(error) {
-			return multiRouteWriter.Write(self.ctx, transferFrameBytes, self.receiveBufferSettings.WriteTimeout)
-		})
-		if err != nil {
-			transferLog("!! WRITE TIMEOUT D\n")
-		} else {
-			transferLog("WROTE ACK: %s -> messageId=%s clientId=%s sequenceId=%s\n", self.clientTag, sendAck.messageId.String(), self.sourceId.String(), self.sequenceId.String())
-		}
-	}
-
-	// the most recently sent ack
-	var headAck *sendAck
-	for {
-		select {
-		case <- self.ctx.Done():
-			return
-		default:
-		}
-
-		compressStartTime := time.Now()
-
-		acks := map[uint64]*sendAck{}
-		selectiveAcks := map[uint64]*sendAck{}
-
-		addAck := func(sendAck *sendAck) {
-			if sendAck.selective {
-				selectiveAcks[sendAck.sequenceNumber] = sendAck
-			} else {
-				acks[sendAck.sequenceNumber] = sendAck
-			}
-		}
-
-		// wait for one ack
-		select {
-		case <- self.ctx.Done():
-			return
-		case sendAck := <- self.sendAcks:
-			addAck(sendAck)
-		}
-
-		CollapseLoop:
-		for {
-			timeout := self.receiveBufferSettings.AckCompressTimeout - time.Now().Sub(compressStartTime)
-			if timeout <= 0 {
-				for {
-					select {
-					case <- self.ctx.Done():
-						return
-					case sendAck := <- self.sendAcks:
-						addAck(sendAck)
-					default:
-						break CollapseLoop
-					}
-				}
-			} else {
-				select {
-				case <- self.ctx.Done():
-					return
-				case sendAck := <- self.sendAcks:
-					addAck(sendAck)
-				case <- time.After(timeout):
-				}
-			}
-		}
-
-		if 0 < len(acks) {
-			// write
-			// - the max ack
-			// - selective acks greater than the max ack
-			for sequenceNumber, ack := range acks {
-				if headAck == nil || headAck.sequenceNumber < sequenceNumber {
-					headAck = ack
-				}
-			}
-		}
-
-		if headAck != nil {
-			// else send the previous head to ack the most messages possible
-			writeAck(headAck)
-			for sequenceNumber, sendAck := range selectiveAcks {
-				if headAck.sequenceNumber < sequenceNumber {
-					writeAck(sendAck)
-				}
-			}
-		} else {
-			// there is no prior ack, so write all the selective acks
-			for _, sendAck := range selectiveAcks {
-				writeAck(sendAck)
-			}
-		}
-	}
+	self.ackWindow.Update(ack)
 }
 
 func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
@@ -2940,6 +2813,91 @@ func newReceiveQueue() *receiveQueue {
 			return 0
 		}
 	})
+}
+
+
+type sequenceAck struct {
+	sequenceNumber uint64
+	messageId Id
+	selective bool
+}
+
+type sequenceAckWindowSnapshot struct {
+	ackNotify <-chan struct{}
+	headAck *sequenceAck
+	ackUpdateCount int
+	selectiveAcks map[Id]uint64
+}
+
+type sequenceAckWindow struct {
+	ackMonitor *Monitor
+	ackLock sync.Mutex
+	headAck *sequenceAck
+	ackUpdateCount int
+	selectiveAcks map[Id]uint64
+}
+
+func newSequenceAckWindow() *sequenceAckWindow {
+	return &sequenceAckWindow{
+		ackMonitor: NewMonitor(),
+		headAck: nil,
+		ackUpdateCount: 0,
+		selectiveAcks: map[Id]uint64{},
+	}
+}
+
+func (self *sequenceAckWindow) Update(ack *sequenceAck) {
+	self.ackLock.Lock()
+	defer self.ackLock.Unlock()
+
+	if self.headAck == nil || self.headAck.sequenceNumber < ack.sequenceNumber {
+		if ack.selective {
+			self.selectiveAcks[ack.messageId] = ack.sequenceNumber
+		} else {
+			self.ackUpdateCount += 1
+			self.headAck = ack
+			// no need to clean up `selectiveAcks` here
+			// selective acks with sequence number <= head are ignored in a final pass during update
+		}
+	} else {
+		// past the head
+		// resend the head
+		self.ackUpdateCount += 1
+	}
+
+	self.ackMonitor.NotifyAll()
+}
+
+func (self *sequenceAckWindow) Snapshot(reset bool) *sequenceAckWindowSnapshot {
+	self.ackLock.Lock()
+	defer self.ackLock.Unlock()
+
+	var selectiveAcksAfterHead map[Id]uint64
+	if 0 < self.ackUpdateCount {
+		selectiveAcksAfterHead = map[Id]uint64{}
+		for messageId, sequenceNumber := range self.selectiveAcks {
+			if self.headAck.sequenceNumber < sequenceNumber {
+				selectiveAcksAfterHead[messageId] = sequenceNumber
+			}
+		}
+	} else {
+		selectiveAcksAfterHead = self.selectiveAcks
+	}
+
+	snapshot := &sequenceAckWindowSnapshot{
+		ackNotify: self.ackMonitor.NotifyChannel(),
+		headAck: self.headAck,
+		ackUpdateCount: self.ackUpdateCount,
+		selectiveAcks: selectiveAcksAfterHead,
+	}
+
+	if reset {
+		// keep the head ack in place
+		self.ackUpdateCount = 0
+		self.selectiveAcks = map[Id]uint64{}
+	}
+
+	return snapshot
 }
 
 
