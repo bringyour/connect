@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"net"
 	"reflect"
-	"sync"
+	// "sync"
 	"fmt"
 
 	"github.com/google/gopacket"
@@ -364,6 +364,7 @@ func testingNewClient(ctx context.Context, providerClient *Client, receivePacket
 }
 
 
+// test with all sequence buffer sizes set to 0
 func testClient[P comparable](
 	t *testing.T,
 	userNatClientGenerator func(context.Context, *Client, ReceivePacketFunction)(UserNatClient, error),
@@ -396,9 +397,9 @@ func testClient[P comparable](
 	// each packet gets echoed back
 	totalCount := parallelCount * m * n * n * n * repeatCount * (1 + echoCount)
 
-	cMutex := sync.Mutex{}
-	cSendCount := 0
-	cReceiveCount := 0
+	// cMutex := sync.Mutex{}
+	// cSendCount := 0
+	// cReceiveCount := 0
 
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -408,7 +409,13 @@ func testClient[P comparable](
 	providerClientId := NewId()
 
 
-	providerClient := NewClientWithDefaults(ctx, providerClientId, NewNoContractClientOob())
+	settings := DefaultClientSettings()
+	settings.SendBufferSettings.SequenceBufferSize = 0
+	settings.SendBufferSettings.AckBufferSize = 0
+	settings.ReceiveBufferSettings.SequenceBufferSize = 0
+	settings.ReceiveBufferSettings.AckBufferSize = 0
+	settings.ForwardBufferSettings.SequenceBufferSize = 0
+	providerClient := NewClient(ctx, providerClientId, NewNoContractClientOob(), settings)
 
 
 	type receivePacket struct {
@@ -422,10 +429,10 @@ func testClient[P comparable](
 	receivePacketCallback := func(source Path, ipProtocol IpProtocol, packet []byte) {
 		// record the echo packet
 
-		cMutex.Lock()
-		cReceiveCount += 1
-		// fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
-		cMutex.Unlock()
+		// cMutex.Lock()
+		// cReceiveCount += 1
+		// // fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
+		// cMutex.Unlock()
 
         receivePacket := &receivePacket{
         	sourceId: source.ClientId,
@@ -441,10 +448,10 @@ func testClient[P comparable](
 
 
 	providerClient.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-		cMutex.Lock()
-		cReceiveCount += 1
-		// fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
-		cMutex.Unlock()
+		// cMutex.Lock()
+		// cReceiveCount += 1
+		// // fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
+		// cMutex.Unlock()
 
 		echo := func(packet []byte) {
             ipPacketFromProvider := &protocol.IpPacketFromProvider{
@@ -460,10 +467,10 @@ func testClient[P comparable](
 		    success := providerClient.SendWithTimeout(frame, sourceId, func(err error) {}, -1)
 		    assert.Equal(t, true, success)
 
-		    cMutex.Lock()
-			cSendCount += 1
-			// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
-			cMutex.Unlock()
+		    // cMutex.Lock()
+			// cSendCount += 1
+			// // fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
+			// cMutex.Unlock()
 		}
 		for _, frame := range frames {
             if ipPacketToProvider_, err := FromFrame(frame); err == nil {
@@ -505,10 +512,10 @@ func testClient[P comparable](
 								}
 								assert.Equal(t, true, success)
 
-								cMutex.Lock()
-								cSendCount += 1
-								// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
-								cMutex.Unlock()
+								// cMutex.Lock()
+								// cSendCount += 1
+								// // fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
+								// cMutex.Unlock()
 							}
 						}
 					}

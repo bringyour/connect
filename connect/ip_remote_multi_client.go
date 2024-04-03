@@ -330,6 +330,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 }
             }
 
+            var retryTimeout time.Duration
             if 0 <= timeout {
                 remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
 
@@ -340,26 +341,42 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                     return
                 }
 
-                select {
-                case <- self.ctx.Done():
-                    fmt.Printf("DROPPED ONE DONE\n")
-                    success = false
-                    return
-                case <- time.After(min(remainingTimeout, self.settings.WriteRetryTimeout)):
-                    // retry
+
+                retryTimeout = min(remainingTimeout, self.settings.WriteRetryTimeout)
+                
+            } else {
+                retryTimeout = self.settings.WriteRetryTimeout
+            }
+
+            if 0 < len(orderedClients) {
+                // distribute the timeout evenly via wait
+                retryTimeoutPerClient := retryTimeout / time.Duration(len(orderedClients))
+                for _, client := range orderedClients {
+                    if client.Send(parsedPacket, retryTimeoutPerClient) {
+                        // lock the path to the client
+                        update.client = client
+                        success = true
+                        return
+                    }
+                    select {
+                    case <- self.ctx.Done():
+                        // drop
+                        fmt.Printf("DROPPED ONE\n")
+                        success = false
+                        return
+                    default:
+                    }
                 }
             } else {
                 select {
                 case <- self.ctx.Done():
-                    fmt.Printf("DROPPED ONE DONE\n")
+                    // drop
+                    fmt.Printf("DROPPED ONE\n")
                     success = false
                     return
-                case <- time.After(self.settings.WriteRetryTimeout):
-                    // retry
+                case <- time.After(retryTimeout):
                 }
             }
-
-            
         }
     })
     return success
@@ -399,6 +416,18 @@ type MultiClientGeneratorClientArgs struct {
 }
 
 
+func DefaultApiMultiClientGeneratorSettings() *ApiMultiClientGeneratorSettings {
+    return &ApiMultiClientGeneratorSettings{
+        InitTimeout: 5 * time.Second,
+    }
+}
+
+
+type ApiMultiClientGeneratorSettings struct {
+    InitTimeout time.Duration
+}
+
+
 type ApiMultiClientGenerator struct {
     specs []*ProviderSpec
     apiUrl string
@@ -408,6 +437,7 @@ type ApiMultiClientGenerator struct {
     deviceSpec string
     appVersion string
     clientSettingsGenerator func()(*ClientSettings)
+    settings *ApiMultiClientGeneratorSettings
 
     clientOob OutOfBandControl
     api *BringYourApi
@@ -431,6 +461,7 @@ func NewApiMultiClientGeneratorWithDefaults(
         deviceSpec,
         appVersion,
         DefaultClientSettings,
+        DefaultApiMultiClientGeneratorSettings(),
     )
 }
 
@@ -443,6 +474,7 @@ func NewApiMultiClientGenerator(
     deviceSpec string,
     appVersion string,
     clientSettingsGenerator func()(*ClientSettings),
+    settings *ApiMultiClientGeneratorSettings,
 ) *ApiMultiClientGenerator {
     api := NewBringYourApi(apiUrl)
     api.SetByJwt(byJwt)
@@ -458,6 +490,7 @@ func NewApiMultiClientGenerator(
         deviceSpec: deviceSpec,
         appVersion: appVersion,
         clientSettingsGenerator: clientSettingsGenerator,
+        settings: settings,
         clientOob: clientOob,
         api: api,
     }
@@ -559,7 +592,17 @@ func (self *ApiMultiClientGenerator) NewClient(
         client.RouteManager(),
     )
     // enable return traffic for this client
-    client.ContractManager().SetProvideModesWithReturnTraffic(map[protocol.ProvideMode]bool{})
+    ack := make(chan struct{})
+    client.ContractManager().SetProvideModesWithReturnTrafficWithAckCallback(
+        map[protocol.ProvideMode]bool{},
+        func(err error) {
+            close(ack)
+        },
+    )
+    select {
+    case <- ack:
+    case <- time.After(self.settings.InitTimeout):
+    }
     return client, nil
 }
 

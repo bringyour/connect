@@ -69,7 +69,15 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 				unsub()
 			}
 	    },
-	    newClientSettings: DefaultClientSettings,
+	    newClientSettings: func()(*ClientSettings) {
+	    	settings := DefaultClientSettings()
+			settings.SendBufferSettings.SequenceBufferSize = 0
+			settings.SendBufferSettings.AckBufferSize = 0
+			settings.ReceiveBufferSettings.SequenceBufferSize = 0
+			settings.ReceiveBufferSettings.AckBufferSize = 0
+			settings.ForwardBufferSettings.SequenceBufferSize = 0
+			return settings
+	    },
 	    newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
 	    	client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
 

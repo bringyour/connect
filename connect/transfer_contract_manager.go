@@ -90,7 +90,7 @@ func (self *ContractManagerSettings) ContractsEnabled() bool {
 type ContractManager struct {
 	ctx context.Context
 	client *Client
-	clientOob OutOfBandControl
+	// clientOob OutOfBandControl
 
 	settings *ContractManagerSettings
 
@@ -108,14 +108,13 @@ type ContractManager struct {
 	localStats *ContractManagerStats
 }
 
-func NewContractManagerWithDefaults(ctx context.Context, client *Client, clientOob OutOfBandControl) *ContractManager {
-	return NewContractManager(ctx, client, clientOob, DefaultContractManagerSettings())
+func NewContractManagerWithDefaults(ctx context.Context, client *Client) *ContractManager {
+	return NewContractManager(ctx, client, DefaultContractManagerSettings())
 }
 
 func NewContractManager(
 	ctx context.Context,
 	client *Client,
-	clientOob OutOfBandControl,
 	settings *ContractManagerSettings,
 ) *ContractManager {
 	// at a minimum 
@@ -134,7 +133,6 @@ func NewContractManager(
 	contractManager := &ContractManager{
 		ctx: ctx,
 		client: client,
-		clientOob: clientOob,
 		settings: settings,
 		provideSecretKeys: map[protocol.ProvideMode][]byte{},
 		destinationContracts: map[Id]*contractQueue{},
@@ -216,15 +214,23 @@ func (self *ContractManager) contractError(contractError protocol.ContractError)
 	}
 }
 
-// clients must enable `ProvideMode_Stream` to allow return traffic
 func (self *ContractManager) SetProvideModesWithReturnTraffic(provideModes map[protocol.ProvideMode]bool) {
+	self.SetProvideModesWithReturnTrafficWithAckCallback(provideModes, func(err error){})
+}
+
+// clients must enable `ProvideMode_Stream` to allow return traffic
+func (self *ContractManager) SetProvideModesWithReturnTrafficWithAckCallback(provideModes map[protocol.ProvideMode]bool, ackCallback func(err error)) {
 	updatedProvideModes := map[protocol.ProvideMode]bool{}
 	maps.Copy(updatedProvideModes, provideModes)
 	updatedProvideModes[protocol.ProvideMode_Stream] = true
-	self.SetProvideModes(updatedProvideModes)
+	self.SetProvideModesWithAckCallback(updatedProvideModes, ackCallback)
 }
 
 func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMode]bool) {
+	self.SetProvideModesWithAckCallback(provideModes, func(err error){})
+}
+
+func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[protocol.ProvideMode]bool, ackCallback func(err error)) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -258,7 +264,12 @@ func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMo
 	provide := &protocol.Provide{
 		Keys: provideKeys,
 	}
-	self.client.SendControl(RequireToFrame(provide), func(err error){})
+	self.client.ClientOob().SendControl(
+		[]*protocol.Frame{RequireToFrame(provide)},
+		func(resultFrames []*protocol.Frame, err error) {
+			ackCallback(err)
+		},
+	)
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
@@ -463,43 +474,11 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 		Companion: companionContract,
 		UsedContractIds: contractQueue.UsedContractIdBytes(),
 	}
-	self.clientOob.SendControl(
+	self.client.ClientOob().SendControl(
 		[]*protocol.Frame{RequireToFrame(createContract)},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err == nil {
-				contracts, contractErrors := parseControlContractFrames(resultFrames)
-				if 0 < len(contracts) {
-					// add a control hole to the client sequence before adding the contract
-					
-					for _, contract := range contracts {
-						var storedContract protocol.StoredContract
-						if err := proto.Unmarshal(contract.StoredContractBytes, &storedContract); err == nil {
-							createContractHole := &protocol.CreateContractHole{
-								ContractId: storedContract.ContractId,
-								DestinationId: storedContract.DestinationId,
-							}
-							self.client.SendControl(
-								RequireToFrame(createContractHole),
-								func(err error){},
-							)
-						}
-
-						TraceWithReturn(
-							"[contract]add",
-							func()(error) {
-								return self.addContract(contract)
-							},
-						)
-					}
-				}
-				for _, contractError := range contractErrors {
-						Trace(
-							fmt.Sprintf("[contract]error = %s", contractError.String()),
-							func() {
-								self.contractError(contractError)
-							},
-						)
-					}
+				self.Receive(ControlId, resultFrames, protocol.ProvideMode_Network)
 			} else {
 				fmt.Printf("[contract]oob err = %s\n", err)
 			}
@@ -507,16 +486,31 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 	)
 }
 
-func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount ByteCount, unackedByteCount ByteCount) {
+func (self *ContractManager) CheckpointContract(
+	contractId Id,
+	ackedByteCount ByteCount,
+	unackedByteCount ByteCount,
+) {
+	self.CompleteContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
+}
+
+func (self *ContractManager) CompleteContract(
+	contractId Id,
+	ackedByteCount ByteCount,
+	unackedByteCount ByteCount,
+) {
+	self.CompleteContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, false)
+}
+
+func (self *ContractManager) CompleteContractWithCheckpoint(
+	contractId Id,
+	ackedByteCount ByteCount,
+	unackedByteCount ByteCount,
+	checkpoint bool,
+) {
 	fmt.Printf("COMPLETE CONTRACT\n")
 	
-	closeContract := &protocol.CloseContract{
-		ContractId: contractId.Bytes(),
-		AckedByteCount: uint64(ackedByteCount),
-		UnackedByteCount: uint64(unackedByteCount),
-	}
-	self.client.SendControl(RequireToFrame(closeContract), func(err error){})
-
+	
 	opened := false
 	var destinationId Id
 
@@ -537,15 +531,25 @@ func (self *ContractManager) CompleteContract(contractId Id, ackedByteCount Byte
 		}
 	}()
 
-	if opened {
-		contractQueue := self.openContractQueue(destinationId)
-		defer self.closeContractQueue(destinationId)
-
-		// the contract is partially closed on the platform now
-		// it can be safely removed from the local used list
-		contractQueue.RemoveUsedContract(contractId)
+	closeContract := &protocol.CloseContract{
+		ContractId: contractId.Bytes(),
+		AckedByteCount: uint64(ackedByteCount),
+		UnackedByteCount: uint64(unackedByteCount),
+		Checkpoint: checkpoint,
 	}
-	
+	self.client.ClientOob().SendControl(
+		[]*protocol.Frame{RequireToFrame(closeContract)},
+		func(resultFrames []*protocol.Frame, err error) {
+			if err == nil && opened {
+				contractQueue := self.openContractQueue(destinationId)
+				defer self.closeContractQueue(destinationId)
+
+				// the contract is partially closed on the platform now
+				// it can be safely removed from the local used list
+				contractQueue.RemoveUsedContract(contractId)
+			}
+		},
+	)
 }
 
 func (self *ContractManager) LocalStats() *ContractManagerStats {
@@ -603,6 +607,7 @@ func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id
 		if err := proto.Unmarshal(contract.StoredContractBytes, &storedContract); err == nil {
 			if contractId, err := IdFromBytes(storedContract.ContractId); err == nil {
 				contractIds = append(contractIds, contractId)
+				fmt.Printf("FLUSH CLOSE CONTRACTS\n")
 				self.CompleteContract(contractId, ByteCount(0), ByteCount(0))
 			}
 		}

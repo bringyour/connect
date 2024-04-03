@@ -313,7 +313,7 @@ func NewClientWithTag(
 	}
 
 	routeManager := NewRouteManager(ctx, clientTag)
-	contractManager := NewContractManager(ctx, client, clientOob, settings.ContractManagerSettings)
+	contractManager := NewContractManager(ctx, client, settings.ContractManagerSettings)
 
 	client.contractManagerUnsub = client.AddReceiveCallback(contractManager.Receive)
 
@@ -346,6 +346,10 @@ func (self *Client) ClientId() Id {
 
 func (self *Client) ClientTag() string {
 	return self.clientTag
+}
+
+func (self *Client) ClientOob() OutOfBandControl {
+	return self.clientOob
 }
 
 func (self *Client) ReportAbuse(sourceId Id) {
@@ -1613,6 +1617,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 					// this contract doesn't fit the message
 					// the contract was requested with the correct size, so this is an error somewhere
 					// just close it and let the platform time out the other side
+					fmt.Printf("COMPLETE CONTRACT SEND 5\n")
 					self.contractManager.CompleteContract(nextSendContract.contractId, 0, 0)
 					return false
 				}
@@ -1668,6 +1673,10 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 }
 
 func (self *SendSequence) setContract(nextSendContract *sequenceContract) {
+	if self.sendContract != nil && self.sendContract.contractId == nextSendContract.contractId {
+		return
+	}
+
 	// do not close the current contract unless it has no pending data
 	// the contract is stracked in `openSendContracts` and will be closed on ack
 	if self.sendContract != nil && self.sendContract.unackedByteCount == 0 {
@@ -1678,7 +1687,7 @@ func (self *SendSequence) setContract(nextSendContract *sequenceContract) {
 			self.sendContract.unackedByteCount,
 		)
 		delete(self.openSendContracts, self.sendContract.contractId)
-		self.sendContract = nil
+		// self.sendContract = nil
 	}
 	self.openSendContracts[nextSendContract.contractId] = nextSendContract
 	self.sendContract = nextSendContract
@@ -2246,13 +2255,15 @@ func (self *ReceiveSequence) Run() {
 
 		// close contract
 		if self.receiveContract != nil {
-			fmt.Printf("COMPLETE CONTRACT RECEIVE 1 (%s)\n", self.receiveContract.contractId)
-			self.contractManager.CompleteContract(
+			fmt.Printf("CHECKPOINT CONTRACT RECEIVE 1 (%s)\n", self.receiveContract.contractId)
+			// the sender may send again with this contract (set as head)
+			// checkpoint the contract but do not close it
+			self.contractManager.CheckpointContract(
 				self.receiveContract.contractId,
 				self.receiveContract.ackedByteCount,
 				self.receiveContract.unackedByteCount,
 			)
-			self.receiveContract = nil
+			// self.receiveContract = nil
 		}
 
 		// drain the buffer
@@ -2441,10 +2452,16 @@ func (self *ReceiveSequence) Run() {
 }
 
 func (self *ReceiveSequence) sendAck(sequenceNumber uint64, messageId Id, selective bool) {
-	self.sendAcks <- &sendAck{
+	sendAck := &sendAck{
 		sequenceNumber: sequenceNumber,
 		messageId: messageId,
 		selective: selective,
+	}
+	select {
+	case self.sendAcks <- sendAck:
+	default:
+		// drop the ack
+		// the ack will be resent when the source resends
 	}
 }
 
@@ -2614,7 +2631,6 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		fmt.Printf("[r]seq= %d->%d %s<-%s\n", self.nextSequenceNumber, item.sequenceNumber, self.clientTag, self.sourceId.String())
 		self.nextSequenceNumber = item.sequenceNumber
 		// the head must have a contract frame to reset the contract
-		self.receiveContract = nil
 	}
 
 
@@ -2835,20 +2851,20 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 }
 
 func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) error {
+	// contract already set
+	if self.receiveContract != nil && self.receiveContract.contractId == nextReceiveContract.contractId {
+		return nil
+	}
+
 	// close out the previous contract
 	if self.receiveContract != nil {
-		// contract already set
-		if self.receiveContract.contractId == nextReceiveContract.contractId {
-			return nil
-		}
-
 		fmt.Printf("COMPLETE CONTRACT RECEIVE 2\n")
 		self.contractManager.CompleteContract(
 			self.receiveContract.contractId,
 			self.receiveContract.ackedByteCount,
 			self.receiveContract.unackedByteCount,
 		)
-		self.receiveContract = nil
+		// self.receiveContract = nil
 	}
 	// FIXME this needs to be done with some kind of async verification to the control
 	/*
@@ -3368,7 +3384,10 @@ func (self *SequencePeerAudit) Complete() {
 	    ResendByteCount: uint64(self.peerAudit.ResendByteCount),
 	    ResendCount: uint64(self.peerAudit.ResendCount),
 	}
-	self.client.SendControl(RequireToFrame(peerAudit), func(err error){})
+	self.client.ClientOob().SendControl(
+		[]*protocol.Frame{RequireToFrame(peerAudit)},
+		func(resultFrames []*protocol.Frame, err error){},
+	)
 	self.peerAudit = nil
 }
 

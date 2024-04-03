@@ -46,8 +46,6 @@ func ToFrame(message proto.Message) (*protocol.Frame, error) {
         messageType = protocol.MessageType_IpIpPacketToProvider
     case *protocol.IpPacketFromProvider:
         messageType = protocol.MessageType_IpIpPacketFromProvider
-    case *protocol.CreateContractHole:
-        messageType = protocol.MessageType_TransferCreateContractHole
     default:
         return nil, fmt.Errorf("Unknown message type: %T", v)
     }
@@ -108,8 +106,6 @@ func FromFrame(frame *protocol.Frame) (proto.Message, error) {
         message = &protocol.IpPacketToProvider{}
     case protocol.MessageType_IpIpPacketFromProvider:
         message = &protocol.IpPacketFromProvider{}
-    case protocol.MessageType_TransferCreateContractHole:
-        message = &protocol.CreateContractHole{}
     default:
         return nil, fmt.Errorf("Unknown message type: %s", frame.MessageType)
     }

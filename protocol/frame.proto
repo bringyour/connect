@@ -24,12 +24,16 @@ enum MessageType {
     TestSimpleMessage = 14;
     IpIpPacketToProvider = 15;
     IpIpPacketFromProvider = 16;
-    TransferCreateContractHole = 17;
 }
 
 
 message Frame {
     MessageType message_type = 1;
     bytes message_bytes = 2;
+}
+
+
+message FilteredFrame {
+    MessageType message_type = 1;
 }
 

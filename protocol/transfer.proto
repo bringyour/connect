@@ -55,6 +55,12 @@ message Pack {
 }
 
 
+// used for deep message inspection
+message FilteredPack {
+    optional Frame contract_frame = 7;
+}
+
+
 // ack of a later message means all prior messages have been ackd
 message Ack {
     // ulid
@@ -162,15 +168,6 @@ message CreateContract {
 }
 
 
-// sent in-band after an out-of-band contract creation to make sure traffic is permitted from source to destination
-message CreateContractHole {
-    // ulid
-    bytes destination_id = 1;
-    // ulid
-    bytes contract_id = 2;
-}
-
-
 enum ContractError {
     NoPermission = 0;
     InsufficientBalance = 1;
@@ -211,6 +208,7 @@ message CloseContract {
     bytes contract_id = 1;
     uint64 acked_byte_count = 2;
     uint64 unacked_byte_count = 3;
+    bool checkpoint = 4;
 }
 
 
