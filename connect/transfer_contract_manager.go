@@ -168,20 +168,30 @@ func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, prov
 	case ControlId:
 		contracts, contractErrors := parseControlContractFrames(frames)
 		for _, contract := range contracts {
-			TraceWithReturn(
-				"[contract]add",
-				func()(error) {
-					return self.addContract(contract)
-				},
-			)
+			c := func()(error) {
+				return self.addContract(contract)
+			}
+			if glog.V(2) {
+				TraceWithReturn(
+					"[contract]add",
+					c,
+				)
+			} else {
+				c()
+			}
 		}
 		for _, contractError := range contractErrors {
-			Trace(
-				fmt.Sprintf("[contract]error = %s", contractError.String()),
-				func() {
-					self.contractError(contractError)
-				},
-			)
+			c := func() {
+				self.contractError(contractError)
+			}
+			if glog.V(2) {
+				Trace(
+					fmt.Sprintf("[contract]error = %s", contractError),
+					c,
+				)
+			} else {
+				c()
+			}
 		}
 	}
 }
@@ -424,7 +434,7 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	}
 
 	if sourceId != self.client.ClientId() {
-		return fmt.Errorf("Contract source must be this client: %s<>%s", sourceId.String(), self.client.ClientId().String())
+		return fmt.Errorf("Contract source must be this client: %s<>%s", sourceId, self.client.ClientId())
 	}
 
 	destinationId, err := IdFromBytes(storedContract.DestinationId)
@@ -693,14 +703,14 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 	}
 
 	if self.usedContractIds[contractId] {
-		glog.V(2).Infof("[contract]add already used %s\n", contractId.String())
+		glog.V(2).Infof("[contract]add already used %s\n", contractId)
 		// update contract
 		if _, ok := self.contracts[contractId]; ok {
 			self.contracts[contractId] = contract
 			self.updateMonitor.NotifyAll()
 		}
 	} else {
-		glog.V(2).Infof("[contract]add %s\n", contractId.String())
+		glog.V(2).Infof("[contract]add %s\n", contractId)
 		self.usedContractIds[contractId] = true
 		self.contracts[contractId] = contract
 		self.updateMonitor.NotifyAll()

@@ -630,7 +630,7 @@ func (self *Client) run() {
 			continue
 		}
 
-		glog.V(1).Infof("[cr] %s %s<-%s\n", self.clientTag, destinationId.String(), sourceId.String())
+		glog.V(1).Infof("[cr] %s %s<-%s\n", self.clientTag, destinationId, sourceId)
 
 		if destinationId == self.clientId {
 			// the transports have typically not parsed the full `TransferFrame`
@@ -662,7 +662,7 @@ func (self *Client) run() {
 				}
 				if glog.V(2) {
 					TraceWithReturn(
-						fmt.Sprintf("[cr]ack %s %s<-%s", self.clientTag, destinationId.String(), sourceId.String()),
+						fmt.Sprintf("[cr]ack %s %s<-%s", self.clientTag, destinationId, sourceId),
 						c,
 					)
 				} else {
@@ -695,7 +695,7 @@ func (self *Client) run() {
 				}
 				if glog.V(2) {
 					TraceWithReturn(
-						fmt.Sprintf("[cr]pack %s %s<-%s", self.clientTag, destinationId.String(), sourceId.String()),
+						fmt.Sprintf("[cr]pack %s %s<-%s", self.clientTag, destinationId, sourceId),
 						c,
 					)
 				} else {
@@ -749,7 +749,7 @@ func (self *Client) run() {
 			}
 			if glog.V(1) {
 				Trace(
-					fmt.Sprintf("[cr]forward %s %s<-%s", self.clientTag, destinationId.String(), sourceId.String()),
+					fmt.Sprintf("[cr]forward %s %s<-%s", self.clientTag, destinationId, sourceId),
 					c,
 				)
 			} else {
@@ -1182,7 +1182,7 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, e
 func (self *SendSequence) Run() {
 	defer func() {
 		if r := recover(); r != nil {
-			glog.Errorf("[s]%s->%s abnormal exit =  %s\n", self.clientTag, self.destinationId.String(), r)
+			glog.Errorf("[s]%s->%s abnormal exit =  %s\n", self.clientTag, self.destinationId, r)
 			panic(r)
 		}
 	}()
@@ -1280,7 +1280,7 @@ func (self *SendSequence) Run() {
 				if itemAckTimeout <= 0 {
 					// message took too long to ack
 					// close the sequence
-					glog.V(1).Infof("[s]%s->%s exit ack timeout\n", self.clientTag, self.destinationId.String())
+					glog.V(1).Infof("[s]%s->%s exit ack timeout\n", self.clientTag, self.destinationId)
 					return
 				}
 
@@ -1304,7 +1304,7 @@ func (self *SendSequence) Run() {
 					var err error
 					transferFrameBytes, err = self.setHead(item)
 					if err != nil {
-						glog.Errorf("[s]%s->%s exit could not set head = %s\n", self.clientTag, self.destinationId.String(), err)
+						glog.Errorf("[s]%s->%s exit could not set head = %s\n", self.clientTag, self.destinationId, err)
 						return
 					}
 				} else {
@@ -1324,7 +1324,7 @@ func (self *SendSequence) Run() {
 							"[s]resend %d multi route write %s->%s",
 							item.sequenceNumber,
 							self.clientTag,
-							self.destinationId.String(),
+							self.destinationId,
 						),
 						c,
 					)
@@ -1389,7 +1389,7 @@ func (self *SendSequence) Run() {
 				} else {
 					// no contract
 					// close the sequence
-					glog.Infof("[s]%s->%s exit could not create contract.\n", self.clientTag, self.destinationId.String())
+					glog.Infof("[s]%s->%s exit could not create contract.\n", self.clientTag, self.destinationId)
 					sendPack.AckCallback(errors.New("No contract"))
 					return
 				}
@@ -1439,7 +1439,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 			)
 			if err != nil {
 				// malformed
-				glog.Infof("[s]%s->%s exit next contract malformed = %s\n", self.clientTag, self.destinationId.String(), err)
+				glog.Infof("[s]%s->%s exit next contract malformed error = %s\n", self.clientTag, self.destinationId, err)
 				return false
 			}
 
@@ -1456,7 +1456,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				// this contract doesn't fit the message
 				// the contract was requested with the correct size, so this is an error somewhere
 				// just close it and let the platform time out the other side
-				glog.Infof("[s]%s->%s contract too small %s\n", self.clientTag, self.destinationId.String(), nextSendContract.contractId)					
+				glog.Infof("[s]%s->%s contract too small %s\n", self.clientTag, self.destinationId, nextSendContract.contractId)
 				self.contractManager.CompleteContract(nextSendContract.contractId, 0, 0)
 				return false
 			}
@@ -1479,7 +1479,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 		traceNextContract := func(timeout time.Duration)(bool) {
 			if glog.V(2) {
 				return TraceWithReturn(
-					fmt.Sprintf("[s]%s->%s next contract", self.clientTag, self.destinationId.String()),
+					fmt.Sprintf("[s]%s->%s next contract", self.clientTag, self.destinationId),
 					func()(bool) {
 						return nextContract(timeout)
 					},
@@ -1521,7 +1521,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 
 	if glog.V(2) {
 		return TraceWithReturn(
-			fmt.Sprintf("[s]create contract c=%t %s->%s", self.companionContract, self.clientTag, self.destinationId.String()),
+			fmt.Sprintf("[s]create contract c=%t %s->%s", self.companionContract, self.clientTag, self.destinationId),
 			createContract,
 		)
 	} else {
@@ -1650,7 +1650,7 @@ func (self *SendSequence) sendWithSetContract(
 	}
 	if glog.V(2) {
 		TraceWithReturn(
-			fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId.String()),
+			fmt.Sprintf("[s]multi route write %s->%s", self.clientTag, self.destinationId),
 			c,
 		)
 	} else {
@@ -1672,7 +1672,7 @@ func (self *SendSequence) sendWithSetContract(
 }
 
 func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
-	glog.V(1).Infof("[s]set head %s->%s\n", self.clientTag, self.destinationId.String())
+	glog.V(1).Infof("[s]set head %s->%s\n", self.clientTag, self.destinationId)
 
 	var transferFrame protocol.TransferFrame
 	err := proto.Unmarshal(item.transferFrameBytes, &transferFrame)
@@ -1714,13 +1714,13 @@ func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
 func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 	item := self.resendQueue.GetByMessageId(messageId)
 	if item == nil {
-		glog.V(1).Infof("[s]ack miss %s->%s\n", self.clientTag, self.destinationId.String())
+		glog.V(1).Infof("[s]ack miss %s->%s\n", self.clientTag, self.destinationId)
 		// message not pending ack
 		return
 	}
 
 	if selective {
-		glog.V(1).Infof("[s]ack selective %s->%s\n", self.clientTag, self.destinationId.String())
+		glog.V(1).Infof("[s]ack selective %s->%s\n", self.clientTag, self.destinationId)
 		removed := self.resendQueue.RemoveByMessageId(messageId)
 		if removed == nil {
 			panic(errors.New("Missing item"))
@@ -1730,7 +1730,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 		return
 	}
 
-	glog.V(1).Infof("[s]ack %d %s->%s\n", item.sequenceNumber, self.clientTag, self.destinationId.String())
+	glog.V(1).Infof("[s]ack %d %s->%s\n", item.sequenceNumber, self.clientTag, self.destinationId)
 
 	// acks are cumulative
 	// implicitly ack all earlier items in the sequence
@@ -1738,7 +1738,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 	for ; i < len(self.sendItems); i += 1 {
 		implicitItem := self.sendItems[i]
 		if item.sequenceNumber < implicitItem.sequenceNumber {
-			glog.V(2).Infof("[s]ack %d <> %d/%d (stop) %s->%s\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber - 1, self.clientTag, self.destinationId.String())
+			glog.V(2).Infof("[s]ack %d <> %d/%d (stop) %s->%s\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber - 1, self.clientTag, self.destinationId)
 			break
 		}
 		
@@ -1759,13 +1759,13 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool) {
 
 		if glog.V(2) {
 			c, d := self.resendQueue.QueueSize()
-			glog.Infof("[s]ack %d <> %d/%d (pass %d->%d %dB->%dB) %s->%s\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber - 1, a, c, b, d, self.clientTag, self.destinationId.String())
+			glog.Infof("[s]ack %d <> %d/%d (pass %d->%d %dB->%dB) %s->%s\n", item.sequenceNumber, implicitItem.sequenceNumber, self.nextSequenceNumber - 1, a, c, b, d, self.clientTag, self.destinationId)
 		}
 	}
 	self.sendItems = self.sendItems[i:]
 	if glog.V(2) {
 		a, b := self.resendQueue.QueueSize()
-		glog.Infof("[s]ack %d/%d (stop %d %dB %d) %s->%s\n", item.sequenceNumber, self.nextSequenceNumber - 1, a, b, len(self.sendItems), self.clientTag, self.destinationId.String())
+		glog.Infof("[s]ack %d/%d (stop %d %dB %d) %s->%s\n", item.sequenceNumber, self.nextSequenceNumber - 1, a, b, len(self.sendItems), self.clientTag, self.destinationId)
 	}
 }
 
@@ -2104,7 +2104,7 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 func (self *ReceiveSequence) Run() {
 	defer func() {
 		if r := recover(); r != nil {
-			glog.Errorf("[r]%s<-%s abnormal exit =  %s\n", self.clientTag, self.sourceId.String(), r)
+			glog.Errorf("[r]%s<-%s abnormal exit =  %s\n", self.clientTag, self.sourceId, r)
 			panic(r)
 		}
 	}()
@@ -2183,7 +2183,7 @@ func (self *ReceiveSequence) Run() {
 						"[r]multi route write (ack %d) %s->%s",
 						sendAck.sequenceNumber,
 						self.clientTag,
-						self.sourceId.String(),
+						self.sourceId,
 					),
 					c,
 				)
@@ -2247,7 +2247,7 @@ func (self *ReceiveSequence) Run() {
 
 				itemGapTimeout := item.receiveTime.Add(self.receiveBufferSettings.GapTimeout).Sub(receiveTime)
 				if itemGapTimeout < 0 {
-					glog.Infof("[r]%s<-%s exit gap timeout\n", self.clientTag, self.sourceId.String())
+					glog.Infof("[r]%s<-%s exit gap timeout\n", self.clientTag, self.sourceId)
 					// did not receive a preceding message in time
 					return
 				}
@@ -2266,16 +2266,16 @@ func (self *ReceiveSequence) Run() {
 				if self.nextSequenceNumber == item.sequenceNumber {
 					// this item is the head of sequence
 					if err := self.registerContracts(item); err != nil {
-						glog.Infof("[r]%s<-%s exit could not register contracts = %s\n", self.clientTag, self.sourceId.String(), err)
+						glog.Infof("[r]%s<-%s exit could not register contracts = %s\n", self.clientTag, self.sourceId, err)
 						return
 					}
 					if self.updateContract(item) {
-						glog.V(1).Infof("[r]seq+ %d->%d (queue) %s<-%s\n", self.nextSequenceNumber, self.nextSequenceNumber + 1, self.clientTag, self.sourceId.String())
+						glog.V(1).Infof("[r]seq+ %d->%d (queue) %s<-%s\n", self.nextSequenceNumber, self.nextSequenceNumber + 1, self.clientTag, self.sourceId)
 						self.nextSequenceNumber = self.nextSequenceNumber + 1
 						self.receiveHead(item)
 					} else {
 						// no valid contract. it should have been attached to the head
-						glog.Infof("[r]drop head no contract %s<-%s\n", self.clientTag, self.sourceId.String())
+						glog.Infof("[r]drop head no contract %s<-%s\n", self.clientTag, self.sourceId)
 						return
 					}
 				} else {
@@ -2301,13 +2301,13 @@ func (self *ReceiveSequence) Run() {
 				if err != nil {
 					// bad message
 					// close the sequence
-					glog.Infof("[r]%s<-%s exit could not receive nack = %s\n", self.clientTag, self.sourceId.String(), err)
+					glog.Infof("[r]%s<-%s exit could not receive nack = %s\n", self.clientTag, self.sourceId, err)
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.badMessage(receivePack.MessageByteCount)
 					})
 					return	
 				} else if !received {
-					glog.V(1).Infof("[r]drop nack %s<-%s\n", self.clientTag, self.sourceId.String())
+					glog.V(1).Infof("[r]drop nack %s<-%s\n", self.clientTag, self.sourceId)
 					// drop the message
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.discard(receivePack.MessageByteCount)
@@ -2320,13 +2320,13 @@ func (self *ReceiveSequence) Run() {
 				if err != nil {
 					// bad message
 					// close the sequence
-					glog.Infof("[r]%s<-%s exit could not receive ack = %s\n", self.clientTag, self.sourceId.String(), err)
+					glog.Infof("[r]%s<-%s exit could not receive ack = %s\n", self.clientTag, self.sourceId, err)
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.badMessage(receivePack.MessageByteCount)
 					})
 					return	
 				} else if !received {
-					glog.V(1).Infof("[r]drop ack %s<-%s\n", self.clientTag, self.sourceId.String())
+					glog.V(1).Infof("[r]drop ack %s<-%s\n", self.clientTag, self.sourceId)
 					// drop the message
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.discard(receivePack.MessageByteCount)
@@ -2411,7 +2411,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	// which represent some state the sender has that the receiver is missing
 	// advance the receiver state to the latest from the sender
 	if item.head && self.nextSequenceNumber < item.sequenceNumber {
-		glog.V(2).Infof("[r]seq= %d->%d %s<-%s\n", self.nextSequenceNumber, item.sequenceNumber, self.clientTag, self.sourceId.String())
+		glog.V(2).Infof("[r]seq= %d->%d %s<-%s\n", self.nextSequenceNumber, item.sequenceNumber, self.clientTag, self.sourceId)
 		self.nextSequenceNumber = item.sequenceNumber
 		// the head must have a contract frame to reset the contract
 	}
@@ -2432,7 +2432,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	if sequenceNumber <= self.nextSequenceNumber {
 		if self.nextSequenceNumber == sequenceNumber {
 			// this item is the head of sequence
-			glog.V(2).Infof("[r]seq+ %d->%d %s<-%s\n", self.nextSequenceNumber, self.nextSequenceNumber + 1, self.clientTag, self.sourceId.String())
+			glog.V(2).Infof("[r]seq+ %d->%d %s<-%s\n", self.nextSequenceNumber, self.nextSequenceNumber + 1, self.clientTag, self.sourceId)
 			self.nextSequenceNumber = self.nextSequenceNumber + 1
 
 			if err := self.registerContracts(item); err != nil {
@@ -2443,11 +2443,11 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 				return true, nil
 			} else {
 				// no valid contract. it should have been attached to the head
-				glog.V(1).Infof("[r]drop queue head no contract %s<-%s\n", self.clientTag, self.sourceId.String())
+				glog.V(1).Infof("[r]drop queue head no contract %s<-%s\n", self.clientTag, self.sourceId)
 				return false, errors.New("No contract")
 			}
 		} else {
-			glog.V(1).Infof("[r]drop past sequence number %d <> %d ack=%t %s<-%s\n", sequenceNumber, self.nextSequenceNumber, item.ack, self.clientTag, self.sourceId.String())
+			glog.V(1).Infof("[r]drop past sequence number %d <> %d ack=%t %s<-%s\n", sequenceNumber, self.nextSequenceNumber, item.ack, self.clientTag, self.sourceId)
 			// this item is a resend of a previous item
 			if item.ack {
 				self.sendAck(sequenceNumber, messageId, false)
@@ -2480,7 +2480,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			self.sendAck(sequenceNumber, messageId, true)
 			return true, nil
 		} else {
-			glog.V(1).Infof("[r]drop ack cannot queue %s<-%s\n", self.clientTag, self.sourceId.String())
+			glog.V(1).Infof("[r]drop ack cannot queue %s<-%s\n", self.clientTag, self.sourceId)
 			return false, nil
 		}
 	}
@@ -2524,7 +2524,7 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 	} else {
 		// no valid contract
 		// drop the message. since this is a nack it will not block the sequence
-		glog.Infof("[r]drop nack no contract %s<-%s\n", self.clientTag, self.sourceId.String())
+		glog.Infof("[r]drop nack no contract %s<-%s\n", self.clientTag, self.sourceId)
 		return false, nil
 	}
 }
@@ -2536,9 +2536,9 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 	}
 	frameMessageTypesStr := strings.Join(frameMessageTypes, ", ")
 	if item.ack {
-		glog.V(1).Infof("[r]head %d (%s) %s<-%s\n", item.sequenceNumber, frameMessageTypesStr, self.clientTag, self.sourceId.String())
+		glog.V(1).Infof("[r]head %d (%s) %s<-%s\n", item.sequenceNumber, frameMessageTypesStr, self.clientTag, self.sourceId)
 	} else {
-		glog.V(1).Infof("[r]head nack (%s) %s<-%s\n", frameMessageTypesStr, self.clientTag, self.sourceId.String())
+		glog.V(1).Infof("[r]head nack (%s) %s<-%s\n", frameMessageTypesStr, self.clientTag, self.sourceId)
 	}
 	self.peerAudit.Update(func(a *PeerAudit) {
 		a.received(item.messageByteCount)
@@ -2582,7 +2582,7 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 			contract.StoredContractHmac,
 			contract.StoredContractBytes,
 			contract.ProvideMode) {
-		glog.Infof("[r]%s<-%s exit contract verification failed (%s)\n", self.clientTag, self.sourceId.String(), contract.ProvideMode)
+		glog.Infof("[r]%s<-%s exit contract verification failed (%s)\n", self.clientTag, self.sourceId, contract.ProvideMode)
 		// bad contract
 		// close sequence
 		self.peerAudit.Update(func(a *PeerAudit) {
@@ -2837,29 +2837,33 @@ func (self *sequenceContract) update(byteCount ByteCount) bool {
 
 	if self.effectiveTransferByteCount < self.ackedByteCount + self.unackedByteCount + effectiveByteCount {
 		// doesn't fit in contract
-		glog.V(1).Infof(
-			"[%s]debit contract %s failed +%d->%d (%d/%d total %.1f%% full)\n",
+		if glog.V(1) {
+			glog.Infof(
+				"[%s]debit contract %s failed +%d->%d (%d/%d total %.1f%% full)\n",
+				self.tag,
+				self.contractId,
+				effectiveByteCount,
+				self.ackedByteCount + self.unackedByteCount + effectiveByteCount,
+				self.ackedByteCount + self.unackedByteCount,
+				self.effectiveTransferByteCount,
+				100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount),
+			)
+		}
+		return false
+	}
+	self.unackedByteCount += effectiveByteCount
+	if glog.V(1) {
+		glog.Infof(
+			"[%s]debit contract %s passed +%d->%d (%d/%d total %.1f%% full)\n",
 			self.tag,
-			self.contractId.String(),
+			self.contractId,
 			effectiveByteCount,
-			self.ackedByteCount + self.unackedByteCount + effectiveByteCount,
+			self.ackedByteCount + self.unackedByteCount,
 			self.ackedByteCount + self.unackedByteCount,
 			self.effectiveTransferByteCount,
 			100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount),
 		)
-		return false
 	}
-	self.unackedByteCount += effectiveByteCount
-	glog.V(1).Infof(
-		"[%s]debit contract %s passed +%d->%d (%d/%d total %.1f%% full)\n",
-		self.tag,
-		self.contractId.String(),
-		effectiveByteCount,
-		self.ackedByteCount + self.unackedByteCount,
-		self.ackedByteCount + self.unackedByteCount,
-		self.effectiveTransferByteCount,
-		100.0 * float32(self.ackedByteCount + self.unackedByteCount) / float32(self.effectiveTransferByteCount),
-	)
 	return true
 }
 
@@ -3106,7 +3110,7 @@ func (self *ForwardSequence) Run() {
 			}
 			if glog.V(2) {
 				TraceWithReturn(
-					fmt.Sprintf("[f]multi route write %s->%s", self.clientTag, self.destinationId.String()),
+					fmt.Sprintf("[f]multi route write %s->%s", self.clientTag, self.destinationId),
 					c,
 				)
 			} else {

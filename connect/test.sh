@@ -20,3 +20,6 @@ done
 
 # go tool trace profile/trace
 # PPROF_BINARY_PATH=. go tool pprof profile/cpu
+
+# store default.pgo
+# https://go.dev/doc/pgo

@@ -908,7 +908,9 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
         }
     }
 
-    self.statsSampleWeights(weights)
+    if glog.V(1) {
+        self.statsSampleWeights(weights)
+    }
 
     WeightedShuffleWithEntropy(nonNegativeClients, weights, self.settings.StatsWindowEntropy)
 
@@ -952,9 +954,9 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
                 }
             }
 
-            glog.V(1).Infof("[multi]sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights) - netCount, 100 * (1 - netThresh))
+            glog.Infof("[multi]sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights) - netCount, 100 * (1 - netThresh))
         } else {
-            glog.V(1).Infof("[multi]sample weights: zero (%d in window)\n", len(weights))
+            glog.Infof("[multi]sample weights: zero (%d in window)\n", len(weights))
         }
     }
 }

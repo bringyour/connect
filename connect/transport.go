@@ -212,7 +212,7 @@ func (self *PlatformTransport) run() {
             return ws, nil
         }()
         if err != nil {
-            glog.Infof("[t]auth error %s = %s\n", clientId.String(), err)
+            glog.Infof("[t]auth error %s = %s\n", clientId, err)
             select {
             case <- self.ctx.Done():
                 return
@@ -221,7 +221,7 @@ func (self *PlatformTransport) run() {
             }
         }
 
-        Trace(fmt.Sprintf("[t]connect %s", clientId.String()), func() {
+        c := func() {
             handleCtx, handleCancel := context.WithCancel(self.ctx)
 
             send := make(chan []byte, TransportBufferSize)
@@ -267,10 +267,10 @@ func (self *PlatformTransport) run() {
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
                             // note that for websocket a dealine timeout cannot be recovered
-                            glog.V(2).Infof("[ts]%s-> error = %s\n", clientId.String(), err)
+                            glog.V(2).Infof("[ts]%s-> error = %s\n", clientId, err)
                             return
                         }
-                        glog.V(2).Infof("[ts]%s->\n", clientId.String())
+                        glog.V(2).Infof("[ts]%s->\n", clientId)
                     case <- time.After(self.settings.PingTimeout):
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, make([]byte, 0)); err != nil {
@@ -297,7 +297,7 @@ func (self *PlatformTransport) run() {
                     ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
                     messageType, message, err := ws.ReadMessage()
                     if err != nil {
-                        glog.V(2).Infof("[tr]%s<- error = %s\n", clientId.String(), err)
+                        glog.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
                         return
                     }
 
@@ -308,7 +308,7 @@ func (self *PlatformTransport) run() {
                             continue
                         }
 
-                        glog.V(2).Infof("[tr]%s<-\n", clientId.String())
+                        glog.V(2).Infof("[tr]%s<-\n", clientId)
 
                         select {
                         case <- handleCtx.Done():
@@ -324,7 +324,12 @@ func (self *PlatformTransport) run() {
             case <- handleCtx.Done():
                 return
             }  
-        })
+        }
+        if glog.V(2) {
+            Trace(fmt.Sprintf("[t]connect %s", clientId), c)
+        } else {
+            c()
+        }
 
         select {
         case <- self.ctx.Done():

@@ -248,7 +248,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            fmt.Sprintf("[lnr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId),
                             c,
                         )
                     } else {
@@ -270,7 +270,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            fmt.Sprintf("[lnr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId),
                             c,
                         )
                     } else {
@@ -299,7 +299,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            fmt.Sprintf("[lnr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId),
                             c,
                         )
                     } else {
@@ -321,7 +321,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            fmt.Sprintf("[lnr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId),
                             c,
                         )
                     } else {
@@ -2044,7 +2044,7 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
         }
         if glog.V(2) {
             TraceWithReturn(
-                fmt.Sprintf("[unps]udp %s->%s", self.client.ClientTag(), source.ClientId.String()),
+                fmt.Sprintf("[unps]udp %s->%s", self.client.ClientTag(), source.ClientId),
                 c,
             )
         } else {
@@ -2062,7 +2062,7 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
         }
         if glog.V(2) {
             TraceWithReturn(
-                fmt.Sprintf("[unps]tcp %s->%s", self.client.ClientTag(), source.ClientId.String()),
+                fmt.Sprintf("[unps]tcp %s->%s", self.client.ClientTag(), source.ClientId),
                 c,
             )
         } else {
@@ -2093,7 +2093,7 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
                 }
                 if glog.V(2) {
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr] %s<-%s", self.client.ClientTag(), sourceId.String()),
+                        fmt.Sprintf("[unpr] %s<-%s", self.client.ClientTag(), sourceId),
                         c,
                     )
                 } else {

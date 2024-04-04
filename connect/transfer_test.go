@@ -368,11 +368,11 @@ func requireTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId
 	}
 
 	if sourceId != sourceId_ {
-		panic(fmt.Errorf("%s <> %s", sourceId.String(), sourceId_.String()))
+		panic(fmt.Errorf("%s <> %s", sourceId, sourceId_))
 	}
 
 	if destinationId != destinationId_ {
-		panic(fmt.Errorf("%s <> %s", destinationId.String(), destinationId_.String()))
+		panic(fmt.Errorf("%s <> %s", destinationId, destinationId_))
 	}
 
 	return b
