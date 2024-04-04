@@ -16,6 +16,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/golang/glog"
+
 	"bringyour.com/protocol"
 )
 
@@ -24,8 +26,6 @@ import (
 
 
 type ContractErrorFunction = func(contractError protocol.ContractError)
-// TODO
-// type ProvideChangedFunction = func(provideModes map[protocol.ProvideMode]bool)
 
 
 type ContractManagerStats struct {
@@ -95,7 +95,6 @@ func (self *ContractManagerSettings) ContractsEnabled() bool {
 type ContractManager struct {
 	ctx context.Context
 	client *Client
-	// clientOob OutOfBandControl
 
 	settings *ContractManagerSettings
 
@@ -163,15 +162,8 @@ func (self *ContractManager) addContractErrorCallback(contractErrorCallback Cont
 	}
 }
 
-// func (self *ContractManager) removeContractErrorCallback(contractErrorCallback ContractErrorFunction) {
-// 	self.contractErrorCallbacks.Remove(contractErrorCallback)
-// }
-
 // ReceiveFunction
 func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-	// for _, frame := range frames {
-	// 	fmt.Printf("CONTRACT MANAGER RECEIVE %s-> %s\n", sourceId.String(), frame.MessageType)
-	// }
 	switch sourceId {
 	case ControlId:
 		contracts, contractErrors := parseControlContractFrames(frames)
@@ -416,19 +408,8 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 				return nil
 			}
 		}
-	}
-	
+	}	
 }
-
-/*
-// must be called for a contract that was previously taken
-func (self *ContractManager) ReturnContract(ctx context.Context, destinationId Id, contract *protocol.Contract) {
-	contractQueue := self.openContractQueue(destinationId)
-	defer self.closeContractQueue(destinationId)
-
-	contractQueue.Push(contract)
-}
-*/
 
 func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	var storedContract protocol.StoredContract
@@ -509,7 +490,6 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 	contractQueue := self.openContractQueue(destinationId)
 	defer self.closeContractQueue(destinationId)
 
-	fmt.Printf("Request contract size %d\n", self.settings.StandardContractTransferByteCount)
 	createContract := &protocol.CreateContract{
 		DestinationId: destinationId.Bytes(),
 		TransferByteCount: uint64(self.settings.StandardContractTransferByteCount),
@@ -522,7 +502,7 @@ func (self *ContractManager) CreateContract(destinationId Id, companionContract 
 			if err == nil {
 				self.Receive(ControlId, resultFrames, protocol.ProvideMode_Network)
 			} else {
-				fmt.Printf("[contract]oob err = %s\n", err)
+				glog.Warningf("[contract]oob err = %s\n", err)
 			}
 		},
 	)
@@ -550,9 +530,6 @@ func (self *ContractManager) CompleteContractWithCheckpoint(
 	unackedByteCount ByteCount,
 	checkpoint bool,
 ) {
-	fmt.Printf("COMPLETE CONTRACT\n")
-	
-	
 	opened := false
 	var destinationId Id
 
@@ -649,7 +626,6 @@ func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id
 		if err := proto.Unmarshal(contract.StoredContractBytes, &storedContract); err == nil {
 			if contractId, err := IdFromBytes(storedContract.ContractId); err == nil {
 				contractIds = append(contractIds, contractId)
-				fmt.Printf("FLUSH CLOSE CONTRACTS\n")
 				self.CompleteContract(contractId, ByteCount(0), ByteCount(0))
 			}
 		}
@@ -707,15 +683,6 @@ func (self *contractQueue) Poll() *protocol.Contract {
 	return contract
 }
 
-/*
-func (self *contractQueue) Push(contract *protocol.Contract) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	self.contracts = append([]*protocol.Contract{contract}, self.contracts...)
-}
-*/
-
 func (self *contractQueue) Add(contract *protocol.Contract, storedContract *protocol.StoredContract) error {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -726,14 +693,14 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 	}
 
 	if self.usedContractIds[contractId] {
-		fmt.Printf("[contract]add already used %s\n", contractId.String())
+		glog.V(2).Infof("[contract]add already used %s\n", contractId.String())
 		// update contract
 		if _, ok := self.contracts[contractId]; ok {
 			self.contracts[contractId] = contract
 			self.updateMonitor.NotifyAll()
 		}
 	} else {
-		fmt.Printf("[contract]add %s\n", contractId.String())
+		glog.V(2).Infof("[contract]add %s\n", contractId.String())
 		self.usedContractIds[contractId] = true
 		self.contracts[contractId] = contract
 		self.updateMonitor.NotifyAll()

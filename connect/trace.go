@@ -12,8 +12,11 @@ import (
     "runtime/debug"
     "strings"
     "encoding/json"
-    // "reflect"
+    "reflect"
+    "runtime"
     // mathrand "math/rand"
+
+    "github.com/golang/glog"
 )
 
 
@@ -43,7 +46,7 @@ func HandleError(do func(), handlers ...any) (r any) {
         	if IsDoneError(r) {
                 // the context was canceled and raised. this is a standard pattern, do not log
             } else {
-	            fmt.Printf("Unexpected error: %s\n", ErrorJson(r, debug.Stack()))
+	            glog.Warningf("Unexpected error: %s\n", ErrorJson(r, debug.Stack()))
 	        }
 	        err, ok := r.(error)
             if !ok {
@@ -96,9 +99,14 @@ func TraceWithReturn[R any](tag string, do func()(R)) (result R) {
 
 func trace(tag string, do func()(string)) {
 	start := time.Now()
-	fmt.Printf("[%-8s]%s (%d)\n", "start", tag, start.UnixMilli())
+	glog.Infof("[%-8s]%s (%d)\n", "start", tag, start.UnixMilli())
 	doTag := do()
 	end := time.Now()
 	millis := float32(end.Sub(start)) / float32(time.Millisecond)
-	fmt.Printf("[%-8s]%s (%.2fms) (%d)%s\n", "end", tag, millis, end.UnixMilli(), doTag)
+	glog.Infof("[%-8s]%s (%.2fms) (%d)%s\n", "end", tag, millis, end.UnixMilli(), doTag)
+}
+
+
+func CallbackName(f any) string {
+    return runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
 }

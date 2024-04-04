@@ -21,6 +21,8 @@ import (
 
     // "google.golang.org/protobuf/proto"
 
+    "github.com/golang/glog"
+
     "bringyour.com/protocol"
 )
 
@@ -28,8 +30,6 @@ import (
 // implements user-space NAT (UNAT) and packet inspection
 // The UNAT emulates a raw socket using user-space sockets.
 
-
-var ipLog = LogFn(LogLevelDebug, "ip")
 
 // use 0 for deadlock testing
 const DefaultIpBufferSize = 32
@@ -148,7 +148,6 @@ func NewLocalUserNat(ctx context.Context, clientTag string, settings *LocalUserN
 // TODO currently filter all local networks and non-encrypted traffic
 func (self *LocalUserNat) SendPacketWithTimeout(source Path, provideMode protocol.ProvideMode,
         packet []byte, timeout time.Duration) bool {
-    ipLog("SendWithTimeout(%s, %s, %d, %s)", source, provideMode, len(packet), timeout)
     sendPacket := &SendPacket{
         source: source,
         provideMode: provideMode,
@@ -237,36 +236,46 @@ func (self *LocalUserNat) Run() {
                     udp := layers.UDP{}
                     udp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-                    TraceWithReturn(
-                        fmt.Sprintf("[lnr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
-                        func()(bool) {
-                            success, err := udp4Buffer.send(
-                                sendPacket.source,
-                                sendPacket.provideMode,
-                                &ipv4,
-                                &udp,
-                                self.settings.BufferTimeout,
-                            )
-                            return success && err == nil
-                        },
-                    )
+                    c := func()(bool) {
+                        success, err := udp4Buffer.send(
+                            sendPacket.source,
+                            sendPacket.provideMode,
+                            &ipv4,
+                            &udp,
+                            self.settings.BufferTimeout,
+                        )
+                        return success && err == nil
+                    }
+                    if glog.V(2) {
+                        TraceWithReturn(
+                            fmt.Sprintf("[lnr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            c,
+                        )
+                    } else {
+                        c()
+                    }
                 case layers.IPProtocolTCP:
                     tcp := layers.TCP{}
                     tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-                    TraceWithReturn(
-                        fmt.Sprintf("[lnr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
-                        func()(bool) {
-                            success, err := tcp4Buffer.send(
-                                sendPacket.source,
-                                sendPacket.provideMode,
-                                &ipv4,
-                                &tcp,
-                                self.settings.BufferTimeout,
-                            )
-                            return success && err == nil
-                        },
-                    )
+                    c := func()(bool) {
+                        success, err := tcp4Buffer.send(
+                            sendPacket.source,
+                            sendPacket.provideMode,
+                            &ipv4,
+                            &tcp,
+                            self.settings.BufferTimeout,
+                        )
+                        return success && err == nil
+                    }
+                    if glog.V(2) {
+                        TraceWithReturn(
+                            fmt.Sprintf("[lnr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            c,
+                        )
+                    } else {
+                        c()
+                    }
                 default:
                     // no support for this protocol, drop
                 }
@@ -278,36 +287,46 @@ func (self *LocalUserNat) Run() {
                     udp := layers.UDP{}
                     udp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
-                    TraceWithReturn(
-                        fmt.Sprintf("[lnr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
-                        func()(bool) {
-                            success, err := udp6Buffer.send(
-                                sendPacket.source,
-                                sendPacket.provideMode,
-                                &ipv6,
-                                &udp,
-                                self.settings.BufferTimeout,
-                            )
-                            return success && err == nil
-                        },
-                    )
+                    c := func()(bool) {
+                        success, err := udp6Buffer.send(
+                            sendPacket.source,
+                            sendPacket.provideMode,
+                            &ipv6,
+                            &udp,
+                            self.settings.BufferTimeout,
+                        )
+                        return success && err == nil
+                    }
+                    if glog.V(2) {
+                        TraceWithReturn(
+                            fmt.Sprintf("[lnr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            c,
+                        )
+                    } else {
+                        c()
+                    }
                 case layers.IPProtocolTCP:
                     tcp := layers.TCP{}
                     tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
-                    TraceWithReturn(
-                        fmt.Sprintf("[lnr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
-                        func()(bool) {
-                            success, err := tcp6Buffer.send(
-                                sendPacket.source,
-                                sendPacket.provideMode,
-                                &ipv6,
-                                &tcp,
-                                self.settings.BufferTimeout,
-                            )
-                            return success && err == nil
-                        },
-                    )
+                    c := func()(bool) {
+                        success, err := tcp6Buffer.send(
+                            sendPacket.source,
+                            sendPacket.provideMode,
+                            &ipv6,
+                            &tcp,
+                            self.settings.BufferTimeout,
+                        )
+                        return success && err == nil
+                    }
+                    if glog.V(2) {
+                        TraceWithReturn(
+                            fmt.Sprintf("[lnr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId.String()),
+                            c,
+                        )
+                    } else {
+                        c()
+                    }
                 default:
                     // no support for this protocol, drop
                 }
@@ -503,7 +522,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
             // limit the total connections per source to avoid blowing up the ulimit
             if sourceSequences := self.sourceSequences[source]; self.udpBufferSettings.UserLimit < len(sourceSequences) {
                 applyLruUserLimit(maps.Values(sourceSequences), self.udpBufferSettings.UserLimit, func(sequence *UdpSequence)(bool) {
-                    fmt.Printf(
+                    glog.Infof(
                         "[lnr]udp limit source %s->%s\n",
                         source,
                         net.JoinHostPort(
@@ -563,7 +582,6 @@ func (self *UdpBuffer[BufferId]) udpSend(
 
 
 type UdpSequence struct {
-    log LogFunction
     ctx context.Context
     cancel context.CancelFunc
     receiveCallback ReceivePacketFunction
@@ -593,11 +611,6 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         userLimited: *newUserLimited(),
     }
     return &UdpSequence{
-        log: SubLogFn(LogLevelDebug, ipLog, fmt.Sprintf(
-            "UdpSequence(%s %s)",
-            streamState.SourceAuthority(),
-            streamState.DestinationAuthority(),
-        )),
         ctx: cancelCtx,
         cancel: cancel,
         receiveCallback: receiveCallback,
@@ -655,18 +668,18 @@ func (self *UdpSequence) Run() {
         self.receiveCallback(self.source, IpProtocolUdp, packet)
     }
 
-    self.log("[init]connect")
+    glog.V(2).Infof("[init]udp connect\n")
     socket, err := net.Dial(
         "udp",
         self.DestinationAuthority(),
     )
     if err != nil {
-        fmt.Printf("[init]udp connect error = %s\n", err)
+        glog.Infof("[init]udp connect error = %s\n", err)
         return
     }
     defer socket.Close()
     self.UpdateLastActivityTime()
-    self.log("[init]connect success")
+    glog.V(2).Infof("[init]connect success\n")
 
     go func() {
         defer self.cancel()
@@ -686,7 +699,7 @@ func (self *UdpSequence) Run() {
             n, err := socket.Read(buffer)
 
             if err != nil {
-                fmt.Printf("[f%d]udp receive err = %s\n", forwardIter, err)
+                glog.Infof("[f%d]udp receive err = %s\n", forwardIter, err)
             }
 
             if 0 < n {
@@ -694,14 +707,14 @@ func (self *UdpSequence) Run() {
 
                 packets, packetsErr := self.DataPackets(buffer, n, self.udpBufferSettings.Mtu)
                 if packetsErr != nil {
-                    fmt.Printf("[f%d]udp receive packets error = %s\n", forwardIter, packetsErr)
+                    glog.Infof("[f%d]udp receive packets error = %s\n", forwardIter, packetsErr)
                     return
                 }
                 if 1 < len(packets) {
-                    fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
+                    glog.V(2).Infof("[f%d]udp receive segemented packets = %d\n", forwardIter, len(packets))
                 }
                 for _, packet := range packets {
-                    fmt.Printf("[f%d]udp receive %d\n", forwardIter, len(packet))
+                    glog.V(1).Infof("[f%d]udp receive %d\n", forwardIter, len(packet))
                     receive(packet)
                 }
             }
@@ -710,7 +723,7 @@ func (self *UdpSequence) Run() {
                 if err == io.EOF {
                     return
                 } else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                    self.log("[f%d]timeout")
+                    glog.Infof("[f%d]timeout\n", forwardIter)
                     return
                 } else {
                     // some other error
@@ -744,9 +757,9 @@ func (self *UdpSequence) Run() {
                     n, err := socket.Write(payload[i:])
 
                     if err == nil {
-                        fmt.Printf("[f%d]udp forward %d\n", sendIter, n)
+                        glog.V(2).Infof("[f%d]udp forward %d\n", sendIter, n)
                     } else {
-                        fmt.Printf("[f%d]udp forward %d err = %s", sendIter, n, err)
+                        glog.Infof("[f%d]udp forward %d error = %s", sendIter, n, err)
                     }
 
                     if 0 < n {
@@ -754,7 +767,7 @@ func (self *UdpSequence) Run() {
 
                         j := i
                         i += n
-                        fmt.Printf("[f%d]udp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+                        glog.V(2).Infof("[f%d]udp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
                     }
 
 
@@ -1054,7 +1067,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
                 return sequence
             }
             // drop the packet; only create a new sequence on SYN
-            fmt.Printf("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
+            glog.V(2).Infof("[lnr]tcp drop no syn (%s)\n", tcpFlagsString(tcp))
             return nil
         }
 
@@ -1073,7 +1086,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
             // limit the total connections per source to avoid blowing up the ulimit
             if sourceSequences := self.sourceSequences[source]; self.tcpBufferSettings.UserLimit < len(sourceSequences) {
                 applyLruUserLimit(maps.Values(sourceSequences), self.tcpBufferSettings.UserLimit, func(sequence *TcpSequence)(bool) {
-                    fmt.Printf(
+                    glog.Infof(
                         "[lnr]tcp limit source %s->%s\n",
                         source,
                         net.JoinHostPort(
@@ -1138,7 +1151,6 @@ to the UNAT via `transfer`, which is lossless and in-order.
 
 */
 type TcpSequence struct {
-    log LogFunction
     ctx context.Context
     cancel context.CancelFunc
     
@@ -1180,11 +1192,6 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
         userLimited: *newUserLimited(),
     }
     return &TcpSequence{
-        log: SubLogFn(LogLevelDebug, ipLog, fmt.Sprintf(
-            "TcpSequence(%s %s)",
-            connectionState.SourceAuthority(),
-            connectionState.DestinationAuthority(),
-        )),
         ctx: cancelCtx,
         cancel: cancel,
         receiveCallback: receiveCallback,
@@ -1246,10 +1253,9 @@ func (self *TcpSequence) Run() {
     // send a final FIN+ACK
     defer func() {
         if closed {
-            fmt.Printf("[r]closed gracefully\n")
+            glog.V(2).Infof("[r]closed gracefully\n")
         } else {
-            fmt.Printf("[r]closed unexpected sending RST\n")
-            self.log("[final]RST")
+            glog.V(2).Infof("[r]closed unexpected sending RST\n")
             var packet []byte
             var err error
             func() {
@@ -1259,7 +1265,6 @@ func (self *TcpSequence) Run() {
                 packet, err = self.RstAck()
             }()
             if err == nil {
-                self.log("[final]send RST (%d)", self.sendSeq)
                 receive(packet)
             }
         }
@@ -1271,10 +1276,10 @@ func (self *TcpSequence) Run() {
         case <- self.ctx.Done():
             return
         case sendItem := <- self.sendItems:
-            self.log("[init]send(%d)", len(sendItem.tcp.BaseLayer.Payload))
+            glog.V(2).Infof("[init]send(%d)\n", len(sendItem.tcp.BaseLayer.Payload))
             // the first packet must be a syn
             if sendItem.tcp.SYN {
-                self.log("[init]SYN")
+                glog.V(2).Infof("[init]SYN\n")
 
                 var packet []byte
                 var err error
@@ -1294,26 +1299,26 @@ func (self *TcpSequence) Run() {
                     self.receiveSeq += 1
                 }()
                 if err == nil {
-                    self.log("[init]receive SYN+ACK")
+                    glog.V(2).Infof("[init]receive SYN+ACK\n")
                     receive(packet)
                 }
                 
                 syn = true
             } else {
                 // an ACK here could be for a previous FIN
-                self.log("[init]waiting for SYN (%s)", tcpFlagsString(sendItem.tcp))
+                glog.V(2).Infof("[init]waiting for SYN (%s)\n", tcpFlagsString(sendItem.tcp))
             }
         }
     }
 
-    self.log("[init]connect")
+    glog.V(2).Infof("[init]tcp connect\n")
     socket, err := net.DialTimeout(
         "tcp",
         self.DestinationAuthority(),
         self.tcpBufferSettings.ConnectTimeout,
     )
     if err != nil {
-        fmt.Printf("[init]tcp connect error = %s\n", err)
+        glog.Infof("[init]tcp connect error = %s\n", err)
         return
     }
     defer socket.Close()
@@ -1322,7 +1327,7 @@ func (self *TcpSequence) Run() {
     tcpSocket.SetNoDelay(false)
     
     self.UpdateLastActivityTime()
-    self.log("[init]connect success")
+    glog.V(2).Infof("[init]connect success\n")
 
     receiveAckCond := sync.NewCond(&self.mutex)
     defer func() {
@@ -1351,7 +1356,7 @@ func (self *TcpSequence) Run() {
             n, err := socket.Read(buffer)
 
             if err != nil {
-                fmt.Printf("[f%d]tcp receive err = %s\n", forwardIter, err)
+                glog.Infof("[f%d]tcp receive error = %s\n", forwardIter, err)
             }
 
             if 0 < n {
@@ -1367,18 +1372,17 @@ func (self *TcpSequence) Run() {
 
                     packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
                     if packetsErr != nil {
-                        fmt.Printf("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
+                        glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
                         return
                     }
 
                     if 1 < len(packets) {
-                        fmt.Printf("SEGMENTED PACKETS (%d)\n", len(packets))
+                        glog.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
                     }
-                    fmt.Printf("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
+                    glog.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
 
-                    // fmt.Printf("[multi] Receive window %d <> %d\n", uint32(self.receiveWindowSize), self.receiveSeq - self.receiveSeqAck + uint32(n))
                     for uint32(self.receiveWindowSize) < self.receiveSeq - self.receiveSeqAck + uint32(n) {
-                        fmt.Printf("[f%d]tcp receive window wait\n", forwardIter)
+                        glog.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
                         receiveAckCond.Wait()
                         select {
                         case <- self.ctx.Done():
@@ -1408,7 +1412,7 @@ func (self *TcpSequence) Run() {
                 if err == io.EOF {
                     // closed (FIN)
                     // propagate the FIN and close the sequence
-                    self.log("[final]FIN")
+                    glog.V(2).Infof("[final]FIN\n")
                     var packet []byte
                     var err error
                     func() {
@@ -1420,12 +1424,11 @@ func (self *TcpSequence) Run() {
                     }()
                     if err == nil {
                         closed = true
-                        self.log("[final]send FIN+ACK (%d)", self.sendSeq)
                         receive(packet)
                     }
                     return
                 } else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                    fmt.Printf("[f%d]timeout\n", forwardIter)
+                    glog.V(2).Infof("[f%d]timeout\n", forwardIter)
                     return
                 } else {
                     // some other error
@@ -1444,8 +1447,10 @@ func (self *TcpSequence) Run() {
             case <- self.ctx.Done():
                 return
             case sendItem := <- self.sendItems:
-                if "ACK" != tcpFlagsString(sendItem.tcp) {
-                    fmt.Printf("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
+                if glog.V(2) {
+                    if "ACK" != tcpFlagsString(sendItem.tcp) {
+                        glog.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
+                    }
                 }
 
                 drop := false
@@ -1478,7 +1483,7 @@ func (self *TcpSequence) Run() {
                 }
 
                 if sendItem.tcp.FIN {
-                    self.log("[r%d]FIN", sendIter)
+                    glog.V(2).Infof("[r%d]FIN\n", sendIter)
                     seq += 1
                 }
 
@@ -1497,9 +1502,9 @@ func (self *TcpSequence) Run() {
                     n, err := socket.Write(payload[i:])
 
                     if err == nil {
-                        fmt.Printf("[f%d]tcp forward %d\n", sendIter, n)
+                        glog.V(2).Infof("[f%d]tcp forward %d\n", sendIter, n)
                     } else {
-                        fmt.Printf("[f%d]tcp forward %d err=%s\n", sendIter, n, err)
+                        glog.Infof("[f%d]tcp forward %d error = %s\n", sendIter, n, err)
                     }
 
                     if 0 < n {
@@ -1507,7 +1512,7 @@ func (self *TcpSequence) Run() {
 
                         j := i
                         i += n
-                        fmt.Printf("[f%d]tcp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
+                        glog.V(2).Infof("[f%d]tcp forward %d/%d -> %d/%d +%d\n", sendIter, j, len(payload), i, len(payload), n)
                     }
 
                     if err != nil {
@@ -1546,14 +1551,14 @@ func (self *TcpSequence) Run() {
 
                 if sendItem.tcp.RST {
                     // a RST typically appears for a bad TCP segment
-                    self.log("[r%d]RST", sendIter)
+                    glog.V(2).Infof("[r%d]RST\n", sendIter)
                     return
                 }
 
             case <- time.After(self.tcpBufferSettings.IdleTimeout):
                 if self.idleCondition.Close(checkpointId) {
                     // close the sequence
-                    self.log("[r%d]timeout", sendIter)
+                    glog.V(2).Infof("[r%d]timeout\n", sendIter)
                     return
                 }
                 // else there pending updates
@@ -2005,11 +2010,9 @@ func NewRemoteUserNatProvider(
 func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, packet []byte) {
     if self.client.ClientId() == source.ClientId {
         // locally generated traffic should use a separate local user nat
-        fmt.Printf("drop remote user nat provider s packet ->%s\n", source.ClientId)
+        glog.V(2).Infof("drop remote user nat provider s packet ->%s\n", source.ClientId)
         return
     }
-
-    // fmt.Printf("REMOTE USER NAT PROVIDER RETURN\n")
 
     ipPacketFromProvider := &protocol.IpPacketFromProvider{
         IpPacket: &protocol.IpPacket{
@@ -2018,52 +2021,53 @@ func (self *RemoteUserNatProvider) Receive(source Path, ipProtocol IpProtocol, p
     }
     frame, err := ToFrame(ipPacketFromProvider)
     if err != nil {
-        fmt.Printf("drop remote user nat provider s packet ->%s = %s\n", source.ClientId, err)
+        glog.V(2).Infof("drop remote user nat provider s packet ->%s = %s\n", source.ClientId, err)
         panic(err)
     }
 
-    // fmt.Printf("remote user nat provider s packet ->%s\n", source.ClientId)
-
-    // fmt.Printf("SEND PROTOCOL %s\n", ipProtocol)
     opts := []any{
         CompanionContract(),
     }
     switch ipProtocol {
     case IpProtocolUdp:
         opts = append(opts, NoAck())
-        TraceWithReturn(
-            fmt.Sprintf("[unps]udp %s->%s", self.client.ClientTag(), source.ClientId.String()),
-            func()(bool) {
-                // ack := make(chan error)
-                sent := self.client.SendWithTimeout(
-                    frame,
-                    source.ClientId,
-                    func(err error) {},
-                    self.settings.WriteTimeout,
-                    opts...,
-                )
-                // if !sent {
-                //     close(ack)
-                //     return false
-                // }
-                // err := <- ack
-                // return err == nil
-                return sent
-            },
-        )
+        c := func()(bool) {
+            // ack := make(chan error)
+            sent := self.client.SendWithTimeout(
+                frame,
+                source.ClientId,
+                func(err error) {},
+                self.settings.WriteTimeout,
+                opts...,
+            )
+            return sent
+        }
+        if glog.V(2) {
+            TraceWithReturn(
+                fmt.Sprintf("[unps]udp %s->%s", self.client.ClientTag(), source.ClientId.String()),
+                c,
+            )
+        } else {
+            c()
+        }
     case IpProtocolTcp:
-        TraceWithReturn(
-            fmt.Sprintf("[unps]tcp %s->%s", self.client.ClientTag(), source.ClientId.String()),
-            func()(bool) {
-                return self.client.SendWithTimeout(
-                    frame,
-                    source.ClientId,
-                    func(err error) {},
-                    self.settings.WriteTimeout,
-                    opts...,
-                )
-            },
-        )
+        c := func()(bool) {
+            return self.client.SendWithTimeout(
+                frame,
+                source.ClientId,
+                func(err error) {},
+                self.settings.WriteTimeout,
+                opts...,
+            )
+        }
+        if glog.V(2) {
+            TraceWithReturn(
+                fmt.Sprintf("[unps]tcp %s->%s", self.client.ClientTag(), source.ClientId.String()),
+                c,
+            )
+        } else {
+            c()
+        }
     }
 
 }
@@ -2073,8 +2077,6 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
     for _, frame := range frames {
         switch frame.MessageType {
         case protocol.MessageType_IpIpPacketToProvider:
-            // fmt.Printf("REMOTE USER NAT PROVIDER SEND\n")
-
             ipPacketToProvider_, err := FromFrame(frame)
             if err != nil {
                 panic(err)
@@ -2083,16 +2085,20 @@ func (self *RemoteUserNatProvider) ClientReceive(sourceId Id, frames []*protocol
 
             packet := ipPacketToProvider.IpPacket.PacketBytes
             _, r := self.securityPolicy.Inspect(provideMode, packet)
-            ipLog("CLIENT RECEIVE %d -> %s", len(packet), r)
             switch r {
             case SecurityPolicyResultAllow:
                 source := Path{ClientId: sourceId}
-                TraceWithReturn(
-                    fmt.Sprintf("[unpr] %s<-%s", self.client.ClientTag(), sourceId.String()),
-                    func()(bool) {
-                        return self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, self.settings.WriteTimeout)
-                    },
-                )
+                c := func()(bool) {
+                    return self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, self.settings.WriteTimeout)
+                }
+                if glog.V(2) {
+                    TraceWithReturn(
+                        fmt.Sprintf("[unpr] %s<-%s", self.client.ClientTag(), sourceId.String()),
+                        c,
+                    )
+                } else {
+                    c()
+                }
             case SecurityPolicyResultIncident:
                 self.client.ReportAbuse(sourceId)
             }
@@ -2154,8 +2160,6 @@ func NewRemoteUserNatClient(
 
 // `SendPacketFunction`
 func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
-    // fmt.Printf("REMOTE USER NAT CLIENT SEND\n")
-
     minRelationship := max(provideMode, self.provideMode)
 
     ipPath, r := self.securityPolicy.Inspect(minRelationship, packet)
@@ -2164,8 +2168,6 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
         destination, err := self.pathTable.SelectDestination(packet)
         if err != nil {
             // drop
-            // TODO log
-            ipLog("NO DESTINATION (%s)", err)
             return false
         }
 
@@ -2178,8 +2180,6 @@ func (self *RemoteUserNatClient) SendPacket(source Path, provideMode protocol.Pr
         if err != nil {
             panic(err)
         }
-
-        // fmt.Printf("remote user nat client s packet ->%s\n", destination.ClientId)
 
         // the sender will control transfer
         opts := []any{}
@@ -2200,22 +2200,17 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
 
     // only process frames from the destinations
     if allow := self.sourceFilter[source]; !allow {
-        ipLog("PACKET FILTERED")
         return
     }
 
     for _, frame := range frames {
         switch frame.MessageType {
         case protocol.MessageType_IpIpPacketFromProvider:
-            // fmt.Printf("REMOTE USER NAT CLIENT RETURN\n")
-            
             ipPacketFromProvider_, err := FromFrame(frame)
             if err != nil {
                 panic(err)
             }
             ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
-
-            // fmt.Printf("remote user nat client r packet %s<-\n", source)
 
             HandleError(func() {
                 self.receivePacketCallback(source, IpProtocolUnknown, ipPacketFromProvider.IpPacket.PacketBytes)

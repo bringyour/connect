@@ -100,5 +100,3 @@ func NewNoContractClientOob() *noContractClientOob {
 func (self *noContractClientOob) SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error)) {
 	callback(nil, errors.New("Not supported."))
 }
-
-

@@ -13,4 +13,6 @@ require (
 	google.golang.org/protobuf v1.33.0
 )
 
+require github.com/golang/glog v1.2.1 // indirect
+
 replace bringyour.com/protocol v0.0.0 => ../protocol/build/bringyour.com/protocol

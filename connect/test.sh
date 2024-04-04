@@ -15,5 +15,8 @@ for d in `find . -iname '*_test.go' | xargs -n 1 dirname | sort | uniq | paste -
 done
 # stdbuf -i0 -o0 -e0 
 
+# to turn on logging e.g.
+# go test -args -v 2 -logtostderr true
+
 # go tool trace profile/trace
 # PPROF_BINARY_PATH=. go tool pprof profile/cpu

@@ -14,6 +14,8 @@ import (
 
     "golang.org/x/exp/maps"
 
+    "github.com/golang/glog"
+
     "bringyour.com/protocol"
 )
 
@@ -293,8 +295,8 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
-        fmt.Printf("[multi] Send bad packet (%s).\n", err)
         // bad packet
+        glog.Infof("[multi]send bad packet = %s\n", err)
         return false
     }
 
@@ -314,10 +316,9 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
 
         for {
             orderedClients, removedClients := self.window.OrderedClients()
-            // fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
-
+            
             for _, client := range removedClients {
-                fmt.Printf("[multi] Remove client %s->%s.\n", client.args.ClientId, client.args.DestinationId) 
+                glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.DestinationId) 
                 self.removeClient(client)
             }
 
@@ -336,7 +337,6 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
 
                 if remainingTimeout <= 0 {
                     // drop
-                    fmt.Printf("DROPPED ONE\n")
                     success = false
                     return
                 }
@@ -361,7 +361,6 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                     select {
                     case <- self.ctx.Done():
                         // drop
-                        fmt.Printf("DROPPED ONE\n")
                         success = false
                         return
                     default:
@@ -371,7 +370,6 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 select {
                 case <- self.ctx.Done():
                     // drop
-                    fmt.Printf("DROPPED ONE\n")
                     success = false
                     return
                 case <- time.After(retryTimeout):
@@ -581,7 +579,6 @@ func (self *ApiMultiClientGenerator) NewClient(
     }
     clientOob := NewApiOutOfBandControl(ctx, args.ClientAuth.ByJwt, self.apiUrl)
     client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings)
-    // fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
     NewPlatformTransportWithDefaults(
         client.Ctx(),
         self.platformUrl,
@@ -617,8 +614,6 @@ type multiClientWindow struct {
 
     stateLock sync.Mutex
     destinationClients map[Id]*multiClientChannel
-
-    // windowUpdate *Monitor
 }
 
 func newMultiClientWindow(
@@ -636,7 +631,6 @@ func newMultiClientWindow(
         settings: settings,
         clientChannelArgs: make(chan *multiClientChannelArgs),
         destinationClients: map[Id]*multiClientChannel{},
-        // windowUpdate: NewMonitor(),
     }
 
     go HandleError(window.randomEnumerateClientArgs, cancel)
@@ -659,13 +653,12 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
             }
 
             nextDestinationIdEstimatedBytesPerSecond, err := next(1)
-            // fmt.Printf("[multi] Window enumerate found %v (%v).\n", nextDestinationIds, err)
             if err != nil {
                 select {
                 case <- self.ctx.Done():
                     return
                 case <- time.After(self.settings.WindowEnumerateErrorTimeout):
-                    fmt.Printf("[multi] Window enumerate error timeout.\n")
+                    glog.V(2).Infof("[multi]window enumerate error timeout.\n")
                 }
             } else if 0 < len(nextDestinationIdEstimatedBytesPerSecond) {
                 for destinationId, estimatedBytesPerSecond := range nextDestinationIdEstimatedBytesPerSecond {
@@ -680,7 +673,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 case <- self.ctx.Done():
                     return
                 case <- time.After(self.settings.WindowEnumerateEmptyTimeout):
-                    fmt.Printf("[multi] Window enumerate empty timeout.\n")
+                    glog.V(2).Infof("[multi]window enumerate empty timeout.\n")
                 }
             }
         }
@@ -693,9 +686,6 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 delete(destinationIdEstimatedBytesPerSecond, destinationId)
             }
         }()
-        
-        
-        // fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
         
         for destinationId, estimatedBytesPerSecond := range destinationIdEstimatedBytesPerSecond {
 
@@ -712,7 +702,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 case self.clientChannelArgs <- args:
                 }
             } else {
-                fmt.Printf("[multi] Could not auth client.\n")
+                glog.V(2).Infof("[multi]could not auth client.\n")
             }
         
         }
@@ -729,9 +719,7 @@ func (self *multiClientWindow) resize() {
 
         clients := []*multiClientChannel{}
 
-        // removedClients := []*multiClientChannel{}
         netSourceCount := 0
-        // nonNegativeClients := []*multiClientChannel{}
         weights := map[*multiClientChannel]float32{}
         durations := map[*multiClientChannel]time.Duration{}
 
@@ -742,9 +730,6 @@ func (self *multiClientWindow) resize() {
                 // byte count per second
                 weights[client] = float32(stats.ByteCountPerSecond())
                 durations[client] = stats.duration
-                // if 0 <= weight {
-                //     nonNegativeClients = append(nonNegativeClients, client)
-                // }
             }
         }
 
@@ -768,53 +753,27 @@ func (self *multiClientWindow) resize() {
                 float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
             )),
         )
-        // fmt.Printf("[multi] Resize ->%d\n", targetWindowSize)
 
         if len(clients) < targetWindowSize {
             // expand
-
             n := targetWindowSize - len(clients)
-            fmt.Printf("[multi] Expand +%d ->%d\n", n, targetWindowSize)
-            
+            glog.Infof("[multi]expand +%d ->%d\n", n, targetWindowSize)
             self.expand(n)
-        } else if targetWindowSize < len(clients) {
-            // collapse the lowest weighted
-            
-            n := len(clients) - targetWindowSize
-            fmt.Printf("[multi] Collapse -%d ->%d\n", n, targetWindowSize)
+        } else {
+            collapseLowestWeighted := func(windowSize int)(int) {
+                // try to remove the lowest weighted clients to resize the window to `windowSize`
+                // clients in the graceperiod or with activity cannot be removed
 
-            func() {
                 self.stateLock.Lock()
                 defer self.stateLock.Unlock()
 
-                for _, client := range clients[targetWindowSize:] {
-                    client.Cancel()
-                }
-                clients = clients[:targetWindowSize]
+                n := 0
 
-                destinationClients := map[Id]*multiClientChannel{}
-                for _, client := range clients {
-                    destinationClients[client.DestinationId()] = client
-                }
-                self.destinationClients = destinationClients
-            }()
-
-            
-        } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
-            // optimize by removing unused from q4
-
-            n := 0
-
-            func() {
-                self.stateLock.Lock()
-                defer self.stateLock.Unlock()
-
-                q4Clients := clients[q3 + 1:]
-                clients = clients[:q3 + 1]
-                for _, client := range q4Clients {
+                collapseClients := clients[windowSize:]
+                clients = clients[:windowSize]
+                for _, client := range collapseClients {
                     if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
                         client.Cancel()
-                        // removedClients = append(removedClients, client)
                         n += 1
                     } else {
                         clients = append(clients, client)
@@ -826,14 +785,23 @@ func (self *multiClientWindow) resize() {
                     destinationClients[client.DestinationId()] = client
                 }
                 self.destinationClients = destinationClients
-            }()
 
-            if 0 < n {
-                fmt.Printf("[multi] Optimize -%d\n", n)
+                return n
+            }
+
+            if targetWindowSize < len(clients) {
+                n := collapseLowestWeighted(targetWindowSize)
+                if 0 < n {
+                    glog.Infof("[multi]collapse -%d ->%d\n", n, len(clients))
+                }
+            } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
+                // optimize by removing unused from q4
+                n := collapseLowestWeighted(q3 + 1)
+                if 0 < n {
+                    glog.Infof("[multi]optimize -%d ->%d\n", n, len(clients))
+                }
             }
         }
-
-        
     }
 }
 
@@ -842,7 +810,7 @@ func (self *multiClientWindow) expand(n int) {
     for i := 0; i < n; i += 1 {
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
-            fmt.Printf("[multi] Expand window timeout\n")
+            glog.V(2).Infof("[multi]expand window timeout\n")
             return
         }
 
@@ -852,7 +820,7 @@ func (self *multiClientWindow) expand(n int) {
         // case <- update:
         //     // continue
         case args := <- self.clientChannelArgs:
-            fmt.Printf("[multi] Expand new client\n")
+            glog.V(2).Infof("[multi]expand new client\n")
 
             var ok bool
             func() {
@@ -883,7 +851,7 @@ func (self *multiClientWindow) expand(n int) {
                 }
             }
         case <- time.After(timeout):
-            fmt.Printf("[multi] Expand window timeout waiting for args\n")
+            glog.V(2).Infof("[multi]expand window timeout waiting for args\n")
             return
         }
     }
@@ -900,24 +868,17 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
     clients := []*multiClientChannel{}
 
     removedClients := []*multiClientChannel{}
-    // netSourceCount := 0
-    // nonNegativeClients := []*multiClientChannel{}
     weights := map[*multiClientChannel]float32{}
     durations := map[*multiClientChannel]time.Duration{}
 
     for _, client := range self.clients() {
         if stats, err := client.WindowStats(); err != nil {
-            fmt.Printf("[multi] Remove client (%s)\n", err)
+            glog.Infof("[multi]remove client = %s\n", err)
             removedClients = append(removedClients, client)
         } else {
             clients = append(clients, client)
-            // netSourceCount += stats.sourceCount
-            // weight := float32(stats.ByteCountPerSecond())
             weights[client] = float32(stats.ByteCountPerSecond())
             durations[client] = stats.duration
-            // if 0 <= weight {
-            //     nonNegativeClients = append(nonNegativeClients, client)
-            // }
         }
     }
 
@@ -926,13 +887,10 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
             self.stateLock.Lock()
             defer self.stateLock.Unlock()
             for _, client := range removedClients {
-                // fmt.Printf("[multi] Remove client.\n")
                 client.Cancel()
                 delete(self.destinationClients, client.DestinationId())
             }
         }()
-
-        // self.windowUpdate.NotifyAll()
     }
 
     // iterate and adjust weights for clients with weights >= 0
@@ -994,9 +952,9 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
                 }
             }
 
-            fmt.Printf("[multi] sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights) - netCount, 100 * (1 - netThresh))
+            glog.V(1).Infof("[multi]sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights) - netCount, 100 * (1 - netThresh))
         } else {
-            fmt.Printf("[multi] sample weights: zero (%d in window)\n", len(weights))
+            glog.V(1).Infof("[multi]sample weights: zero (%d in window)\n", len(weights))
         }
     }
 }
@@ -1005,11 +963,8 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
 type multiClientChannelArgs struct {
     MultiClientGeneratorClientArgs
 
-    // platformUrl string
     DestinationId Id
     EstimatedBytesPerSecond ByteCount
-    // clientId Id
-    // clientAuth *ClientAuth
 }
 
 
@@ -1072,9 +1027,6 @@ type multiClientChannel struct {
 
     api *BringYourApi
 
-    // send chan *parsedPacket
-    // sendNoLimit chan *parsedPacket
-
     receivePacketCallback ReceivePacketFunction
 
     settings *MultiClientSettings
@@ -1090,10 +1042,6 @@ type multiClientChannel struct {
     ip6DestinationSourceCount map[Ip6Path]map[Ip6Path]int
     packetStats *clientWindowStats
     endErr error
-
-    // maxNackCount int
-
-    // eventUpdate *Monitor
 
     clientReceiveUnsub func()
 }
@@ -1135,8 +1083,6 @@ func newMultiClientChannel(
         ctx: cancelCtx,
         cancel: cancel,
         args: args,
-        // send: make(chan *parsedPacket),
-        // sendNoLimit: make(chan *parsedPacket),
         receivePacketCallback: receivePacketCallback,
         settings: settings,
         sourceFilter: sourceFilter,
@@ -1146,13 +1092,10 @@ func newMultiClientChannel(
         ip6DestinationSourceCount: map[Ip6Path]map[Ip6Path]int{},
         packetStats: &clientWindowStats{},
         endErr: nil,
-        // maxNackCount: settings.ClientNackInitialLimit,
-        // eventUpdate: NewMonitor(),
     }
 
     clientReceiveUnsub := client.AddReceiveCallback(clientChannel.clientReceive)
     clientChannel.clientReceiveUnsub = clientReceiveUnsub
-
 
     return clientChannel, nil
 }
@@ -1163,7 +1106,6 @@ func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Du
 }
 
 func (self *multiClientChannel) SendDetailed(parsedPacket *parsedPacket, timeout time.Duration) (bool, error) {
-    // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
     ipPacketToProvider := &protocol.IpPacketToProvider{
         IpPacket: &protocol.IpPacket{
             PacketBytes: parsedPacket.packet,
@@ -1177,15 +1119,12 @@ func (self *multiClientChannel) SendDetailed(parsedPacket *parsedPacket, timeout
         self.addSendNack(packetByteCount)
         self.addSource(parsedPacket.ipPath)
         ackCallback := func(err error) {
-            // fmt.Printf("[multi] ack callback (%v)\n", err)
             if err == nil {
                 self.addSendAck(packetByteCount)
             } else {
                 self.addError(err)
             }
         }
-
-        // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
 
         opts := []any{}
         switch parsedPacket.ipPath.Protocol {
@@ -1343,13 +1282,15 @@ func (self *multiClientChannel) addError(err error) {
 func (self *multiClientChannel) coalesceEventBuckets() {
     // must be called with `stateLock`
 
+    // if there is no activity (no new buckets), keep historical buckets around
+    minBucketCount := 1 + int(self.settings.StatsWindowDuration / self.settings.StatsWindowBucketDuration)
+
     windowStart := time.Now().Add(-self.settings.StatsWindowDuration)
 
     // remove events before the window start
     i := 0
-    for i < len(self.eventBuckets) {
+    for i < len(self.eventBuckets) && minBucketCount < len(self.eventBuckets) {
         eventBucket := self.eventBuckets[i]
-        // fmt.Printf("[multi] event advance %v %s\n", event, windowStart)
         if windowStart.Before(eventBucket.eventTime) {
             break
         }
@@ -1453,7 +1394,7 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
 
     // only process frames from the destinations
     if allow := self.sourceFilter[source]; !allow {
-        fmt.Printf("[multi] Receive drop %d %s<-\n", len(frames), self.args.DestinationId)
+        glog.V(2).Infof("[multi]receive drop %d %s<-\n", len(frames), self.args.DestinationId)
         return
     }
 
@@ -1462,19 +1403,17 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
         case protocol.MessageType_IpIpPacketFromProvider:
             if ipPacketFromProvider_, err := FromFrame(frame); err == nil {
                 ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
-
-                // fmt.Printf("[multi] Receive allow %s<-\n", self.args.destinationId)
-
+                
                 packet := ipPacketFromProvider.IpPacket.PacketBytes
 
                 self.addReceiveAck(ByteCount(len(packet)))
 
                 self.receivePacketCallback(source, IpProtocolUnknown, packet)
             } else {
-                fmt.Printf("[multi] Receive drop 2 %s<-\n", self.args.DestinationId)
+                glog.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.DestinationId, err)
             }
         default:
-            fmt.Printf("[multi] Receive drop 1 %s<-\n", self.args.DestinationId)
+            // unknown message, drop
         }
     }
 }

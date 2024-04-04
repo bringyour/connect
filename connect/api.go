@@ -12,10 +12,9 @@ import (
 	"time"
 	"errors"
 	"strings"
+
+	// "github.com/golang/glog"
 )
-
-
-var apiLog = LogFn(LogLevelInfo, "api")
 
 
 const defaultHttpTimeout = 60 * time.Second
@@ -439,9 +438,6 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 		}
 	}
 
-	// apiLog("REQUEST BODY BYTES: %s", string(requestBodyBytes))
-
-
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(requestBodyBytes))
 	if err != nil {
 		var empty R
@@ -451,19 +447,14 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 
 	req.Header.Add("Content-Type", "text/json")
 
-	// apiLog("BY JWT IS \"%s\"", byJwt)
-
 	if byJwt != "" {
 		auth := fmt.Sprintf("Bearer %s", byJwt)
-		// apiLog("AUTH: \"%s\"", auth)
 		req.Header.Add("Authorization", auth)
 	}
-
 
 	client := defaultClient()
 	r, err := client.Do(req)
 	if err != nil {
-		// apiLog("REQUEST ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
@@ -475,7 +466,6 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 	if http.StatusOK != r.StatusCode {
 		// the response body is the error message
 		errorMessage := strings.TrimSpace(string(responseBodyBytes))
-		// apiLog("RESPONSE ERROR %s: %s", r.Status, errorMessage)
 		err = errors.New(errorMessage)
 		callback.Result(result, err)
 		return result, err
@@ -486,11 +476,8 @@ func post[R any](ctx context.Context, url string, args any, byJwt string, result
 		return result, err
 	}
 
-	// apiLog("GOT API RESPONSE BODY: %s", string(responseBodyBytes))
-
 	err = json.Unmarshal(responseBodyBytes, &result)
 	if err != nil {
-		// apiLog("UNMARSHAL ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
@@ -511,19 +498,14 @@ func get[R any](ctx context.Context, url string, byJwt string, result R, callbac
 
 	req.Header.Add("Content-Type", "text/json")
 
-	// apiLog("BY JWT IS \"%s\"", byJwt)
-
 	if byJwt != "" {
 		auth := fmt.Sprintf("Bearer %s", byJwt)
-		// apiLog("AUTH: \"%s\"", auth)
 		req.Header.Add("Authorization", auth)
 	}
-
 
 	client := defaultClient()
 	r, err := client.Do(req)
 	if err != nil {
-		// apiLog("REQUEST ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
@@ -532,11 +514,8 @@ func get[R any](ctx context.Context, url string, byJwt string, result R, callbac
 	responseBodyBytes, err := io.ReadAll(r.Body)
 	r.Body.Close()
 
-	// apiLog("GOT API RESPONSE BODY: %s", string(responseBodyBytes))
-
 	err = json.Unmarshal(responseBodyBytes, &result)
 	if err != nil {
-		// apiLog("UNMARSHAL ERROR %s", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err

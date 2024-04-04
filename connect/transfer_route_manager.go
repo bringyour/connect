@@ -8,9 +8,11 @@ import (
 	mathrand "math/rand"
 	"reflect"
 	"slices"
-    "fmt"
+    // "fmt"
 
 	"golang.org/x/exp/maps"
+
+    "github.com/golang/glog"
 )
 
 
@@ -186,8 +188,6 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 }
 
 func (self *MatchState) openMultiRouteSelector(destinationId Id) *MultiRouteSelector {
-    // fmt.Printf("create selector transports=%d\n", len(self.transportRoutes))
-
     multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, destinationId, self.weightedRoutes)
 
     multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]
@@ -234,12 +234,6 @@ func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSe
 }
 
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
-    // c := 0
-    // for _, multiRouteSelectors := range self.destinationMultiRouteSelectors {
-    //  c += len(multiRouteSelectors)
-    // }
-    // fmt.Printf("update transport selectors=%d routes=%v\n", c, routes)
-
     if len(routes) == 0 {
         if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
             for destinationId, _ := range currentMatchedDestinations {
@@ -405,12 +399,6 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
     }
 
     self.transportUpdate.NotifyAll()
-
-
-    // postTransportCount := len(self.transportRoutes)
-    // postActiveRouteCount := len(activeRoutes())
-        
-    // fmt.Printf("updated transports=%d->%d routes=%d->%d\n", preTransportCount, postTransportCount, preActiveRouteCount, postActiveRouteCount)
 }
 
 func (self *MultiRouteSelector) updateRouteWeights() {
@@ -570,6 +558,8 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
+        glog.V(2).Infof("[mrw] %s %s<- routes = %d\n", self.clientTag, self.destinationId.String(), len(activeRoutes))
+
         // non-blocking priority 
         for _, route := range activeRoutes {
             select {
@@ -640,14 +630,8 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
             }
         }
 
-        // fmt.Printf("write (->%s) select from %d routes (%d transports)\n", self.destinationId, timeoutIndex - routeStartIndex, len(self.transportRoutes))
-
-
-        // note writing to a channel does not return an ok value
-        // a := time.Now()
         chosenIndex, _, _ := reflect.Select(selectCases)
-        // d := time.Now().Sub(a)
-        // fmt.Printf("write (->%s) selected from %d routes (%.2fms)\n", self.destinationId, timeoutIndex - routeStartIndex, float64(d) / float64(time.Millisecond))
+        glog.V(2).Infof("[mrw] %s %s<-\n", self.clientTag, self.destinationId.String())
 
         switch chosenIndex {
         case contextDoneIndex:
@@ -676,7 +660,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
-        fmt.Printf("[mrr] %s %s<- routes = %d\n", self.clientTag, self.destinationId.String(), len(activeRoutes))
+        glog.V(2).Infof("[mrr] %s %s<- routes = %d\n", self.clientTag, self.destinationId.String(), len(activeRoutes))
 
         // non-blocking priority
         retry := false
@@ -756,12 +740,8 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
             }
         }
 
-        // a := time.Now()
         chosenIndex, value, ok := reflect.Select(selectCases)
-        // d := time.Now().Sub(a)
-        // fmt.Printf("read (->%s) selected from %d routes (%.2fms)\n", self.destinationId, timeoutIndex - routeStartIndex, float64(d) / float64(time.Millisecond))
-        fmt.Printf("[mrr] %s %s<-\n", self.clientTag, self.destinationId.String())
-
+        glog.V(2).Infof("[mrr] %s %s<-\n", self.clientTag, self.destinationId.String())
 
         switch chosenIndex {
         case contextDoneIndex:
