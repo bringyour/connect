@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"strings"
 
+	"golang.org/x/exp/maps"
+
 	"google.golang.org/protobuf/proto"
 
 	"bringyour.com/protocol"
@@ -59,7 +61,6 @@ type AckFunction = func(err error)
 // provideMode nil means no contract
 type ReceiveFunction = func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode)
 type ForwardFunction = func(sourceId Id, destinationId Id, transferFrameBytes []byte)
-type ContractErrorFunction = func(protocol.ContractError)
 
 
 // destination id for control messages
@@ -1450,7 +1451,7 @@ func (self *SendSequence) Run() {
 func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	// `sendNoContract` is a mutual configuration 
 	// both sides must configure themselves to require no contract from each other
-	if self.contractManager.SendNoContract(self.destinationId) {
+	if self.contractManager.SendNoContract(self.destinationId, self.companionContract) {
 		return true
 	}
 	if self.sendContract != nil && self.sendContract.update(messageByteCount) {
@@ -2213,6 +2214,8 @@ func (self *ReceiveSequence) Run() {
 		// 	}
 		// }()
 
+		self.contractManager.CloseSourceContract(self.sourceId)
+
 		self.peerAudit.Complete()
 	}()
 
@@ -2267,7 +2270,7 @@ func (self *ReceiveSequence) Run() {
 			}
 
 			ackSnapshot := self.ackWindow.Snapshot(false)
-			if ackSnapshot.ackUpdateCount == 0 {
+			if ackSnapshot.ackUpdateCount == 0 && len(ackSnapshot.selectiveAcks) == 0 {
 				// wait for one ack
 				select {
 				case <- self.ctx.Done():
@@ -2748,6 +2751,7 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 	self.usedContractIds[nextReceiveContract.contractId] = true
 	*/
 	self.receiveContract = nextReceiveContract
+	self.contractManager.OpenSourceContract(self.sourceId)
 	return nil
 }
 
@@ -2881,7 +2885,7 @@ func (self *sequenceAckWindow) Snapshot(reset bool) *sequenceAckWindowSnapshot {
 			}
 		}
 	} else {
-		selectiveAcksAfterHead = self.selectiveAcks
+		selectiveAcksAfterHead = maps.Clone(self.selectiveAcks)
 	}
 
 	snapshot := &sequenceAckWindowSnapshot{

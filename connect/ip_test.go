@@ -416,6 +416,7 @@ func testClient[P comparable](
 	// settings.ReceiveBufferSettings.AckBufferSize = 0
 	settings.ForwardBufferSettings.SequenceBufferSize = 0
 	providerClient := NewClient(ctx, providerClientId, NewNoContractClientOob(), settings)
+	defer providerClient.Cancel()
 
 
 	type receivePacket struct {

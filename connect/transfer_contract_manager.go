@@ -23,6 +23,11 @@ import (
 // manage contracts which are embedded into each transfer sequence
 
 
+type ContractErrorFunction = func(contractError protocol.ContractError)
+// TODO
+// type ProvideChangedFunction = func(provideModes map[protocol.ProvideMode]bool)
+
+
 type ContractManagerStats struct {
 	ContractOpenCount int64
 	ContractCloseCount int64
@@ -99,6 +104,7 @@ type ContractManager struct {
 	provideSecretKeys map[protocol.ProvideMode][]byte
 
 	destinationContracts map[Id]*contractQueue
+	sourceContracts map[Id]bool
 	
 	receiveNoContractClientIds map[Id]bool
 	sendNoContractClientIds map[Id]bool
@@ -136,6 +142,7 @@ func NewContractManager(
 		settings: settings,
 		provideSecretKeys: map[protocol.ProvideMode][]byte{},
 		destinationContracts: map[Id]*contractQueue{},
+		sourceContracts: map[Id]bool{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds: sendNoContractClientIds,
 		contractErrorCallbacks: NewCallbackList[ContractErrorFunction](),
@@ -234,8 +241,9 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	currentProvideModes := maps.Keys(self.provideSecretKeys)
-	for _, provideMode := range currentProvideModes {
+	// keep current keys included in the new modes
+
+	for provideMode, _ := range self.provideSecretKeys {
 		if allow, ok := provideModes[provideMode]; !ok || !allow {
 			delete(self.provideSecretKeys, provideMode)
 		}
@@ -270,6 +278,17 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 			ackCallback(err)
 		},
 	)
+}
+
+func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	provideModes := map[protocol.ProvideMode]bool{}
+	for provideMode, _ := range self.provideSecretKeys {
+		provideModes[provideMode] = true
+	}
+	return provideModes
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
@@ -308,32 +327,55 @@ func (self *ContractManager) AddNoContractPeer(clientId Id) {
 	self.receiveNoContractClientIds[clientId] = true
 }
 
-func (self *ContractManager) SendNoContract(destinationId Id) bool {
-	if !self.settings.ContractsEnabled() {
-		return true
-	}
-
+func (self *ContractManager) SendNoContract(destinationId Id, companionContract bool) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	if allow, ok := self.sendNoContractClientIds[destinationId]; ok {
 		return allow
 	}
-	return false
-}
 
-func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
+	// migration helper. this can be removed when contracts are fully enabled
+	if companionContract && self.sourceContracts[destinationId] {
+		// use contracts if a companion sequence and 
+		// the destination has an active contract into this client
+		return false
+	}
+
 	if !self.settings.ContractsEnabled() {
 		return true
 	}
 
+	return false
+}
+
+func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	if allow, ok := self.receiveNoContractClientIds[sourceId]; ok {
 		return allow
 	}
+
+	if !self.settings.ContractsEnabled() {
+		return true
+	}
+
 	return false
+}
+
+func (self *ContractManager) OpenSourceContract(sourceId Id) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	self.sourceContracts[sourceId] = true
+}
+
+func (self *ContractManager) CloseSourceContract(sourceId Id) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	delete(self.sourceContracts, sourceId)
 }
 
 func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id, timeout time.Duration) *protocol.Contract {
