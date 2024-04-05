@@ -9,11 +9,10 @@ import (
 
     "github.com/gorilla/websocket"
 
+    "github.com/golang/glog"
+
     "bringyour.com/protocol"
 )
-
-
-var transportLog = LogFn(LogLevelInfo, "transport")
 
 
 const TransportBufferSize = 1
@@ -32,17 +31,6 @@ const TransportBufferSize = 1
 // add the source ip as the X-Extender header
 
 
-const DefaultHttpConnectTimeout = 2 * time.Second
-const DefaultWsHandshakeTimeout = 2 * time.Second
-const DefaultAuthTimeout = 2 * time.Second
-const DefaultReconnectTimeout = 2 * time.Second
-const DefaultPingTimeout = 5 * time.Second
-const DefaultWriteTimeout = 5 * time.Second
-const DefaultReadTimeout = 2 * DefaultPingTimeout
-
-const TransportDrainTimeout = 30 * time.Second
-
-
 type PlatformTransportSettings struct {
     HttpConnectTimeout time.Duration
     WsHandshakeTimeout time.Duration
@@ -51,18 +39,21 @@ type PlatformTransportSettings struct {
     PingTimeout time.Duration
     WriteTimeout time.Duration
     ReadTimeout time.Duration
+    TransportDrainTimeout time.Duration
 }
 
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
+    pingTimeout := 5 * time.Second
     return &PlatformTransportSettings{
-        HttpConnectTimeout: DefaultHttpConnectTimeout,
-        WsHandshakeTimeout: DefaultWsHandshakeTimeout,
-        AuthTimeout: DefaultAuthTimeout,
-        ReconnectTimeout: DefaultReconnectTimeout,
-        PingTimeout: DefaultPingTimeout,
-        WriteTimeout: DefaultWriteTimeout,
-        ReadTimeout: DefaultReadTimeout,
+        HttpConnectTimeout: 2 * time.Second,
+        WsHandshakeTimeout: 2 * time.Second,
+        AuthTimeout: 2 * time.Second,
+        ReconnectTimeout: 5 * time.Second,
+        PingTimeout: pingTimeout,
+        WriteTimeout: 5 * time.Second,
+        ReadTimeout: 2 * pingTimeout,
+        TransportDrainTimeout: 30 * time.Second,
     }
 }
 
@@ -72,6 +63,14 @@ type ClientAuth struct {
     // ClientId Id
     InstanceId Id
     AppVersion string
+}
+
+func (self *ClientAuth) ClientId() (Id, error) {
+    byJwt, err := ParseByJwtUnverified(self.ByJwt)
+    if err != nil {
+        return Id{}, err
+    }
+    return byJwt.ClientId, nil
 }
 
 
@@ -160,6 +159,8 @@ func (self *PlatformTransport) run() {
     // connect and update route manager for this transport
     defer self.cancel()
 
+    clientId, _ := self.auth.ClientId()
+
     authBytes, err := EncodeFrame(&protocol.Auth{
         ByJwt: self.auth.ByJwt,
         AppVersion: self.auth.AppVersion,
@@ -175,8 +176,6 @@ func (self *PlatformTransport) run() {
             HandshakeTimeout: self.settings.WsHandshakeTimeout,
         }
 
-        transportLog("Connecting to %s ...\n", self.platformUrl)
-        
         ws, err := func()(*websocket.Conn, error) {
             ws, _, err := wsDialer.DialContext(self.ctx, self.platformUrl, nil)
             if err != nil {
@@ -189,8 +188,6 @@ func (self *PlatformTransport) run() {
                     ws.Close()
                 }
             }()
-
-            transportLog("Connected to %s!\n", self.platformUrl)
 
             ws.SetWriteDeadline(time.Now().Add(self.settings.AuthTimeout))
             if err := ws.WriteMessage(websocket.BinaryMessage, authBytes); err != nil {
@@ -215,7 +212,7 @@ func (self *PlatformTransport) run() {
             return ws, nil
         }()
         if err != nil {
-            transportLog("Auth error (%s)\n", err)
+            glog.Infof("[t]auth error %s = %s\n", clientId, err)
             select {
             case <- self.ctx.Done():
                 return
@@ -224,7 +221,7 @@ func (self *PlatformTransport) run() {
             }
         }
 
-        func() {
+        c := func() {
             handleCtx, handleCancel := context.WithCancel(self.ctx)
 
             send := make(chan []byte, TransportBufferSize)
@@ -247,7 +244,8 @@ func (self *PlatformTransport) run() {
 
                 go func() {
                     select {
-                    case <- time.After(TransportDrainTimeout):
+                    case <- handleCtx.Done():
+                    case <- time.After(self.settings.TransportDrainTimeout):
                     }
 
                     close(send)
@@ -266,19 +264,17 @@ func (self *PlatformTransport) run() {
                             return
                         }
 
-                        // fmt.Printf("transport write message %s->\n", self.auth.ClientId)
-
-                        // transportLog("!!!! WRITE MESSAGE %s\n", message)
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
-                            // fmt.Printf("ws write error\n")
-                            transportLog("Write message error %s\n", err)
+                            // note that for websocket a dealine timeout cannot be recovered
+                            glog.V(2).Infof("[ts]%s-> error = %s\n", clientId, err)
                             return
                         }
+                        glog.V(2).Infof("[ts]%s->\n", clientId)
                     case <- time.After(self.settings.PingTimeout):
                         ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
                         if err := ws.WriteMessage(websocket.BinaryMessage, make([]byte, 0)); err != nil {
-                            transportLog("Write ping error %s\n", err)
+                            // note that for websocket a dealine timeout cannot be recovered
                             return
                         }
                     }
@@ -300,13 +296,10 @@ func (self *PlatformTransport) run() {
 
                     ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
                     messageType, message, err := ws.ReadMessage()
-                    // transportLog("Read message %s\n", message)
                     if err != nil {
-                        transportLog("Read message error %s\n", err)
+                        glog.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
                         return
                     }
-
-                    transportLog("READ MESSAGE\n")
 
                     switch messageType {
                     case websocket.BinaryMessage:
@@ -315,15 +308,13 @@ func (self *PlatformTransport) run() {
                             continue
                         }
 
-                        // fmt.Printf("transport read message ->%s\n", self.auth.ClientId)
+                        glog.V(2).Infof("[tr]%s<-\n", clientId)
 
                         select {
                         case <- handleCtx.Done():
                             return
                         case receive <- message:
-                            // fmt.Printf("transport wrote message to channel ->%s\n", self.auth.ClientId)
-                        case <- time.After(self.settings.WriteTimeout):
-                            transportLog("TIMEOUT J\n")
+                        case <- time.After(self.settings.ReadTimeout):
                         }
                     }
                 }
@@ -333,7 +324,12 @@ func (self *PlatformTransport) run() {
             case <- handleCtx.Done():
                 return
             }  
-        }()
+        }
+        if glog.V(2) {
+            Trace(fmt.Sprintf("[t]connect %s", clientId), c)
+        } else {
+            c()
+        }
 
         select {
         case <- self.ctx.Done():
@@ -410,7 +406,6 @@ func (self *wsForwardingConn) Read(b []byte) (int, error) {
         self.ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
         messageType, message, err := self.ws.ReadMessage()
         if err != nil {
-            transportLog("!! TIMEOUT TA\n")
             return i, err
         }
         switch messageType {
@@ -435,7 +430,7 @@ func (self *wsForwardingConn) Write(b []byte) (int, error) {
     self.ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
     err := self.ws.WriteMessage(websocket.BinaryMessage, b)
     if err != nil {
-        transportLog("!! TIMEOUT TB\n")
+        // note that for websocket a dealine timeout cannot be recovered
         return 0, err
     }
     return len(b), nil

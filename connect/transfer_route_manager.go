@@ -8,8 +8,11 @@ import (
 	mathrand "math/rand"
 	"reflect"
 	"slices"
+    // "fmt"
 
 	"golang.org/x/exp/maps"
+
+    "github.com/golang/glog"
 )
 
 
@@ -63,17 +66,20 @@ type MultiRouteReader interface {
 type RouteManager struct {
 	ctx context.Context
 
+    clientTag string
+
     mutex sync.Mutex
     writerMatchState *MatchState
     readerMatchState *MatchState
 }
 
-func NewRouteManager(ctx context.Context) *RouteManager {
+func NewRouteManager(ctx context.Context, clientTag string) *RouteManager {
     return &RouteManager{
     	ctx: ctx,
-        writerMatchState: NewMatchState(ctx, true, Transport.MatchesSend),
+        clientTag: clientTag,
+        writerMatchState: NewMatchState(ctx, clientTag, true, Transport.MatchesSend),
         // `weightedRoutes=false` because unless there is a cpu limit this is not needed
-        readerMatchState: NewMatchState(ctx, false, Transport.MatchesReceive),
+        readerMatchState: NewMatchState(ctx, clientTag, false, Transport.MatchesReceive),
     }
 }
 
@@ -130,13 +136,11 @@ func (self *RouteManager) getTransportStats(transport Transport) (writerStats *R
     return
 }
 
-func (self *RouteManager) Close() {
-    // transports close individually and remove themselves via `updateTransport`
-}
-
 
 type MatchState struct {
 	ctx context.Context
+    clientTag string
+
     weightedRoutes bool
     matches func(Transport, Id)(bool)
 
@@ -150,9 +154,10 @@ type MatchState struct {
 }
 
 // note weighted routes typically are used by the sender not receiver
-func NewMatchState(ctx context.Context, weightedRoutes bool, matches func(Transport, Id)(bool)) *MatchState {
+func NewMatchState(ctx context.Context, clientTag string, weightedRoutes bool, matches func(Transport, Id)(bool)) *MatchState {
     return &MatchState{
     	ctx: ctx,
+        clientTag: clientTag,
         weightedRoutes: weightedRoutes,
         matches: matches,
         transportRoutes: map[Transport][]Route{},
@@ -183,9 +188,7 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
 }
 
 func (self *MatchState) openMultiRouteSelector(destinationId Id) *MultiRouteSelector {
-    // fmt.Printf("create selector transports=%d\n", len(self.transportRoutes))
-
-    multiRouteSelector := NewMultiRouteSelector(self.ctx, destinationId, self.weightedRoutes)
+    multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, destinationId, self.weightedRoutes)
 
     multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]
     if !ok {
@@ -231,12 +234,6 @@ func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSe
 }
 
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
-    // c := 0
-    // for _, multiRouteSelectors := range self.destinationMultiRouteSelectors {
-    //  c += len(multiRouteSelectors)
-    // }
-    // fmt.Printf("update transport selectors=%d routes=%v\n", c, routes)
-
     if len(routes) == 0 {
         if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
             for destinationId, _ := range currentMatchedDestinations {
@@ -285,6 +282,7 @@ func (self *MatchState) Downgrade(sourceId Id) {
 type MultiRouteSelector struct {
     ctx context.Context
     cancel context.CancelFunc
+    clientTag string
 
     destinationId Id
     weightedRoutes bool
@@ -298,11 +296,12 @@ type MultiRouteSelector struct {
     routeWeight map[Route]float32
 }
 
-func NewMultiRouteSelector(ctx context.Context, destinationId Id, weightedRoutes bool) *MultiRouteSelector {
+func NewMultiRouteSelector(ctx context.Context, clientTag string, destinationId Id, weightedRoutes bool) *MultiRouteSelector {
 	cancelCtx, cancel := context.WithCancel(ctx)
     return &MultiRouteSelector{
         ctx: cancelCtx,
         cancel: cancel,
+        clientTag: clientTag,
         destinationId: destinationId,
         weightedRoutes: weightedRoutes,
         transportUpdate: NewMonitor(),
@@ -400,12 +399,6 @@ func (self *MultiRouteSelector) updateTransport(transport Transport, routes []Ro
     }
 
     self.transportUpdate.NotifyAll()
-
-
-    // postTransportCount := len(self.transportRoutes)
-    // postActiveRouteCount := len(activeRoutes())
-        
-    // fmt.Printf("updated transports=%d->%d routes=%d->%d\n", preTransportCount, postTransportCount, preActiveRouteCount, postActiveRouteCount)
 }
 
 func (self *MultiRouteSelector) updateRouteWeights() {
@@ -565,6 +558,8 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
+        glog.V(2).Infof("[mrw] %s %s<- routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
+
         // non-blocking priority 
         for _, route := range activeRoutes {
             select {
@@ -635,14 +630,8 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
             }
         }
 
-        // fmt.Printf("write (->%s) select from %d routes (%d transports)\n", self.destinationId, timeoutIndex - routeStartIndex, len(self.transportRoutes))
-
-
-        // note writing to a channel does not return an ok value
-        // a := time.Now()
         chosenIndex, _, _ := reflect.Select(selectCases)
-        // d := time.Now().Sub(a)
-        // fmt.Printf("write (->%s) selected from %d routes (%.2fms)\n", self.destinationId, timeoutIndex - routeStartIndex, float64(d) / float64(time.Millisecond))
+        glog.V(2).Infof("[mrw] %s %s<-\n", self.clientTag, self.destinationId)
 
         switch chosenIndex {
         case contextDoneIndex:
@@ -670,6 +659,8 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
     for {
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
+
+        glog.V(2).Infof("[mrr] %s %s<- routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
 
         // non-blocking priority
         retry := false
@@ -749,11 +740,8 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
             }
         }
 
-        // a := time.Now()
         chosenIndex, value, ok := reflect.Select(selectCases)
-        // d := time.Now().Sub(a)
-        // fmt.Printf("read (->%s) selected from %d routes (%.2fms)\n", self.destinationId, timeoutIndex - routeStartIndex, float64(d) / float64(time.Millisecond))
-
+        glog.V(2).Infof("[mrr] %s %s<-\n", self.clientTag, self.destinationId)
 
         switch chosenIndex {
         case contextDoneIndex:
@@ -763,6 +751,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         case transportUpdateIndex:
             // new routes, try again
         case timeoutIndex:
+            // FIXME return nil, nil? don't use errors for timeouts
             return nil, errors.New("Timeout")
         default:
             // a route
@@ -846,16 +835,22 @@ func (self *sendGatewayTransport) Downgrade(sourceId Id) {
 // conforms to `Transport`
 type sendClientTransport struct {
     transportId Id
+    complement bool
     destinationIds map[Id]bool
 }
 
 func NewSendClientTransport(destinationIds ...Id) *sendClientTransport {
+    return NewSendClientTransportWithComplement(false, destinationIds...)
+}
+
+func NewSendClientTransportWithComplement(complement bool, destinationIds ...Id) *sendClientTransport {
     destinationIds_ := map[Id]bool{}
     for _, destinationId := range destinationIds {
         destinationIds_[destinationId] = true
     }
     return &sendClientTransport{
         transportId: NewId(),
+        complement: complement,
         destinationIds: destinationIds_,
     }
 }
@@ -878,7 +873,7 @@ func (self *sendClientTransport) RouteWeight(stats *RouteStats, remainingStats m
 }
 
 func (self *sendClientTransport) MatchesSend(destinationId Id) bool {
-    return self.destinationIds[destinationId]
+    return self.complement != self.destinationIds[destinationId]
 }
 
 func (self *sendClientTransport) MatchesReceive(destinationId Id) bool {

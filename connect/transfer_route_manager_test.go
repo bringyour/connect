@@ -27,7 +27,7 @@ func TestMultiRoute(t *testing.T) {
 	clientId := NewId()
 	// client := NewClientWithDefaults(ctx, clientId)
 
-	routeManager := NewRouteManager(ctx)
+	routeManager := NewRouteManager(ctx, "test")
 
 
 	sendTransports := map[Transport][]Route{}

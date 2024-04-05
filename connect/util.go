@@ -8,8 +8,10 @@ import (
     "os"
     "os/signal"
     "syscall"
-    "fmt"
-    "runtime/debug"
+    // "fmt"
+    // "runtime/debug"
+    // "strings"
+    // "encoding/json"
     // "reflect"
     mathrand "math/rand"
 )
@@ -283,15 +285,5 @@ func WeightedShuffleWithEntropy[T comparable](values []T, weights map[T]float32,
 }
 
 
-func HandleError(do func(), handlers ...func()) {
-    defer func() {
-        if r := recover(); r != nil {
-        	debug.PrintStack()
-            fmt.Printf("Unexpected error: %v\n", r)
-            for _, handler := range handlers {
-                handler()
-            }
-        }
-    }()
-    do()
-}
+
+

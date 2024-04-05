@@ -7,7 +7,8 @@ import (
 	"encoding/binary"
 	"net"
 	"reflect"
-	"sync"
+	// "sync"
+	"fmt"
 
 	"github.com/google/gopacket"
     "github.com/google/gopacket/layers"
@@ -16,6 +17,26 @@ import (
 
     "bringyour.com/protocol"
 )
+
+
+func TestClientUdp4(t *testing.T) {
+	testClient(t, testingNewClient, udp4Packet, (*IpPath).ToIp4Path)
+}
+
+
+func TestClientTcp4(t *testing.T) {
+	testClient(t, testingNewClient, tcp4Packet, (*IpPath).ToIp4Path)
+}
+
+
+func TestClientUdp6(t *testing.T) {
+	testClient(t, testingNewClient, udp6Packet, (*IpPath).ToIp6Path)
+}
+
+
+func TestClientTcp6(t *testing.T) {
+	testClient(t, testingNewClient, tcp6Packet, (*IpPath).ToIp6Path)
+}
 
 
 type PacketGeneratorFunction func(int, int, int, int)([]byte, []byte)
@@ -308,28 +329,8 @@ func tcp6Packet(s int, i int, j int, k int)(packet []byte, payload []byte) {
 }
 
 
-func TestClientUdp4(t *testing.T) {
-	testClient(t, testingNewClient, udp4Packet, (*IpPath).ToIp4Path)
-}
-
-
-func TestClientTcp4(t *testing.T) {
-	testClient(t, testingNewClient, tcp4Packet, (*IpPath).ToIp4Path)
-}
-
-
-func TestClientUdp6(t *testing.T) {
-	testClient(t, testingNewClient, udp6Packet, (*IpPath).ToIp6Path)
-}
-
-
-func TestClientTcp6(t *testing.T) {
-	testClient(t, testingNewClient, tcp6Packet, (*IpPath).ToIp6Path)
-}
-
-
 func testingNewClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
-	client := NewClientWithDefaults(ctx, NewId())
+	client := NewClientWithDefaults(ctx, NewId(), NewNoContractClientOob())
 
 	routesSend := []Route{
 		make(chan []byte),
@@ -343,10 +344,14 @@ func testingNewClient(ctx context.Context, providerClient *Client, receivePacket
 	client.RouteManager().UpdateTransport(transportSend, routesSend)
 	client.RouteManager().UpdateTransport(transportReceive, routesReceive)
 
+	client.ContractManager().AddNoContractPeer(providerClient.ClientId())
+
 	providerTransportSend := NewSendClientTransport(client.ClientId())
 	providerTransportReceive := NewReceiveGatewayTransport()
 	providerClient.RouteManager().UpdateTransport(providerTransportReceive, routesSend)
 	providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
+
+	providerClient.ContractManager().AddNoContractPeer(client.ClientId())
 
 	return NewRemoteUserNatClient(
 		client,
@@ -359,6 +364,7 @@ func testingNewClient(ctx context.Context, providerClient *Client, receivePacket
 }
 
 
+// test with all sequence buffer sizes set to 0
 func testClient[P comparable](
 	t *testing.T,
 	userNatClientGenerator func(context.Context, *Client, ReceivePacketFunction)(UserNatClient, error),
@@ -391,9 +397,9 @@ func testClient[P comparable](
 	// each packet gets echoed back
 	totalCount := parallelCount * m * n * n * n * repeatCount * (1 + echoCount)
 
-	cMutex := sync.Mutex{}
-	cSendCount := 0
-	cReceiveCount := 0
+	// cMutex := sync.Mutex{}
+	// cSendCount := 0
+	// cReceiveCount := 0
 
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -403,7 +409,14 @@ func testClient[P comparable](
 	providerClientId := NewId()
 
 
-	providerClient := NewClientWithDefaults(ctx, providerClientId)
+	settings := DefaultClientSettings()
+	settings.SendBufferSettings.SequenceBufferSize = 0
+	settings.SendBufferSettings.AckBufferSize = 0
+	settings.ReceiveBufferSettings.SequenceBufferSize = 0
+	// settings.ReceiveBufferSettings.AckBufferSize = 0
+	settings.ForwardBufferSettings.SequenceBufferSize = 0
+	providerClient := NewClient(ctx, providerClientId, NewNoContractClientOob(), settings)
+	defer providerClient.Cancel()
 
 
 	type receivePacket struct {
@@ -417,10 +430,10 @@ func testClient[P comparable](
 	receivePacketCallback := func(source Path, ipProtocol IpProtocol, packet []byte) {
 		// record the echo packet
 
-		cMutex.Lock()
-		cReceiveCount += 1
-		// fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
-		cMutex.Unlock()
+		// cMutex.Lock()
+		// cReceiveCount += 1
+		// // fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
+		// cMutex.Unlock()
 
         receivePacket := &receivePacket{
         	sourceId: source.ClientId,
@@ -436,10 +449,10 @@ func testClient[P comparable](
 
 
 	providerClient.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-		cMutex.Lock()
-		cReceiveCount += 1
-		// fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
-		cMutex.Unlock()
+		// cMutex.Lock()
+		// cReceiveCount += 1
+		// // fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
+		// cMutex.Unlock()
 
 		echo := func(packet []byte) {
             ipPacketFromProvider := &protocol.IpPacketFromProvider{
@@ -452,14 +465,13 @@ func testClient[P comparable](
 		        panic(err)
 		    }
 
-		    providerClient.SendWithTimeout(frame, sourceId, func(err error) {
-		        // ignore
-		    }, timeout)
+		    success := providerClient.SendWithTimeout(frame, sourceId, func(err error) {}, -1)
+		    assert.Equal(t, true, success)
 
-		    cMutex.Lock()
-			cSendCount += 1
-			// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
-			cMutex.Unlock()
+		    // cMutex.Lock()
+			// cSendCount += 1
+			// // fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
+			// cMutex.Unlock()
 		}
 		for _, frame := range frames {
             if ipPacketToProvider_, err := FromFrame(frame); err == nil {
@@ -475,7 +487,10 @@ func testClient[P comparable](
 	            receivePackets <- receivePacket
 
 	            for i := 0; i < echoCount; i += 1 {
-		            echo(packet)
+	            	// do not make a blocking call back into the client from the receiver
+	            	// this could deadlock the client depending on whether other messages are
+	            	// queued to this receiver
+		            go echo(packet)
 		        }
 	        }
 
@@ -492,14 +507,16 @@ func testClient[P comparable](
 						for k := 0; k < n; k += 1 {
 							for a := 0; a < repeatCount; a += 1 {
 								packet, _ := packetGenerator(s, i, j, k)
-								success := natClient.SendPacket(source, protocol.ProvideMode_Network, packet, timeout)
-
-								if success {
-									cMutex.Lock()
-									cSendCount += 1
-									// fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
-									cMutex.Unlock()
+								success := natClient.SendPacket(source, protocol.ProvideMode_Network, packet, -1)
+								if !success {
+									fmt.Printf("[TIMEOUT]%T\n", natClient)
 								}
+								assert.Equal(t, true, success)
+
+								// cMutex.Lock()
+								// cSendCount += 1
+								// // fmt.Printf("C Send %d/%d (%.2f%%)\n", cSendCount, totalCount, 100.0 * float32(cSendCount) / float32(totalCount))
+								// cMutex.Unlock()
 							}
 						}
 					}
@@ -513,6 +530,7 @@ func testClient[P comparable](
 	comparableIpPathSources := map[P]map[Id]bool{}
 
 	for i := 0; i < totalCount; i += 1 {
+		fmt.Printf("[testr]%d/%d (%.2f%%)\n", i, totalCount, 100 * float32(i) / float32(totalCount))
 		select {
 		case receivePacket := <- receivePackets:
 			// fmt.Printf("Receive %d/%d (%.2f%%)\n", i + 1, totalCount, 100.0 * float32(i + 1) / float32(totalCount))

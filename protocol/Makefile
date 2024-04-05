@@ -7,7 +7,8 @@ clean:
 build:
 	mkdir build
 	protoc -I=. --go_out=build *.proto
-	cd build/bringyour.com/protocol; go mod init bringyour.com/protocol
+	cp go.mod build/bringyour.com/protocol/
+# 	cd build/bringyour.com/protocol; go mod init bringyour.com/protocol
 	cd build/bringyour.com/protocol; go mod tidy
 
 install_protoc:

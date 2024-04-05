@@ -61,7 +61,13 @@ func TestSendReceiveSenderReset(t *testing.T) {
     }
 
 
-	a := NewClientWithDefaults(ctx, aClientId)
+    clientSettingsA := DefaultClientSettings()
+	clientSettingsA.SendBufferSettings.SequenceBufferSize = 0
+	clientSettingsA.SendBufferSettings.AckBufferSize = 0
+	clientSettingsA.ReceiveBufferSettings.SequenceBufferSize = 0
+	// clientSettingsA.ReceiveBufferSettings.AckBufferSize = 0
+	clientSettingsA.ForwardBufferSettings.SequenceBufferSize = 0
+	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA)
 	aRouteManager := a.RouteManager()
 	aContractManager := a.ContractManager()
 	// aRouteManager := NewRouteManager(a)
@@ -76,7 +82,13 @@ func TestSendReceiveSenderReset(t *testing.T) {
     aContractManager.SetProvideModes(provideModes)
 
 
-	b := NewClientWithDefaults(ctx, bClientId)
+    clientSettingsB := DefaultClientSettings()
+	clientSettingsB.SendBufferSettings.SequenceBufferSize = 0
+	clientSettingsB.SendBufferSettings.AckBufferSize = 0
+	clientSettingsB.ReceiveBufferSettings.SequenceBufferSize = 0
+	// clientSettingsB.ReceiveBufferSettings.AckBufferSize = 0
+	clientSettingsB.ForwardBufferSettings.SequenceBufferSize = 0
+	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB)
 	bRouteManager := b.RouteManager()
 	bContractManager := b.ContractManager()
 	// bRouteManager := NewRouteManager(b)
@@ -96,8 +108,10 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	b.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 		for _, frame := range frames {
-			v := RequireFromFrame(frame).(*protocol.SimpleMessage)
-			receives <- v
+			switch v := RequireFromFrame(frame).(type) {
+			case *protocol.SimpleMessage:
+				receives <- v
+			}
 		}
 	})
 
@@ -174,7 +188,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	aRouteManager.RemoveTransport(aReceiveTransport)
 
 
-	a2 := NewClientWithDefaults(ctx, aClientId)
+	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
 	a2RouteManager := a2.RouteManager()
 	a2ContractManager := a2.ContractManager()
 	// a2RouteManager := NewRouteManager(a2)
@@ -354,11 +368,11 @@ func requireTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId
 	}
 
 	if sourceId != sourceId_ {
-		panic(fmt.Errorf("%s <> %s", sourceId.String(), sourceId_.String()))
+		panic(fmt.Errorf("%s <> %s", sourceId, sourceId_))
 	}
 
 	if destinationId != destinationId_ {
-		panic(fmt.Errorf("%s <> %s", destinationId.String(), destinationId_.String()))
+		panic(fmt.Errorf("%s <> %s", destinationId, destinationId_))
 	}
 
 	return b

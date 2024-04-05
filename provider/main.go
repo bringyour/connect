@@ -93,7 +93,8 @@ func provide(opts docopt.Opts) {
 
     instanceId := connect.NewId()
 
-    connectClient := connect.NewClientWithDefaults(ctx, clientId)
+    clientOob := connect.NewApiOutOfBandControl(ctx, byClientJwt, apiUrl)
+    connectClient := connect.NewClientWithDefaults(ctx, clientId, clientOob)
 
     // routeManager := connect.NewRouteManager(connectClient)
     // contractManager := connect.NewContractManagerWithDefaults(connectClient)
@@ -112,7 +113,7 @@ func provide(opts docopt.Opts) {
     connect.NewPlatformTransportWithDefaults(ctx, connectUrl, auth, connectClient.RouteManager())
     // go platformTransport.Run(connectClient.RouteManager())
 
-    localUserNat := connect.NewLocalUserNatWithDefaults(ctx)
+    localUserNat := connect.NewLocalUserNatWithDefaults(ctx, clientId.String())
     remoteUserNatProvider := connect.NewRemoteUserNatProviderWithDefaults(connectClient, localUserNat)
 
     provideModes := map[protocol.ProvideMode]bool{

@@ -14,6 +14,10 @@ import (
 
     "golang.org/x/exp/maps"
 
+    "google.golang.org/protobuf/proto"
+
+    "github.com/golang/glog"
+
     "bringyour.com/protocol"
 )
 
@@ -28,12 +32,20 @@ import (
 // net frame count statistics (acks - nacks)
 
 
+// TODO surface window stats to show to users
+
+
+// for each `NewClientArgs`, 
+//   `RemoveClientWithArgs` will be called if a client was created for the args,
+//   else `RemoveClientArgs`
 type MultiClientGenerator interface {
     // client id -> estimated byte count per second
     NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
     // client id, client auth
     NewClientArgs() (*MultiClientGeneratorClientArgs, error)
     RemoveClientArgs(args *MultiClientGeneratorClientArgs)
+    RemoveClientWithArgs(client *Client, args *MultiClientGeneratorClientArgs)
+    NewClientSettings() *ClientSettings
     NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
 
@@ -44,17 +56,15 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         WindowSizeMax: 32,
         // reconnects per source
         WindowSizeReconnectScale: 0.5,
-        // ClientNackInitialLimit: 1,
-        // ClientNackMaxLimit: 64 * 1024,
-        // ClientNackScale: 4,
-        // SendTimeout: 60 * time.Second,
-        // WriteTimeout: 30 * time.Second,
         WriteRetryTimeout: 200 * time.Millisecond,
-        AckTimeout: 5 * time.Second,
+        PingWriteTimeout: 1 * time.Second,
+        PingTimeout: 5 * time.Second,
+        // a lower ack timeout helps cycle through bad providers faster
+        AckTimeout: 10 * time.Second,
         WindowResizeTimeout: 1 * time.Second,
         StatsWindowGraceperiod: 5 * time.Second,
         StatsWindowEntropy: 0.25,
-        WindowExpandTimeout: 2 * time.Second,
+        WindowExpandTimeout: 15 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
         StatsWindowDuration: 120 * time.Second,
@@ -76,6 +86,8 @@ type MultiClientSettings struct {
     // SendTimeout time.Duration
     // WriteTimeout time.Duration
     WriteRetryTimeout time.Duration
+    PingWriteTimeout time.Duration
+    PingTimeout time.Duration
     AckTimeout time.Duration
     WindowResizeTimeout time.Duration
     StatsWindowGraceperiod time.Duration
@@ -288,26 +300,30 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
-        fmt.Printf("[multi] Send bad packet (%s).\n", err)
         // bad packet
+        glog.Infof("[multi]send bad packet = %s\n", err)
         return false
     }
 
     success := false
     self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
-        if update.client != nil {
-            success = update.client.Send(parsedPacket, timeout)
-            return
-        }
+        enterTime := time.Now()
 
-        endTime := time.Now().Add(timeout)
+        if update.client != nil {
+            var err error
+            success, err = update.client.SendDetailed(parsedPacket, timeout)
+            if err == nil {
+                return
+            }
+            // find a new client
+            update.client = nil
+        }
 
         for {
             orderedClients, removedClients := self.window.OrderedClients()
-            // fmt.Printf("[multi] Window =%d -%d\n", len(orderedClients), len(removedClients))
-
+            
             for _, client := range removedClients {
-                fmt.Printf("[multi] Remove client %s->%s.\n", client.args.ClientId, client.args.DestinationId) 
+                glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.DestinationId) 
                 self.removeClient(client)
             }
 
@@ -320,22 +336,49 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 }
             }
 
-            timeout := endTime.Sub(time.Now())
+            var retryTimeout time.Duration
+            if 0 <= timeout {
+                remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
 
-            if timeout <= 0 {
-                // drop
-                fmt.Printf("DROPPED ONE\n")
-                success = false
-                return
+                if remainingTimeout <= 0 {
+                    // drop
+                    success = false
+                    return
+                }
+
+
+                retryTimeout = min(remainingTimeout, self.settings.WriteRetryTimeout)
+                
+            } else {
+                retryTimeout = self.settings.WriteRetryTimeout
             }
 
-            select {
-            case <- self.ctx.Done():
-                fmt.Printf("DROPPED ONE DONE\n")
-                success = false
-                return
-            case <- time.After(min(timeout, self.settings.WriteRetryTimeout)):
-                // retry
+            if 0 < len(orderedClients) {
+                // distribute the timeout evenly via wait
+                retryTimeoutPerClient := retryTimeout / time.Duration(len(orderedClients))
+                for _, client := range orderedClients {
+                    if client.Send(parsedPacket, retryTimeoutPerClient) {
+                        // lock the path to the client
+                        update.client = client
+                        success = true
+                        return
+                    }
+                    select {
+                    case <- self.ctx.Done():
+                        // drop
+                        success = false
+                        return
+                    default:
+                    }
+                }
+            } else {
+                select {
+                case <- self.ctx.Done():
+                    // drop
+                    success = false
+                    return
+                case <- time.After(retryTimeout):
+                }
             }
         }
     })
@@ -376,6 +419,18 @@ type MultiClientGeneratorClientArgs struct {
 }
 
 
+func DefaultApiMultiClientGeneratorSettings() *ApiMultiClientGeneratorSettings {
+    return &ApiMultiClientGeneratorSettings{
+        InitTimeout: 5 * time.Second,
+    }
+}
+
+
+type ApiMultiClientGeneratorSettings struct {
+    InitTimeout time.Duration
+}
+
+
 type ApiMultiClientGenerator struct {
     specs []*ProviderSpec
     apiUrl string
@@ -384,8 +439,32 @@ type ApiMultiClientGenerator struct {
     deviceDescription string
     deviceSpec string
     appVersion string
+    clientSettingsGenerator func()(*ClientSettings)
+    settings *ApiMultiClientGeneratorSettings
 
     api *BringYourApi
+}
+
+func NewApiMultiClientGeneratorWithDefaults(
+    specs []*ProviderSpec,
+    apiUrl string,
+    byJwt string,
+    platformUrl string,
+    deviceDescription string,
+    deviceSpec string,
+    appVersion string,
+) *ApiMultiClientGenerator {
+    return NewApiMultiClientGenerator(
+        specs,
+        apiUrl,
+        byJwt,
+        platformUrl,
+        deviceDescription,
+        deviceSpec,
+        appVersion,
+        DefaultClientSettings,
+        DefaultApiMultiClientGeneratorSettings(),
+    )
 }
 
 func NewApiMultiClientGenerator(
@@ -396,6 +475,8 @@ func NewApiMultiClientGenerator(
     deviceDescription string,
     deviceSpec string,
     appVersion string,
+    clientSettingsGenerator func()(*ClientSettings),
+    settings *ApiMultiClientGeneratorSettings,
 ) *ApiMultiClientGenerator {
     api := NewBringYourApi(apiUrl)
     api.SetByJwt(byJwt)
@@ -408,6 +489,8 @@ func NewApiMultiClientGenerator(
         deviceDescription: deviceDescription,
         deviceSpec: deviceSpec,
         appVersion: appVersion,
+        clientSettingsGenerator: clientSettingsGenerator,
+        settings: settings,
         api: api,
     }
 }
@@ -482,6 +565,14 @@ func (self *ApiMultiClientGenerator) RemoveClientArgs(args *MultiClientGenerator
     }))
 }
 
+func (self *ApiMultiClientGenerator) RemoveClientWithArgs(client *Client, args *MultiClientGeneratorClientArgs) {
+    self.RemoveClientArgs(args)
+}
+
+func (self *ApiMultiClientGenerator) NewClientSettings() *ClientSettings {
+    return self.clientSettingsGenerator()
+}
+
 func (self *ApiMultiClientGenerator) NewClient(
     ctx context.Context,
     args *MultiClientGeneratorClientArgs,
@@ -491,14 +582,28 @@ func (self *ApiMultiClientGenerator) NewClient(
     if err != nil {
         return nil, err
     }
-    client := NewClient(ctx, byJwt.ClientId, clientSettings)
-    // fmt.Printf("[multi] new platform transport %s %v\n", args.platformUrl, args.clientAuth)
+    clientOob := NewApiOutOfBandControl(ctx, args.ClientAuth.ByJwt, self.apiUrl)
+    client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings)
     NewPlatformTransportWithDefaults(
-        ctx,
+        client.Ctx(),
         self.platformUrl,
         args.ClientAuth,
         client.RouteManager(),
     )
+    // enable return traffic for this client
+    ack := make(chan struct{})
+    client.ContractManager().SetProvideModesWithReturnTrafficWithAckCallback(
+        map[protocol.ProvideMode]bool{},
+        func(err error) {
+            close(ack)
+        },
+    )
+    select {
+    case <- ack:
+    case <- time.After(self.settings.InitTimeout):
+        client.Cancel()
+        return nil, errors.New("Could not enable return traffic for client.")
+    }
     return client, nil
 }
 
@@ -516,8 +621,6 @@ type multiClientWindow struct {
 
     stateLock sync.Mutex
     destinationClients map[Id]*multiClientChannel
-
-    // windowUpdate *Monitor
 }
 
 func newMultiClientWindow(
@@ -533,9 +636,8 @@ func newMultiClientWindow(
         generator: generator,
         receivePacketCallback: receivePacketCallback,
         settings: settings,
-        clientChannelArgs: make(chan *multiClientChannelArgs),
+        clientChannelArgs: make(chan *multiClientChannelArgs, settings.WindowSizeMin),
         destinationClients: map[Id]*multiClientChannel{},
-        // windowUpdate: NewMonitor(),
     }
 
     go HandleError(window.randomEnumerateClientArgs, cancel)
@@ -545,6 +647,23 @@ func newMultiClientWindow(
 }
 
 func (self *multiClientWindow) randomEnumerateClientArgs() {
+    defer func() {
+        close(self.clientChannelArgs)
+
+        // drain the channel
+        func() {
+            for {
+                select {
+                case args, ok := <- self.clientChannelArgs:
+                    if !ok {
+                        return
+                    }
+                    self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
+                }
+            }
+        }()
+    }()
+
     // continually reset the visited set when there are no more
     visitedDestinationIds := map[Id]bool{}
     for {
@@ -558,13 +677,12 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
             }
 
             nextDestinationIdEstimatedBytesPerSecond, err := next(1)
-            // fmt.Printf("[multi] Window enumerate found %v (%v).\n", nextDestinationIds, err)
             if err != nil {
                 select {
                 case <- self.ctx.Done():
                     return
                 case <- time.After(self.settings.WindowEnumerateErrorTimeout):
-                    fmt.Printf("[multi] Window enumerate error timeout.\n")
+                    glog.V(2).Infof("[multi]window enumerate error timeout.\n")
                 }
             } else if 0 < len(nextDestinationIdEstimatedBytesPerSecond) {
                 for destinationId, estimatedBytesPerSecond := range nextDestinationIdEstimatedBytesPerSecond {
@@ -579,22 +697,21 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 case <- self.ctx.Done():
                     return
                 case <- time.After(self.settings.WindowEnumerateEmptyTimeout):
-                    fmt.Printf("[multi] Window enumerate empty timeout.\n")
+                    glog.V(2).Infof("[multi]window enumerate empty timeout.\n")
                 }
             }
         }
 
         // remove destinations that are already in the window
-        self.stateLock.Lock()
-        for destinationId, _ := range self.destinationClients {
-            delete(destinationIdEstimatedBytesPerSecond, destinationId)
-        }
-        self.stateLock.Unlock()
-        
-        // fmt.Printf("[multi] Window next destinations %d\n", len(destinationIds))
+        func() {
+            self.stateLock.Lock()
+            defer self.stateLock.Unlock()
+            for destinationId, _ := range self.destinationClients {
+                delete(destinationIdEstimatedBytesPerSecond, destinationId)
+            }
+        }()
         
         for destinationId, estimatedBytesPerSecond := range destinationIdEstimatedBytesPerSecond {
-
             if clientArgs, err := self.generator.NewClientArgs(); err == nil {
                 args := &multiClientChannelArgs{
                     DestinationId: destinationId,
@@ -608,7 +725,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 case self.clientChannelArgs <- args:
                 }
             } else {
-                fmt.Printf("[multi] Could not auth client.\n")
+                glog.Infof("[multi]create client args error = %s\n", err)
             }
         
         }
@@ -620,14 +737,12 @@ func (self *multiClientWindow) resize() {
         select {
         case <- self.ctx.Done():
             return
-        default:
+        case <- time.After(self.settings.WindowResizeTimeout):
         }
 
         clients := []*multiClientChannel{}
 
-        // removedClients := []*multiClientChannel{}
         netSourceCount := 0
-        // nonNegativeClients := []*multiClientChannel{}
         weights := map[*multiClientChannel]float32{}
         durations := map[*multiClientChannel]time.Duration{}
 
@@ -638,10 +753,9 @@ func (self *multiClientWindow) resize() {
                 // byte count per second
                 weights[client] = float32(stats.ByteCountPerSecond())
                 durations[client] = stats.duration
-                // if 0 <= weight {
-                //     nonNegativeClients = append(nonNegativeClients, client)
-                // }
             }
+            // else ignore the client for optimization
+            // it will get cleaned up on the next call to `OrderedClients`
         }
 
         slices.SortFunc(clients, func(a *multiClientChannel, b *multiClientChannel)(int) {
@@ -664,59 +778,65 @@ func (self *multiClientWindow) resize() {
                 float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
             )),
         )
-        // fmt.Printf("[multi] Resize ->%d\n", targetWindowSize)
 
         if len(clients) < targetWindowSize {
             // expand
-
             n := targetWindowSize - len(clients)
-            fmt.Printf("[multi] Expand +%d ->%d\n", n, targetWindowSize)
-            
+            glog.Infof("[multi]expand +%d ->%d\n", n, targetWindowSize)
             self.expand(n)
-        } else if targetWindowSize < len(clients) {
-            // collapse the lowest weighted
-            
-            n := len(clients) - targetWindowSize
-            fmt.Printf("[multi] Collapse -%d ->%d\n", n, targetWindowSize)
+        } else {
+            collapseLowestWeighted := func(windowSize int)(int) {
+                // try to remove the lowest weighted clients to resize the window to `windowSize`
+                // clients in the graceperiod or with activity cannot be removed
 
-            for _, client := range clients[targetWindowSize:] {
-                client.Cancel()
+                self.stateLock.Lock()
+                defer self.stateLock.Unlock()
+
+                n := 0
+
+                collapseClients := clients[windowSize:]
+                clients = clients[:windowSize]
+                for _, client := range collapseClients {
+                    if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
+                        client.Cancel()
+                        n += 1
+                    } else {
+                        clients = append(clients, client)
+                    }
+                }
+
+                destinationClients := map[Id]*multiClientChannel{}
+                for _, client := range clients {
+                    destinationClients[client.DestinationId()] = client
+                }
+                self.destinationClients = destinationClients
+
+                return n
             }
-            clients = clients[:targetWindowSize]
-        } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
-            // optimize by removing unused from q4
 
-            n := 0
-
-            q4Clients := clients[q3 + 1:]
-            clients = clients[:q3 + 1]
-            for _, client := range q4Clients {
-                if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
-                    client.Cancel()
-                    // removedClients = append(removedClients, client)
-                    n += 1
-                } else {
-                    clients = append(clients, client)
+            if targetWindowSize < len(clients) {
+                n := collapseLowestWeighted(targetWindowSize)
+                if 0 < n {
+                    glog.Infof("[multi]collapse -%d ->%d\n", n, len(clients))
+                }
+            } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
+                // optimize by removing unused from q4
+                n := collapseLowestWeighted(q3 + 1)
+                if 0 < n {
+                    glog.Infof("[multi]optimize -%d ->%d\n", n, len(clients))
                 }
             }
-
-            if 0 < n {
-                fmt.Printf("[multi] Optimize -%d\n", n)
-            }
-        }
-
-        select {
-        case <- time.After(self.settings.WindowResizeTimeout):
         }
     }
 }
 
 func (self *multiClientWindow) expand(n int) {
     endTime := time.Now().Add(self.settings.WindowExpandTimeout)
+    pendingPingDones := []chan struct{}{}
     for i := 0; i < n; i += 1 {
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
-            fmt.Printf("[multi] Expand window timeout\n")
+            glog.Infof("[multi]expand window timeout\n")
             return
         }
 
@@ -725,12 +845,15 @@ func (self *multiClientWindow) expand(n int) {
             return
         // case <- update:
         //     // continue
-        case args := <- self.clientChannelArgs:
-            fmt.Printf("[multi] Expand new client\n")
-
-            self.stateLock.Lock()
-            _, ok := self.destinationClients[args.DestinationId]
-            self.stateLock.Unlock()
+        case args, ok := <- self.clientChannelArgs:
+            if !ok {
+                return
+            }
+            func() {
+                self.stateLock.Lock()
+                defer self.stateLock.Unlock()
+                _, ok = self.destinationClients[args.DestinationId]
+            }()
 
             if ok {
                 // already have a client in the window for this destination
@@ -744,25 +867,66 @@ func (self *multiClientWindow) expand(n int) {
                     self.settings,
                 )
                 if err == nil {
-                    go HandleError(func() {
-                        select {
-                        case <- self.ctx.Done():
-                        case <- client.Done():
-                        }
+                    // send an initial ping on the client and let the ack timeout close it
+                    pingDone := make(chan struct{})
+                    success, err := client.SendDetailedMessage(
+                        &protocol.IpPing{},
+                        self.settings.PingWriteTimeout,
+                        func (err error) {
+                            defer close(pingDone)
+                            if err == nil {
+                                glog.Infof("[multi]expand new client\n")
+                                func () {
+                                    self.stateLock.Lock()
+                                    defer self.stateLock.Unlock()
+                                    self.destinationClients[args.DestinationId] = client
+                                }()
+                            } else {
+                                glog.Infof("[multi]create ping error = %s\n", err)
+                                client.Cancel()
+                            }
+                        },
+                    )
+                    if err != nil {
+                        glog.Infof("[multi]create client ping error = %s\n", err)
                         client.Cancel()
-                        self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
-                    }, self.cancel)
-
-                    self.stateLock.Lock()
-                    self.destinationClients[args.DestinationId] = client
-                    self.stateLock.Unlock()
+                    } else if !success {
+                        client.Cancel()
+                    } else {
+                        // async wait for the ping
+                        pendingPingDones = append(pendingPingDones, pingDone)
+                        go func() {
+                            select {
+                            case <- pingDone:
+                            case <- time.After(self.settings.PingTimeout):
+                                glog.V(2).Infof("[multi]expand window timeout waiting for ping\n")
+                                client.Cancel()
+                            }
+                        }()
+                    }
                 } else {
+                    glog.Infof("[multi]create client error = %s\n", err)
                     self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
                 }
             }
         case <- time.After(timeout):
-            fmt.Printf("[multi] Expand window timeout waiting for args\n")
+            glog.V(2).Infof("[multi]expand window timeout waiting for args\n")
+        }
+    }
+
+    // wait for pending pings
+    pingDoneEndTime := time.Now().Add(self.settings.PingTimeout)
+    for _, pingDone := range pendingPingDones {
+        timeout := pingDoneEndTime.Sub(time.Now())
+        if timeout < 0 {
             return
+        }
+        select {
+        case <- self.ctx.Done():
+            return
+        case <- pingDone:
+        case <- time.After(timeout):
+            // something went wrong
         }
     }
 }
@@ -778,37 +942,29 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
     clients := []*multiClientChannel{}
 
     removedClients := []*multiClientChannel{}
-    // netSourceCount := 0
-    // nonNegativeClients := []*multiClientChannel{}
     weights := map[*multiClientChannel]float32{}
     durations := map[*multiClientChannel]time.Duration{}
 
     for _, client := range self.clients() {
         if stats, err := client.WindowStats(); err != nil {
-            fmt.Printf("[multi] Remove client (%s)\n", err)
+            glog.Infof("[multi]remove client = %s\n", err)
             removedClients = append(removedClients, client)
         } else {
             clients = append(clients, client)
-            // netSourceCount += stats.sourceCount
-            // weight := float32(stats.ByteCountPerSecond())
             weights[client] = float32(stats.ByteCountPerSecond())
             durations[client] = stats.duration
-            // if 0 <= weight {
-            //     nonNegativeClients = append(nonNegativeClients, client)
-            // }
         }
     }
 
     if 0 < len(removedClients) {
-        self.stateLock.Lock()
-        for _, client := range removedClients {
-            // fmt.Printf("[multi] Remove client.\n")
-            client.Cancel()
-            delete(self.destinationClients, client.DestinationId())
-        }
-        self.stateLock.Unlock()
-
-        // self.windowUpdate.NotifyAll()
+        func() {
+            self.stateLock.Lock()
+            defer self.stateLock.Unlock()
+            for _, client := range removedClients {
+                client.Cancel()
+                delete(self.destinationClients, client.DestinationId())
+            }
+        }()
     }
 
     // iterate and adjust weights for clients with weights >= 0
@@ -826,7 +982,9 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
         }
     }
 
-    self.statsSampleWeights(weights)
+    if glog.V(1) {
+        self.statsSampleWeights(weights)
+    }
 
     WeightedShuffleWithEntropy(nonNegativeClients, weights, self.settings.StatsWindowEntropy)
 
@@ -870,9 +1028,9 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
                 }
             }
 
-            fmt.Printf("[multi] sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights) - netCount, 100 * (1 - netThresh))
+            glog.Infof("[multi]sample weights: %s (+%d more in window <%.0f%%)\n", sb.String(), len(weights) - netCount, 100 * (1 - netThresh))
         } else {
-            fmt.Printf("[multi] sample weights: zero (%d in window)\n", len(weights))
+            glog.Infof("[multi]sample weights: zero (%d in window)\n", len(weights))
         }
     }
 }
@@ -881,11 +1039,8 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
 type multiClientChannelArgs struct {
     MultiClientGeneratorClientArgs
 
-    // platformUrl string
     DestinationId Id
     EstimatedBytesPerSecond ByteCount
-    // clientId Id
-    // clientAuth *ClientAuth
 }
 
 
@@ -948,9 +1103,6 @@ type multiClientChannel struct {
 
     api *BringYourApi
 
-    // send chan *parsedPacket
-    // sendNoLimit chan *parsedPacket
-
     receivePacketCallback ReceivePacketFunction
 
     settings *MultiClientSettings
@@ -967,10 +1119,6 @@ type multiClientChannel struct {
     packetStats *clientWindowStats
     endErr error
 
-    // maxNackCount int
-
-    // eventUpdate *Monitor
-
     clientReceiveUnsub func()
 }
 
@@ -983,7 +1131,7 @@ func newMultiClientChannel(
 ) (*multiClientChannel, error) {
     cancelCtx, cancel := context.WithCancel(ctx)
 
-    clientSettings := DefaultClientSettings()
+    clientSettings := generator.NewClientSettings()
     clientSettings.SendBufferSettings.AckTimeout = settings.AckTimeout
     
     client, err := generator.NewClient(
@@ -994,6 +1142,14 @@ func newMultiClientChannel(
     if err != nil {
         return nil, err
     }
+    go HandleError(func() {
+        select {
+        case <- cancelCtx.Done():
+        case <- client.Done():
+        }
+        client.Cancel()
+        generator.RemoveClientWithArgs(client, &args.MultiClientGeneratorClientArgs)
+    }, cancel)
 
     sourceFilter := map[Path]bool{
         Path{ClientId:args.DestinationId}: true,
@@ -1003,8 +1159,6 @@ func newMultiClientChannel(
         ctx: cancelCtx,
         cancel: cancel,
         args: args,
-        // send: make(chan *parsedPacket),
-        // sendNoLimit: make(chan *parsedPacket),
         receivePacketCallback: receivePacketCallback,
         settings: settings,
         sourceFilter: sourceFilter,
@@ -1014,19 +1168,20 @@ func newMultiClientChannel(
         ip6DestinationSourceCount: map[Ip6Path]map[Ip6Path]int{},
         packetStats: &clientWindowStats{},
         endErr: nil,
-        // maxNackCount: settings.ClientNackInitialLimit,
-        // eventUpdate: NewMonitor(),
     }
 
     clientReceiveUnsub := client.AddReceiveCallback(clientChannel.clientReceive)
     clientChannel.clientReceiveUnsub = clientReceiveUnsub
 
-
     return clientChannel, nil
 }
 
 func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Duration) bool {
-    // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
+    success, err := self.SendDetailed(parsedPacket, timeout)
+    return success && err == nil
+}
+
+func (self *multiClientChannel) SendDetailed(parsedPacket *parsedPacket, timeout time.Duration) (bool, error) {
     ipPacketToProvider := &protocol.IpPacketToProvider{
         IpPacket: &protocol.IpPacket{
             PacketBytes: parsedPacket.packet,
@@ -1034,13 +1189,12 @@ func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Du
     }
     if frame, err := ToFrame(ipPacketToProvider); err != nil {
         self.addError(err)
-        return false
+        return false, err
     } else {
         packetByteCount := ByteCount(len(parsedPacket.packet))
         self.addSendNack(packetByteCount)
         self.addSource(parsedPacket.ipPath)
         ackCallback := func(err error) {
-            // fmt.Printf("[multi] ack callback (%v)\n", err)
             if err == nil {
                 self.addSendAck(packetByteCount)
             } else {
@@ -1048,21 +1202,31 @@ func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Du
             }
         }
 
-        // fmt.Printf("[multi] Send ->%s\n", self.args.destinationId)
-
         opts := []any{}
         switch parsedPacket.ipPath.Protocol {
         case IpProtocolUdp:
             opts = append(opts, NoAck())
         }
-        success := self.client.SendWithTimeout(
+        return self.client.SendWithTimeoutDetailed(
             frame,
             self.args.DestinationId,
             ackCallback,
             timeout,
             opts...,
         )
-        return success
+    }
+}
+
+func (self *multiClientChannel) SendDetailedMessage(message proto.Message, timeout time.Duration, ackCallback func(error)) (bool, error) {
+    if frame, err := ToFrame(message); err != nil {
+        return false, err
+    } else {
+        return self.client.SendWithTimeoutDetailed(
+            frame,
+            self.args.DestinationId,
+            ackCallback,
+            timeout,
+        )
     }
 }
 
@@ -1207,13 +1371,15 @@ func (self *multiClientChannel) addError(err error) {
 func (self *multiClientChannel) coalesceEventBuckets() {
     // must be called with `stateLock`
 
+    // if there is no activity (no new buckets), keep historical buckets around
+    minBucketCount := 1 + int(self.settings.StatsWindowDuration / self.settings.StatsWindowBucketDuration)
+
     windowStart := time.Now().Add(-self.settings.StatsWindowDuration)
 
     // remove events before the window start
     i := 0
-    for i < len(self.eventBuckets) {
+    for i < len(self.eventBuckets) && minBucketCount < len(self.eventBuckets) {
         eventBucket := self.eventBuckets[i]
-        // fmt.Printf("[multi] event advance %v %s\n", event, windowStart)
         if windowStart.Before(eventBucket.eventTime) {
             break
         }
@@ -1317,7 +1483,7 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
 
     // only process frames from the destinations
     if allow := self.sourceFilter[source]; !allow {
-        fmt.Printf("[multi] Receive drop %d %s<-\n", len(frames), self.args.DestinationId)
+        glog.V(2).Infof("[multi]receive drop %d %s<-\n", len(frames), self.args.DestinationId)
         return
     }
 
@@ -1326,19 +1492,17 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
         case protocol.MessageType_IpIpPacketFromProvider:
             if ipPacketFromProvider_, err := FromFrame(frame); err == nil {
                 ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
-
-                // fmt.Printf("[multi] Receive allow %s<-\n", self.args.destinationId)
-
+                
                 packet := ipPacketFromProvider.IpPacket.PacketBytes
 
                 self.addReceiveAck(ByteCount(len(packet)))
 
                 self.receivePacketCallback(source, IpProtocolUnknown, packet)
             } else {
-                fmt.Printf("[multi] Receive drop 2 %s<-\n", self.args.DestinationId)
+                glog.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.DestinationId, err)
             }
         default:
-            fmt.Printf("[multi] Receive drop 1 %s<-\n", self.args.DestinationId)
+            // unknown message, drop
         }
     }
 }

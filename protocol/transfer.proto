@@ -50,6 +50,14 @@ message Pack {
     // use true when there is an external transfer control
     // default to false for backward compatibility
     bool nack = 6;
+
+    optional Frame contract_frame = 7;
+}
+
+
+// used for deep message inspection
+message FilteredPack {
+    optional Frame contract_frame = 7;
 }
 
 
@@ -153,6 +161,10 @@ message CreateContract {
     // ulid
     bytes destination_id = 1;
     uint64 transfer_byte_count = 2;
+    // restrict the contract to a companion of an existing open contract
+    bool companion = 3;
+    // ulids
+    repeated bytes used_contract_ids = 4;
 }
 
 
@@ -196,6 +208,7 @@ message CloseContract {
     bytes contract_id = 1;
     uint64 acked_byte_count = 2;
     uint64 unacked_byte_count = 3;
+    bool checkpoint = 4;
 }
 
 

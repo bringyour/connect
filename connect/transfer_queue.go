@@ -106,6 +106,17 @@ func (self *transferQueue[T]) Add(item T) {
     self.byteCount += item.MessageByteCount()
 }
 
+func (self *transferQueue[T]) ContainsMessageId(messageId Id) (sequenceNumber uint64, ok bool) {
+    self.stateLock.Lock()
+    defer self.stateLock.Unlock()
+
+    item, ok := self.messageIdItems[messageId]
+    if !ok {
+        return 0, false
+    }
+    return item.SequenceNumber(), true
+}
+
 func (self *transferQueue[T]) RemoveByMessageId(messageId Id) T {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
