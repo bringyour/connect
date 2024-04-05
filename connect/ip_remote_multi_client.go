@@ -14,6 +14,8 @@ import (
 
     "golang.org/x/exp/maps"
 
+    "google.golang.org/protobuf/proto"
+
     "github.com/golang/glog"
 
     "bringyour.com/protocol"
@@ -28,6 +30,9 @@ import (
 // scaling up successful destinations to use the full transfer buffer
 // - the clients are chosen with probability weighted by their 
 // net frame count statistics (acks - nacks)
+
+
+// TODO surface window stats to show to users
 
 
 // for each `NewClientArgs`, 
@@ -51,17 +56,15 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         WindowSizeMax: 32,
         // reconnects per source
         WindowSizeReconnectScale: 0.5,
-        // ClientNackInitialLimit: 1,
-        // ClientNackMaxLimit: 64 * 1024,
-        // ClientNackScale: 4,
-        // SendTimeout: 60 * time.Second,
-        // WriteTimeout: 30 * time.Second,
         WriteRetryTimeout: 200 * time.Millisecond,
-        AckTimeout: 30 * time.Second,
+        PingWriteTimeout: 1 * time.Second,
+        PingTimeout: 5 * time.Second,
+        // a lower ack timeout helps cycle through bad providers faster
+        AckTimeout: 10 * time.Second,
         WindowResizeTimeout: 1 * time.Second,
         StatsWindowGraceperiod: 5 * time.Second,
         StatsWindowEntropy: 0.25,
-        WindowExpandTimeout: 2 * time.Second,
+        WindowExpandTimeout: 15 * time.Second,
         WindowEnumerateEmptyTimeout: 1 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
         StatsWindowDuration: 120 * time.Second,
@@ -83,6 +86,8 @@ type MultiClientSettings struct {
     // SendTimeout time.Duration
     // WriteTimeout time.Duration
     WriteRetryTimeout time.Duration
+    PingWriteTimeout time.Duration
+    PingTimeout time.Duration
     AckTimeout time.Duration
     WindowResizeTimeout time.Duration
     StatsWindowGraceperiod time.Duration
@@ -596,6 +601,8 @@ func (self *ApiMultiClientGenerator) NewClient(
     select {
     case <- ack:
     case <- time.After(self.settings.InitTimeout):
+        client.Cancel()
+        return nil, errors.New("Could not enable return traffic for client.")
     }
     return client, nil
 }
@@ -688,7 +695,6 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
         }()
         
         for destinationId, estimatedBytesPerSecond := range destinationIdEstimatedBytesPerSecond {
-
             if clientArgs, err := self.generator.NewClientArgs(); err == nil {
                 args := &multiClientChannelArgs{
                     DestinationId: destinationId,
@@ -702,7 +708,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 case self.clientChannelArgs <- args:
                 }
             } else {
-                glog.V(2).Infof("[multi]could not auth client.\n")
+                glog.Infof("[multi]create client args error = %s\n", err)
             }
         
         }
@@ -731,6 +737,8 @@ func (self *multiClientWindow) resize() {
                 weights[client] = float32(stats.ByteCountPerSecond())
                 durations[client] = stats.duration
             }
+            // else ignore the client for optimization
+            // it will get cleaned up on the next call to `OrderedClients`
         }
 
         slices.SortFunc(clients, func(a *multiClientChannel, b *multiClientChannel)(int) {
@@ -807,10 +815,11 @@ func (self *multiClientWindow) resize() {
 
 func (self *multiClientWindow) expand(n int) {
     endTime := time.Now().Add(self.settings.WindowExpandTimeout)
+    pendingPingDones := []chan struct{}{}
     for i := 0; i < n; i += 1 {
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
-            glog.V(2).Infof("[multi]expand window timeout\n")
+            glog.Infof("[multi]expand window timeout\n")
             return
         }
 
@@ -820,8 +829,6 @@ func (self *multiClientWindow) expand(n int) {
         // case <- update:
         //     // continue
         case args := <- self.clientChannelArgs:
-            glog.V(2).Infof("[multi]expand new client\n")
-
             var ok bool
             func() {
                 self.stateLock.Lock()
@@ -841,18 +848,66 @@ func (self *multiClientWindow) expand(n int) {
                     self.settings,
                 )
                 if err == nil {
-                    func () {
-                        self.stateLock.Lock()
-                        defer self.stateLock.Unlock()
-                        self.destinationClients[args.DestinationId] = client
-                    }()
+                    // send an initial ping on the client and let the ack timeout close it
+                    pingDone := make(chan struct{})
+                    success, err := client.SendDetailedMessage(
+                        &protocol.IpPing{},
+                        self.settings.PingWriteTimeout,
+                        func (err error) {
+                            defer close(pingDone)
+                            if err == nil {
+                                glog.Infof("[multi]expand new client\n")
+                                func () {
+                                    self.stateLock.Lock()
+                                    defer self.stateLock.Unlock()
+                                    self.destinationClients[args.DestinationId] = client
+                                }()
+                            } else {
+                                glog.Infof("[multi]create ping error = %s\n", err)
+                                client.Cancel()
+                            }
+                        },
+                    )
+                    if err != nil {
+                        glog.Infof("[multi]create client ping error = %s\n", err)
+                        client.Cancel()
+                    } else if !success {
+                        client.Cancel()
+                    } else {
+                        // async wait for the ping
+                        pendingPingDones = append(pendingPingDones, pingDone)
+                        go func() {
+                            select {
+                            case <- pingDone:
+                            case <- time.After(self.settings.PingTimeout):
+                                glog.V(2).Infof("[multi]expand window timeout waiting for ping\n")
+                                client.Cancel()
+                            }
+                        }()
+                    }
                 } else {
+                    glog.Infof("[multi]create client error = %s\n", err)
                     self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
                 }
             }
         case <- time.After(timeout):
             glog.V(2).Infof("[multi]expand window timeout waiting for args\n")
+        }
+    }
+
+    // wait for pending pings
+    pingDoneEndTime := time.Now().Add(self.settings.PingTimeout)
+    for _, pingDone := range pendingPingDones {
+        timeout := pingDoneEndTime.Sub(time.Now())
+        if timeout < 0 {
             return
+        }
+        select {
+        case <- self.ctx.Done():
+            return
+        case <- pingDone:
+        case <- time.After(timeout):
+            // something went wrong
         }
     }
 }
@@ -1139,6 +1194,19 @@ func (self *multiClientChannel) SendDetailed(parsedPacket *parsedPacket, timeout
             ackCallback,
             timeout,
             opts...,
+        )
+    }
+}
+
+func (self *multiClientChannel) SendDetailedMessage(message proto.Message, timeout time.Duration, ackCallback func(error)) (bool, error) {
+    if frame, err := ToFrame(message); err != nil {
+        return false, err
+    } else {
+        return self.client.SendWithTimeoutDetailed(
+            frame,
+            self.args.DestinationId,
+            ackCallback,
+            timeout,
         )
     }
 }
