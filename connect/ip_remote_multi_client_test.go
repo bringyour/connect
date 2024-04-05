@@ -60,6 +60,8 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 	    	var unsub func()
 	    	var ok bool
 	    	func() {
+	    		mutex.Lock()
+	    		defer mutex.Unlock()
 				unsub, ok = unsubs[client]
 				if ok {
 					delete(unsubs, client)
