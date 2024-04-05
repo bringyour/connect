@@ -50,10 +50,11 @@ Each transport should apply the forwarding ACL:
 // can be active in parallel, each limited by their slowest destination.
 
 
-const VerifyForwardMessages = false
-
 // use 0 for deadlock testing
 const DefaultTransferBufferSize = 32
+
+
+const VerifyForwardMessages = false
 
 
 type AckFunction = func(err error)

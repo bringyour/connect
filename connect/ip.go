@@ -1323,8 +1323,8 @@ func (self *TcpSequence) Run() {
     }
     defer socket.Close()
 
-    tcpSocket := socket.(*net.TCPConn)
-    tcpSocket.SetNoDelay(false)
+    // tcpSocket := socket.(*net.TCPConn)
+    // tcpSocket.SetNoDelay(false)
     
     self.UpdateLastActivityTime()
     glog.V(2).Infof("[init]connect success\n")
