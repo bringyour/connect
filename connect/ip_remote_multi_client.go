@@ -636,7 +636,7 @@ func newMultiClientWindow(
         generator: generator,
         receivePacketCallback: receivePacketCallback,
         settings: settings,
-        clientChannelArgs: make(chan *multiClientChannelArgs),
+        clientChannelArgs: make(chan *multiClientChannelArgs, settings.WindowSizeMin),
         destinationClients: map[Id]*multiClientChannel{},
     }
 
@@ -647,6 +647,23 @@ func newMultiClientWindow(
 }
 
 func (self *multiClientWindow) randomEnumerateClientArgs() {
+    defer func() {
+        close(self.clientChannelArgs)
+
+        // drain the channel
+        func() {
+            for {
+                select {
+                case args, ok := <- self.clientChannelArgs:
+                    if !ok {
+                        return
+                    }
+                    self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
+                }
+            }
+        }()
+    }()
+
     // continually reset the visited set when there are no more
     visitedDestinationIds := map[Id]bool{}
     for {
@@ -828,8 +845,10 @@ func (self *multiClientWindow) expand(n int) {
             return
         // case <- update:
         //     // continue
-        case args := <- self.clientChannelArgs:
-            var ok bool
+        case args, ok := <- self.clientChannelArgs:
+            if !ok {
+                return
+            }
             func() {
                 self.stateLock.Lock()
                 defer self.stateLock.Unlock()
