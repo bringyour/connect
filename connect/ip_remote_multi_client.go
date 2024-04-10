@@ -70,6 +70,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         WindowEnumerateErrorTimeout: 1 * time.Second,
         WindowExpandScale: 2.0,
         WindowCollapseScale: 0.5,
+        WindowExpandMaxOvershotScale: 4.0,
         StatsWindowDuration: 120 * time.Second,
         StatsWindowBucketDuration: 10 * time.Second,
         StatsSampleWeightsCount: 8,
@@ -101,6 +102,7 @@ type MultiClientSettings struct {
     WindowEnumerateErrorTimeout time.Duration
     WindowExpandScale float64
     WindowCollapseScale float64
+    WindowExpandMaxOvershotScale float64
     StatsWindowDuration time.Duration
     StatsWindowBucketDuration time.Duration
     StatsSampleWeightsCount int
@@ -740,6 +742,8 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 }
 
 func (self *multiClientWindow) resize() {
+    // based on the most recent expand failure
+    expandOvershotScale := float64(1.0)
     for {
         startTime := time.Now()
 
@@ -828,17 +832,28 @@ func (self *multiClientWindow) resize() {
             if 0 < n {
                 glog.Infof("[multi]window optimize -%d ->%d\n", n, len(clients))
             }
-            // if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
-            //     // optimize by removing unused from q4
-            //     n := collapseLowestWeighted(q3 + 1)
-            //     if 0 < n {
-            //         glog.Infof("[multi]window optimize -%d ->%d\n", n, len(clients))
-            //     }
-            // }
+
             // expand
             n = expandWindowSize - len(clients)
-            glog.Infof("[multi]window expand +%d %d->%d\n", n, len(clients), expandWindowSize)
-            self.expand(n)
+            overN := int(math.Ceil(expandOvershotScale * float64(n)))
+            glog.Infof("[multi]window expand +%d(%d) %d->%d\n", n, overN, len(clients), expandWindowSize)
+            self.expand(overN)
+
+            // evaluate the next overshot scale
+            func () {
+                self.stateLock.Lock()
+                defer self.stateLock.Unlock()
+                n = len(self.destinationClients) - len(clients)
+            }()
+            if n <= 0 {
+                expandOvershotScale = self.settings.WindowExpandMaxOvershotScale
+            } else {
+                // overN = s * n
+                expandOvershotScale = min(
+                    self.settings.WindowExpandMaxOvershotScale,
+                    float64(overN) / float64(n),
+                )
+            }
         } else if targetWindowSize <= collapseWindowSize && collapseWindowSize < len(clients) {
             n := collapseLowestWeighted(collapseWindowSize)
             if 0 < n {
@@ -950,18 +965,11 @@ func (self *multiClientWindow) expand(n int) {
     }
 
     // wait for pending pings
-    pingDoneEndTime := time.Now().Add(self.settings.PingTimeout)
     for _, pingDone := range pendingPingDones {
-        timeout := pingDoneEndTime.Sub(time.Now())
-        if timeout < 0 {
-            return
-        }
         select {
         case <- self.ctx.Done():
             return
         case <- pingDone:
-        case <- time.After(timeout):
-            // something went wrong
         }
     }
 }
