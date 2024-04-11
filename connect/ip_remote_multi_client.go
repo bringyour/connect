@@ -402,6 +402,10 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
     return success
 }
 
+func (self *RemoteUserNatMultiClient) Shuffle() {
+    self.window.shuffle()
+}
+
 func (self *RemoteUserNatMultiClient) Close() {
     self.cancel()
 }
@@ -1004,6 +1008,12 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
     }
 
     return
+}
+
+func (self *multiClientWindow) shuffle() {
+    for _, client := range self.clients() {
+        client.Cancel()
+    }
 }
 
 func (self *multiClientWindow) clients() []*multiClientChannel {

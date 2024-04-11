@@ -62,7 +62,7 @@ func (self *ContractManagerStats) ContractOpenByteCount() ByteCount {
 func DefaultContractManagerSettings() *ContractManagerSettings {
 	// NETWORK EVENT: at the enable contracts date, all clients will require contracts
 	// up to that time, contracts are optional for the sender and match for the receiver
-	networkEventTimeEnableContracts, err := time.Parse(time.RFC3339, "2024-04-15T00:00:00Z")
+	networkEventTimeEnableContracts, err := time.Parse(time.RFC3339, "2024-04-22T00:00:00Z")
 	if err != nil {
 		panic(err)
 	}

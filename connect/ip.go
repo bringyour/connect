@@ -56,6 +56,7 @@ type UserNatClient interface {
     // `SendPacketFunction`
     SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
     Close()
+    Shuffle()
 }
 
 
@@ -2217,6 +2218,9 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
             })
         }
     }
+}
+
+func (self *RemoteUserNatClient) Shuffle() {
 }
 
 func (self *RemoteUserNatClient) Close() {
