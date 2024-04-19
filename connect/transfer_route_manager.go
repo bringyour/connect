@@ -558,12 +558,13 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
-        glog.V(2).Infof("[mrw] %s %s<- routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
+        glog.V(2).Infof("[mrw] %s->%s routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
 
         // non-blocking priority 
         for _, route := range activeRoutes {
             select {
             case route <- transportFrameBytes:
+                glog.V(2).Infof("[mrw]nb %s->%s\n", self.clientTag, self.destinationId)
                 self.updateSendStats(route, 1, ByteCount(len(transportFrameBytes)))
                 return nil
             default:
@@ -631,7 +632,7 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         }
 
         chosenIndex, _, _ := reflect.Select(selectCases)
-        glog.V(2).Infof("[mrw] %s %s<-\n", self.clientTag, self.destinationId)
+        glog.V(2).Infof("[mrw]b %s->%s\n", self.clientTag, self.destinationId)
 
         switch chosenIndex {
         case contextDoneIndex:
@@ -660,7 +661,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
-        glog.V(2).Infof("[mrr] %s %s<- routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
+        glog.V(2).Infof("[mrr] %s/%s<- routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
 
         // non-blocking priority
         retry := false
@@ -668,6 +669,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
             select {
             case transportFrameBytes, ok := <- route:
                 if ok {
+                    glog.V(2).Infof("[mrr]nb %s/%s<-\n", self.clientTag, self.destinationId)
                     self.updateReceiveStats(route, 1, ByteCount(len(transportFrameBytes)))
                     return transportFrameBytes, nil
                 } else {
@@ -741,7 +743,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         }
 
         chosenIndex, value, ok := reflect.Select(selectCases)
-        glog.V(2).Infof("[mrr] %s %s<-\n", self.clientTag, self.destinationId)
+        glog.V(2).Infof("[mrr]b %s/%s<-\n", self.clientTag, self.destinationId)
 
         switch chosenIndex {
         case contextDoneIndex:

@@ -314,15 +314,20 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 }
 
 // `SendPacketFunction`
-func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
+func (self *RemoteUserNatMultiClient) SendPacket(
+    source Path,
+    provideMode protocol.ProvideMode,
+    packet []byte,
+    timeout time.Duration,
+) (success bool) {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
         // bad packet
         glog.Infof("[multi]send bad packet = %s\n", err)
-        return false
+        success = false
+        return
     }
 
-    success := false
     self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
         enterTime := time.Now()
 
@@ -332,6 +337,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             if err == nil {
                 return
             }
+            glog.Infof("[multi]send error = %s\n", err)
             // find a new client
             update.client = nil
         }
@@ -374,11 +380,14 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 // distribute the timeout evenly via wait
                 retryTimeoutPerClient := retryTimeout / time.Duration(len(orderedClients))
                 for _, client := range orderedClients {
-                    if client.Send(parsedPacket, retryTimeoutPerClient) {
+                    success, err = client.SendDetailed(parsedPacket, retryTimeoutPerClient)
+                    if success && err == nil {
                         // lock the path to the client
                         update.client = client
                         success = true
                         return
+                    } else if err != nil {
+                        glog.Infof("[multi]send error = %s\n", err)
                     }
                     select {
                     case <- self.ctx.Done():
@@ -399,7 +408,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             }
         }
     })
-    return success
+    return
 }
 
 func (self *RemoteUserNatMultiClient) Shuffle() {

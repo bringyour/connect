@@ -305,6 +305,7 @@ func (self *PlatformTransport) run() {
                     case websocket.BinaryMessage:
                         if 0 == len(message) {
                             // ping
+                            glog.V(2).Infof("[tr]ping %s<-\n", clientId)
                             continue
                         }
 
@@ -323,7 +324,7 @@ func (self *PlatformTransport) run() {
             select {
             case <- handleCtx.Done():
                 return
-            }  
+            }
         }
         if glog.V(2) {
             Trace(fmt.Sprintf("[t]connect %s", clientId), c)
