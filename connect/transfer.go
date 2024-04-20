@@ -1097,16 +1097,16 @@ func (self *SendSequence) ResendQueueSize() (int, ByteCount, Id) {
 
 // success, error
 func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
-	if !self.idleCondition.UpdateOpen() {
-		return false, nil
-	}
-	defer self.idleCondition.UpdateClose()
-
 	select {
 	case <- self.ctx.Done():
 		return false, errors.New("Done.")
 	default:
 	}
+
+	if !self.idleCondition.UpdateOpen() {
+		return false, errors.New("Done.")
+	}
+	defer self.idleCondition.UpdateClose()
 
 	if timeout < 0 {
 		select {
@@ -1330,7 +1330,10 @@ func (self *SendSequence) Run() {
 						c,
 					)
 				} else {
-					c()
+					err := c()
+					if err != nil {
+						glog.Infof("[s]resend drop = %s", err)
+					}
 				}
 
 				item.sendCount += 1
@@ -1655,7 +1658,10 @@ func (self *SendSequence) sendWithSetContract(
 			c,
 		)
 	} else {
-		c() 
+		err := c()
+		if err != nil {
+			glog.Infof("[s]drop = %s", err)
+		}
 	}
 
 	if ack {
@@ -2063,16 +2069,16 @@ func (self *ReceiveSequence) ReceiveQueueSize() (int, ByteCount) {
 
 // success, error
 func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
-	if !self.idleCondition.UpdateOpen() {
-		return false, nil
-	}
-	defer self.idleCondition.UpdateClose()
-
 	select {
 	case <- self.ctx.Done():
 		return false, errors.New("Done.")
 	default:
 	}
+
+	if !self.idleCondition.UpdateOpen() {
+		return false, errors.New("Done.")
+	}
+	defer self.idleCondition.UpdateClose()
 
 	if timeout < 0 {
 		select {
@@ -2189,7 +2195,10 @@ func (self *ReceiveSequence) Run() {
 					c,
 				)
 			} else {
-				c()
+				err := c()
+				if err != nil {
+					glog.Infof("[r]drop = %s", err)
+				}
 			}
 		}
 
@@ -3052,16 +3061,16 @@ func NewForwardSequence(
 
 // success, error
 func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duration) (bool, error) {
-	if !self.idleCondition.UpdateOpen() {
-		return false, nil
-	}
-	defer self.idleCondition.UpdateClose()
-
 	select {
 	case <- self.ctx.Done():
 		return false, errors.New("Done.")
 	default:
 	}
+	
+	if !self.idleCondition.UpdateOpen() {
+		return false, errors.New("Done.")
+	}
+	defer self.idleCondition.UpdateClose()
 
 	if timeout < 0 {
 		select {
@@ -3115,7 +3124,10 @@ func (self *ForwardSequence) Run() {
 					c,
 				)
 			} else {
-				c()
+				err := c()
+				if err != nil {
+					glog.Infof("[f]drop = %s", err)
+				}
 			}
 		case <- time.After(self.forwardBufferSettings.IdleTimeout):
 			if self.idleCondition.Close(checkpointId) {

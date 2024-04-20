@@ -56,6 +56,7 @@ type UserNatClient interface {
     // `SendPacketFunction`
     SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
     Close()
+    Shuffle()
 }
 
 
@@ -2219,6 +2220,9 @@ func (self *RemoteUserNatClient) ClientReceive(sourceId Id, frames []*protocol.F
     }
 }
 
+func (self *RemoteUserNatClient) Shuffle() {
+}
+
 func (self *RemoteUserNatClient) Close() {
     // self.client.RemoveReceiveCallback(self.clientCallbackId)
     self.clientUnsub()
@@ -2520,9 +2524,14 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
         // Known insecure traffic and unencrypted is blocked.
         // This currently includes:
         // - port 80 (http)
+        // - ports 6881 to 6889 (bittorrent)
         allow := func()(bool) {
-            switch ipPath.DestinationPort {
-            case 80:
+            switch port := ipPath.DestinationPort; {
+            case port == 80:
+                // http
+                return false
+            case 6881 <= port && port <= 6889:
+                // bittorrent
                 return false
             default:
                 return true

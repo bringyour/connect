@@ -52,24 +52,31 @@ type MultiClientGenerator interface {
 
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
-        WindowSizeMin: 4,
-        WindowSizeMax: 32,
+        WindowSizeMin: 2,
+        WindowSizeMax: 8,
         // reconnects per source
-        WindowSizeReconnectScale: 0.5,
+        WindowSizeReconnectScale: 1.0,
         WriteRetryTimeout: 200 * time.Millisecond,
         PingWriteTimeout: 1 * time.Second,
         PingTimeout: 5 * time.Second,
         // a lower ack timeout helps cycle through bad providers faster
         AckTimeout: 10 * time.Second,
-        WindowResizeTimeout: 1 * time.Second,
+        WindowResizeTimeout: 5 * time.Second,
         StatsWindowGraceperiod: 5 * time.Second,
         StatsWindowEntropy: 0.25,
         WindowExpandTimeout: 15 * time.Second,
-        WindowEnumerateEmptyTimeout: 1 * time.Second,
+        // wait this time before enumerating potential clients again
+        WindowEnumerateEmptyTimeout: 60 * time.Second,
         WindowEnumerateErrorTimeout: 1 * time.Second,
+        WindowExpandScale: 2.0,
+        WindowCollapseScale: 0.5,
+        WindowExpandMaxOvershotScale: 4.0,
         StatsWindowDuration: 120 * time.Second,
         StatsWindowBucketDuration: 10 * time.Second,
         StatsSampleWeightsCount: 8,
+        StatsSourceCountSelection: 0.95,
+
+        RemoteUserNatMultiClientMonitorSettings: *DefaultRemoteUserNatMultiClientMonitorSettings(),
     }
 }
 
@@ -95,9 +102,15 @@ type MultiClientSettings struct {
     WindowExpandTimeout time.Duration
     WindowEnumerateEmptyTimeout time.Duration
     WindowEnumerateErrorTimeout time.Duration
+    WindowExpandScale float64
+    WindowCollapseScale float64
+    WindowExpandMaxOvershotScale float64
     StatsWindowDuration time.Duration
     StatsWindowBucketDuration time.Duration
     StatsSampleWeightsCount int
+    StatsSourceCountSelection float64
+
+    RemoteUserNatMultiClientMonitorSettings
 }
 
 
@@ -163,6 +176,10 @@ func NewRemoteUserNatMultiClient(
         updateIp6Paths: map[*multiClientChannelUpdate]map[Ip6Path]bool{},
         clientUpdates: map[*multiClientChannel]*multiClientChannelUpdate{},
     }
+}
+
+func (self *RemoteUserNatMultiClient) Monitor() *RemoteUserNatMultiClientMonitor {
+    return self.window.monitor
 }
 
 func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback func(*multiClientChannelUpdate)) {
@@ -297,15 +314,20 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 }
 
 // `SendPacketFunction`
-func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
+func (self *RemoteUserNatMultiClient) SendPacket(
+    source Path,
+    provideMode protocol.ProvideMode,
+    packet []byte,
+    timeout time.Duration,
+) (success bool) {
     parsedPacket, err := newParsedPacket(packet)
     if err != nil {
         // bad packet
         glog.Infof("[multi]send bad packet = %s\n", err)
-        return false
+        success = false
+        return
     }
 
-    success := false
     self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
         enterTime := time.Now()
 
@@ -315,6 +337,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             if err == nil {
                 return
             }
+            glog.Infof("[multi]send error = %s\n", err)
             // find a new client
             update.client = nil
         }
@@ -357,11 +380,14 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
                 // distribute the timeout evenly via wait
                 retryTimeoutPerClient := retryTimeout / time.Duration(len(orderedClients))
                 for _, client := range orderedClients {
-                    if client.Send(parsedPacket, retryTimeoutPerClient) {
+                    success, err = client.SendDetailed(parsedPacket, retryTimeoutPerClient)
+                    if success && err == nil {
                         // lock the path to the client
                         update.client = client
                         success = true
                         return
+                    } else if err != nil {
+                        glog.Infof("[multi]send error = %s\n", err)
                     }
                     select {
                     case <- self.ctx.Done():
@@ -382,7 +408,11 @@ func (self *RemoteUserNatMultiClient) SendPacket(source Path, provideMode protoc
             }
         }
     })
-    return success
+    return
+}
+
+func (self *RemoteUserNatMultiClient) Shuffle() {
+    self.window.shuffle()
 }
 
 func (self *RemoteUserNatMultiClient) Close() {
@@ -619,6 +649,8 @@ type multiClientWindow struct {
 
     clientChannelArgs chan *multiClientChannelArgs
 
+    monitor *RemoteUserNatMultiClientMonitor
+
     stateLock sync.Mutex
     destinationClients map[Id]*multiClientChannel
 }
@@ -637,6 +669,7 @@ func newMultiClientWindow(
         receivePacketCallback: receivePacketCallback,
         settings: settings,
         clientChannelArgs: make(chan *multiClientChannelArgs, settings.WindowSizeMin),
+        monitor: NewRemoteUserNatMultiClientMonitor(&settings.RemoteUserNatMultiClientMonitorSettings),
         destinationClients: map[Id]*multiClientChannel{},
     }
 
@@ -733,23 +766,21 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 }
 
 func (self *multiClientWindow) resize() {
+    // based on the most recent expand failure
+    expandOvershotScale := float64(1.0)
     for {
-        select {
-        case <- self.ctx.Done():
-            return
-        case <- time.After(self.settings.WindowResizeTimeout):
-        }
+        startTime := time.Now()
 
         clients := []*multiClientChannel{}
 
-        netSourceCount := 0
+        maxSourceCount := 0
         weights := map[*multiClientChannel]float32{}
         durations := map[*multiClientChannel]time.Duration{}
 
         for _, client := range self.clients() {
             if stats, err := client.WindowStats(); err == nil {
                 clients = append(clients, client)
-                netSourceCount = max(netSourceCount, stats.sourceCount)
+                maxSourceCount = max(maxSourceCount, stats.sourceCount)
                 // byte count per second
                 weights[client] = float32(stats.ByteCountPerSecond())
                 durations[client] = stats.duration
@@ -773,64 +804,114 @@ func (self *multiClientWindow) resize() {
 
         targetWindowSize := min(
             self.settings.WindowSizeMax,
-            int(math.Ceil(
-                float64(self.settings.WindowSizeMin) + 
-                float64(netSourceCount) * self.settings.WindowSizeReconnectScale,
-            )),
+            max(
+                self.settings.WindowSizeMin, 
+                int(math.Ceil(float64(maxSourceCount) * self.settings.WindowSizeReconnectScale)),
+            ),
         )
 
-        if len(clients) < targetWindowSize {
-            // expand
-            n := targetWindowSize - len(clients)
-            glog.Infof("[multi]expand +%d ->%d\n", n, targetWindowSize)
-            self.expand(n)
-        } else {
-            collapseLowestWeighted := func(windowSize int)(int) {
-                // try to remove the lowest weighted clients to resize the window to `windowSize`
-                // clients in the graceperiod or with activity cannot be removed
+        // expand and collapse have scale thresholds to avoid jittery resizing
+        // too much resing wastes device resources
+        expandWindowSize := min(
+            self.settings.WindowSizeMax,
+            max(
+                self.settings.WindowSizeMin,
+                int(math.Ceil(self.settings.WindowExpandScale * float64(len(clients)))),
+            ),
+        )
+        collapseWindowSize := int(math.Ceil(self.settings.WindowCollapseScale * float64(len(clients))))
 
-                self.stateLock.Lock()
-                defer self.stateLock.Unlock()
+        collapseLowestWeighted := func(windowSize int)(int) {
+            // try to remove the lowest weighted clients to resize the window to `windowSize`
+            // clients in the graceperiod or with activity cannot be removed
 
-                n := 0
+            self.stateLock.Lock()
+            defer self.stateLock.Unlock()
 
-                collapseClients := clients[windowSize:]
-                clients = clients[:windowSize]
-                for _, client := range collapseClients {
-                    if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
-                        client.Cancel()
-                        n += 1
-                    } else {
-                        clients = append(clients, client)
-                    }
+            n := 0
+
+            collapseClients := clients[windowSize:]
+            clients = clients[:windowSize]
+            for _, client := range collapseClients {
+                if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
+                    client.Cancel()
+                    n += 1
+                } else {
+                    clients = append(clients, client)
                 }
-
-                destinationClients := map[Id]*multiClientChannel{}
-                for _, client := range clients {
-                    destinationClients[client.DestinationId()] = client
-                }
-                self.destinationClients = destinationClients
-
-                return n
             }
 
-            if targetWindowSize < len(clients) {
-                n := collapseLowestWeighted(targetWindowSize)
-                if 0 < n {
-                    glog.Infof("[multi]collapse -%d ->%d\n", n, len(clients))
-                }
-            } else if q3 := 3 * len(clients) / 4; q3 + 1 < len(clients) {
-                // optimize by removing unused from q4
-                n := collapseLowestWeighted(q3 + 1)
-                if 0 < n {
-                    glog.Infof("[multi]optimize -%d ->%d\n", n, len(clients))
-                }
+            destinationClients := map[Id]*multiClientChannel{}
+            for _, client := range clients {
+                destinationClients[client.DestinationId()] = client
+            }
+            self.destinationClients = destinationClients
+
+            return n
+        }
+
+        if expandWindowSize <= targetWindowSize && len(clients) < expandWindowSize {
+            // collapse badly performing clients before expanding
+            n := collapseLowestWeighted(0)
+            if 0 < n {
+                glog.Infof("[multi]window optimize -%d ->%d\n", n, len(clients))
+            }
+
+            // expand
+            n = expandWindowSize - len(clients)
+            self.monitor.AddWindowExpandEvent(len(clients), expandWindowSize)
+            overN := int(math.Ceil(expandOvershotScale * float64(n)))
+            glog.Infof("[multi]window expand +%d(%d) %d->%d\n", n, overN, len(clients), expandWindowSize)
+            self.expand(len(clients), expandWindowSize, overN)
+
+            // evaluate the next overshot scale
+            func () {
+                self.stateLock.Lock()
+                defer self.stateLock.Unlock()
+                n = len(self.destinationClients) - len(clients)
+            }()
+            if n <= 0 {
+                expandOvershotScale = self.settings.WindowExpandMaxOvershotScale
+            } else {
+                // overN = s * n
+                expandOvershotScale = min(
+                    self.settings.WindowExpandMaxOvershotScale,
+                    float64(overN) / float64(n),
+                )
+            }
+        } else if targetWindowSize <= collapseWindowSize && collapseWindowSize < len(clients) {
+            self.monitor.AddWindowExpandEvent(len(clients), collapseWindowSize)
+            n := collapseLowestWeighted(collapseWindowSize)
+            if 0 < n {
+                glog.Infof("[multi]window collapse -%d ->%d\n", n, len(clients))
+            }
+            self.monitor.AddWindowExpandEvent(len(clients), collapseWindowSize)
+        } else {
+            self.monitor.AddWindowExpandEvent(len(clients), len(clients))
+            glog.Infof("[multi]window stable =%d\n", len(clients))
+        }
+
+        timeout := self.settings.WindowResizeTimeout - time.Now().Sub(startTime)
+        if timeout <= 0 {
+            select {
+            case <- self.ctx.Done():
+                return
+            default:
+            }
+        } else {
+            select {
+            case <- self.ctx.Done():
+                return
+            case <- time.After(timeout):
             }
         }
     }
 }
 
-func (self *multiClientWindow) expand(n int) {
+func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize int, n int) {
+    mutex := sync.Mutex{}
+    addedCount := 0
+
     endTime := time.Now().Add(self.settings.WindowExpandTimeout)
     pendingPingDones := []chan struct{}{}
     for i := 0; i < n; i += 1 {
@@ -867,6 +948,8 @@ func (self *multiClientWindow) expand(n int) {
                     self.settings,
                 )
                 if err == nil {
+                    self.monitor.AddProviderEvent(args.ClientId, ProviderStateInEvaluation)
+
                     // send an initial ping on the client and let the ack timeout close it
                     pingDone := make(chan struct{})
                     success, err := client.SendDetailedMessage(
@@ -876,14 +959,22 @@ func (self *multiClientWindow) expand(n int) {
                             defer close(pingDone)
                             if err == nil {
                                 glog.Infof("[multi]expand new client\n")
+                                self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded)
                                 func () {
                                     self.stateLock.Lock()
                                     defer self.stateLock.Unlock()
                                     self.destinationClients[args.DestinationId] = client
                                 }()
+                                func() {
+                                    mutex.Lock()
+                                    defer mutex.Unlock()
+                                    addedCount += 1
+                                    self.monitor.AddWindowExpandEvent(currentWindowSize + addedCount, targetWindowSize)
+                                }()
                             } else {
                                 glog.Infof("[multi]create ping error = %s\n", err)
                                 client.Cancel()
+                                self.monitor.AddProviderEvent(args.ClientId, ProviderStateEvaluationFailed)
                             }
                         },
                     )
@@ -892,6 +983,7 @@ func (self *multiClientWindow) expand(n int) {
                         client.Cancel()
                     } else if !success {
                         client.Cancel()
+                        self.monitor.AddProviderEvent(args.ClientId, ProviderStateEvaluationFailed)
                     } else {
                         // async wait for the ping
                         pendingPingDones = append(pendingPingDones, pingDone)
@@ -907,6 +999,7 @@ func (self *multiClientWindow) expand(n int) {
                 } else {
                     glog.Infof("[multi]create client error = %s\n", err)
                     self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
+                    self.monitor.AddProviderEvent(args.ClientId, ProviderStateEvaluationFailed)
                 }
             }
         case <- time.After(timeout):
@@ -915,19 +1008,20 @@ func (self *multiClientWindow) expand(n int) {
     }
 
     // wait for pending pings
-    pingDoneEndTime := time.Now().Add(self.settings.PingTimeout)
     for _, pingDone := range pendingPingDones {
-        timeout := pingDoneEndTime.Sub(time.Now())
-        if timeout < 0 {
-            return
-        }
         select {
         case <- self.ctx.Done():
             return
         case <- pingDone:
-        case <- time.After(timeout):
-            // something went wrong
         }
+    }
+
+    return
+}
+
+func (self *multiClientWindow) shuffle() {
+    for _, client := range self.clients() {
+        client.Cancel()
     }
 }
 
@@ -965,6 +1059,9 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
                 delete(self.destinationClients, client.DestinationId())
             }
         }()
+        for _, client := range removedClients {
+            self.monitor.AddProviderEvent(client.ClientId(), ProviderStateRemoved)
+        }
     }
 
     // iterate and adjust weights for clients with weights >= 0
@@ -1174,6 +1271,10 @@ func newMultiClientChannel(
     clientChannel.clientReceiveUnsub = clientReceiveUnsub
 
     return clientChannel, nil
+}
+
+func (self *multiClientChannel) ClientId() Id {
+    return self.client.ClientId()
 }
 
 func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Duration) bool {
@@ -1449,14 +1550,49 @@ func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientW
     }
 
 
-    maxSourceCount := 0
-    for _, sourceCounts := range self.ip4DestinationSourceCount {
-        maxSourceCount = max(maxSourceCount, len(sourceCounts))
-    }
-    for _, sourceCounts := range self.ip6DestinationSourceCount {
-        maxSourceCount = max(maxSourceCount, len(sourceCounts))
+    // public internet resource ports
+    isPublicPort := func(port int)(bool) {
+        switch port {
+        case 443:
+            return true
+        default:
+            return false
+        }
     }
 
+
+    netSourceCounts := []int{}
+    for ip4Path, sourceCounts := range self.ip4DestinationSourceCount {
+        if isPublicPort(ip4Path.DestinationPort) {
+            netSourceCounts = append(netSourceCounts, len(sourceCounts))
+        }
+    }
+    for ip6Path, sourceCounts := range self.ip6DestinationSourceCount {
+        if isPublicPort(ip6Path.DestinationPort) {
+            netSourceCounts = append(netSourceCounts, len(sourceCounts))
+        }
+    }
+    slices.Sort(netSourceCounts)
+    maxSourceCount := 0
+    if selectionIndex := int(math.Ceil(self.settings.StatsSourceCountSelection * float64(len(netSourceCounts) - 1))); selectionIndex < len(netSourceCounts) {
+        maxSourceCount = netSourceCounts[selectionIndex]
+    }
+    if glog.V(2) {
+        for ip4Path, sourceCounts := range self.ip4DestinationSourceCount {
+            if isPublicPort(ip4Path.DestinationPort) {
+                if len(sourceCounts) == maxSourceCount {
+                    glog.Infof("[multi]max source count %d = %v\n", maxSourceCount, ip4Path)
+                }
+            }
+        }
+        for ip6Path, sourceCounts := range self.ip6DestinationSourceCount {
+            if isPublicPort(ip6Path.DestinationPort) {
+                if len(sourceCounts) == maxSourceCount {
+                    glog.Infof("[multi]max source count %d = %v\n", maxSourceCount, ip6Path)
+                }
+            }
+        }
+    }
     stats := &clientWindowStats{
         sourceCount: maxSourceCount,
         ackCount: self.packetStats.ackCount,

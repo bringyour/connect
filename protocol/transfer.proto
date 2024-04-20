@@ -32,6 +32,11 @@ message FilteredTransferFrame {
     TransferPath transfer_path = 1;
 }
 
+message FilteredTransferFrameWithFrame {
+    TransferPath transfer_path = 1;
+    FilteredFrame frame = 2;
+}
+
 
 message Pack {
     // ulid

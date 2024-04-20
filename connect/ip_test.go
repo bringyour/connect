@@ -475,23 +475,23 @@ func testClient[P comparable](
 		}
 		for _, frame := range frames {
             if ipPacketToProvider_, err := FromFrame(frame); err == nil {
-	            ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
+            	if ipPacketToProvider, ok := ipPacketToProvider_.(*protocol.IpPacketToProvider); ok {
+		            packet := ipPacketToProvider.IpPacket.PacketBytes
 
-	            packet := ipPacketToProvider.IpPacket.PacketBytes
+		            receivePacket := &receivePacket{
+		            	sourceId: sourceId,
+		            	packet: packet,
+		            }
 
-	            receivePacket := &receivePacket{
-	            	sourceId: sourceId,
-	            	packet: packet,
-	            }
+		            receivePackets <- receivePacket
 
-	            receivePackets <- receivePacket
-
-	            for i := 0; i < echoCount; i += 1 {
-	            	// do not make a blocking call back into the client from the receiver
-	            	// this could deadlock the client depending on whether other messages are
-	            	// queued to this receiver
-		            go echo(packet)
-		        }
+		            for i := 0; i < echoCount; i += 1 {
+		            	// do not make a blocking call back into the client from the receiver
+		            	// this could deadlock the client depending on whether other messages are
+		            	// queued to this receiver
+			            go echo(packet)
+			        }
+			    }
 	        }
 
         }

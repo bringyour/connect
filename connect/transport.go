@@ -39,7 +39,6 @@ type PlatformTransportSettings struct {
     PingTimeout time.Duration
     WriteTimeout time.Duration
     ReadTimeout time.Duration
-    TransportDrainTimeout time.Duration
 }
 
 
@@ -53,7 +52,6 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
         PingTimeout: pingTimeout,
         WriteTimeout: 5 * time.Second,
         ReadTimeout: 2 * pingTimeout,
-        TransportDrainTimeout: 30 * time.Second,
     }
 }
 
@@ -222,7 +220,10 @@ func (self *PlatformTransport) run() {
         }
 
         c := func() {
+            defer ws.Close()
+
             handleCtx, handleCancel := context.WithCancel(self.ctx)
+            defer handleCancel()
 
             send := make(chan []byte, TransportBufferSize)
             receive := make(chan []byte, TransportBufferSize)
@@ -238,18 +239,9 @@ func (self *PlatformTransport) run() {
             defer func() {
                 self.routeManager.RemoveTransport(sendTransport)
                 self.routeManager.RemoveTransport(receiveTransport)
-                
-                handleCancel()
-                ws.Close()
 
-                go func() {
-                    select {
-                    case <- handleCtx.Done():
-                    case <- time.After(self.settings.TransportDrainTimeout):
-                    }
-
-                    close(send)
-                }()
+                // note `send` is not closed. This channel is left open.
+                // it used to be closed after a delay, but it is not needed to close it.
             }()
 
             go func() {
@@ -305,16 +297,17 @@ func (self *PlatformTransport) run() {
                     case websocket.BinaryMessage:
                         if 0 == len(message) {
                             // ping
+                            glog.V(2).Infof("[tr]ping %s<-\n", clientId)
                             continue
                         }
-
-                        glog.V(2).Infof("[tr]%s<-\n", clientId)
 
                         select {
                         case <- handleCtx.Done():
                             return
                         case receive <- message:
+                            glog.V(2).Infof("[tr]%s<-\n", clientId)
                         case <- time.After(self.settings.ReadTimeout):
+                            glog.Infof("[tr]drop %s<-\n", clientId)
                         }
                     }
                 }
@@ -322,8 +315,7 @@ func (self *PlatformTransport) run() {
 
             select {
             case <- handleCtx.Done():
-                return
-            }  
+            }
         }
         if glog.V(2) {
             Trace(fmt.Sprintf("[t]connect %s", clientId), c)
