@@ -222,7 +222,10 @@ func (self *PlatformTransport) run() {
         }
 
         c := func() {
+            defer ws.Close()
+
             handleCtx, handleCancel := context.WithCancel(self.ctx)
+            defer handleCancel()
 
             send := make(chan []byte, TransportBufferSize)
             receive := make(chan []byte, TransportBufferSize)
@@ -238,9 +241,6 @@ func (self *PlatformTransport) run() {
             defer func() {
                 self.routeManager.RemoveTransport(sendTransport)
                 self.routeManager.RemoveTransport(receiveTransport)
-                
-                handleCancel()
-                ws.Close()
 
                 go func() {
                     select {
@@ -309,13 +309,13 @@ func (self *PlatformTransport) run() {
                             continue
                         }
 
-                        glog.V(2).Infof("[tr]%s<-\n", clientId)
-
                         select {
                         case <- handleCtx.Done():
                             return
                         case receive <- message:
+                            glog.V(2).Infof("[tr]%s<-\n", clientId)
                         case <- time.After(self.settings.ReadTimeout):
+                            glog.Infof("[tr]drop %s<-\n", clientId)
                         }
                     }
                 }
@@ -323,7 +323,6 @@ func (self *PlatformTransport) run() {
 
             select {
             case <- handleCtx.Done():
-                return
             }
         }
         if glog.V(2) {
