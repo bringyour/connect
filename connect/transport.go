@@ -39,7 +39,6 @@ type PlatformTransportSettings struct {
     PingTimeout time.Duration
     WriteTimeout time.Duration
     ReadTimeout time.Duration
-    TransportDrainTimeout time.Duration
 }
 
 
@@ -53,7 +52,6 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
         PingTimeout: pingTimeout,
         WriteTimeout: 5 * time.Second,
         ReadTimeout: 2 * pingTimeout,
-        TransportDrainTimeout: 30 * time.Second,
     }
 }
 
@@ -242,14 +240,8 @@ func (self *PlatformTransport) run() {
                 self.routeManager.RemoveTransport(sendTransport)
                 self.routeManager.RemoveTransport(receiveTransport)
 
-                go func() {
-                    select {
-                    case <- handleCtx.Done():
-                    case <- time.After(self.settings.TransportDrainTimeout):
-                    }
-
-                    close(send)
-                }()
+                // note `send` is not closed. This channel is left open.
+                // it used to be closed after a delay, but it is not needed to close it.
             }()
 
             go func() {
