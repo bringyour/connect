@@ -107,6 +107,48 @@ connectClient.Cancel()
 
 More security and speed can be achieved using multiple clientIds that add and balance traffic to multiple destinations based on throughput. Each clientId has a maximum lifespan to limit tracing. This is called continuous optimization and the default way to use the public market.
 
+## Systems Diagrams
+
+### Client / Provider Interaction
+
+Core logic of network code within `/connect` folder
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant CM as Contract Manager
+    participant RM as Route Manager
+    participant P as Provider
+    <!-- participant PT as Platform Transport -->
+
+    C->>CM: Request Contract
+    CM-->>C: Contract Details
+    C->>RM: Send Data with Contract
+    RM->>P: Data Packets
+    P-->>RM: Acknowledge Receipt
+    RM-->>C: Notify Acknowledgement
+
+    C->>RM: Receive Data Request
+    RM->>P: Data Request
+    P-->>RM: Data Packets
+    RM-->>C: Deliver Data
+
+    <!-- C->>RM: Forward Data to Another Client
+    RM->>P: Forward Data Packets
+    P->>PT: Use Platform Transport
+    PT-->>C: Deliver Forwarded Data -->
+```
+
+Definitions
+- Client: entity that uses the BringYour VPN network and service
+- Provider: entity that offers network services to clients, responsible for routing client traffic through their network infrastructure, allowing client to access web resources privately
+- Contract: data structure that specifies data transfer limits, duration, and other conditions between a client and a provider (`protocol.Contract`)
+- Contract Manager: handles the creation, negotiation, and maintenance of contracts (`transfer_contract_manager.go`)
+- Route Manager: intermediary that determines the best path for data to travel based on the available routes (`transfer_route_manager.go`)
+
+Notes
+- `Contract Manager` and `Route Manager` are currently initialized by the client/s in the network (`connect.NewClientWithTag`) so each client establishes its own instance of both.
+
 ## Issues
 
 Submit issues on the [issues page](https://github.com/bringyour/connect/issues). 
