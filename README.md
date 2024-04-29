@@ -143,7 +143,7 @@ Definitions
 Notes
 - `Contract Manager` and `Route Manager` are currently initialized by the client/s in the network (`connect.NewClientWithTag`) so each client establishes its own instance of both.
 
-#### 
+#### Code diagram
 
 With the above diagram, explaining the overall structure, here is deeper look with the actual function calls and classes used within `/connect`
 
