@@ -127,10 +127,10 @@ sequenceDiagram
     P-->>RM: Acknowledge Receipt
     RM-->>C: Notify Acknowledgement
 
-    C->>RM: Receive Data Request
-    RM->>P: Data Request
-    P-->>RM: Data Packets
-    RM-->>C: Deliver Data
+    C->>RM: Request data from provider
+    RM->>P: Retrieve data for client
+    P-->>RM: Send data packets
+    RM-->>C: Deliver data to client
 ```
 
 Definitions
