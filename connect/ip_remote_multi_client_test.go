@@ -170,7 +170,8 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	// ensure that the bucket counts are bounded
 	// if this is broken, the coalesce logic is broken and there will be a memory issue
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	timeout := 10 * time.Second
 
