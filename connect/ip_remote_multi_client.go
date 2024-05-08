@@ -61,6 +61,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         PingTimeout: 5 * time.Second,
         // a lower ack timeout helps cycle through bad providers faster
         AckTimeout: 10 * time.Second,
+        BlackholeTimeout: 10 * time.Second,
         WindowResizeTimeout: 5 * time.Second,
         StatsWindowGraceperiod: 5 * time.Second,
         StatsWindowEntropy: 0.25,
@@ -96,6 +97,7 @@ type MultiClientSettings struct {
     PingWriteTimeout time.Duration
     PingTimeout time.Duration
     AckTimeout time.Duration
+    BlackholeTimeout time.Duration
     WindowResizeTimeout time.Duration
     StatsWindowGraceperiod time.Duration
     StatsWindowEntropy float32
@@ -1154,10 +1156,13 @@ type multiClientEventBucket struct {
     createTime time.Time
     eventTime time.Time
 
-    ackCount int
-    ackByteCount ByteCount
-    nackCount int
-    nackByteCount ByteCount
+    sendAckCount int
+    sendAckByteCount ByteCount
+    sendNackCount int
+    sendNackByteCount ByteCount
+    receiveAckCount int
+    receiveAckByteCount ByteCount
+    sendAckTime time.Time
     errs []error
     ip4Paths map[Ip4Path]bool
     ip6Paths map[Ip6Path]bool
@@ -1173,11 +1178,15 @@ func newMultiClientEventBucket() *multiClientEventBucket {
 
 type clientWindowStats struct {
     sourceCount int
-    ackCount int
-    nackCount int
+    sendAckCount int
+    sendAckByteCount ByteCount
+    sendNackCount int
+    sendNackByteCount ByteCount
+    receiveAckCount int
+    receiveAckByteCount ByteCount
     ackByteCount ByteCount
-    nackByteCount ByteCount
     duration time.Duration
+    sendAckDuration time.Duration
 
     // internal
     bucketCount int
@@ -1188,7 +1197,7 @@ func (self *clientWindowStats) ByteCountPerSecond() ByteCount {
     if seconds <= 0 {
         return ByteCount(0)
     }
-    return ByteCount(float64(self.ackByteCount - self.nackByteCount) / seconds)
+    return ByteCount(float64(self.sendAckByteCount - self.sendNackByteCount + self.receiveAckByteCount) / seconds)
 }
 
 
@@ -1266,6 +1275,7 @@ func newMultiClientChannel(
         packetStats: &clientWindowStats{},
         endErr: nil,
     }
+    go HandleError(clientChannel.detectBlackhole, cancel)
 
     clientReceiveUnsub := client.AddReceiveCallback(clientChannel.clientReceive)
     clientChannel.clientReceiveUnsub = clientReceiveUnsub
@@ -1343,6 +1353,55 @@ func (self *multiClientChannel) DestinationId() Id {
     return self.args.DestinationId
 }
 
+func (self *multiClientChannel) detectBlackhole() {
+    // within a timeout window, if there are sent data but none received,
+    // error out. This is similar to an ack timeout.
+    defer self.cancel()
+
+    for {
+        if windowStats, err := self.WindowStats(); err != nil {
+            return
+        } else {
+            timeout := self.settings.BlackholeTimeout - windowStats.sendAckDuration
+            if timeout <= 0 {
+                timeout = self.settings.BlackholeTimeout
+                
+                if 0 < windowStats.sendAckCount && windowStats.receiveAckCount <= 0 {
+                    // the client has sent data but received nothing back
+                    // this looks like a blackhole
+                    glog.Infof("[multi]routing %s blackhole: %d %dB <> %d %dB\n",
+                        self.args.DestinationId,
+                        windowStats.sendAckCount,
+                        windowStats.sendAckByteCount,
+                        windowStats.receiveAckCount,
+                        windowStats.receiveAckByteCount,
+                    )
+                    self.addError(fmt.Errorf("Blackhole (%d %dB)",
+                        windowStats.sendAckCount,
+                        windowStats.sendAckByteCount,
+                    ))
+                    return
+                } else {
+                    glog.Infof(
+                        "[multi]routing ok %s: %d %dB <> %d %dB\n",
+                        self.args.DestinationId,
+                        windowStats.sendAckCount,
+                        windowStats.sendAckByteCount,
+                        windowStats.receiveAckCount,
+                        windowStats.receiveAckByteCount,
+                    )
+                }
+            }
+
+            select {
+            case <- self.ctx.Done():
+                return
+            case <- time.After(timeout):
+            }
+        }
+    }
+}
+
 func (self *multiClientChannel) eventBucket() *multiClientEventBucket {
     // must be called with stateLock
 
@@ -1371,12 +1430,12 @@ func (self *multiClientChannel) addSendNack(ackByteCount ByteCount) {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
 
-    self.packetStats.nackCount += 1
-    self.packetStats.nackByteCount += ackByteCount
+    self.packetStats.sendNackCount += 1
+    self.packetStats.sendNackByteCount += ackByteCount
 
     eventBucket := self.eventBucket()
-    eventBucket.nackCount += 1
-    eventBucket.nackByteCount += ackByteCount
+    eventBucket.sendNackCount += 1
+    eventBucket.sendNackByteCount += ackByteCount
 
     self.coalesceEventBuckets()
 }
@@ -1385,14 +1444,17 @@ func (self *multiClientChannel) addSendAck(ackByteCount ByteCount) {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
 
-    self.packetStats.nackCount -= 1
-    self.packetStats.nackByteCount -= ackByteCount
-    self.packetStats.ackCount += 1
-    self.packetStats.ackByteCount += ackByteCount
+    self.packetStats.sendNackCount -= 1
+    self.packetStats.sendNackByteCount -= ackByteCount
+    self.packetStats.sendAckCount += 1
+    self.packetStats.sendAckByteCount += ackByteCount
 
     eventBucket := self.eventBucket()
-    eventBucket.ackCount += 1
-    eventBucket.ackByteCount += ackByteCount
+    if eventBucket.sendAckCount == 0 {
+        eventBucket.sendAckTime = time.Now()
+    }
+    eventBucket.sendAckCount += 1
+    eventBucket.sendAckByteCount += ackByteCount
 
     self.coalesceEventBuckets()
 }
@@ -1401,12 +1463,12 @@ func (self *multiClientChannel) addReceiveAck(ackByteCount ByteCount) {
     self.stateLock.Lock()
     defer self.stateLock.Unlock()
 
-    self.packetStats.ackCount += 1
-    self.packetStats.ackByteCount += ackByteCount
+    self.packetStats.receiveAckCount += 1
+    self.packetStats.receiveAckByteCount += ackByteCount
 
     eventBucket := self.eventBucket()
-    eventBucket.ackCount += 1
-    eventBucket.ackByteCount += ackByteCount
+    eventBucket.receiveAckCount += 1
+    eventBucket.receiveAckByteCount += ackByteCount
 
     self.coalesceEventBuckets()
 }
@@ -1485,8 +1547,10 @@ func (self *multiClientChannel) coalesceEventBuckets() {
             break
         }
 
-        self.packetStats.ackCount -= eventBucket.ackCount
-        self.packetStats.ackByteCount -= eventBucket.ackByteCount
+        self.packetStats.sendAckCount -= eventBucket.sendAckCount
+        self.packetStats.sendAckByteCount -= eventBucket.sendAckByteCount
+        self.packetStats.receiveAckCount -= eventBucket.receiveAckCount
+        self.packetStats.receiveAckByteCount -= eventBucket.receiveAckByteCount
 
         for ip4Path, _ := range eventBucket.ip4Paths {
             source := ip4Path.Source()
@@ -1548,6 +1612,13 @@ func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientW
     if 0 < len(self.eventBuckets) {
         duration = time.Now().Sub(self.eventBuckets[0].createTime)
     }
+    sendAckDuration := time.Duration(0)
+    for _, eventBucket := range self.eventBuckets {
+        if 0 < eventBucket.sendAckCount {
+            sendAckDuration = time.Now().Sub(eventBucket.sendAckTime)
+            break
+        }
+    }
 
 
     // public internet resource ports
@@ -1595,11 +1666,14 @@ func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientW
     }
     stats := &clientWindowStats{
         sourceCount: maxSourceCount,
-        ackCount: self.packetStats.ackCount,
-        nackCount: self.packetStats.nackCount,
-        ackByteCount: self.packetStats.ackByteCount,
-        nackByteCount: self.packetStats.nackByteCount,
+        sendAckCount: self.packetStats.sendAckCount,
+        sendNackCount: self.packetStats.sendNackCount,
+        sendAckByteCount: self.packetStats.sendAckByteCount,
+        sendNackByteCount: self.packetStats.sendNackByteCount,
+        receiveAckCount: self.packetStats.receiveAckCount,
+        receiveAckByteCount: self.packetStats.receiveAckByteCount,
         duration: duration,
+        sendAckDuration: sendAckDuration,
         bucketCount: len(self.eventBuckets),
     }
     err := self.endErr
