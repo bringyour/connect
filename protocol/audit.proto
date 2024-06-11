@@ -50,10 +50,10 @@ option go_package = "bringyour.com/protocol";
 // note the platform does not have prior knowledge and would have to brute force decrypt the audit record
 // the provider creates and encrypts the final `AccountRecord` from the partial and discards the partial
 message ProviderAudit {
-    EncryptedAuditRecord Record = 1;
+    EncryptedEgressRecord Egress = 1;
     // this data is used to encode the associated `AccountRecord`
     // this data is not stored and should be thrown out by the platform
-    AccountRecordPartial Partial = 2;
+    AccountRecordPartial AccountPartial = 2;
 }
 
 
@@ -82,15 +82,15 @@ message EgressKeyWithSalt {
 }
 
 
-// the `EncruptedAuditRecord` is created on the provider so that the platform cannot see the raw data
+// this created on the provider so that the platform cannot see the raw data
 // a complete audit record is an `EgressRecord` and an `AccountRecord`
-message EncryptedAuditRecord {
+message EncryptedEgressRecord {
     // 128-bit
     bytes Salt = 1;
     // Argon2id of `EgressKeyWithSalt`
     bytes KeyWithSaltHash = 2;
     // AES256 using `EgressRecordSecret`
-    bytes EncryptedEgressRecord = 3;
+    bytes EncryptedEgress = 3;
 }
 
 message AccountRecordPartial {
