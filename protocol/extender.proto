@@ -6,7 +6,9 @@ option go_package = "bringyour.com/protocol";
 
 
 message ExtenderHeader {
-    string DestinationHost = 1;
-    uint32 DestinationPort = 2;
+// FIXME this should be a signature not the secret to avoid revealing the secret
+    string Secret = 1;
+    string DestinationHost = 2;
+    uint32 DestinationPort = 3;
 }
 

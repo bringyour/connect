@@ -518,7 +518,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
                 }
             }
         }
-        
+
         if 0 < self.udpBufferSettings.UserLimit {
             // limit the total connections per source to avoid blowing up the ulimit
             if sourceSequences := self.sourceSequences[source]; self.udpBufferSettings.UserLimit < len(sourceSequences) {
@@ -535,6 +535,10 @@ func (self *UdpBuffer[BufferId]) udpSend(
                 })
             }
         }
+
+        // TODO
+        // limit the number of new connections per second per source
+        // self.sourceLimiter[source].Limit()
 
         sequence = NewUdpSequence(
             self.ctx,
@@ -1082,7 +1086,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
                 delete(self.sourceSequences, sequence.source)
             }
         }
-        
+
         if 0 < self.tcpBufferSettings.UserLimit {
             // limit the total connections per source to avoid blowing up the ulimit
             if sourceSequences := self.sourceSequences[source]; self.tcpBufferSettings.UserLimit < len(sourceSequences) {
@@ -1099,6 +1103,10 @@ func (self *TcpBuffer[BufferId]) tcpSend(
                 })
             }
         }
+
+        // TODO
+        // limit the number of new connections per second per source
+        // self.sourceLimiter[source].Limit()
 
         sequence := NewTcpSequence(
             self.ctx,
@@ -1323,6 +1331,10 @@ func (self *TcpSequence) Run() {
         return
     }
     defer socket.Close()
+
+    // EXPORT audit record for start
+    // EVERY 5 MINUTES, EXPORT audit record
+    // AT CLOSE, EXPORT audit recordp89
 
     // tcpSocket := socket.(*net.TCPConn)
     // tcpSocket.SetNoDelay(false)
@@ -2519,16 +2531,26 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
             return ipPath, SecurityPolicyResultIncident 
         }
 
-        // block insecure or unencrypted traffic is implemented as a block list,
-        // rather than an allow list.
-        // Known insecure traffic and unencrypted is blocked.
-        // This currently includes:
-        // - port 80 (http)
-        // - ports 6881 to 6889 (bittorrent)
+        // block insecure or unencrypted traffic
+        // block known destructive protocols
+        // - allow secure web and dns traffic (443)
+        // - allow email protocols (465, 993, 995)
+        // - allow dns over tls (853)
+        // - allow user ports (>=1024)
+        // - block bittorrent (6881-6889)
+        // TODO in the future, allow a control message to dynamically adjust the security rules
         allow := func()(bool) {
             switch port := ipPath.DestinationPort; {
-            case port == 80:
-                // http
+            case port == 443:
+                // https
+                return true
+            case port == 465, port == 993, port == 995:
+                // email
+                return true
+            case port == 853:
+                // dns over tls
+                return true
+            case port < 1024:
                 return false
             case 6881 <= port && port <= 6889:
                 // bittorrent
