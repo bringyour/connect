@@ -78,6 +78,8 @@ Usage:
     	[--extender_secret=<extender_secret>]
     	[--api_url=<api_url>]
     	[--delay=<delay>]
+        [--spoof_host=<spoof_host>...]
+        [--spoof_port=<spoof_port>...]
     
 Options:
     -h --help                        Show this screen.
@@ -88,7 +90,8 @@ Options:
     --extender_ip=<extender_ip>
     --secret=<secret>
     --port=<port>
-    --host=<host>    If omitted, allows the default api and connect hosts.`,
+    --host=<host>    If omitted, allows the default api and connect hosts.
+    --spoof_host=<spoof_host>`,
         DefaultApiUrl,
         DefaultConnectUrl,
     )
@@ -214,10 +217,14 @@ func server(opts docopt.Opts) {
 
 func probe(opts docopt.Opts) {
 
+    connectMode := connect.ExtenderConnectModeQuic
+
     extenderIps := []net.IP{}
     extenderSecret := ""
     apiUrl := DefaultApiUrl
     scanDelay := 50 * time.Millisecond
+    spoofHosts := []string{}
+    spoofPorts := []int{}
 
     if extenderIpStrs, ok := opts["--extender_ip"]; ok {
         if v, ok := extenderIpStrs.([]string); ok {
@@ -252,6 +259,22 @@ func probe(opts docopt.Opts) {
         }
     }
 
+    if spoofHostsStrs, ok := opts["--spoof_host"]; ok {
+        if v, ok := spoofHostsStrs.([]string); ok {
+            spoofHosts = append(spoofHosts, v...)
+        }
+    }
+
+    if spoofPortStrs, ok := opts["--spoof_port"]; ok {
+        if v, ok := spoofPortStrs.([]string); ok {
+            for _, spoofPortStr := range v {
+                if spoofPort, err := strconv.Atoi(spoofPortStr); err == nil {
+                    spoofPorts = append(spoofPorts, spoofPort)
+                }
+            }
+        }
+    }
+
 
     callback := func(config *connect.ExtenderConfig, success bool) {
         if success {
@@ -268,21 +291,83 @@ func probe(opts docopt.Opts) {
         }
     }
 
-    SearchMailExtenders(
-        extenderIps,
-        extenderSecret,
-        apiUrl,
-        scanDelay,
-        callback,
-    )
+    if 0 < len(spoofHosts) {
+        if len(spoofPorts) == 0 {
+            standardPorts := []int{
+                // https and secure dns
+                443,
+                // dns
+                853,
+                // ldap
+                636,
+                // ftp
+                989,
+                990,
+                // telnet
+                992,
+                // irc
+                994,
+                // docker
+                2376,
+                // ldap
+                3269,
+                // sip
+                5061,
+                // powershell
+                5986,
+                // alt https
+                8443,
+                // tor
+                9001,
+                // imap
+                993,
+                // pop
+                995,
+                // smtp
+                465,
+                // ntp, nts
+                4460,
+                // cpanel
+                2083,
+                2096,
+                // webhost mail
+                2087,
+            }
+            spoofPorts = append(spoofPorts, standardPorts...)
+        }
 
-    SearchWebExtenders(
-        extenderIps,
-        extenderSecret,
-        apiUrl,
-        scanDelay,
-        callback,
-    )
+        SearchExtenders(
+            connectMode,
+            spoofHosts,
+            extenderIps,
+            extenderSecret,
+            spoofPorts,
+            apiUrl,
+            scanDelay,
+            callback,
+        )
+
+
+    } else {
+
+        SearchMailExtenders(
+            connectMode,
+            extenderIps,
+            extenderSecret,
+            apiUrl,
+            scanDelay,
+            callback,
+        )
+
+        SearchWebExtenders(
+            connectMode,
+            extenderIps,
+            extenderSecret,
+            apiUrl,
+            scanDelay,
+            callback,
+        )
+    }
 
 }
 

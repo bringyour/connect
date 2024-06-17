@@ -14,6 +14,7 @@ import (
 
 
 func SearchMailExtenders(
+	connectMode connect.ExtenderConnectMode,
 	extenderIps []net.IP,
 	extenderSecret string,
 	apiUrl string,
@@ -21,6 +22,7 @@ func SearchMailExtenders(
 	callback func(*connect.ExtenderConfig, bool),
 ) ([]*connect.ExtenderConfig, error) {
 	return SearchExtenders(
+		connectMode,
 		mailHosts,
 		extenderIps,
 		extenderSecret,
@@ -45,6 +47,7 @@ func SearchMailExtenders(
 
 
 func SearchWebExtenders(
+	connectMode connect.ExtenderConnectMode,
 	extenderIps []net.IP,
 	extenderSecret string,
 	apiUrl string,
@@ -52,6 +55,7 @@ func SearchWebExtenders(
 	callback func(*connect.ExtenderConfig, bool),
 ) ([]*connect.ExtenderConfig, error) {
 	return SearchExtenders(
+		connectMode,
 		webHosts,
 		extenderIps,
 		extenderSecret,
@@ -96,6 +100,7 @@ func SearchWebExtenders(
 // extenders must allow apiHost, which would typically be api.bringyour.com
 // uses the hello api to search
 func SearchExtenders(
+	connectMode connect.ExtenderConnectMode,
 	spoofHosts []string,
 	extenderIps []net.IP,
 	extenderSecret string,
@@ -149,6 +154,7 @@ func SearchExtenders(
 		    ExtenderPorts: []int{spoof.port},
 		}
 		client := connect.NewExtenderHttpClient(
+			connectMode,
 			helloConfig,
 			&tls.Config{},
 		)

@@ -29,7 +29,7 @@ func defaultClient() *http.Client {
   	}
 	transport := &http.Transport{
 	  	// DialTLSContext: NewResilientTlsDialContext(dialer),
-	  	DialContext: NewExtenderDialContext(dialer, TestExtenderConfig()),
+	  	DialContext: NewExtenderDialContext(ExtenderConnectModeQuic, dialer, TestExtenderConfig()),
 	  	TLSHandshakeTimeout: defaultHttpTlsTimeout,
 	}
 	return &http.Client{

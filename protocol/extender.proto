@@ -10,5 +10,17 @@ message ExtenderHeader {
     string Secret = 1;
     string DestinationHost = 2;
     uint32 DestinationPort = 3;
+
+    // Timestamp
+    // Signature
 }
 
+
+message ExtenderUdpPack {
+    uint64 PacketNumber = 1;
+    bytes MessageBytes = 2;
+}
+
+message ExtenderUdpAck {
+    uint64 PacketNumber = 1;
+}

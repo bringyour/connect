@@ -147,7 +147,7 @@ func (self *PlatformTransport) run() {
     for {
         wsDialer := &websocket.Dialer{
             // NetDialTLSContext: NewResilientTlsDialContext(self.dialer),
-            NetDialContext: NewExtenderDialContext(self.dialer, TestExtenderConfig()),
+            NetDialContext: NewExtenderDialContext(ExtenderConnectModeQuic, self.dialer, TestExtenderConfig()),
             HandshakeTimeout: self.settings.WsHandshakeTimeout,
         }
 
