@@ -212,6 +212,8 @@ func (self *transferQueue[T]) PeekLast() T {
     return self.maxHeap.PeekFirst()
 }
 
+// FIXME RemoveLast
+
 // heap.Interface
 
 func (self *transferQueue[T]) Push(x any) {

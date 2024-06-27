@@ -330,11 +330,29 @@ func (self *SimpleReliableUdpTransport) AddPacket(packetBytes []byte) (boolean, 
 
 	// FIXME
 	// packetReceive <- packetBytes
+
+	select {
+	case <- self.ctx.Done():
+		return false, errors.New("Done.")
+	default:
+	}
+
+	if !self.idleCondition.UpdateOpen() {
+		return false, errors.New("Done.")
+	}
+	defer self.idleCondition.UpdateClose()
+
+	select {
+	case <- self.ctx.Done():
+		return false, errors.New("Done.")
+	case packetReceive <- packetBytes:
+		return true, nil
+	}
 }
 
 func (self *SimpleReliableUdpTransport) receive() {
 	receiveNumber := 0
-	receiveQueue := NEW
+	queue := NEW
 
 	for {
 		var packetBytes []byte
@@ -342,7 +360,15 @@ func (self *SimpleReliableUdpTransport) receive() {
 		case <- self.ctx.Done():
 			return
 		case packetBytes = <- self.packetReceive:
-		// FIXME idle timeout
+		case <- time.After(timeout):
+			if 0 == self.resendQueue.Len() {
+				// idle timeout
+				if self.idleCondition.Close(checkpointId) {
+					// close the sequence
+					return
+				}
+				// else there are pending updates
+			}
 		}
 
 		frame := &protocol.Frame{}
@@ -354,18 +380,35 @@ func (self *SimpleReliableUdpTransport) receive() {
 
 		switch frame.MessageType {
 		case ExtenderUdpPack:
-			receiveQueue.Add(messageBytes)
-			for HEAD_OF_RECEIVE == receiveNumbrer {
-				SEND_ACK()
-				messageBytes := REMOVE()
-				select {
-				case self.ctx.Done():
-					return
-				case self.receive <- messageBytes:
+
+			if NUMBER < receiveNumber {
+				// already received
+				SEND_ACK(receiveNumber - 1)
+			} else {
+
+				receiveQueue.Add(messageBytes)
+
+				receiveCount := 0
+				for queue.PeekFirst().SequenceNumber() == receiveNumber {
+					receiveCount += 1
+					receiveNumber += 1
+					messageBytes := REMOVE()
+					select {
+					case self.ctx.Done():
+						return
+					case self.receive <- messageBytes:
+					}
 				}
-			}
-			for MAX_BYTES < receiveQueue.BYTES {
-				receiveQueue.RemoveLast()
+				if 0 <= receiveCount {
+					SEND_ACK(receiveNumber - 1)
+				}
+				for {
+					_, queueByteCount := queue.QueueSize()
+					if queueByteCount <= config.MaxReceiveBufferByteCount {
+						break
+					}
+					queue.RemoveLast()
+				}
 			}
 		case ExtenderUdpAck:
 			func() {
@@ -394,7 +437,7 @@ func (self *SimpleReliableUdpTransport) receive() {
 
 func (self *SimpleReliableUdpTransport) send() {
 	sendNumber := 0
-	sendQueue := NEW
+	queue := NEW
 
 	for {
 		ack := self.ackMonitor.NotifyChannel()
@@ -414,10 +457,26 @@ func (self *SimpleReliableUdpTransport) send() {
 
 
 
-		if BUFFER_FULL {
+		if _, queueByteCount := queue.QueueSize(); config.MaxSendBufferByteCount <= queueByteCount {
 			// listen to ack monitor
-		} else {
 
+			select {
+			case <- self.ctx.Done():
+				return
+			case <- ack:
+			case <- time.After(resendTimeout):
+			case <- time.After(timeout):
+				if 0 == self.resendQueue.Len() {
+					// idle timeout
+					if self.idleCondition.Close(checkpointId) {
+						// close the sequence
+						return
+					}
+					// else there are pending updates
+				}
+			}
+
+		} else {
 			select {
 			case <- self.ctx.Done():
 				return
@@ -438,12 +497,49 @@ func (self *SimpleReliableUdpTransport) send() {
 				}
 
 			case <- time.After(resendTimeout):
-			// FIXME idle timeout
+			case <- time.After(timeout):
+				if 0 == self.resendQueue.Len() {
+					// idle timeout
+					if self.idleCondition.Close(checkpointId) {
+						// close the sequence
+						return
+					}
+					// else there are pending updates
+				}
 			}
 		}
 	}
 }
 
+
+type udpReceiveItem struct {
+	transferItem
+
+}
+
+// ordered by sequenceNumber
+type receiveQueue = transferQueue[*udpReceiveItem]
+
+func newReceiveQueue() *receiveQueue {
+	return newTransferQueue[*udpReceiveItem](func(a *udpReceiveItem, b *udpReceiveItem)(int) {
+		if a.sequenceNumber < b.sequenceNumber {
+			return -1
+		} else if b.sequenceNumber < a.sequenceNumber {
+			return 1
+		} else {
+			return 0
+		}
+	})
+}
+
+
+type udpSendItem struct {
+	transferItem
+
+	sendTime time.Time
+	resendTime time.Time
+	
+}
 
 type udpResendQueue = transferQueue[*udpSendItem]
 
