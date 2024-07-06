@@ -2511,27 +2511,26 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
     }
 
     if protocol.ProvideMode_Public <= provideMode {
-        // apply public rules:
-        // - only public unicast network destinations
-        // - block insecure or known unencrypted traffic
+        // see https://bringyour.com/trustandsafety
 
         if !isPublicUnicast(ipPath.DestinationIp) {
             return ipPath, SecurityPolicyResultIncident 
         }
 
-        // block insecure or unencrypted traffic is implemented as a block list,
-        // rather than an allow list.
-        // Known insecure traffic and unencrypted is blocked.
-        // This currently includes:
-        // - port 80 (http)
-        // - ports 6881 to 6889 (bittorrent)
         allow := func()(bool) {
             switch port := ipPath.DestinationPort; {
-            case port == 80:
-                // http
-                return false
+            case port < 1024:
+                switch port {
+                case 443, 853, 993, 587, 465, 995:
+                    return true
+                default:
+                    return false
+                }
             case 6881 <= port && port <= 6889:
                 // bittorrent
+                return false
+            case port == 6667:
+                // irc
                 return false
             default:
                 return true
