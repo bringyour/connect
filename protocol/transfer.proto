@@ -56,13 +56,13 @@ message Pack {
     // default to false for backward compatibility
     bool nack = 6;
 
-    optional Frame contract_frame = 7;
+    Frame contract_frame = 7;
 }
 
 
 // used for deep message inspection
 message FilteredPack {
-    optional Frame contract_frame = 7;
+    Frame contract_frame = 7;
 }
 
 
@@ -133,8 +133,8 @@ enum StreamError {
 
 // the client uses this stream_id to send a message to the first destination_id
 message CreateStreamResult {
-    optional StreamError error = 1;
-    optional bytes stream_id = 2;
+    StreamError error = 1;
+    bytes stream_id = 2;
 }
 
 
@@ -146,8 +146,8 @@ message CloseStream {
 
 // each hop on the stream receives this to configure its state
 message StreamOpen {
-    optional TransferPath source = 1;
-    optional TransferPath destination = 2;
+    TransferPath source = 1;
+    TransferPath destination = 2;
     // FIXME move this to PKE public key
     // all contracts for this stream will be signed with this key
     ProvideKey key = 3;
@@ -155,8 +155,8 @@ message StreamOpen {
 
 // each hop on the stream receives this to configure its state
 message StreamClose {
-    optional TransferPath source = 1;
-    optional TransferPath destination = 2;
+    TransferPath source = 1;
+    TransferPath destination = 2;
 }
 
 
@@ -181,8 +181,8 @@ enum ContractError {
 
 
 message CreateContractResult {    
-    optional ContractError error = 1;
-    optional Contract contract = 2;
+    ContractError error = 1;
+    Contract contract = 2;
 }
 
 
@@ -202,9 +202,9 @@ message StoredContract {
     bytes contract_id = 1;
     uint64 transfer_byte_count = 2;
     // ulid, used only for non-stream provide modes
-    optional bytes source_id = 3;
+    bytes source_id = 3;
     // ulid, used only for non-stream provide modes
-    optional bytes destination_id = 4;
+    bytes destination_id = 4;
 }
 
 
