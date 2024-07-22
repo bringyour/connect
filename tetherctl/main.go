@@ -25,6 +25,7 @@ const TetherCtlVersion = "0.0.1"
 
 const DefaultApiUrl = "localhost:9090"
 const DefaultDeviceName = "wg0"
+const DefaultListenPort = 51820
 
 var tc tether.TetherClient
 
@@ -33,12 +34,18 @@ func main() {
 		`Tether control.
 
 Usage:
-    tetherctl start-api [--device_name=<device_name>] [--endpoint=<endpoint>]
-		[--api_url=<api_url>]
+	tetherctl setup-device [--device_name=<device_name>] 
+		[--listen_port=<listen_port>]
+		[--priv_key=<priv_key>]
+	tetherctl get-device-names
+	tetherctl get-device-interface [--device_name=<device_name>]
 	tetherctl add-peer [--device_name=<device_name>] [--endpoint=<endpoint>]
 		--pub_key=<pub_key> 
-	tetherctl get-config [--device_name=<device_name>] [--endpoint=<endpoint>]
+	tetherctl get-peer-config [--device_name=<device_name>] [--endpoint=<endpoint>]
 		--pub_key=<pub_key>
+    tetherctl start-api [--device_name=<device_name>] [--endpoint=<endpoint>]
+		[--api_url=<api_url>]
+	tetherctl hello [--device_name=<device_name>]
     
 Options:
     -h --help                       Show this screen.
@@ -47,10 +54,13 @@ Options:
     --device_name=<device_name> 	Wireguard device name [default: %q].
 	--endpoint=<endpoint> 			Wireguard url/ip where server can be found [default: this_pc_public_ip].
 	--pub_key=<pub_key> 			Public key of a peer (unique)
+	--listen_port=<listen_port> 	Port to listen on for incoming connections [default: %d].
+	--priv_key=<priv_key> 			Private key of the device (if not given it is auto generated).
 
     `,
 		DefaultApiUrl,
 		DefaultDeviceName,
+		DefaultListenPort,
 	)
 
 	opts, err := docopt.ParseArgs(usage, os.Args[1:], TetherCtlVersion)
@@ -81,12 +91,18 @@ Options:
 	}
 	fmt.Printf("\033[34mTether client created for IP %q and device %q\033[0m\n\n", wgEndpoint, deviceName)
 
-	if startAPI_, _ := opts.Bool("start-api"); startAPI_ {
-		startAPICli(opts)
+	if setupDevice_, _ := opts.Bool("setup-device"); setupDevice_ {
+		setupDeviceCli(opts)
+	} else if getDeviceNames_, _ := opts.Bool("get-device-names"); getDeviceNames_ {
+		getDeviceNamesCli()
+	} else if getDeviceInterface_, _ := opts.Bool("get-device-interface"); getDeviceInterface_ {
+		getDeviceInterfaceCli()
 	} else if addPeer_, _ := opts.Bool("add-peer"); addPeer_ {
 		addPeerCli(opts)
-	} else if getConfig_, _ := opts.Bool("get-config"); getConfig_ {
-		getConfigCli(opts)
+	} else if getConfig_, _ := opts.Bool("get-peer-config"); getConfig_ {
+		getPeerConfigCli(opts)
+	} else if startAPI_, _ := opts.Bool("start-api"); startAPI_ {
+		startAPICli(opts)
 	}
 }
 
@@ -108,6 +124,92 @@ func getPublicIP() string {
 	}
 
 	return string(ip)
+}
+
+func setupDeviceCli(opts docopt.Opts) {
+	listenPort, err := opts.Int("--listen_port")
+	if err != nil {
+		listenPort = DefaultListenPort
+	}
+
+	privateKey, err := opts.String("--priv_key")
+	var privKeyP *wgtypes.Key
+	if err == nil {
+		privKey, err := wgtypes.ParseKey(privateKey)
+		if err != nil {
+			fmt.Println("Invalid private key provided. Setup not possible.")
+			return
+		}
+		privKeyP = &privKey
+	}
+
+	err = tc.SetupDevice(listenPort, privKeyP)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Device %q setup successfully.\n", tc.DeviceName)
+}
+
+func getDeviceNamesCli() {
+	devices, err := tc.GetAvailableDevices()
+	if err != nil {
+		panic(err)
+	}
+
+	if len(devices) == 0 {
+		fmt.Println("No devices found.")
+		return
+	}
+
+	deviceNames := make([]string, len(devices))
+	for i, deviceName := range devices {
+		deviceNames[i] = fmt.Sprintf("%q", deviceName)
+	}
+
+	fmt.Printf("Found %d device(s) - %s\n", len(devices), strings.Join(deviceNames, ", "))
+}
+
+func getDeviceInterfaceCli() {
+	config, err := tc.GetDeviceInterface()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(config)
+}
+
+func addPeerCli(opts docopt.Opts) {
+	publicKey, err := opts.String("--pub_key")
+	if err != nil {
+		panic(err)
+	}
+
+	_pk, err := wgtypes.ParseKey(publicKey)
+	if err != nil {
+		panic(err)
+	}
+
+	config, err := tc.AddPeerToDevice(_pk)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(config)
+}
+
+func getPeerConfigCli(opts docopt.Opts) {
+	publicKey, err := opts.String("--pub_key")
+	if err != nil {
+		panic(err)
+	}
+
+	config, err := tc.GetPeerConfig(publicKey)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(config)
 }
 
 func startAPICli(opts docopt.Opts) {
@@ -190,37 +292,4 @@ func apiAddPeer(context *gin.Context) {
 
 	// return the config as plaintext in the response body
 	context.String(http.StatusOK, config)
-}
-
-func addPeerCli(opts docopt.Opts) {
-	publicKey, err := opts.String("--pub_key")
-	if err != nil {
-		panic(err)
-	}
-
-	_pk, err := wgtypes.ParseKey(publicKey)
-	if err != nil {
-		panic(err)
-	}
-
-	config, err := tc.AddPeerToDevice(_pk)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(config)
-}
-
-func getConfigCli(opts docopt.Opts) {
-	publicKey, err := opts.String("--pub_key")
-	if err != nil {
-		panic(err)
-	}
-
-	config, err := tc.GetPeerConfig(publicKey)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(config)
 }

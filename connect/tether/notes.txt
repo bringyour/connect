@@ -1,0 +1,14 @@
+Every time system restarts the wireguard interface is removed (including peers)
+- Upon system start run the wireguard_server_setup.sh script from the connect/tetherctl folder
+- If you want to remove the interface check the end of the script
+- Current problem is that peers are obviously lost upon reboot so maybe we need a way to setup a config file everytime an interface is changed or a peer is added
+- So that upon reboot this file can be used to start wireguard. Can use linux services to enable on startup
+Need a way to assign the next available ip per peer
+
+
+// TODOs include:
+- integrate WG routing with BY tunnel
+- setup config/service for automatic startup
+- decide how allowed ips are given 
+- look into ipv6 addresses
+- add tests for tether package
