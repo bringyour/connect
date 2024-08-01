@@ -8,8 +8,8 @@ Wants=network-online.target nss-lookup.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/etc/tetherctl/tetherctl hello
-ExecStop=/etc/tetherctl/tetherctl hello
+ExecStart=/etc/tetherctl/tetherctl up --device_name=%i
+ExecStop=/etc/tetherctl/tetherctl down --device_name=%i
 #Environment=IDK_IDK_IDK=something
 
 [Install]
