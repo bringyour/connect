@@ -23,9 +23,9 @@ import (
 
 const TetherCtlVersion = "0.0.1"
 
+const DefaultDeviceName = "bywg0"
+const DefaultConfigFile = "/etc/tetherctl/"
 const DefaultApiUrl = "localhost:9090"
-const DefaultDeviceName = "wg0"
-const DefaultListenPort = 51820
 
 var tc tether.TetherClient
 
@@ -34,11 +34,17 @@ func main() {
 		`Tether control.
 
 Usage:
-	tetherctl setup-device [--device_name=<device_name>] 
+	tetherctl up [--device_name=<device_name>]
+		[--config_file=<config_file>]
+	tetherctl down [--device_name=<device_name>]
+		[--config_file=<config_file>]
+	tetherctl gen-priv-key
+	tetherctl gen-pub-key --priv_key=<priv_key>
+	tetherctl get-device-names
+	tetherctl get-device [--device_name=<device_name>]
+	tetherctl change-device [--device_name=<device_name>] 
 		[--listen_port=<listen_port>]
 		[--priv_key=<priv_key>]
-	tetherctl get-device-names
-	tetherctl get-device-interface [--device_name=<device_name>]
 	tetherctl add-peer [--device_name=<device_name>] [--endpoint=<endpoint>]
 		--pub_key=<pub_key> 
 	tetherctl get-peer-config [--device_name=<device_name>] [--endpoint=<endpoint>]
@@ -46,21 +52,23 @@ Usage:
     tetherctl start-api [--device_name=<device_name>] [--endpoint=<endpoint>]
 		[--api_url=<api_url>]
 	tetherctl hello [--device_name=<device_name>]
+	tetherctl test [--device_name=<device_name>]
     
 Options:
     -h --help                       Show this screen.
     --version                       Show version.
-    --api_url=<api_url> 			[default: %q]
     --device_name=<device_name> 	Wireguard device name [default: %q].
 	--endpoint=<endpoint> 			Wireguard url/ip where server can be found [default: this_pc_public_ip].
+	--config_file					Location of the config file in the system [default: %q]
 	--pub_key=<pub_key> 			Public key of a peer (unique)
-	--listen_port=<listen_port> 	Port to listen on for incoming connections [default: %d].
-	--priv_key=<priv_key> 			Private key of the device (if not given it is auto generated).
+	--listen_port=<listen_port> 	Port to listen on for incoming connections.
+	--priv_key=<priv_key> 			Private key of the device.
+    --api_url=<api_url> 			API url [default: %q]
 
     `,
-		DefaultApiUrl,
 		DefaultDeviceName,
-		DefaultListenPort,
+		DefaultConfigFile,
+		DefaultApiUrl,
 	)
 
 	opts, err := docopt.ParseArgs(usage, os.Args[1:], TetherCtlVersion)
@@ -80,7 +88,7 @@ Options:
 
 	c, err := wgctrl.New()
 	if err != nil {
-		log.Fatalf("failed to open wgctrl: %v", err)
+		panic(err)
 	}
 	defer c.Close()
 
@@ -89,20 +97,32 @@ Options:
 		ClientIP:   net.ParseIP(wgEndpoint),
 		DeviceName: deviceName,
 	}
-	fmt.Printf("\033[34mTether client created for IP %q and device %q\033[0m\n\n", wgEndpoint, deviceName)
+	// fmt.Printf("\033[34mTether client created for IP %q and device %q\033[0m\n\n", wgEndpoint, deviceName)
 
-	if setupDevice_, _ := opts.Bool("setup-device"); setupDevice_ {
-		setupDeviceCli(opts)
+	if up_, _ := opts.Bool("up"); up_ {
+		upCli(opts)
+	} else if down_, _ := opts.Bool("down"); down_ {
+		downCli(opts)
+	} else if genPrivKey_, _ := opts.Bool("gen-priv-key"); genPrivKey_ {
+		genPrivKeyCli()
+	} else if genPubKey_, _ := opts.Bool("gen-pub-key"); genPubKey_ {
+		genPubKeyCli(opts)
 	} else if getDeviceNames_, _ := opts.Bool("get-device-names"); getDeviceNames_ {
 		getDeviceNamesCli()
-	} else if getDeviceInterface_, _ := opts.Bool("get-device-interface"); getDeviceInterface_ {
-		getDeviceInterfaceCli()
+	} else if getDevice_, _ := opts.Bool("get-device"); getDevice_ {
+		getDeviceCli()
+	} else if setupDevice_, _ := opts.Bool("change-device"); setupDevice_ {
+		changeDeviceCli(opts)
 	} else if addPeer_, _ := opts.Bool("add-peer"); addPeer_ {
 		addPeerCli(opts)
-	} else if getConfig_, _ := opts.Bool("get-peer-config"); getConfig_ {
+	} else if getPeerConfig_, _ := opts.Bool("get-peer-config"); getPeerConfig_ {
 		getPeerConfigCli(opts)
 	} else if startAPI_, _ := opts.Bool("start-api"); startAPI_ {
-		startAPICli(opts)
+		startApiCli(opts)
+	} else if hello_, _ := opts.Bool("hello"); hello_ {
+		fmt.Println("Hello, World!")
+	} else if test_, _ := opts.Bool("test"); test_ {
+		tether.Test()
 	}
 }
 
@@ -126,29 +146,70 @@ func getPublicIP() string {
 	return string(ip)
 }
 
-func setupDeviceCli(opts docopt.Opts) {
-	listenPort, err := opts.Int("--listen_port")
+func upCli(opts docopt.Opts) {
+	configFile, err := opts.String("--config_file")
 	if err != nil {
-		listenPort = DefaultListenPort
+		configFile = DefaultConfigFile
 	}
+	finalConfPath := configFile + tc.DeviceName + ".conf"
 
-	privateKey, err := opts.String("--priv_key")
-	var privKeyP *wgtypes.Key
-	if err == nil {
-		privKey, err := wgtypes.ParseKey(privateKey)
-		if err != nil {
-			fmt.Println("Invalid private key provided. Setup not possible.")
-			return
-		}
-		privKeyP = &privKey
-	}
-
-	err = tc.SetupDevice(listenPort, privKeyP)
+	bywgConf, err := tether.ParseConfig(finalConfPath)
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("Device %q setup successfully.\n", tc.DeviceName)
+	fmt.Printf("Running up command for config %q of device %q\n ", finalConfPath, tc.DeviceName)
+	err = tc.BringUpInterface(bywgConf)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Interface %q brought up successfully.\n", tc.DeviceName)
+}
+
+func downCli(opts docopt.Opts) {
+	configFile, err := opts.String("--config_file")
+	if err != nil {
+		configFile = DefaultConfigFile
+	}
+	finalConfPath := configFile + tc.DeviceName + ".conf"
+
+	bywgConf, err := tether.ParseConfig(finalConfPath)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Running down command for config %q of device %q\n ", finalConfPath, tc.DeviceName)
+	err = tc.BringDownInterface(bywgConf)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Interface %q brought down successfully.\n", tc.DeviceName)
+}
+
+func genPrivKeyCli() {
+	privateKeyGenerated, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		fmt.Println("failed to generate private key: %w", err)
+		return
+	}
+	fmt.Println(privateKeyGenerated.String())
+}
+
+func genPubKeyCli(opts docopt.Opts) {
+	privateKey, err := opts.String("--priv_key")
+	if err != nil {
+		panic(err)
+	}
+
+	_pk, err := wgtypes.ParseKey(privateKey)
+	if err != nil {
+		fmt.Println("Invalid private key provided: %w", err)
+		return
+	}
+
+	fmt.Println(_pk.PublicKey())
 }
 
 func getDeviceNamesCli() {
@@ -170,13 +231,39 @@ func getDeviceNamesCli() {
 	fmt.Printf("Found %d device(s) - %s\n", len(devices), strings.Join(deviceNames, ", "))
 }
 
-func getDeviceInterfaceCli() {
-	config, err := tc.GetDeviceInterface()
+func getDeviceCli() {
+	config, err := tc.GetDeviceFormatted()
 	if err != nil {
 		panic(err)
 	}
 
 	fmt.Println(config)
+}
+
+func changeDeviceCli(opts docopt.Opts) {
+	listenPort, err := opts.Int("--listen_port")
+	var listenPortP *int // if listenPort is not provided then listenPortP is nil
+	if err == nil {
+		listenPortP = &listenPort
+	}
+
+	privateKey, err := opts.String("--priv_key")
+	var privKeyP *wgtypes.Key // if privateKey is not provided then privKeyP is nil
+	if err == nil {
+		privKey, err := wgtypes.ParseKey(privateKey)
+		if err != nil {
+			fmt.Println("Invalid private key provided. Change not possible.")
+			return
+		}
+		privKeyP = &privKey
+	}
+
+	err = tc.ChangeDevice(privKeyP, listenPortP)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Device %q changed successfully.\n", tc.DeviceName)
 }
 
 func addPeerCli(opts docopt.Opts) {
@@ -212,7 +299,7 @@ func getPeerConfigCli(opts docopt.Opts) {
 	fmt.Println(config)
 }
 
-func startAPICli(opts docopt.Opts) {
+func startApiCli(opts docopt.Opts) {
 	apiUrl, err := opts.String("--api_url")
 	if err != nil {
 		apiUrl = DefaultApiUrl

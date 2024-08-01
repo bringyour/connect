@@ -1,0 +1,16 @@
+[Unit]
+Description=WireGuard Server (BringYour Network) for %i
+After=network-online.target nss-lookup.target
+Wants=network-online.target nss-lookup.target
+#PartOf=by-wireguard.target #can setup a target as a grouping of the services similar to how wireguard do it
+#Documentation=TODO
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/etc/tetherctl/tetherctl hello
+ExecStop=/etc/tetherctl/tetherctl hello
+#Environment=IDK_IDK_IDK=something
+
+[Install]
+WantedBy=multi-user.target

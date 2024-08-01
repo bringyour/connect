@@ -36,3 +36,9 @@ ip addr show wg0
 # balcklist module from laoding automatically $ sudo nano /etc/modprobe.d/blacklist-wireguard.conf
 # put in file $ blacklist wireguard
 # reboot system
+
+# to undo
+# $ sudo rm /etc/modprobe.d/blacklist-wireguard.conf
+# $ sudo modprobe wireguard
+# reboot system
+

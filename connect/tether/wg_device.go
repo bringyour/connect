@@ -10,6 +10,11 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+// Device is an abstarction from a WireGuard interface.
+// Having a device assumes that the corresponding interface exists,
+// i.e., you cannot create a Device it "becomes" one after creating a WireGuard interface
+// and configuring it with the desired settings (see wg_config.go for config options)
+
 // TetherClient is a wrapper around the wgctrl.Client that provides additional functionality.
 // It contains the client's IP and the device name.
 type TetherClient struct {
@@ -18,30 +23,31 @@ type TetherClient struct {
 	DeviceName string
 }
 
-var lastAllowedIP string = "192.168.88.100/32" // TODO: figure out how IPs are chosen. for now its always the same
+var lastAllowedIP string = "192.168.89.100/32" // TODO: figure out how IPs are chosen. for now its always the same
 
-// SetupDevice sets up a new (or changes an old) WireGuard device based on the DeviceName in the TetherClient.
-// The listenPort and privateKey can be configured where if privateKey is nil then a random one is generated.
+// ChangeDevice edits the config of an existing WireGuard device based on the DeviceName in the TetherClient.
+//
+// listenPort specifies the port to which the device should listen for peers (if nil it is not set).
+// privateKey specifies the private key of the device (if nil it is not set).
+//
 // The function returns an error if the device could not be configured.
-func (server *TetherClient) SetupDevice(listenPort int, privateKey *wgtypes.Key) error {
-	if privateKey == nil {
-		// generate new private key if none is provided
-		privateKeyGenerated, err := wgtypes.GeneratePrivateKey()
-		if err != nil {
-			return fmt.Errorf("failed to generate private key: %v", err)
-		}
-		privateKey = &privateKeyGenerated // publicKey := privateKey.PublicKey()
+func (server *TetherClient) ChangeDevice(privateKey *wgtypes.Key, listenPort *int) error {
+	if privateKey == nil && listenPort == nil {
+		fmt.Printf("Warning! No changes requested to device %s.\n", server.DeviceName)
+		return nil
+
 	}
 
-	// configure the device with the new (or given) private key
-	err := server.ConfigureDevice(server.DeviceName, wgtypes.Config{
-		PrivateKey: privateKey,
-		ListenPort: &listenPort,
+	//  at least one of the fields is not nil
+	return server.ConfigureDevice(server.DeviceName, wgtypes.Config{
+		PrivateKey: privateKey, // if nil it is not applied
+		ListenPort: listenPort, // if nil it is not applied
 	})
-	return err
 }
 
 // GetAvailableDevices returns a list of all available devices on the server.
+//
+// The function returns an error if the devices could not be retrieved.
 func (server *TetherClient) GetAvailableDevices() ([]string, error) {
 	devices, err := server.Devices()
 	if err != nil {
@@ -57,7 +63,9 @@ func (server *TetherClient) GetAvailableDevices() ([]string, error) {
 }
 
 // GetDeviceInterface returns a string representation of the device based on the DeviceName in the TetherClient.
-func (server *TetherClient) GetDeviceInterface() (string, error) {
+//
+// The function returns an error if the device could not be retrieved.
+func (server *TetherClient) GetDeviceFormatted() (string, error) {
 	device, err := server.Device(server.DeviceName)
 	if err != nil {
 		return "", fmt.Errorf("device %q does not exist", server.DeviceName)
@@ -74,6 +82,7 @@ func (server *TetherClient) GetDeviceInterface() (string, error) {
 }
 
 // AddPeerToDevice adds a new peer to the device based on the public key provided.
+//
 // The function returns the config for the new peer if successful.
 func (server *TetherClient) AddPeerToDevice(pubKey wgtypes.Key) (string, error) {
 	peerIP, err := getNextAllowedIP(lastAllowedIP)
@@ -104,7 +113,7 @@ func (server *TetherClient) AddPeerToDevice(pubKey wgtypes.Key) (string, error) 
 	return server.createConfigForPeer(peerIP, pubKey.String())
 }
 
-// GetPeerConfig returns the config for a peer based on the public key provided.
+// GetPeerConfig returns the formatted config for a peer based on the public key provided.
 func (server *TetherClient) GetPeerConfig(peerPubKey string) (string, error) {
 	device, err := server.Device(server.DeviceName)
 	if err != nil {
@@ -127,7 +136,10 @@ func (server *TetherClient) GetPeerConfig(peerPubKey string) (string, error) {
 	return "", fmt.Errorf("peer with public key %q not found", peerPubKey)
 }
 
-// createConfigForPeer creates a new config for a peer based on the provided allowed IP and public key.
+// createConfigForPeer creates a new config (ini format) for a peer based on the provided allowed IP and public key.
+//
+// The PrivateKey field is set to a __PLACEHOLDER__ which should be replaced by the peer to make a valid config.
+// No other __PLACEHOLDER__ exists in the config.
 func (server *TetherClient) createConfigForPeer(peerAllowedIP string, pubKey string) (string, error) {
 	device, err := server.Device(server.DeviceName)
 	if err != nil {
@@ -190,11 +202,10 @@ func getNextAllowedIP(lastAllowedIp string) (string, error) {
 	return newIP, nil
 }
 
-func ipsString(ipns []net.IPNet) string {
-	ss := make([]string, 0, len(ipns))
-	for _, ipn := range ipns {
-		ss = append(ss, ipn.String())
+func ipsString(ipnets []net.IPNet) string {
+	ipNetStrings := make([]string, 0, len(ipnets))
+	for _, ipnet := range ipnets {
+		ipNetStrings = append(ipNetStrings, ipnet.String())
 	}
-
-	return strings.Join(ss, ", ")
+	return strings.Join(ipNetStrings, ", ")
 }
