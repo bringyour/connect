@@ -30,7 +30,7 @@ func (server *TetherClient) BringUpInterface(bywgConf ByWgConfig) error {
 	// TODO: add option to config for chosing wireguard implementation
 
 	runCommands(bywgConf.PreUp, server.DeviceName)
-	if err := server.setupDevice(bywgConf.PrivateKey, bywgConf.ListenPort); err != nil {
+	if err := server.setupDevice(bywgConf.PrivateKey, bywgConf.ListenPort, bywgConf.Peers); err != nil {
 		server.revertUpChanges()
 		return err
 	}
@@ -98,30 +98,28 @@ func (server *TetherClient) createWgInterface() error {
 	return nil
 }
 
-// Configures the WireGuard interface to use the provided private key and listen port.
+// setupDevice configures the WireGuard interface to use the provided private key and listen port.
 // From here on this interface can be abstracted away to a Device (see wg_device.go).
+// Function assumes the interface was just created.
 //
 // privKey is mandatory to setup a device.
 // listenPort can be nil, indicating that a random one should be used.
 //
 // The function returns an error if the private key is invalid or the configuration cannot be applied
-func (server *TetherClient) setupDevice(privKey string, listenPort *int) error {
+func (server *TetherClient) setupDevice(privKey string, listenPort *int, peers []wgtypes.PeerConfig) error {
 	privateKey, err := wgtypes.ParseKey(privKey)
 	if err != nil {
 		return fmt.Errorf("failed to parse private key: %w", err)
 	}
 
-	if listenPort == nil {
-		// If ListenPort is nil then random one is chosen, however,
-		// ListenPort is initially chosen at random when creating interface so no need to override here
-		return server.ConfigureDevice(server.DeviceName, wgtypes.Config{
-			PrivateKey: &privateKey,
-		})
-	}
+	// If ListenPort is nil then random one should be chosen, however,
+	// ListenPort is initially chosen at random when creating interface so no need to override here
 
 	return server.ConfigureDevice(server.DeviceName, wgtypes.Config{
-		PrivateKey: &privateKey,
-		ListenPort: listenPort,
+		PrivateKey:   &privateKey,
+		ListenPort:   listenPort, // if nil it is not applied
+		ReplacePeers: true,
+		Peers:        peers,
 	})
 }
 

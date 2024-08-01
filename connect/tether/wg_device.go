@@ -27,8 +27,8 @@ var lastAllowedIP string = "192.168.89.100/32" // TODO: figure out how IPs are c
 
 // ChangeDevice edits the config of an existing WireGuard device based on the DeviceName in the TetherClient.
 //
-// listenPort specifies the port to which the device should listen for peers (if nil it is not set).
-// privateKey specifies the private key of the device (if nil it is not set).
+// listenPort specifies the port to which the device should listen for peers (if nil it is not applied).
+// privateKey specifies the private key of the device (if nil it is not applied).
 //
 // The function returns an error if the device could not be configured.
 func (server *TetherClient) ChangeDevice(privateKey *wgtypes.Key, listenPort *int) error {
@@ -87,7 +87,7 @@ func (server *TetherClient) GetDeviceFormatted() (string, error) {
 func (server *TetherClient) AddPeerToDevice(pubKey wgtypes.Key) (string, error) {
 	peerIP, err := getNextAllowedIP(lastAllowedIP)
 	if err != nil {
-		return "", fmt.Errorf("failed to get next allowed IP (%v)", err)
+		return "", fmt.Errorf("failed to get next allowed IP (%w)", err)
 	}
 
 	_, peerIPNet, err := net.ParseCIDR(peerIP)

@@ -158,7 +158,7 @@ func upCli(opts docopt.Opts) {
 		panic(err)
 	}
 
-	fmt.Printf("Running up command for config %q of device %q\n ", finalConfPath, tc.DeviceName)
+	fmt.Printf("Running up command for config %q of device %q\n", finalConfPath, tc.DeviceName)
 	err = tc.BringUpInterface(bywgConf)
 	if err != nil {
 		panic(err)
@@ -179,7 +179,7 @@ func downCli(opts docopt.Opts) {
 		panic(err)
 	}
 
-	fmt.Printf("Running down command for config %q of device %q\n ", finalConfPath, tc.DeviceName)
+	fmt.Printf("Running down command for config %q of device %q\n", finalConfPath, tc.DeviceName)
 	err = tc.BringDownInterface(bywgConf)
 	if err != nil {
 		panic(err)
