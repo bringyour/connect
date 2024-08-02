@@ -23,34 +23,40 @@ func (server *TetherClient) BringUpInterface(bywgConf ByWgConfig) error {
 		return fmt.Errorf("name in config does not match the device name")
 	}
 
+	errorOccurred := true
+	defer func() {
+		if errorOccurred {
+			server.revertUpChanges()
+		}
+	}()
+
 	if err := server.createWgInterface(); err != nil {
-		server.revertUpChanges()
-		return err
+		return fmt.Errorf("could not create WireGuard interface: %w", err)
 	}
 	// TODO: add option to config for chosing wireguard implementation
 
 	runCommands(bywgConf.PreUp, server.DeviceName)
 	if err := server.setupDevice(bywgConf.PrivateKey, bywgConf.ListenPort, bywgConf.Peers); err != nil {
-		server.revertUpChanges()
-		return err
+		return fmt.Errorf("device setup failed: %w", err)
 	}
 	server.addAddresses(bywgConf.Address)
 	if err := server.runUpCommand(); err != nil {
-		server.revertUpChanges()
-		return err
+		return fmt.Errorf("error running up command: %w", err)
 	}
 	runCommands(bywgConf.PostUp, server.DeviceName)
 
+	errorOccurred = false // do not execute defer statement
 	return nil
 }
 
 // BringDownInterface removes a WireGuard interface based on a configuration file.
 //
 // bywgConf is the configuration file.
+// configSavePath is the location where the updated configuration file will be stored.
 //
 // The function returns an error if the interface could not be brought down.
 // Additionally, an error will be returned if the Config.Name does not match the TetherClient.DeviceName.
-func (server *TetherClient) BringDownInterface(bywgConf ByWgConfig) error {
+func (server *TetherClient) BringDownInterface(bywgConf ByWgConfig, configSavePath string) error {
 	// TODO: need user to be superuser (either throw error or prompt user to give privilages)
 
 	if server.DeviceName != bywgConf.Name {
@@ -59,12 +65,15 @@ func (server *TetherClient) BringDownInterface(bywgConf ByWgConfig) error {
 
 	// throw error if device does not exist or is not a WireGuard device
 	if _, err := server.Device(server.DeviceName); err != nil {
-		return err
+		return fmt.Errorf("could not get device: %w", err)
 	}
 
 	runCommands(bywgConf.PreDown, server.DeviceName)
+	if bywgConf.SaveConfig {
+		server.SaveConfigToFile(bywgConf, configSavePath)
+	}
 	if err := server.runDownCommand(); err != nil {
-		return err
+		return fmt.Errorf("error running down command: %w", err)
 	}
 	runCommands(bywgConf.PostDown, server.DeviceName)
 
@@ -115,12 +124,17 @@ func (server *TetherClient) setupDevice(privKey string, listenPort *int, peers [
 	// If ListenPort is nil then random one should be chosen, however,
 	// ListenPort is initially chosen at random when creating interface so no need to override here
 
-	return server.ConfigureDevice(server.DeviceName, wgtypes.Config{
+	err = server.ConfigureDevice(server.DeviceName, wgtypes.Config{
 		PrivateKey:   &privateKey,
 		ListenPort:   listenPort, // if nil it is not applied
 		ReplacePeers: true,
 		Peers:        peers,
 	})
+	if err != nil {
+		return fmt.Errorf("failed to configure device: %w", err)
+	}
+
+	return nil
 }
 
 func (server *TetherClient) addAddresses(addresses []string) {

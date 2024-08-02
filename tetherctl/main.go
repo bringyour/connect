@@ -38,6 +38,12 @@ Usage:
 		[--config_file=<config_file>]
 	tetherctl down [--device_name=<device_name>]
 		[--config_file=<config_file>]
+		[--new_file=<new_file>]
+	tetherctl get-config [--device_name=<device_name>]
+		[--config_file=<config_file>]
+	tetherctl save-config [--device_name=<device_name>]
+		[--config_file=<config_file>]
+		[--new_file=<new_file>]
 	tetherctl gen-priv-key
 	tetherctl gen-pub-key --priv_key=<priv_key>
 	tetherctl get-device-names
@@ -51,19 +57,18 @@ Usage:
 		--pub_key=<pub_key>
     tetherctl start-api [--device_name=<device_name>] [--endpoint=<endpoint>]
 		[--api_url=<api_url>]
-	tetherctl hello [--device_name=<device_name>]
-	tetherctl test [--device_name=<device_name>]
     
 Options:
     -h --help                       Show this screen.
     --version                       Show version.
     --device_name=<device_name> 	Wireguard device name [default: %q].
 	--endpoint=<endpoint> 			Wireguard url/ip where server can be found [default: this_pc_public_ip].
-	--config_file					Location of the config file in the system [default: %q]
-	--pub_key=<pub_key> 			Public key of a peer (unique)
+	--config_file					Location of the config file in the system [default: %q].
+	--new_file						Location where the updated config should be stored [default: <config_file>].
+	--pub_key=<pub_key> 			Public key of a peer (unique).
 	--listen_port=<listen_port> 	Port to listen on for incoming connections.
-	--priv_key=<priv_key> 			Private key of the device.
-    --api_url=<api_url> 			API url [default: %q]
+	--priv_key=<priv_key> 			Private key of a device.
+    --api_url=<api_url> 			API url [default: %q].
 
     `,
 		DefaultDeviceName,
@@ -73,7 +78,7 @@ Options:
 
 	opts, err := docopt.ParseArgs(usage, os.Args[1:], TetherCtlVersion)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error parsing cli arguments: %v", err)
 	}
 
 	deviceName, err := opts.String("--device_name")
@@ -88,7 +93,7 @@ Options:
 
 	c, err := wgctrl.New()
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error creating wgctrl client: %v", err)
 	}
 	defer c.Close()
 
@@ -103,6 +108,10 @@ Options:
 		upCli(opts)
 	} else if down_, _ := opts.Bool("down"); down_ {
 		downCli(opts)
+	} else if getConfig_, _ := opts.Bool("get-config"); getConfig_ {
+		getConfigCli(opts)
+	} else if saveConfig_, _ := opts.Bool("save-config"); saveConfig_ {
+		saveConfigCli(opts)
 	} else if genPrivKey_, _ := opts.Bool("gen-priv-key"); genPrivKey_ {
 		genPrivKeyCli()
 	} else if genPubKey_, _ := opts.Bool("gen-pub-key"); genPubKey_ {
@@ -119,10 +128,6 @@ Options:
 		getPeerConfigCli(opts)
 	} else if startAPI_, _ := opts.Bool("start-api"); startAPI_ {
 		startApiCli(opts)
-	} else if hello_, _ := opts.Bool("hello"); hello_ {
-		fmt.Println("Hello, World!")
-	} else if test_, _ := opts.Bool("test"); test_ {
-		tether.Test()
 	}
 }
 
@@ -153,15 +158,16 @@ func upCli(opts docopt.Opts) {
 	}
 	finalConfPath := configFile + tc.DeviceName + ".conf"
 
+	fmt.Printf("Bringing up interface %q from config file %q\n", tc.DeviceName, finalConfPath)
+
 	bywgConf, err := tether.ParseConfig(finalConfPath)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error parsing config: %v", err)
 	}
 
-	fmt.Printf("Running up command for config %q of device %q\n", finalConfPath, tc.DeviceName)
 	err = tc.BringUpInterface(bywgConf)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error bringing up interface: %v", err)
 	}
 
 	fmt.Printf("Interface %q brought up successfully.\n", tc.DeviceName)
@@ -174,18 +180,74 @@ func downCli(opts docopt.Opts) {
 	}
 	finalConfPath := configFile + tc.DeviceName + ".conf"
 
+	newFile, err := opts.String("--new_file")
+	if err != nil {
+		newFile = configFile
+	}
+	finalNewPath := newFile + tc.DeviceName + ".conf"
+
+	fmt.Printf("Bringing down interface %q from config file %q\n", tc.DeviceName, finalConfPath)
+
 	bywgConf, err := tether.ParseConfig(finalConfPath)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error parsing config: %v", err)
 	}
 
-	fmt.Printf("Running down command for config %q of device %q\n", finalConfPath, tc.DeviceName)
-	err = tc.BringDownInterface(bywgConf)
+	err = tc.BringDownInterface(bywgConf, finalNewPath)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error bringing down interface: %v", err)
 	}
 
 	fmt.Printf("Interface %q brought down successfully.\n", tc.DeviceName)
+}
+
+func getConfigCli(opts docopt.Opts) {
+	configFile, err := opts.String("--config_file")
+	if err != nil {
+		configFile = DefaultConfigFile
+	}
+	finalConfPath := configFile + tc.DeviceName + ".conf"
+
+	fmt.Printf("Getting updated config for file %q of device %q\n", finalConfPath, tc.DeviceName)
+
+	bywgConf, err := tether.ParseConfig(finalConfPath)
+	if err != nil {
+		log.Fatalf("Error parsing config: %v", err)
+	}
+
+	config, err := tc.GetUpdatedConfig(bywgConf)
+	if err != nil {
+		log.Fatalf("Error getting updated config: %v", err)
+	}
+	fmt.Println(config)
+}
+
+func saveConfigCli(opts docopt.Opts) {
+	configFile, err := opts.String("--config_file")
+	if err != nil {
+		configFile = DefaultConfigFile
+	}
+	finalConfPath := configFile + tc.DeviceName + ".conf"
+
+	newFile, err := opts.String("--new_file")
+	if err != nil {
+		newFile = configFile
+	}
+	finalNewPath := newFile + tc.DeviceName + ".conf"
+
+	fmt.Printf("Saving config based on config file %q and device %q to %q\n", finalConfPath, tc.DeviceName, finalNewPath)
+
+	bywgConf, err := tether.ParseConfig(finalConfPath)
+	if err != nil {
+		log.Fatalf("Error parsing config: %v", err)
+	}
+
+	err = tc.SaveConfigToFile(bywgConf, finalNewPath)
+	if err != nil {
+		log.Fatalf("Error saving config to file: %v", err)
+	}
+
+	fmt.Printf("Config file %q for device %q saved successfully.\n", finalNewPath, tc.DeviceName)
 }
 
 func genPrivKeyCli() {
@@ -200,7 +262,7 @@ func genPrivKeyCli() {
 func genPubKeyCli(opts docopt.Opts) {
 	privateKey, err := opts.String("--priv_key")
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error: no --priv_key provided: %v", err)
 	}
 
 	_pk, err := wgtypes.ParseKey(privateKey)
@@ -215,7 +277,7 @@ func genPubKeyCli(opts docopt.Opts) {
 func getDeviceNamesCli() {
 	devices, err := tc.GetAvailableDevices()
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error: could not get available devices: %v", err)
 	}
 
 	if len(devices) == 0 {
@@ -234,7 +296,7 @@ func getDeviceNamesCli() {
 func getDeviceCli() {
 	config, err := tc.GetDeviceFormatted()
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error getting device information: %v", err)
 	}
 
 	fmt.Println(config)
@@ -260,7 +322,7 @@ func changeDeviceCli(opts docopt.Opts) {
 
 	err = tc.ChangeDevice(privKeyP, listenPortP)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error changing device configuration: %v", err)
 	}
 
 	fmt.Printf("Device %q changed successfully.\n", tc.DeviceName)
@@ -269,17 +331,17 @@ func changeDeviceCli(opts docopt.Opts) {
 func addPeerCli(opts docopt.Opts) {
 	publicKey, err := opts.String("--pub_key")
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error: no --pub_key provided: %v", err)
 	}
 
 	_pk, err := wgtypes.ParseKey(publicKey)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error parsing public key: %v", err)
 	}
 
 	config, err := tc.AddPeerToDevice(_pk)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error adding peer to device: %v", err)
 	}
 
 	fmt.Println(config)
@@ -288,12 +350,12 @@ func addPeerCli(opts docopt.Opts) {
 func getPeerConfigCli(opts docopt.Opts) {
 	publicKey, err := opts.String("--pub_key")
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error: no --pub_key provided: %v", err)
 	}
 
 	config, err := tc.GetPeerConfig(publicKey)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Error getting peer config: %v", err)
 	}
 
 	fmt.Println(config)
@@ -323,7 +385,7 @@ func startApiCli(opts docopt.Opts) {
 	// start server in goroutine and wait for interrupt signal
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %s\n", err)
+			log.Fatalf("Error listen: %s\n", err)
 		}
 	}()
 	quit := make(chan os.Signal, 1)
@@ -338,15 +400,6 @@ func startApiCli(opts docopt.Opts) {
 		log.Fatal("Server forced to shutdown:", err)
 	}
 	fmt.Println("Server exiting")
-}
-
-func parsePublicKey(context *gin.Context) string {
-	publicKey := context.Param("pubkey")
-
-	// remove leading slash since we are using wildcards (should always be trimmed)
-	publicKey = strings.TrimPrefix(publicKey, "/")
-
-	return publicKey
 }
 
 func apiGetPeerConfig(context *gin.Context) {
@@ -379,4 +432,13 @@ func apiAddPeer(context *gin.Context) {
 
 	// return the config as plaintext in the response body
 	context.String(http.StatusOK, config)
+}
+
+func parsePublicKey(context *gin.Context) string {
+	publicKey := context.Param("pubkey")
+
+	// remove leading slash since we are using wildcards (should always be trimmed)
+	publicKey = strings.TrimPrefix(publicKey, "/")
+
+	return publicKey
 }
