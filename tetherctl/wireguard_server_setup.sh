@@ -1,5 +1,5 @@
 # uncomment next line if you want to try with kernel module 
-# ip link add dev wg0 type wireguard 
+ip link add dev wg0 type wireguard 
 # if not then install wireguard-go and create wg0 interface manually before running script (to disable kernel module check bottom of this script)
 # https://github.com/WireGuard/wireguard-go
 
@@ -10,7 +10,7 @@ sysctl -w net.ipv4.ip_forward=1
 
 export WG_ADDRESS=192.168.88.1/24
 ip address add dev wg0 $WG_ADDRESS
-go run main.go setup-device --device_name=wg0 --listen_port=51820
+go run main.go setup-device --device_name=wg0 --listen_port=33334
 ip link set up dev wg0
 
 # iptables rules (not always neccessary)

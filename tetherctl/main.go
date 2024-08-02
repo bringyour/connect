@@ -57,7 +57,6 @@ Usage:
 		--pub_key=<pub_key>
     tetherctl start-api [--device_name=<device_name>] [--endpoint=<endpoint>]
 		[--api_url=<api_url>]
-	tetherctl test
     
 Options:
     -h --help                       Show this screen.

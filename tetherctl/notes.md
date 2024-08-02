@@ -4,8 +4,6 @@
 * the .service file is added automatically
 * \<interface-name\>.config files are expected to be placed in /etc/library-name/
 
-**TODO**: make service file which should call tetherctl interface-up command to bring up the interface
-
 ## interface-up command
 * need user to be superuser (either throw error or prompt user to give privilages)
 * [DONE] check if config file exists
@@ -26,7 +24,7 @@
 * need user to be superuser (either throw error or prompt user to give privilages)
 * [DONE] throw error if interface doesnt exist
 * [DONE] run predown commands
-* save config is option is on (i.e, overrides current config)
+* [DONE] save config when option is on (i.e, overrides current config)
 * (not for now) revert changes done to route
 * [DONE] delete interface %i
 * (not for now) unset dns
@@ -44,12 +42,10 @@
 
 
 ## other TODOs
-* figure out what save config option does
-* decide how peers can be saved so that later they can de added using add-peer command
-* add thetherctl command to generate keypair (returns the private and public key maybe can also give private key so then it only return public key)
 * should address be mandatory in config file
 * decide if we need mtu and dns options like wg-quick
 * decide if we wanna add a firewall options
+* decide if we wanna add fwMark option
 
 ## links
 * wg-quick manual - https://www.man7.org/linux/man-pages/man8/wg-quick.8.html
@@ -61,6 +57,7 @@
 ### file structure
 * /etc/tetherctl/ contains tetherctl binary
 * /etc/systemd/system contains by-wireguard\@.service file
+
 ### assumptions
 * wireguard-go is available
 
