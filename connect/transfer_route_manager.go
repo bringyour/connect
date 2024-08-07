@@ -40,7 +40,8 @@ type Transport interface {
     // call `rematchTransport` to re-evaluate the weights. this is used for a control loop where the weight is adjusted to match the actual distribution
     RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32
     
-    MatchesSend(destinationId Id) bool
+    // FIXME p2p options, require p2p
+    MatchesSend(destinationId Id, opts *TransportOptions) bool
     MatchesReceive(destinationId Id) bool
 
     // request that p2p and direct connections be re-established that include the source

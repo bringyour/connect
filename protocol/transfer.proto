@@ -12,18 +12,13 @@ message TransferPath {
     // ulid
     bytes source_id = 2;
     // ulid
-    bytes stream_id = 3;
+    optional bytes stream_id = 3;
 }
 
 
 message TransferFrame {
     TransferPath transfer_path = 1;
-
     Frame frame = 2;
-
-    // TODO have the option to use fully encrypt the frame bytes using pke
-    // TODO for the initial use case of already encrypted frame data, this is not needed
-    // optional bool encrypted = 4;
 }
 
 
@@ -31,6 +26,7 @@ message TransferFrame {
 message FilteredTransferFrame {
     TransferPath transfer_path = 1;
 }
+
 
 message FilteredTransferFrameWithFrame {
     TransferPath transfer_path = 1;
@@ -75,7 +71,6 @@ message Ack {
     // all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
     bool selective = 3;
 }
-// TODO potential sender improvement: consider blocking send items to be fast retransmitted once if a later selective ack is received
 
 
 // this is a connection local message that is sent at the start of each connection to the control platform
@@ -94,7 +89,7 @@ message Auth {
 }
 
 
-// each mode implies all the lower modes
+// CHANGE FROM PRIOR VERSION, modes should be considered individually as a mask and do not imply other modes
 enum ProvideMode {
     None = 0; // this is interpreted the same as a `null` provide mode
     Network = 1;
@@ -105,7 +100,6 @@ enum ProvideMode {
 
 
 message Provide {
-    // FIXME move this to PKE public key
     repeated ProvideKey keys = 1;
 }
 
@@ -117,40 +111,11 @@ message ProvideKey {
 }
 
 
-message CreateStream {
-    // ulid
-    repeated bytes destination_ids = 1;
-}
-// the creator knows all the hops on the stream
-// when evaluating the completed contracts, the send and receive count involving the source_id
-// is the baseline to evaluate the other contracts for disputes
-
-
-enum StreamError {
-    STREAM_NO_PERMISSION = 0;
-}
-
-
-// the client uses this stream_id to send a message to the first destination_id
-message CreateStreamResult {
-    optional StreamError error = 1;
-    optional bytes stream_id = 2;
-}
-
-
-message CloseStream {
-    // ulid
-    bytes stream_id = 1;
-}
-
-
 // each hop on the stream receives this to configure its state
+// the last hop
 message StreamOpen {
     optional TransferPath source = 1;
     optional TransferPath destination = 2;
-    // FIXME move this to PKE public key
-    // all contracts for this stream will be signed with this key
-    ProvideKey key = 3;
 }
 
 // each hop on the stream receives this to configure its state
@@ -170,7 +135,13 @@ message CreateContract {
     bool companion = 3;
     // ulids
     repeated bytes used_contract_ids = 4;
+
+    optional repeated bytes intermediary_client_ids = 5;
+    optional bytes stream_id = 6;
 }
+// the creator knows all the hops on the stream from the enumerated linpaths
+// when evaluating the completed contracts, the send and receive count involving the source_id
+// is the baseline to evaluate the other contracts for disputes
 
 
 enum ContractError {
@@ -190,7 +161,6 @@ message CreateContractResult {
 message Contract {
     // ulid
     bytes stored_contract_bytes = 1;
-    // FIXME move this to PKE encrypted value
     // `stored_contract_bytes` signed with the `provider_secret_key`
     bytes stored_contract_hmac = 2;
     // the client must always verify the provide mode by matching the `provider_secret_key` for that mode to the hmac
@@ -201,10 +171,12 @@ message Contract {
 message StoredContract {
     bytes contract_id = 1;
     uint64 transfer_byte_count = 2;
-    // ulid, used only for non-stream provide modes
-    optional bytes source_id = 3;
-    // ulid, used only for non-stream provide modes
-    optional bytes destination_id = 4;
+    // ulid
+    bytes source_id = 3;
+    // ulid
+    bytes destination_id = 4;
+    // ulid
+    optional bytes stream_id = 3;
 }
 
 

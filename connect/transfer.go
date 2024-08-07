@@ -60,7 +60,9 @@ const VerifyForwardMessages = false
 type AckFunction = func(err error)
 // provideMode is the mode of where these frames are from: network, friends and family, public
 // provideMode nil means no contract
+// FIXME source TransferPath instead of sourceId
 type ReceiveFunction = func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode)
+// FIXME source TransferPath instead of sourceId
 type ForwardFunction = func(sourceId Id, destinationId Id, transferFrameBytes []byte)
 
 
@@ -408,6 +410,8 @@ func (self *Client) SendWithTimeout(
 	return success && err == nil
 }
 
+// FIXME dest should be a TransferPath, should also be able to take intermediary client ids
+// FIXME there should be p2p options for the send, to require p2p
 func (self *Client) SendWithTimeoutDetailed(
 	frame *protocol.Frame,
 	destinationId Id,
