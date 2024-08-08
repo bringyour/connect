@@ -6,11 +6,12 @@ import "frame.proto";
 option go_package = "bringyour.com/protocol";
 
 
+// stream_id replaces the source and destination
 message TransferPath {
     // ulid
-    bytes destination_id = 1;
+    optional bytes source_id = 2;
     // ulid
-    bytes source_id = 2;
+    optional bytes destination_id = 1;
     // ulid
     optional bytes stream_id = 3;
 }
@@ -172,9 +173,9 @@ message StoredContract {
     bytes contract_id = 1;
     uint64 transfer_byte_count = 2;
     // ulid
-    bytes source_id = 3;
+    optional bytes source_id = 3;
     // ulid
-    bytes destination_id = 4;
+    optional bytes destination_id = 4;
     // ulid
     optional bytes stream_id = 3;
 }
