@@ -1,52 +1,6 @@
 package connect
 
 
-
-
-// multi hop buffer
-// buffers until for the StreamOpen message
-// or timeout, then close
-
-// if the buffer closes, it cannot re-open in the future. that would break reliable deliverability
-// because each hop by acking the message, is saying as long as it exists it will deliver the messages
-// the idle timeout should just be large
-
-
-
-
-// add listener for StreamOpen
-//    on stream open, add p2p transport to destination id
-
-// initBuffer().SetNextHop()
-
-
-
-
-// add forward listener. 
-//      forward sequence with some small buffer, write to buffer drops immediately if no room
-
-
-
-
-// NewP2pTransport(api, destination)
-// inside the transport, every 1s when active, update the weights
-// transports stays active until closed
-
-
-
-
-
-
-// when buffer opens, create the transport
-// when buffer times out, close the transport
-
-
-// a stream replaces a single source and desintation with a route
-// over arbitrarily many hops
-// this manager sets up additional transports for each stream,
-// which include a p2p transport
-
-
 type StreamManager struct {
 	ctx context.DialContext
 	
@@ -62,7 +16,6 @@ func NewStreamManager(ctx, client, streamBufferSettings *StreamBufferSettings) *
 	self.streamBuffer = NewStreamBuffer(ctx, client, streamBufferSettings)
 }
 
-
 // ReceiveFunction
 func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	switch sourceId {
@@ -74,7 +27,7 @@ func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, prov
 	}
 }
 
-func handleControlMessage(frame *protocol.Frame) error {
+func (self *ContractManager) handleControlMessage(frame *protocol.Frame) error {
 	if message, err := FromFrame(frame); err == nil {
 		switch v := message.(type) {
 		case *protocol.StreamOpen:
@@ -157,7 +110,7 @@ func NewStreamBuffer(ctx context.Context, client *Client, streamBufferSettings *
 	}
 }
 
-func OpenStream(sourceId *Id, destinationId *Id, streamId Id) (bool, error) {
+func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId Id) (bool, error) {
 	streamSequenceId := newStreamSequenceId(sourceId, destinationId, streamId)
 
 	initStreamSequence := func(skip *StreamSequence) *StreamSequence {
@@ -215,12 +168,10 @@ func OpenStream(sourceId *Id, destinationId *Id, streamId Id) (bool, error) {
 		}
 		// sequence closed
 	}
-	return success, err
-	
-	
+	return success, err	
 }
 
-func CloseStream(streamId Id) {
+func (self *StreamBuffer) CloseStream(streamId Id) {
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -228,10 +179,6 @@ func CloseStream(streamId Id) {
 		streamSequenceByStreamId.Cancel()
 	}
 }
-
-
-
-
 
 
 type StreamSequence struct {
@@ -247,8 +194,7 @@ type StreamSequence struct {
 	idleCondition *IdleCondition
 }
 
-
-func NewSendSequence(
+func NewStreamSequence(
 		ctx context.Context,
 		client *Client,
 		sourceId *Id
@@ -283,7 +229,6 @@ func (self *StreamSequence) Open() (bool, error) {
 
 	return true, nil
 }
-
 
 func (self *StreamSequence) Run() {	
 	defer self.cancel()
@@ -396,16 +341,9 @@ func (self *StreamSequence) Run() {
 	case <- self.ctx.Done():
 		return
 	}
-
-	// FIXME Transfer will need to switch multi route writers when the contract stream id changes
-	// FIXME close stream when stream switches, and when sender or receiver closes
-	// FIXME close all pending contracts when sender or receiver closes
 }
 
 func (self *StreamSequence) Close() {
 	cancel()
 }
-
-
-
 

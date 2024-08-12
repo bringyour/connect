@@ -29,7 +29,6 @@ const (
 
 
 type P2pTransport struct {
-
 	ctx context.Context
 	cancel context.CancelFunc
 
@@ -46,9 +45,6 @@ type P2pTransport struct {
 	receiveReady chan struct{}
 }
 
-// FIXME if route manager is not nil, register send and receive with route manager
-// FIXME    weight is max for client route manager
-// FIXME both send and receive are registered with the p2p route manager
 func NewP2pTransport(
 	ctx context.Context,
 	client *Client,
@@ -74,28 +70,13 @@ func NewP2pTransport(
 		receiveReady: receiveReady,
 	}
 	return p2pTransport
-
-
-
-	// when receiveReady done, write a READY message to Send
-	// when read a READY message from Receive, close sendReady
-
-	// on receive ready, add receive transport to route manager
-	// on send ready, add send transport to route manager
-
-
-
 }
 
 
 func (self *P2pTransport) run() {
-
 	defer self.cancel()
 
-
 	for {
-		
-
 		// todo using net.Conn as a stand in for the actual interface
 		var conn net.Conn
 		// note here, one side of the P2P connection will be driving the setup process
@@ -196,15 +177,13 @@ func (self *P2pTransport) run() {
         case <- time.After(self.settings.ReconnectTimeout):
         }
 	}
-
-
 }
-
 
 
 func NewP2pSendTransport(handleCtx, handleCancel, conn, streamId) (Transport, Route) {
 
 }
+
 
 func NewP2pReceiveTransport(handleCtx, handleCancel, conn, streamId) (Transport, Route) {
 
@@ -214,6 +193,7 @@ func NewP2pReceiveTransport(handleCtx, handleCancel, conn, streamId) (Transport,
 func P2pActive(peerId, streamId) net.Conn {
 
 }
+
 
 func P2pPassive(peerId, streamId) net.Conn {
 
