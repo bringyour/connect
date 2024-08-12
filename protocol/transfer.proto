@@ -6,7 +6,17 @@ import "frame.proto";
 option go_package = "bringyour.com/protocol";
 
 
-// stream_id replaces the source and destination
+// changes 2024-08: 
+// 1. transfer can now be addressed to/from a stream_id
+//    Anywhere transfer would be addressed to a destination_id or from a source_id,
+//    it can now be to/from a stream_id.
+// 2. stream_ids are created by adding intermediary_destination_ids to CreateContract
+// 3. multi-hop state is created with StreamOpen
+//    This is sent each time a stream contract is created,
+//    so that the hop state can time out the same as the sender state.
+
+
+// stream_id replaces the source_id and destination_id
 message TransferPath {
     // ulid
     optional bytes source_id = 2;
@@ -112,17 +122,23 @@ message ProvideKey {
 }
 
 
-// each hop on the stream receives this to configure its state
-// the last hop
+// each hop on the stream receives this to configure its state,
+// including the first and last hops
+// this is sent each time a stream contract is created
 message StreamOpen {
-    optional TransferPath source = 1;
-    optional TransferPath destination = 2;
+    // ulid
+    optional bytes source_id = 2;
+    // ulid
+    optional bytes destination_id = 1;
+    // ulid
+    bytes stream_id = 3;
 }
 
 // each hop on the stream receives this to configure its state
+// this is sent when all open contracts for the stream are closed
 message StreamClose {
-    optional TransferPath source = 1;
-    optional TransferPath destination = 2;
+    // ulid
+    bytes stream_id = 3;
 }
 
 
@@ -130,14 +146,16 @@ message StreamClose {
 // platform sends a CreateContractResult
 message CreateContract {
     // ulid
-    bytes destination_id = 1;
+    optional bytes destination_id = 1;
     uint64 transfer_byte_count = 2;
     // restrict the contract to a companion of an existing open contract
     bool companion = 3;
     // ulids
     repeated bytes used_contract_ids = 4;
 
-    optional repeated bytes intermediary_client_ids = 5;
+    // ulids
+    repeated bytes intermediary_destination_ids = 5;
+    // ulid
     optional bytes stream_id = 6;
 }
 // the creator knows all the hops on the stream from the enumerated linpaths
@@ -152,7 +170,7 @@ enum ContractError {
 }
 
 
-message CreateContractResult {    
+message CreateContractResult {
     optional ContractError error = 1;
     optional Contract contract = 2;
 }
@@ -169,6 +187,7 @@ message Contract {
 }
 
 
+// stream_id replaces the source_id and destination_id
 message StoredContract {
     bytes contract_id = 1;
     uint64 transfer_byte_count = 2;
@@ -177,7 +196,7 @@ message StoredContract {
     // ulid
     optional bytes destination_id = 4;
     // ulid
-    optional bytes stream_id = 3;
+    optional bytes stream_id = 5;
 }
 
 

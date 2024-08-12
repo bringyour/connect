@@ -51,7 +51,7 @@ type Transport interface {
 
 
 type MultiRouteWriter interface {
-    Write(ctx context.Context, transportFrameBytes []byte, timeout time.Duration) error
+    Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) error
     GetActiveRoutes() []Route
     GetInactiveRoutes() []Route
 }
@@ -552,7 +552,7 @@ func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int
 }
 
 // MultiRouteWriter
-func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes []byte, timeout time.Duration) error {
+func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) (bool, error) {
     // write to the first channel available, in random priority
     enterTime := time.Now()
     for {
@@ -564,9 +564,9 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         // non-blocking priority 
         for _, route := range activeRoutes {
             select {
-            case route <- transportFrameBytes:
+            case route <- transferFrameBytes:
                 glog.V(2).Infof("[mrw]nb %s->%s\n", self.clientTag, self.destinationId)
-                self.updateSendStats(route, 1, ByteCount(len(transportFrameBytes)))
+                self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
                 return nil
             default:
             }
@@ -605,7 +605,7 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         // add all the route
         routeStartIndex := len(selectCases)
         if 0 < len(activeRoutes) {
-            sendValue := reflect.ValueOf(transportFrameBytes)
+            sendValue := reflect.ValueOf(transferFrameBytes)
             for _, route := range activeRoutes {
                 selectCases = append(selectCases, reflect.SelectCase{
                     Dir: reflect.SelectSend,
@@ -648,7 +648,7 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
             // a route
             routeIndex := chosenIndex - routeStartIndex
             route := activeRoutes[routeIndex]
-            self.updateSendStats(route, 1, ByteCount(len(transportFrameBytes)))
+            self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
             return nil
         }
     }
@@ -668,11 +668,11 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         retry := false
         for _, route := range activeRoutes {
             select {
-            case transportFrameBytes, ok := <- route:
+            case transferFrameBytes, ok := <- route:
                 if ok {
                     glog.V(2).Infof("[mrr]nb %s/%s<-\n", self.clientTag, self.destinationId)
-                    self.updateReceiveStats(route, 1, ByteCount(len(transportFrameBytes)))
-                    return transportFrameBytes, nil
+                    self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
+                    return transferFrameBytes, nil
                 } else {
                     // mark the route as closed, try again
                     self.setActive(route, false)
@@ -755,15 +755,15 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
             // new routes, try again
         case timeoutIndex:
             // FIXME return nil, nil? don't use errors for timeouts
-            return nil, errors.New("Timeout")
+            return nil, nil
         default:
             // a route
             routeIndex := chosenIndex - routeStartIndex
             route := activeRoutes[routeIndex]
             if ok {
-                transportFrameBytes := value.Bytes()
-                self.updateReceiveStats(route, 1, ByteCount(len(transportFrameBytes)))
-                return transportFrameBytes, nil
+                transferFrameBytes := value.Bytes()
+                self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
+                return transferFrameBytes, nil
             } else {
                 // mark the route as closed, try again
                 self.setActive(route, false)

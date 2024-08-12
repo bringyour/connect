@@ -50,6 +50,14 @@ Each transport should apply the forwarding ACL:
 // can be active in parallel, each limited by their slowest destination.
 
 
+// comparable
+type TransferPath struct {
+	SourceId Id
+	DestinationId Id
+	StreamId Id
+}
+
+
 // use 0 for deadlock testing
 const DefaultTransferBufferSize = 32
 
@@ -149,27 +157,13 @@ func DefaultForwardBufferSettings() *ForwardBufferSettings {
 }
 
 
-// comparable
-type TransferPath struct {
-	source Path
-	destination Path
-}
-
-
-// comparable
-type Path struct {
-	ClientId Id
-	StreamId Id
-}
-
-
 type SendPack struct {
 	TransferOptions
 
 	// frame and destination is repacked by the send buffer into a Pack,
 	// with destination and frame from the tframe, and other pack properties filled in by the buffer
 	Frame *protocol.Frame
-	DestinationId Id
+	DestinationIds []Id
 	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
 	AckCallback AckFunction
 	MessageByteCount ByteCount
@@ -318,8 +312,10 @@ func NewClientWithTag(
 
 	routeManager := NewRouteManager(ctx, clientTag)
 	contractManager := NewContractManager(ctx, client, settings.ContractManagerSettings)
+	streamManager := NewStreamManager(ctx, client, settings.StreamManagerSettings)
 
 	client.contractManagerUnsub = client.AddReceiveCallback(contractManager.Receive)
+	client.streamManagerUnsub = client.AddReceiveCallback(streamManager.Receive)
 
 	client.initBuffers(routeManager, contractManager)
 
@@ -331,9 +327,9 @@ func NewClientWithTag(
 func (self *Client) initBuffers(routeManager *RouteManager, contractManager *ContractManager) {
 	self.routeManager = routeManager
 	self.contractManager = contractManager
-	self.sendBuffer = NewSendBuffer(self.ctx, self, routeManager, contractManager, self.settings.SendBufferSettings)
-	self.receiveBuffer = NewReceiveBuffer(self.ctx, self, routeManager, contractManager, self.settings.ReceiveBufferSettings)
-	self.forwardBuffer = NewForwardBuffer(self.ctx, self, routeManager, contractManager, self.settings.ForwardBufferSettings)
+	self.sendBuffer = NewSendBuffer(self.ctx, self, self.settings.SendBufferSettings)
+	self.receiveBuffer = NewReceiveBuffer(self.ctx, self, self.settings.ReceiveBufferSettings)
+	self.forwardBuffer = NewForwardBuffer(self.ctx, self, self.settings.ForwardBufferSettings)
 }
 
 func (self *Client) RouteManager() *RouteManager {
@@ -410,11 +406,31 @@ func (self *Client) SendWithTimeout(
 	return success && err == nil
 }
 
-// FIXME dest should be a TransferPath, should also be able to take intermediary client ids
-// FIXME there should be p2p options for the send, to require p2p
 func (self *Client) SendWithTimeoutDetailed(
 	frame *protocol.Frame,
 	destinationId Id,
+	ackCallback AckFunction,
+	timeout time.Duration,
+	opts ...any,
+) (bool, error) {
+}
+
+func (self *Client) SendMultihopWithTimeout(
+	frame *protocol.Frame,
+	destinationIds []Id,
+	ackCallback AckFunction,
+	timeout time.Duration,
+	opts ...any,
+) bool {
+	success, err := self.SendMultihopWithTimeoutDetailed(frame, destinationIds, ackCallback, timeout, opts...)
+	return success && err == nil
+}
+
+// FIXME dest should be a TransferPath, should also be able to take intermediary client ids
+// FIXME there should be p2p options for the send, to require p2p
+func (self *Client) SendMultihopWithTimeoutDetailed(
+	frame *protocol.Frame,
+	destinationIds []Id,
 	ackCallback AckFunction,
 	timeout time.Duration,
 	opts ...any,
@@ -806,6 +822,7 @@ func (self *Client) Close() {
 	self.forwardBuffer.Close()
 
 	self.contractManagerUnsub()
+	self.streamManagerUnsub()
 }
 
 func (self *Client) Cancel() {
@@ -862,8 +879,6 @@ type sendSequenceId struct {
 type SendBuffer struct {
 	ctx context.Context
 	client *Client
-	routeManager *RouteManager
-	contractManager *ContractManager
 	
 	sendBufferSettings *SendBufferSettings
 
@@ -873,14 +888,10 @@ type SendBuffer struct {
 
 func NewSendBuffer(ctx context.Context,
 		client *Client,
-		routeManager *RouteManager,
-		contractManager *ContractManager,
 		sendBufferSettings *SendBufferSettings) *SendBuffer {
 	return &SendBuffer{
 		ctx: ctx,
 		client: client,
-		routeManager: routeManager,
-		contractManager: contractManager,
 		sendBufferSettings: sendBufferSettings,
 		sendSequences: map[sendSequenceId]*SendSequence{},
 	}
@@ -908,8 +919,6 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 		sendSequence = NewSendSequence(
 			self.ctx,
 			self.client,
-			self.routeManager,
-			self.contractManager,
 			sendPack.DestinationId,
 			sendPack.TransferOptions.CompanionContract,
 			self.sendBufferSettings,
@@ -1032,10 +1041,6 @@ type SendSequence struct {
 	cancel context.CancelFunc
 
 	client *Client
-	clientId Id
-	clientTag string
-	routeManager *RouteManager
-	contractManager *ContractManager
 
 	destinationId Id
 	companionContract bool
@@ -1064,8 +1069,6 @@ type SendSequence struct {
 func NewSendSequence(
 		ctx context.Context,
 		client *Client,
-		routeManager *RouteManager,
-		contractManager *ContractManager,
 		destinationId Id,
 		companionContract bool,
 		sendBufferSettings *SendBufferSettings) *SendSequence {
@@ -1077,8 +1080,6 @@ func NewSendSequence(
 		client: client,
 		clientId: client.ClientId(),
 		clientTag: client.ClientTag(),
-		routeManager: routeManager,
-		contractManager: contractManager,
 		destinationId: destinationId,
 		companionContract: companionContract,
 		sequenceId: NewId(),
@@ -1196,7 +1197,7 @@ func (self *SendSequence) Run() {
 
 		// close contract
 		for _, sendContract := range self.openSendContracts {
-			self.contractManager.CompleteContract(
+			self.client.ContractManager().CompleteContract(
 				sendContract.contractId,
 				sendContract.ackedByteCount,
 				sendContract.unackedByteCount,
@@ -1223,11 +1224,11 @@ func (self *SendSequence) Run() {
 
 		// flush queued up contracts
 		// remove used contract ids because all used contracts were closed above
-		self.contractManager.FlushContractQueue(self.destinationId, true)
+		self.client.ContractManager().FlushContractQueue(self.destinationId, true)
 	}()
 
-	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.destinationId)
-	defer self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
+	self.multiRouteWriter = self.client.RouteManager().OpenMultiRouteWriter(self.destinationId)
+	defer self.client.RouteManager().CloseMultiRouteWriter(self.multiRouteWriter)
 
 	ackWindow := newSequenceAckWindow()
 	go func() {
@@ -1418,7 +1419,7 @@ func (self *SendSequence) Run() {
 func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 	// `sendNoContract` is a mutual configuration 
 	// both sides must configure themselves to require no contract from each other
-	if self.contractManager.SendNoContract(self.destinationId, self.companionContract) {
+	if self.client.ContractManager().SendNoContract(self.destinationId, self.companionContract) {
 		return true
 	}
 	if self.sendContract != nil && self.sendContract.update(messageByteCount) {
@@ -1430,7 +1431,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 		// this is needed because the size of the contract pack is counted against the contract
 		// maxContractMessageByteCount := ByteCount(256)
 
-		effectiveContractTransferByteCount := ByteCount(float32(self.contractManager.StandardContractTransferByteCount()) * self.sendBufferSettings.ContractFillFraction)
+		effectiveContractTransferByteCount := ByteCount(float32(self.client.ContractManager().StandardContractTransferByteCount()) * self.sendBufferSettings.ContractFillFraction)
 		if effectiveContractTransferByteCount < messageByteCount + self.sendBufferSettings.MinMessageByteCount /*+ maxContractMessageByteCount*/ {
 			// this pack does not fit into a standard contract
 			// TODO allow requesting larger contracts
@@ -1465,15 +1466,15 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				// the contract was requested with the correct size, so this is an error somewhere
 				// just close it and let the platform time out the other side
 				glog.Infof("[s]%s->%s contract too small %s\n", self.clientTag, self.destinationId, nextSendContract.contractId)
-				self.contractManager.CompleteContract(nextSendContract.contractId, 0, 0)
+				self.client.ContractManager().CompleteContract(nextSendContract.contractId, 0, 0)
 				return false
 			}
 		}
 
 		nextContract := func(timeout time.Duration)(bool) {
-			if contract := self.contractManager.TakeContract(self.ctx, self.destinationId, timeout); contract != nil && setNextContract(contract) {
+			if contract := self.client.ContractManager().TakeContract(self.ctx, self.destinationId, timeout); contract != nil && setNextContract(contract) {
 				// async queue up the next contract
-				self.contractManager.CreateContract(
+				self.client.ContractManager().CreateContract(
 					self.destinationId,
 					self.companionContract,
 					self.client.settings.ControlWriteTimeout,
@@ -1515,7 +1516,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 			}
 
 			// async queue up the next contract
-			self.contractManager.CreateContract(
+			self.client.ContractManager().CreateContract(
 				self.destinationId,
 				self.companionContract,
 				self.client.settings.ControlWriteTimeout,
@@ -1545,7 +1546,7 @@ func (self *SendSequence) setContract(nextSendContract *sequenceContract) {
 	// do not close the current contract unless it has no pending data
 	// the contract is stracked in `openSendContracts` and will be closed on ack
 	if self.sendContract != nil && self.sendContract.unackedByteCount == 0 {
-		self.contractManager.CompleteContract(
+		self.client.ContractManager().CompleteContract(
 			self.sendContract.contractId,
 			self.sendContract.ackedByteCount,
 			self.sendContract.unackedByteCount,
@@ -1617,6 +1618,7 @@ func (self *SendSequence) sendWithSetContract(
 
 	transferFrame := &protocol.TransferFrame{
 		TransferPath: &protocol.TransferPath{
+			// FIXME use the values from the contract
 			DestinationId: self.destinationId.Bytes(),
 			SourceId: self.clientId.Bytes(),
 			StreamId: DirectStreamId.Bytes(),
@@ -1786,7 +1788,7 @@ func (self *SendSequence) ackItem(item *sendItem) {
 		itemSendContract.ack(item.messageByteCount)
 		// not current and closed
 		if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
-			self.contractManager.CompleteContract(
+			self.client.ContractManager().CompleteContract(
 				itemSendContract.contractId,
 				itemSendContract.ackedByteCount,
 				itemSendContract.unackedByteCount,
@@ -1875,8 +1877,6 @@ type receiveSequenceId struct {
 type ReceiveBuffer struct {
 	ctx context.Context
 	client *Client
-	contractManager *ContractManager
-	routeManager *RouteManager
 
 	receiveBufferSettings *ReceiveBufferSettings
 
@@ -1887,14 +1887,10 @@ type ReceiveBuffer struct {
 
 func NewReceiveBuffer(ctx context.Context,
 		client *Client,
-		routeManager *RouteManager,
-		contractManager *ContractManager,
 		receiveBufferSettings *ReceiveBufferSettings) *ReceiveBuffer {
 	return &ReceiveBuffer{
 		ctx: ctx,
 		client: client,
-		routeManager: routeManager,
-		contractManager: contractManager,
 		receiveBufferSettings: receiveBufferSettings,
 		receiveSequences: map[receiveSequenceId]*ReceiveSequence{},
 	}
@@ -1922,8 +1918,6 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 		receiveSequence = NewReceiveSequence(
 			self.ctx,
 			self.client,
-			self.routeManager,
-			self.contractManager,
 			receivePack.SourceId,
 			receivePack.SequenceId,
 			self.receiveBufferSettings,
@@ -2014,10 +2008,6 @@ type ReceiveSequence struct {
 	cancel context.CancelFunc
 
 	client *Client
-	clientId Id
-	clientTag string
-	routeManager *RouteManager
-	contractManager *ContractManager
 
 	sourceId Id
 	sequenceId Id
@@ -2041,8 +2031,6 @@ type ReceiveSequence struct {
 func NewReceiveSequence(
 		ctx context.Context,
 		client *Client,
-		routeManager *RouteManager,
-		contractManager *ContractManager,
 		sourceId Id,
 		sequenceId Id,
 		receiveBufferSettings *ReceiveBufferSettings) *ReceiveSequence {
@@ -2051,10 +2039,6 @@ func NewReceiveSequence(
 		ctx: cancelCtx,
 		cancel: cancel,
 		client: client,
-		clientId: client.ClientId(),
-		clientTag: client.ClientTag(),
-		routeManager: routeManager,
-		contractManager: contractManager,
 		sourceId: sourceId,
 		sequenceId: sequenceId,
 		receiveBufferSettings: receiveBufferSettings,
@@ -2126,7 +2110,7 @@ func (self *ReceiveSequence) Run() {
 		if self.receiveContract != nil {
 			// the sender may send again with this contract (set as head)
 			// checkpoint the contract but do not close it
-			self.contractManager.CheckpointContract(
+			self.client.ContractManager().CheckpointContract(
 				self.receiveContract.contractId,
 				self.receiveContract.ackedByteCount,
 				self.receiveContract.unackedByteCount,
@@ -2140,7 +2124,7 @@ func (self *ReceiveSequence) Run() {
 			})
 		}
 
-		self.contractManager.CloseSourceContract(self.sourceId)
+		self.client.ContractManager().CloseSourceContract(self.sourceId)
 
 		self.peerAudit.Complete()
 	}()
@@ -2155,8 +2139,8 @@ func (self *ReceiveSequence) Run() {
 	go func() {
 		defer self.cancel()
 
-		multiRouteWriter := self.routeManager.OpenMultiRouteWriter(self.sourceId)
-		defer self.routeManager.CloseMultiRouteWriter(multiRouteWriter)
+		multiRouteWriter := self.client.RouteManager().OpenMultiRouteWriter(self.sourceId)
+		defer self.client.RouteManager().CloseMultiRouteWriter(multiRouteWriter)
 
 		writeAck := func(sendAck *sequenceAck) {
 			ack := &protocol.Ack{
@@ -2169,6 +2153,7 @@ func (self *ReceiveSequence) Run() {
 
 			transferFrame := &protocol.TransferFrame{
 				TransferPath: &protocol.TransferPath{
+					// FIXME use the values from the contract
 					DestinationId: self.sourceId.Bytes(),
 					SourceId: self.clientId.Bytes(),
 					StreamId: DirectStreamId.Bytes(),
@@ -2592,7 +2577,7 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 	}
 
 	// check the hmac with the local provider secret key
-	if !self.contractManager.Verify(
+	if !self.client.ContractManager().Verify(
 			contract.StoredContractHmac,
 			contract.StoredContractBytes,
 			contract.ProvideMode) {
@@ -2641,7 +2626,7 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 
 	// close out the previous contract
 	if self.receiveContract != nil {
-		self.contractManager.CompleteContract(
+		self.client.ContractManager().CompleteContract(
 			self.receiveContract.contractId,
 			self.receiveContract.ackedByteCount,
 			self.receiveContract.unackedByteCount,
@@ -2649,7 +2634,7 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 	}
 	// FIXME some kind of async verification to the control to make sure the contract is valid
 	self.receiveContract = nextReceiveContract
-	self.contractManager.OpenSourceContract(self.sourceId)
+	self.client.ContractManager().OpenSourceContract(self.sourceId)
 	return nil
 }
 
@@ -2661,7 +2646,7 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 	}
 	// `receiveNoContract` is a mutual configuration 
 	// both sides must configure themselves to require no contract from each other
-	if self.contractManager.ReceiveNoContract(self.sourceId) {
+	if self.client.ContractManager().ReceiveNoContract(self.sourceId) {
 		return true
 	}
 	return false
@@ -2905,8 +2890,6 @@ type ForwardBufferSettings struct {
 type ForwardBuffer struct {
 	ctx context.Context
 	client *Client
-	contractManager *ContractManager
-	routeManager *RouteManager
 
 	forwardBufferSettings *ForwardBufferSettings
 
@@ -2917,14 +2900,10 @@ type ForwardBuffer struct {
 
 func NewForwardBuffer(ctx context.Context,
 		client *Client,
-		routeManager *RouteManager,
-		contractManager *ContractManager,
 		forwardBufferSettings *ForwardBufferSettings) *ForwardBuffer {
 	return &ForwardBuffer{
 		ctx: ctx,
 		client: client,
-		routeManager: routeManager,
-		contractManager: contractManager,
 		forwardBufferSettings: forwardBufferSettings,
 		forwardSequences: map[Id]*ForwardSequence{},
 	}
@@ -2947,8 +2926,6 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 		forwardSequence = NewForwardSequence(
 			self.ctx,
 			self.client,
-			self.routeManager,
-			self.contractManager,
 			forwardPack.DestinationId,
 			self.forwardBufferSettings,
 		)
@@ -3026,8 +3003,6 @@ type ForwardSequence struct {
 	client *Client
 	clientId Id
 	clientTag string
-	routeManager *RouteManager
-	contractManager *ContractManager
 
 	destinationId Id
 
@@ -3043,8 +3018,6 @@ type ForwardSequence struct {
 func NewForwardSequence(
 		ctx context.Context,
 		client *Client,
-		routeManager *RouteManager,
-		contractManager *ContractManager,
 		destinationId Id,
 		forwardBufferSettings *ForwardBufferSettings) *ForwardSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
@@ -3052,10 +3025,6 @@ func NewForwardSequence(
 		ctx: cancelCtx,
 		cancel: cancel,
 		client: client,
-		clientId: client.ClientId(),
-		clientTag: client.ClientTag(),
-		routeManager: routeManager,
-		contractManager: contractManager,
 		destinationId: destinationId,
 		forwardBufferSettings: forwardBufferSettings,
 		packs: make(chan *ForwardPack, forwardBufferSettings.SequenceBufferSize),
@@ -3107,8 +3076,8 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 func (self *ForwardSequence) Run() {
 	defer self.cancel()
 
-	self.multiRouteWriter = self.routeManager.OpenMultiRouteWriter(self.destinationId)
-	defer self.routeManager.CloseMultiRouteWriter(self.multiRouteWriter)
+	self.multiRouteWriter = self.client.RouteManager().OpenMultiRouteWriter(self.destinationId)
+	defer self.client.RouteManager().CloseMultiRouteWriter(self.multiRouteWriter)
 
 	for {
 		checkpointId := self.idleCondition.Checkpoint()

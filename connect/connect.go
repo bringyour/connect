@@ -11,6 +11,9 @@ import (
 )
 
 
+const MaxMultihopLength = 8
+
+
 // use this type when counting bytes
 type ByteCount = int64
 
@@ -110,4 +113,31 @@ func encodeUuid(src [16]byte) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", src[0:4], src[4:6], src[6:8], src[8:10], src[10:16])
 }
 
+
+// comparable
+type MultihopId struct {
+	ids [MaxMultihopLength]Id
+	len int
+}
+
+func NewMultihopId(ids ... Id) (MultihopId, error) {
+	if MaxMultihopLength < len(ids) {
+		return MultihopId{}, fmt.Errorf("Multihop length exceeds maximum: %d < %d", MaxMultihopLength, len(ids))
+	}
+	multihopId := MultihopId{
+		len: len(ids),
+	}
+	for i, id := range ids {
+		multihopId.ids[i] = id
+	}
+	return multihopId, nil
+}
+
+func (self MultihopId) Len() int {
+	return self.len
+}
+
+func (self MultihopId) Ids() []Id {
+	return self.ids[0:self.len]
+}
 

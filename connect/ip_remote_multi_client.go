@@ -621,6 +621,7 @@ func (self *ApiMultiClientGenerator) NewClient(
         self.platformUrl,
         args.ClientAuth,
         client.RouteManager(),
+        p2pOnly,
     )
     // enable return traffic for this client
     ack := make(chan struct{})
