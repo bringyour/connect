@@ -64,10 +64,6 @@ type ReceiveFunction = func(source TransferPath, frames []*protocol.Frame, provi
 type ForwardFunction = func(path TransferPath, transferFrameBytes []byte)
 
 
-// destination id for control messages
-var ControlId = Id{}
-
-
 func DefaultClientSettings() *ClientSettings {
 	return &ClientSettings{
 		SendBufferSize: DefaultTransferBufferSize,
@@ -1105,7 +1101,7 @@ func (self *SendBuffer) Flush() {
 
 	// cancel all open sequences
 	for sendSequenceId, sendSequence := range self.sendSequences {
-		if sendSequenceId.DestinationId != ControlId {
+		if !sendSequenceId.Destination.IsControlDestination() {
 			sendSequence.Cancel()
 		}
 	}
@@ -2075,7 +2071,7 @@ func (self *ReceiveBuffer) Flush() {
 
 	// cancel all open sequences
 	for receiveSequenceId, receiveSequence := range self.receiveSequences {
-		if receiveSequenceId.SourceId != ControlId {
+		if !receiveSequenceId.Source.IsControlSource() {
 			receiveSequence.Cancel()
 		}
 	}
@@ -2107,12 +2103,10 @@ type ReceiveSequence struct {
 	ackWindow *sequenceAckWindow
 }
 
-// FIXME pick up here
-
 func NewReceiveSequence(
 		ctx context.Context,
 		client *Client,
-		sourceId Id,
+		source TransferPath,
 		sequenceId Id,
 		receiveBufferSettings *ReceiveBufferSettings) *ReceiveSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
@@ -2120,7 +2114,7 @@ func NewReceiveSequence(
 		ctx: cancelCtx,
 		cancel: cancel,
 		client: client,
-		sourceId: sourceId,
+		source: source,
 		sequenceId: sequenceId,
 		receiveBufferSettings: receiveBufferSettings,
 		receiveContract: nil,
@@ -2180,7 +2174,7 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 func (self *ReceiveSequence) Run() {
 	defer func() {
 		if r := recover(); r != nil {
-			glog.Errorf("[r]%s<-%s abnormal exit =  %s\n", self.clientTag, self.sourceId, r)
+			glog.Errorf("[r]%s<-%s s(%s) abnormal exit =  %s\n", self.clientTag, self.source.SourceId, self.source.StreamId, r)
 			panic(r)
 		}
 	}()
@@ -2205,14 +2199,14 @@ func (self *ReceiveSequence) Run() {
 			})
 		}
 
-		self.client.ContractManager().CloseSourceContract(self.sourceId)
+		self.client.ContractManager().CloseSourceContract(self.source)
 
 		self.peerAudit.Complete()
 	}()
 
 	self.peerAudit = NewSequencePeerAudit(
 		self.client,
-		self.sourceId,
+		self.source,
 		self.receiveBufferSettings.MaxPeerAuditDuration,
 	)
 
@@ -2220,7 +2214,7 @@ func (self *ReceiveSequence) Run() {
 	go func() {
 		defer self.cancel()
 
-		multiRouteWriter := self.client.RouteManager().OpenMultiRouteWriter(self.sourceId)
+		multiRouteWriter := self.client.RouteManager().OpenMultiRouteWriter(self.source)
 		defer self.client.RouteManager().CloseMultiRouteWriter(multiRouteWriter)
 
 		writeAck := func(sendAck *sequenceAck) {
@@ -2257,10 +2251,11 @@ func (self *ReceiveSequence) Run() {
 			if glog.V(2) {
 				TraceWithReturn(
 					fmt.Sprintf(
-						"[r]multi route write (ack %d) %s->%s",
+						"[r]multi route write (ack %d) %s->%s s(%s)",
 						sendAck.sequenceNumber,
 						self.clientTag,
-						self.sourceId,
+						self.source.SourceId,
+						self.source.StreamId,
 					),
 					c,
 				)
@@ -2327,7 +2322,7 @@ func (self *ReceiveSequence) Run() {
 
 				itemGapTimeout := item.receiveTime.Add(self.receiveBufferSettings.GapTimeout).Sub(receiveTime)
 				if itemGapTimeout < 0 {
-					glog.Infof("[r]%s<-%s exit gap timeout\n", self.clientTag, self.sourceId)
+					glog.Infof("[r]%s<-%s s(%s) exit gap timeout\n", self.clientTag, self.source.SourceId, self.source.StreamId)
 					// did not receive a preceding message in time
 					return
 				}
@@ -2346,7 +2341,7 @@ func (self *ReceiveSequence) Run() {
 				if self.nextSequenceNumber == item.sequenceNumber {
 					// this item is the head of sequence
 					if err := self.registerContracts(item); err != nil {
-						glog.Infof("[r]%s<-%s exit could not register contracts = %s\n", self.clientTag, self.sourceId, err)
+						glog.Infof("[r]%s<-%s s(%s) exit could not register contracts = %s\n", self.clientTag, self.source.SourceId, self.source.StreamId, err)
 						return
 					}
 					if self.updateContract(item) {
@@ -2355,7 +2350,7 @@ func (self *ReceiveSequence) Run() {
 						self.receiveHead(item)
 					} else {
 						// no valid contract. it should have been attached to the head
-						glog.Infof("[r]drop head no contract %s<-%s\n", self.clientTag, self.sourceId)
+						glog.Infof("[r]drop head no contract %s<-%s s(%s)\n", self.clientTag, self.source.SourceId, self.source.StreamId)
 						return
 					}
 				} else {
@@ -2381,13 +2376,13 @@ func (self *ReceiveSequence) Run() {
 				if err != nil {
 					// bad message
 					// close the sequence
-					glog.Infof("[r]%s<-%s exit could not receive nack = %s\n", self.clientTag, self.sourceId, err)
+					glog.Infof("[r]%s<-%s s(%s) exit could not receive nack = %s\n", self.clientTag, self.source.SourceId, self.source.StreamId, err)
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.badMessage(receivePack.MessageByteCount)
 					})
 					return	
 				} else if !received {
-					glog.V(1).Infof("[r]drop nack %s<-%s\n", self.clientTag, self.sourceId)
+					glog.V(1).Infof("[r]drop nack %s<-%s s(%s)\n", self.clientTag, self.source.SourceId, self.source.StreamId)
 					// drop the message
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.discard(receivePack.MessageByteCount)
@@ -2400,13 +2395,13 @@ func (self *ReceiveSequence) Run() {
 				if err != nil {
 					// bad message
 					// close the sequence
-					glog.Infof("[r]%s<-%s exit could not receive ack = %s\n", self.clientTag, self.sourceId, err)
+					glog.Infof("[r]%s<-%s s(%s) exit could not receive ack = %s\n", self.clientTag, self.source.SourceId, self.source.StreamId, err)
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.badMessage(receivePack.MessageByteCount)
 					})
 					return	
 				} else if !received {
-					glog.V(1).Infof("[r]drop ack %s<-%s\n", self.clientTag, self.sourceId)
+					glog.V(1).Infof("[r]drop ack %s<-%s s(%s)\n", self.clientTag, self.source.SourceId, self.source.StreamId)
 					// drop the message
 					self.peerAudit.Update(func(a *PeerAudit) {
 						a.discard(receivePack.MessageByteCount)
@@ -2713,9 +2708,8 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 			self.receiveContract.unackedByteCount,
 		)
 	}
-	// FIXME some kind of async verification to the control to make sure the contract is valid
 	self.receiveContract = nextReceiveContract
-	self.client.ContractManager().OpenSourceContract(self.sourceId)
+	self.client.ContractManager().OpenSourceContract(self.source)
 	return nil
 }
 
@@ -2727,7 +2721,7 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 	}
 	// `receiveNoContract` is a mutual configuration 
 	// both sides must configure themselves to require no contract from each other
-	if self.client.ContractManager().ReceiveNoContract(self.sourceId) {
+	if self.client.ContractManager().ReceiveNoContract(self.source) {
 		return true
 	}
 	return false
@@ -2868,8 +2862,7 @@ type sequenceContract struct {
 
 	minUpdateByteCount ByteCount
 
-	sourceId Id
-	destinationId Id
+	path TransferPath
 	
 	ackedByteCount ByteCount
 	unackedByteCount ByteCount
@@ -2897,6 +2890,18 @@ func newSequenceContract(tag string, contract *protocol.Contract, minUpdateByteC
 		return nil, err
 	}
 
+	streamId, err := IdFromBytes(storedContract.StreamId)
+	if err != nil {
+		return nil, err
+	}
+
+	path := TransferPath{
+		SourceId: sourceId,
+		DestinationId: destinationId,
+		StreamId: streamId,
+	}
+
+
 	return &sequenceContract{
 		tag: tag,
 		contract: contract,
@@ -2905,8 +2910,7 @@ func newSequenceContract(tag string, contract *protocol.Contract, minUpdateByteC
 		effectiveTransferByteCount: ByteCount(float32(storedContract.TransferByteCount) * contractFillFraction),
 		provideMode: contract.ProvideMode,
 		minUpdateByteCount: minUpdateByteCount,
-		sourceId: sourceId,
-		destinationId: destinationId,
+		path: path,
 		ackedByteCount: ByteCount(0),
 		unackedByteCount: ByteCount(0),
 	}, nil
@@ -2975,8 +2979,8 @@ type ForwardBuffer struct {
 	forwardBufferSettings *ForwardBufferSettings
 
 	mutex sync.Mutex
-	// destination id -> forward sequence
-	forwardSequences map[Id]*ForwardSequence
+	// destination -> forward sequence
+	forwardSequences map[TransferPath]*ForwardSequence
 }
 
 func NewForwardBuffer(ctx context.Context,
@@ -2986,7 +2990,7 @@ func NewForwardBuffer(ctx context.Context,
 		ctx: ctx,
 		client: client,
 		forwardBufferSettings: forwardBufferSettings,
-		forwardSequences: map[Id]*ForwardSequence{},
+		forwardSequences: map[TransferPath]*ForwardSequence{},
 	}
 }
 
@@ -2995,22 +2999,22 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
-		forwardSequence, ok := self.forwardSequences[forwardPack.DestinationId]
+		forwardSequence, ok := self.forwardSequences[forwardPack.Destination]
 		if ok {
 			if skip == nil || skip != forwardSequence {
 				return forwardSequence
 			} else {
 				forwardSequence.Cancel()
-				delete(self.forwardSequences, forwardPack.DestinationId)
+				delete(self.forwardSequences, forwardPack.Destination)
 			}
 		}
 		forwardSequence = NewForwardSequence(
 			self.ctx,
 			self.client,
-			forwardPack.DestinationId,
+			forwardPack.Destination,
 			self.forwardBufferSettings,
 		)
-		self.forwardSequences[forwardPack.DestinationId] = forwardSequence
+		self.forwardSequences[forwardPack.Destination] = forwardSequence
 		go func() {
 			HandleError(forwardSequence.Run)
 
@@ -3018,8 +3022,8 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 			defer self.mutex.Unlock()
 			forwardSequence.Close()
 			// clean up
-			if forwardSequence == self.forwardSequences[forwardPack.DestinationId] {
-				delete(self.forwardSequences, forwardPack.DestinationId)
+			if forwardSequence == self.forwardSequences[forwardPack.Destination] {
+				delete(self.forwardSequences, forwardPack.Destination)
 			}
 		}()
 		return forwardSequence
@@ -3069,8 +3073,8 @@ func (self *ForwardBuffer) Flush() {
 	defer self.mutex.Unlock()
 
 	// cancel all open sequences
-	for destinationId, forwardSequence := range self.forwardSequences {
-		if destinationId != ControlId {
+	for destination, forwardSequence := range self.forwardSequences {
+		if !destination.IsControlDestination() {
 			forwardSequence.Cancel()
 		}
 	}
@@ -3085,7 +3089,7 @@ type ForwardSequence struct {
 	clientId Id
 	clientTag string
 
-	destinationId Id
+	destination TransferPath
 
 	forwardBufferSettings *ForwardBufferSettings
 
@@ -3099,14 +3103,14 @@ type ForwardSequence struct {
 func NewForwardSequence(
 		ctx context.Context,
 		client *Client,
-		destinationId Id,
+		destination TransferPath,
 		forwardBufferSettings *ForwardBufferSettings) *ForwardSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	return &ForwardSequence{
 		ctx: cancelCtx,
 		cancel: cancel,
 		client: client,
-		destinationId: destinationId,
+		destination: destination,
 		forwardBufferSettings: forwardBufferSettings,
 		packs: make(chan *ForwardPack, forwardBufferSettings.SequenceBufferSize),
 		idleCondition: NewIdleCondition(),
@@ -3157,7 +3161,7 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 func (self *ForwardSequence) Run() {
 	defer self.cancel()
 
-	self.multiRouteWriter = self.client.RouteManager().OpenMultiRouteWriter(self.destinationId)
+	self.multiRouteWriter = self.client.RouteManager().OpenMultiRouteWriter(self.destination)
 	defer self.client.RouteManager().CloseMultiRouteWriter(self.multiRouteWriter)
 
 	for {
@@ -3174,7 +3178,7 @@ func (self *ForwardSequence) Run() {
 			}
 			if glog.V(2) {
 				TraceWithReturn(
-					fmt.Sprintf("[f]multi route write %s->%s", self.clientTag, self.destinationId),
+					fmt.Sprintf("[f]multi route write %s->%s s(%s)", self.clientTag, self.destination.DestinationId, self.destination.StreamId),
 					c,
 				)
 			} else {

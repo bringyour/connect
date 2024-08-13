@@ -14,6 +14,10 @@ import (
 const MaxMultihopLength = 8
 
 
+// id for message to/from the platform
+var ControlId = Id{}
+
+
 // comparable
 type TransferPath struct {
 	SourceId Id
@@ -37,6 +41,14 @@ func StreamId(streamId Id) TransferPath {
 	return TransferPath{
 		StreamId: streamId,
 	}
+}
+
+func (self TransferPath) IsControlSource() {
+	return self.StreamId == Id{} && self.SourceId == ControlId
+}
+
+func (self TransferPath) IsControlDestination() {
+	return self.StreamId == Id{} && self.DestinationId == ControlId
 }
 
 
