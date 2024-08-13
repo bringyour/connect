@@ -1718,6 +1718,9 @@ components:
                     type: string
                 client_id:
                     description: udid
+                    type: string
+                best_available:
+                    type: boolean
 
         FindProviders2Args:
             type: object
