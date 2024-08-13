@@ -1,29 +1,26 @@
 package connect
 
 
-
-// transport implementation with webrtc
-// halving ramp up prioritization as long as the route is sending data at the fraction requested
-
-// a + (1 - a) / 2 = b
-// a  + 1/2 - a/2 = b
-// a * (1 - 1/2) + 1/2 = b
-// a = 2 * (b - 1/2)
-
-// e error
-// a + (1 - a) / 2 = 1 - e
-// second step
-// (a + (1 - a) / 2) + (1 - (a + (1 - a) / 2)) / 2
-
-// n steps
-// (2^n - 1 + a)/(2^n)
-
-// Log_2[(1-a)/e]
+// Assumptions about our peer-to-peer connections:
+// - a limited transmit buffer that uses semi-reliable delivery as flow control. 
+//   While the transfer client is the ultimate source of reliable delivery,
+//   we require the p2p connection use semi-reliable delivery to back pressure the transfer rate,
+//   which propagates through the entire multi-hop stream.
+//   Without flow control we would have more mismatches in transfer rate
+//   and retransmits from the transfer clients.
+// - disconnect detection. Both peers should be aware when either side disconnects.
+//   This is typically manifested in clean disconnect messages and heartbeat timeouts.
+// - directed initializaton. One side of the connection will offer to connect
+//   and the other side will respond. We assume this in our architecture. However,
+//   directed is usually a superset of undirected, so this does not prevent an undirected
+//   initializtion either.
 
 
 type PeerType = string
 const (
+	// the peer who initiates the transfer
 	PeerTypeSource PeerType = "source"
+	// the peer who is the destination of the transfer
 	PeerTypeDestination PeerType = "destination"
 )
 
@@ -52,6 +49,7 @@ func NewP2pTransport(
 	receiveRouteManager *RouteManager,
 	peerId Id,
 	streamId Id,
+	// this is the peer type of `peerId`. The current client is the complement.
 	peerType PeerType,
 	sendReady chan struct{},
 	receiveReady chan struct{},
@@ -77,23 +75,32 @@ func (self *P2pTransport) run() {
 	defer self.cancel()
 
 	for {
-		// todo using net.Conn as a stand in for the actual interface
+		// TODO using net.Conn as a stand in for the actual interface
 		var conn net.Conn
-		// note here, one side of the P2P connection will be driving the setup process
-		// this is the active side. Choose one side arbitrarily.
-		// Here the sender (peer is destination) is active
+		var err error
+		// note, one side of the P2P connection will be driving the setup process (active).
+		// We arbitrarily choose the sender (peer is destination) as active.
 		switch peerType {
 			case PeerTypeDestination:
-				conn = P2pActive(peerId, streamId)
+				conn, err = NewP2pConnActive(self.ctx, self.peerId, self.streamId)
 			case PeerTypeSource:
-				conn = P2pPassive(peerId, streamId)
+				conn, err = NewP2pConnPassive(self.ctx, self.peerId, self.streamId)
 			default:
 				// unknown peer type
 				return
 		}
 
+		if err != nil {
+			select {
+	        case <- self.ctx.Done():
+	            return
+	        case <- time.After(self.settings.ReconnectTimeout):
+	        }
+	        continue
+		}
+
 		// at this point, the connection should be able to ping the other side
-		// now we wait for the entire stream to be ready to send and receive
+		// now we wait for the entire stream to be ready by propagating the `ReaderHeader`
 		c := func() {
 			defer conn.Close()
 
@@ -109,7 +116,6 @@ func (self *P2pTransport) run() {
 				case <- receiveReady:
 				}
 
-				conn.SetWriteDeadline(WRITETIMEOUT)
 				n, err := conn.Write(READY)
 				if err != nil {
 					return
@@ -136,15 +142,10 @@ func (self *P2pTransport) run() {
 				}
 
 				header := make([]byte, len(READY))
-				conn.SetReadDeadline(READTIMEOUT)
 				n, err := conn.Read(header)
 				if err != nil {
 					return
 				}
-				if n < len(READY) {
-					return
-				}
-
 				if !slices.Equal(header, READY) {
 					return
 				}
@@ -161,7 +162,6 @@ func (self *P2pTransport) run() {
 					return
 				}
 			}
-
 
 			select {
 	        case <- self.handleCtx.Done():
@@ -180,23 +180,169 @@ func (self *P2pTransport) run() {
 }
 
 
-func NewP2pSendTransport(handleCtx, handleCancel, conn, streamId) (Transport, Route) {
+type P2pSendTransport struct {
+	transportId Id
 
+	ctx context.Context
+	cancel context.CancelFunc
+	conn net.Conn
+	streamId Id
+	send chan []byte
 }
 
+func NewP2pSendTransport(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	conn net.Conn,
+	streamId Id,
+) (Transport, Route) {
+	send := make(chan []byte)
+	p2pSendTransport := &P2pSendTransport{
+		transportId: NewId(),
+		ctx: ctx,
+		cancel: cancel,
+		conn: conn,
+		streamId: streamId,
+		send: send,
+	}
+	go p2pSendTransport.run()
+	return p2pSendTransport, send
+}
+
+func (self *P2pSendTransport) run() {
+	defer self.cancel()
+
+	for {
+		select {
+		case <- ctx.Done():
+			return
+		case transferFrameBytes, ok := <- self.send:
+			if !ok {
+				return
+			}
+
+			if len(transferFrameBytes) <= MaxMessageSize {
+				_, err := conn.Write(transferFrameBytes)
+				if err != nil {
+					return
+				}
+			} else {
+				// drop it
+				// FIXME log
+			}
+		}
+	}
+}
+
+func (self *P2pSendTransport) TransportId() Id {
+	return self.transportId
+}
+    
+// lower priority takes precedence
+func (self *P2pSendTransport) Priority() int {
+	return 0
+}
+
+func (self *P2pSendTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
+	return true
+}
+
+func (self *P2pSendTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
+	return 1.0
+}
+
+func (self *P2pSendTransport) MatchesSend(destination TransferPath) bool {
+	return destination.StreamId == self.streamId
+}
+
+func (self *P2pSendTransport) MatchesReceive(destination TransferPath) bool {
+	return false
+}
+
+func (self *P2pSendTransport) Downgrade(sourceId Id) {
+	self.cancel()
+}
+
+
+
+type P2pReceiveTransport struct {
+	transportId Id
+
+	ctx context.Context
+	cancel context.CancelFunc
+	conn net.Conn
+	streamId Id
+	receive chan []byte
+}
 
 func NewP2pReceiveTransport(handleCtx, handleCancel, conn, streamId) (Transport, Route) {
-
+	receive := make(chan []byte)
+	p2pReceiveTransport := &P2pReceiveTransport{
+		transportId: NewId(),
+		ctx: ctx,
+		cancel: cancel,
+		conn: conn,
+		streamId: streamId,
+		send: send,
+	}
+	go p2pReceiveTransport.run()
+	return p2pReceiveTransport, receive
 }
 
+func (self *P2pReceiveTransport) run() {
+	defer self.cancel()
 
-func P2pActive(peerId, streamId) net.Conn {
+	buffer := make([]byte, MaxMessageSize)
 
+	for {
+		select {
+		case <- ctx.Done():
+			return
+		default:
+		}
+
+		n, err := conn.Read(buffer)
+		if err != nil {
+			return
+		}
+		if 0 < n {
+			transferFrameBytes := make([]byte, n)
+			copy(transferFrameBytes, buffer[0:n])
+			select {
+			case <- ctx.Done():
+				return
+			case self.receive <- transferFrameBytes:
+			}
+		}
+	}
 }
 
-
-func P2pPassive(peerId, streamId) net.Conn {
-
+func (self *P2pReceiveTransport) TransportId() Id {
+	return self.transportId
+}
+    
+// lower priority takes precedence
+func (self *P2pReceiveTransport) Priority() int {
+	return 0
 }
 
+func (self *P2pReceiveTransport) CanEvalRouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) bool {
+	return true
+}
+
+func (self *P2pReceiveTransport) RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32 {
+	return 1.0
+}
+
+func (self *P2pReceiveTransport) MatchesSend(destination TransferPath) bool {
+	return false
+}
+
+func (self *P2pReceiveTransport) MatchesReceive(destination TransferPath) bool {
+	return true
+}
+
+func (self *P2pReceiveTransport) Downgrade(sourceId Id) {
+	self.cancel()
+}
 

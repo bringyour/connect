@@ -157,6 +157,10 @@ message CreateContract {
     repeated bytes intermediary_destination_ids = 5;
     // ulid
     optional bytes stream_id = 6;
+    // stream will be used when intermediary_destination_ids or stream_id is set
+    // in the case of wanting to use streams with no intermediaries, set `force_stream=true`
+    optional bool force_stream = 7;
+
 }
 // the creator knows all the hops on the stream from the enumerated linpaths
 // when evaluating the completed contracts, the send and receive count involving the source_id
