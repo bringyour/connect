@@ -154,10 +154,10 @@ message CreateContract {
     repeated bytes used_contract_ids = 4;
 
     // ulids
-    repeated bytes intermediary_destination_ids = 5;
+    repeated bytes intermediary_ids = 5;
     // ulid
     optional bytes stream_id = 6;
-    // stream will be used when intermediary_destination_ids or stream_id is set
+    // stream will be used when intermediary_ids or stream_id is set
     // in the case of wanting to use streams with no intermediaries, set `force_stream=true`
     optional bool force_stream = 7;
 

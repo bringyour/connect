@@ -259,8 +259,10 @@ func (self *P2pSendTransport) MatchesReceive(destination TransferPath) bool {
 	return false
 }
 
-func (self *P2pSendTransport) Downgrade(sourceId Id) {
-	self.cancel()
+func (self *P2pSendTransport) Downgrade(source TransferPath) {
+	if source.StreamId == self.streamId {
+		self.cancel()
+	}
 }
 
 
@@ -342,7 +344,9 @@ func (self *P2pReceiveTransport) MatchesReceive(destination TransferPath) bool {
 	return true
 }
 
-func (self *P2pReceiveTransport) Downgrade(sourceId Id) {
-	self.cancel()
+func (self *P2pReceiveTransport) Downgrade(source TransferPath) {
+	if source.StreamId == self.streamId {
+		self.cancel()
+	}
 }
 

@@ -14,22 +14,33 @@ import (
 const MaxMultihopLength = 8
 
 
-// use this type when counting bytes
-type ByteCount = int64
-
-func kib(c ByteCount) ByteCount {
-	return c * ByteCount(1024)
+// comparable
+type TransferPath struct {
+	SourceId Id
+	DestinationId Id
+	StreamId Id
 }
 
-func mib(c ByteCount) ByteCount {
-	return c * ByteCount(1024 * 1024)
+func DestinationId(destinationId Id) TransferPath {
+	return TransferPath{
+		DestinationId: destinationId,
+	}
 }
 
-func gib(c ByteCount) ByteCount {
-	return c * ByteCount(1024 * 1024 * 1024)
+func SourceId(sourceId Id) TransferPath {
+	return TransferPath{
+		SourceId: sourceId,
+	}
+}
+
+func StreamId(streamId Id) TransferPath {
+	return TransferPath{
+		StreamId: streamId,
+	}
 }
 
 
+// comparable
 type Id [16]byte
 
 func NewId() Id {
@@ -115,12 +126,12 @@ func encodeUuid(src [16]byte) string {
 
 
 // comparable
-type MultihopId struct {
+type MultiHopId struct {
 	ids [MaxMultihopLength]Id
 	len int
 }
 
-func NewMultihopId(ids ... Id) (MultihopId, error) {
+func NewMultiHopId(ids ... Id) (MultiHopId, error) {
 	if MaxMultihopLength < len(ids) {
 		return MultihopId{}, fmt.Errorf("Multihop length exceeds maximum: %d < %d", MaxMultihopLength, len(ids))
 	}
@@ -133,11 +144,27 @@ func NewMultihopId(ids ... Id) (MultihopId, error) {
 	return multihopId, nil
 }
 
-func (self MultihopId) Len() int {
+func (self MultiHopId) Len() int {
 	return self.len
 }
 
-func (self MultihopId) Ids() []Id {
+func (self MultiHopId) Ids() []Id {
 	return self.ids[0:self.len]
 }
 
+
+
+// use this type when counting bytes
+type ByteCount = int64
+
+func kib(c ByteCount) ByteCount {
+	return c * ByteCount(1024)
+}
+
+func mib(c ByteCount) ByteCount {
+	return c * ByteCount(1024 * 1024)
+}
+
+func gib(c ByteCount) ByteCount {
+	return c * ByteCount(1024 * 1024 * 1024)
+}

@@ -50,14 +50,6 @@ Each transport should apply the forwarding ACL:
 // can be active in parallel, each limited by their slowest destination.
 
 
-// comparable
-type TransferPath struct {
-	SourceId Id
-	DestinationId Id
-	StreamId Id
-}
-
-
 // use 0 for deadlock testing
 const DefaultTransferBufferSize = 32
 
@@ -68,19 +60,12 @@ const VerifyForwardMessages = false
 type AckFunction = func(err error)
 // provideMode is the mode of where these frames are from: network, friends and family, public
 // provideMode nil means no contract
-// FIXME source TransferPath instead of sourceId
-type ReceiveFunction = func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode)
-// FIXME source TransferPath instead of sourceId
-type ForwardFunction = func(sourceId Id, destinationId Id, transferFrameBytes []byte)
+type ReceiveFunction = func(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode)
+type ForwardFunction = func(path TransferPath, transferFrameBytes []byte)
 
 
 // destination id for control messages
 var ControlId = Id{}
-
-
-// in this case there are no intermediary hops
-// the contract is signed with the local provide keys
-var DirectStreamId = Id{}
 
 
 func DefaultClientSettings() *ClientSettings {
@@ -163,7 +148,8 @@ type SendPack struct {
 	// frame and destination is repacked by the send buffer into a Pack,
 	// with destination and frame from the tframe, and other pack properties filled in by the buffer
 	Frame *protocol.Frame
-	DestinationIds []Id
+	Destination TransferPath
+	IntermediaryIds MultiHopId
 	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
 	AckCallback AckFunction
 	MessageByteCount ByteCount
@@ -171,7 +157,7 @@ type SendPack struct {
 
 
 type ReceivePack struct {
-	SourceId Id
+	Source TransferPath
 	SequenceId Id
 	Pack *protocol.Pack
 	ReceiveCallback ReceiveFunction
@@ -180,7 +166,7 @@ type ReceivePack struct {
 
 
 type ForwardPack struct {
-	DestinationId Id
+	Destination TransferPath
 	TransferFrameBytes []byte
 }
 
@@ -352,8 +338,8 @@ func (self *Client) ClientOob() OutOfBandControl {
 	return self.clientOob
 }
 
-func (self *Client) ReportAbuse(sourceId Id) {
-	peerAudit := NewSequencePeerAudit(self, sourceId, 0)
+func (self *Client) ReportAbuse(source TransferPath) {
+	peerAudit := NewSequencePeerAudit(self, source, 0)
 	peerAudit.Update(func (peerAudit *PeerAudit) {
 		peerAudit.Abuse = true
 	})
@@ -397,40 +383,81 @@ func (self *Client) Forward(transferFrameBytes []byte) bool {
 
 func (self *Client) SendWithTimeout(
 	frame *protocol.Frame,
-	destinationId Id,
+	destination TransferPath,
 	ackCallback AckFunction,
 	timeout time.Duration,
 	opts ...any,
 ) bool {
-	success, err := self.SendWithTimeoutDetailed(frame, destinationId, ackCallback, timeout, opts...)
+	success, err := self.SendWithTimeoutDetailed(frame, destination, ackCallback, timeout, opts...)
 	return success && err == nil
 }
 
 func (self *Client) SendWithTimeoutDetailed(
 	frame *protocol.Frame,
-	destinationId Id,
+	destination TransferPath,
 	ackCallback AckFunction,
 	timeout time.Duration,
 	opts ...any,
 ) (bool, error) {
+	self.sendWithTimeout(
+		frame,
+		destination,
+		NewMultiHopId(),
+		ackCallback,
+		timeout,
+		opts...,
+	)
 }
 
-func (self *Client) SendMultihopWithTimeout(
+func (self *Client) SendMultiHopWithTimeout(
 	frame *protocol.Frame,
 	destinationIds []Id,
 	ackCallback AckFunction,
 	timeout time.Duration,
 	opts ...any,
 ) bool {
-	success, err := self.SendMultihopWithTimeoutDetailed(frame, destinationIds, ackCallback, timeout, opts...)
+	success, err := self.SendMultiHopWithTimeoutDetailed(frame, destinationIds, ackCallback, timeout, opts...)
 	return success && err == nil
 }
 
-// FIXME dest should be a TransferPath, should also be able to take intermediary client ids
-// FIXME there should be p2p options for the send, to require p2p
-func (self *Client) SendMultihopWithTimeoutDetailed(
+func (self *Client) SendMultiHopWithTimeoutDetailed(
 	frame *protocol.Frame,
 	destinationIds []Id,
+	ackCallback AckFunction,
+	timeout time.Duration,
+	opts ...any,
+) (bool, error) {
+	destination := TransferPath{
+		DestinationId: destinationIds[len(destinationIds) - 1],
+	}
+	intermediaryIds := NewMultiHopId(destinationIds[0:len(destinationIds) - 1]...)
+	self.sendWithTimeout(
+		frame,
+		destination,
+		intermediaryIds,
+		ackCallback,
+		timeout,
+		opts...,
+	)
+}
+
+func (self *Client) sendWithTimeout(
+	frame *protocol.Frame,
+	destination TransferPath,
+	intermediaryIds MultiHopId,
+	ackCallback AckFunction,
+	timeout time.Duration,
+	opts ...any,
+) bool {
+	success, err := self.sendWithTimeoutDetailed(frame, destination, intermediaryIds, ackCallback, timeout, opts...)
+	return success && err == nil
+}
+
+// FIXME convert Ids to TransferPath
+func (self *Client) sendWithTimeoutDetailed(
+	frame *protocol.Frame,
+	destination TransferPath,
+	intermediaryIds MultiHopId,
 	ackCallback AckFunction,
 	timeout time.Duration,
 	opts ...any,
@@ -504,23 +531,40 @@ func (self *Client) SendMultihopWithTimeoutDetailed(
 }
 
 func (self *Client) SendControlWithTimeout(frame *protocol.Frame, ackCallback AckFunction, timeout time.Duration) bool {
-	return self.SendWithTimeout(frame, ControlId, ackCallback, timeout)
+	return self.SendWithTimeout(
+		frame,
+		TransferPath{
+			DestinationId: ControlId,
+		},
+		ackCallback,
+		timeout,
+	)
 }
 
-func (self *Client) Send(frame *protocol.Frame, destinationId Id, ackCallback AckFunction) bool {
-	return self.SendWithTimeout(frame, destinationId, ackCallback, -1)
+func (self *Client) Send(frame *protocol.Frame, destination TransferPath, ackCallback AckFunction) bool {
+	return self.SendWithTimeout(frame, destination, ackCallback, -1)
 }
 
 func (self *Client) SendControl(frame *protocol.Frame, ackCallback AckFunction) bool {
-	return self.Send(frame, ControlId, ackCallback)
+	return self.Send(
+		frame,
+		TransferPath{
+			DestinationId: ControlId,
+		},
+		ackCallback,
+	)
+}
+
+func (self *Client) SendMultiHop(frame *protocol.Frame, destinationIds []Id, ackCallback AckFunction) bool {
+	return self.SendMultiHopWithTimeout(frame, destinationIds, ackCallback, -1)
 }
 
 // ReceiveFunction
-func (self *Client) receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *Client) receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	for _, receiveCallback := range self.receiveCallbacks.Get() {
 		c := func()(any) {
 			return HandleError(func() {
-				receiveCallback(sourceId, frames, provideMode)
+				receiveCallback(source, frames, provideMode)
 			})
 		}
 		if glog.V(2) {
@@ -535,11 +579,11 @@ func (self *Client) receive(sourceId Id, frames []*protocol.Frame, provideMode p
 }
 
 // ForwardFunction
-func (self *Client) forward(sourceId Id, destinationId Id, transferFrameBytes []byte) {
+func (self *Client) forward(path TransferPath, transferFrameBytes []byte) {
 	for _, forwardCallback := range self.forwardCallbacks.Get() {
 		c := func()(any) {
 			return HandleError(func() {
-				forwardCallback(sourceId, destinationId, transferFrameBytes)
+				forwardCallback(path, transferFrameBytes)
 			})
 		}
 		if glog.V(2) {
@@ -571,12 +615,14 @@ func (self *Client) run() {
 	defer self.cancel()
 	
 	// receive
-	multiRouteReader := self.routeManager.OpenMultiRouteReader(self.clientId)
+	multiRouteReader := self.routeManager.OpenMultiRouteReader(TransferPath{
+		DestinationId: self.clientId,
+	})
 	defer self.routeManager.CloseMultiRouteReader(multiRouteReader)
 
-	updatePeerAudit := func(sourceId Id, callback func(*PeerAudit)) {
+	updatePeerAudit := func(source TransferPath, callback func(*PeerAudit)) {
 		// immediately send peer audits at this level
-		peerAudit := NewSequencePeerAudit(self, sourceId, 0)
+		peerAudit := NewSequencePeerAudit(self, source, 0)
 		peerAudit.Update(callback)
 		peerAudit.Complete()
 	}
@@ -650,16 +696,25 @@ func (self *Client) run() {
 			// bad protobuf (unexpected, see route note above)
 			continue
 		}
+		streamId, err := IdFromBytes(filteredTransferFrame.TransferPath.StreamId)
+		if err != nil {
+			// bad protobuf (unexpected, see route note above)
+			continue
+		}
+		source := TransferPath{
+			SourceId: sourceId,
+			StreamId: streamId,
+		}
 
-		glog.V(1).Infof("[cr] %s %s<-%s\n", self.clientTag, destinationId, sourceId)
+		glog.V(1).Infof("[cr] %s %s<-%s s(%s)\n", self.clientTag, destinationId, sourceId, streamId)
 
-		if destinationId == self.clientId {
+		if destinationId == self.clientId || streamId != Id{} {
 			// the transports have typically not parsed the full `TransferFrame`
 			// on error, discard the message and report the peer
 			transferFrame := &protocol.TransferFrame{}
 			if err := proto.Unmarshal(transferFrameBytes, transferFrame); err != nil {
 				// bad protobuf
-				updatePeerAudit(sourceId, func(a *PeerAudit) {
+				updatePeerAudit(source, func(a *PeerAudit) {
 					a.badMessage(ByteCount(len(transferFrameBytes)))
 				})
 				continue
@@ -673,17 +728,24 @@ func (self *Client) run() {
 				ack := &protocol.Ack{}
 				if err := proto.Unmarshal(frame.GetMessageBytes(), ack); err != nil {
 					// bad protobuf
-					updatePeerAudit(sourceId, func(a *PeerAudit) {
+					updatePeerAudit(source, func(a *PeerAudit) {
 						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
 					continue
 				}
 				c := func()(bool) {
-					return self.sendBuffer.Ack(sourceId, ack, self.settings.BufferTimeout)
+					return self.sendBuffer.Ack(
+						TransferPath{
+							DestinationId: sourceId,
+							StreamId: streamId,
+						},
+						ack,
+						self.settings.BufferTimeout,
+					)
 				}
 				if glog.V(2) {
 					TraceWithReturn(
-						fmt.Sprintf("[cr]ack %s %s<-%s", self.clientTag, destinationId, sourceId),
+						fmt.Sprintf("[cr]ack %s %s<-%s s(%s)", self.clientTag, destinationId, sourceId, sourceId),
 						c,
 					)
 				} else {
@@ -693,7 +755,7 @@ func (self *Client) run() {
 				pack := &protocol.Pack{}
 				if err := proto.Unmarshal(frame.GetMessageBytes(), pack); err != nil {
 					// bad protobuf
-					updatePeerAudit(sourceId, func(a *PeerAudit) {
+					updatePeerAudit(source, func(a *PeerAudit) {
 						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
 					continue
@@ -706,7 +768,7 @@ func (self *Client) run() {
 				messageByteCount := MessageByteCount(pack.Frames)
 				c := func()(bool) {
 					success, err := self.receiveBuffer.Pack(&ReceivePack{
-						SourceId: sourceId,
+						Source: source,
 						SequenceId: sequenceId,
 						Pack: pack,
 						ReceiveCallback: self.receive,
@@ -716,14 +778,14 @@ func (self *Client) run() {
 				}
 				if glog.V(2) {
 					TraceWithReturn(
-						fmt.Sprintf("[cr]pack %s %s<-%s", self.clientTag, destinationId, sourceId),
+						fmt.Sprintf("[cr]pack %s %s<-%s s(%s)", self.clientTag, destinationId, sourceId, streamId),
 						c,
 					)
 				} else {
 					c()
 				}
 			default:
-				updatePeerAudit(sourceId, func(a *PeerAudit) {
+				updatePeerAudit(source, func(a *PeerAudit) {
 					a.badMessage(ByteCount(len(transferFrameBytes)))
 				})
 			}
@@ -732,7 +794,7 @@ func (self *Client) run() {
 				transferFrame := &protocol.TransferFrame{}
 				if err := proto.Unmarshal(transferFrameBytes, transferFrame); err != nil {
 					// bad protobuf
-					updatePeerAudit(sourceId, func(a *PeerAudit) {
+					updatePeerAudit(source, func(a *PeerAudit) {
 						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
 					continue
@@ -746,7 +808,7 @@ func (self *Client) run() {
 					ack := &protocol.Ack{}
 					if err := proto.Unmarshal(frame.GetMessageBytes(), ack); err != nil {
 						// bad protobuf
-						updatePeerAudit(sourceId, func(a *PeerAudit) {
+						updatePeerAudit(source, func(a *PeerAudit) {
 							a.badMessage(ByteCount(len(transferFrameBytes)))
 						})
 						continue
@@ -755,7 +817,7 @@ func (self *Client) run() {
 					pack := &protocol.Pack{}
 					if err := proto.Unmarshal(frame.GetMessageBytes(), pack); err != nil {
 						// bad protobuf
-						updatePeerAudit(sourceId, func(a *PeerAudit) {
+						updatePeerAudit(source, func(a *PeerAudit) {
 							a.badMessage(ByteCount(len(transferFrameBytes)))
 						})
 						continue
@@ -766,11 +828,18 @@ func (self *Client) run() {
 			}
 
 			c := func() {
-				self.forward(sourceId, destinationId, transferFrameBytes)
+				self.forward(
+					TransferPath{
+						SourceId: sourceId,
+						DestinationId: destinationId,
+						StreamId: streamId,
+					},
+					transferFrameBytes,
+				)
 			}
 			if glog.V(1) {
 				Trace(
-					fmt.Sprintf("[cr]forward %s %s<-%s", self.clientTag, destinationId, sourceId),
+					fmt.Sprintf("[cr]forward %s %s<-%s s(%s)", self.clientTag, destinationId, sourceId, streamId),
 					c,
 				)
 			} else {
@@ -780,19 +849,19 @@ func (self *Client) run() {
 	}
 }
 
-func (self *Client) ResendQueueSize(destinationId Id, companionContract bool) (int, ByteCount, Id) {
+func (self *Client) ResendQueueSize(destination TransferPath, intermediaryIds MultiHopId, companionContract bool) (int, ByteCount, Id) {
 	if self.sendBuffer == nil {
 		return 0, 0, Id{}
 	} else {
-		return self.sendBuffer.ResendQueueSize(destinationId, companionContract)
+		return self.sendBuffer.ResendQueueSize(destination, intermediaryIds, companionContract)
 	}
 }
 
-func (self *Client) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, ByteCount) {
+func (self *Client) ReceiveQueueSize(source TransferPath, sequenceId Id) (int, ByteCount) {
 	if self.receiveBuffer == nil {
 		return 0, 0
 	} else {
-		return self.receiveBuffer.ReceiveQueueSize(sourceId, sequenceId)
+		return self.receiveBuffer.ReceiveQueueSize(source, sequenceId)
 	}
 }
 
@@ -870,9 +939,10 @@ type SendBufferSettings struct {
 	ContractFillFraction float32
 }
 
-
+// FIXME
 type sendSequenceId struct {
-	DestinationId Id
+	Destination TransferPath
+	IntermediaryIds MultiHopId
 	CompanionContract bool
 }
 
@@ -899,7 +969,8 @@ func NewSendBuffer(ctx context.Context,
 
 func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
 	sendSequenceId := sendSequenceId{
-		DestinationId: sendPack.DestinationId,
+		Destination: sendPack.Destination,
+		IntermediaryIds: sendPack.IntermediaryIds,
 		CompanionContract: sendPack.TransferOptions.CompanionContract,
 	}
 
@@ -919,7 +990,8 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 		sendSequence = NewSendSequence(
 			self.ctx,
 			self.client,
-			sendPack.DestinationId,
+			sendPack.Destination,
+			sendPack.IntermediaryIds,
 			sendPack.TransferOptions.CompanionContract,
 			self.sendBufferSettings,
 		)
@@ -956,15 +1028,18 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 	return success, err
 }
 
-func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duration) bool {
+func (self *SendBuffer) Ack(destination TransferPath, ack *protocol.Ack, timeout time.Duration) bool {
 	sendSequence := func(companionContract bool)(*SendSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 		return self.sendSequences[sendSequenceId{
-			DestinationId: sourceId,
+			Destination: destination,
 			CompanionContract: companionContract,
 		}]
 	}
+
+	// FIXME
+	// FIXME look up via StreamId first
 	
 	anyFound := false
 	anySuccess := false
@@ -986,12 +1061,13 @@ func (self *SendBuffer) Ack(sourceId Id, ack *protocol.Ack, timeout time.Duratio
 	return anySuccess
 }
 
-func (self *SendBuffer) ResendQueueSize(destinationId Id, companionContract bool) (int, ByteCount, Id) {
+func (self *SendBuffer) ResendQueueSize(destination TransferPath, intermediaryIds IntermediaryIds, companionContract bool) (int, ByteCount, Id) {
 	sendSequence := func()(*SendSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 		return self.sendSequences[sendSequenceId{
 			DestinationId: destinationId,
+			IntermediaryIds: intermediaryIds,
 			CompanionContract: companionContract,
 		}]
 	}
@@ -1042,7 +1118,8 @@ type SendSequence struct {
 
 	client *Client
 
-	destinationId Id
+	destination TransferPath
+	intermediaryIds MultiHopId
 	companionContract bool
 	sequenceId Id
 
@@ -1069,7 +1146,8 @@ type SendSequence struct {
 func NewSendSequence(
 		ctx context.Context,
 		client *Client,
-		destinationId Id,
+		destination TransferPath,
+		intermediaryIds MultiHopId,
 		companionContract bool,
 		sendBufferSettings *SendBufferSettings) *SendSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
@@ -1080,7 +1158,8 @@ func NewSendSequence(
 		client: client,
 		clientId: client.ClientId(),
 		clientTag: client.ClientTag(),
-		destinationId: destinationId,
+		destination: destination,
+		intermediaryIds: intermediaryIds,
 		companionContract: companionContract,
 		sequenceId: NewId(),
 		sendBufferSettings: sendBufferSettings,
@@ -1869,7 +1948,7 @@ type ReceiveBufferSettings struct {
 
 
 type receiveSequenceId struct {
-	SourceId Id
+	Source TransferPath
 	SequenceId Id
 }
 
@@ -1955,12 +2034,12 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 	return success, err
 }
 
-func (self *ReceiveBuffer) ReceiveQueueSize(sourceId Id, sequenceId Id) (int, ByteCount) {
+func (self *ReceiveBuffer) ReceiveQueueSize(source TransferPath, sequenceId Id) (int, ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	receiveSequenceId := receiveSequenceId{
-		SourceId: sourceId,
+		Source: source,
 		SequenceId: sequenceId,
 	}
 	if receiveSequence, ok := self.receiveSequences[receiveSequenceId]; ok {
@@ -2009,7 +2088,7 @@ type ReceiveSequence struct {
 
 	client *Client
 
-	sourceId Id
+	source TransferPath
 	sequenceId Id
 
 	receiveBufferSettings *ReceiveBufferSettings
@@ -2027,6 +2106,8 @@ type ReceiveSequence struct {
 
 	ackWindow *sequenceAckWindow
 }
+
+// FIXME pick up here
 
 func NewReceiveSequence(
 		ctx context.Context,
