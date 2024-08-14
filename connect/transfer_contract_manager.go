@@ -25,6 +25,13 @@ import (
 // manage contracts which are embedded into each transfer sequence
 
 
+type ContractKey struct {
+	Destination TransferPath
+	IntermediaryIds MultiHopId
+	CompanionContract bool
+}
+
+
 type ContractErrorFunction = func(contractError protocol.ContractError)
 
 
@@ -33,8 +40,8 @@ type ContractManagerStats struct {
 	ContractCloseCount int64
 	// contract id -> byte count
 	ContractOpenByteCounts map[Id]ByteCount
-	// contract id -> destination id
-	ContractOpenDestinationIds map[Id]Id
+	// contract id -> contract key
+	ContractOpenKeys map[Id]ContractKey
 	ContractCloseByteCount ByteCount
 	ReceiveContractCloseByteCount ByteCount
 }
@@ -44,7 +51,7 @@ func NewContractManagerStats() *ContractManagerStats{
 		ContractOpenCount: 0,
 		ContractCloseCount: 0,
 		ContractOpenByteCounts: map[Id]ByteCount{},
-		ContractOpenDestinationIds: map[Id]Id{},
+		ContractOpenKeys: map[Id]ContractKey{},
 		ContractCloseByteCount: 0,
 		ReceiveContractCloseByteCount: 0,
 	}
@@ -103,11 +110,10 @@ type ContractManager struct {
 
 	provideSecretKeys map[protocol.ProvideMode][]byte
 
-	destinationContracts map[Id]*contractQueue
-	sourceContracts map[Id]bool
+	destinationContracts map[ContractKey]*contractQueue
 	
-	receiveNoContractClientIds map[Id]bool
-	sendNoContractClientIds map[Id]bool
+	receiveNoContractClientIds map[TransferPath]bool
+	sendNoContractClientIds map[TransferPath]bool
 
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
 
@@ -127,13 +133,13 @@ func NewContractManager(
 	// - messages to/from the platform (ControlId) do not need a contract
 	//   this is because the platform is needed to create contracts
 	// - messages to self do not need a contract
-	receiveNoContractClientIds := map[Id]bool{
-		ControlId: true,
-		client.ClientId(): true,
+	receiveNoContractClientIds := map[TransferPath]bool{
+		DestinationId(ControlId): true,
+		DestinationId(client.ClientId()): true,
 	}
-	sendNoContractClientIds := map[Id]bool{
-		ControlId: true,
-		client.ClientId(): true,
+	sendNoContractClientIds := map[TransferPath]bool{
+		DestinationId(ControlId): true,
+		DestinationId(client.ClientId()): true,
 	}
 
 	contractManager := &ContractManager{
@@ -141,8 +147,7 @@ func NewContractManager(
 		client: client,
 		settings: settings,
 		provideSecretKeys: map[protocol.ProvideMode][]byte{},
-		destinationContracts: map[Id]*contractQueue{},
-		sourceContracts: map[Id]bool{},
+		destinationContracts: map[TransferPath]*contractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds: sendNoContractClientIds,
 		contractErrorCallbacks: NewCallbackList[ContractErrorFunction](),
@@ -164,13 +169,12 @@ func (self *ContractManager) addContractErrorCallback(contractErrorCallback Cont
 }
 
 // ReceiveFunction
-func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-	switch sourceId {
-	case ControlId:
+func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+	if source.IsControlSource() {
 		contracts, contractErrors := parseControlContractFrames(frames)
-		for _, contract := range contracts {
+		for contract, contractKey := range contracts {
 			c := func()(error) {
-				return self.addContract(contract)
+				return self.addContract(contractKey, contract)
 			}
 			if glog.V(2) {
 				TraceWithReturn(
@@ -198,7 +202,10 @@ func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, prov
 }
 
 // frames are verified before calling to be from source ControlId
-func parseControlContractFrames(frames []*protocol.Frame) (contracts []*protocol.Contract, contractErrors []protocol.ContractError) {
+func parseControlContractFrames(frames []*protocol.Frame) (
+	contracts map[*protocol.Contract]ContractKey,
+	contractErrors []protocol.ContractError,
+) {
 	for _, frame := range frames {
 		if message, err := FromFrame(frame); err == nil {
 			switch v := message.(type) {
@@ -206,7 +213,21 @@ func parseControlContractFrames(frames []*protocol.Frame) (contracts []*protocol
 				if contractError := v.Error; contractError != nil {
 					contractErrors = append(contractErrors, *contractError)
 				} else if contract := v.Contract; contract != nil {
-					contracts = append(contracts, contract)
+					destination, err := TransferPathFromBytes(
+						nil,
+						v.CreateContract.DestinationId,
+						v.CreateContract.StreamId,
+					)
+					if err == nil {
+						intermediaryIds, err := MultiHopIdFromBytes(v.IntermediaryIds)
+						if err == nil {
+							contracts[contract] = ContractKey{
+								Destination: destination,
+								IntermediaryIds: intermediaryIds,
+								v.Companion,
+							}
+						}
+					}
 				}
 			}
 		}
@@ -330,33 +351,11 @@ func (self *ContractManager) AddNoContractPeer(clientId Id) {
 	self.receiveNoContractClientIds[clientId] = true
 }
 
-func (self *ContractManager) SendNoContract(destinationId Id, companionContract bool) bool {
+func (self *ContractManager) SendNoContract(destination TransferPath, companionContract bool) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	if allow, ok := self.sendNoContractClientIds[destinationId]; ok {
-		return allow
-	}
-
-	// migration helper. this can be removed when contracts are fully enabled
-	if companionContract && self.sourceContracts[destinationId] {
-		// use contracts if a companion sequence and 
-		// the destination has an active contract into this client
-		return false
-	}
-
-	if !self.settings.ContractsEnabled() {
-		return true
-	}
-
-	return false
-}
-
-func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	if allow, ok := self.receiveNoContractClientIds[sourceId]; ok {
+	if allow, ok := self.sendNoContractClientIds[destination]; ok {
 		return allow
 	}
 
@@ -367,23 +366,28 @@ func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
 	return false
 }
 
-func (self *ContractManager) OpenSourceContract(sourceId Id) {
+func (self *ContractManager) ReceiveNoContract(source TransferPath) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	self.sourceContracts[sourceId] = true
+	if allow, ok := self.receiveNoContractClientIds[source]; ok {
+		return allow
+	}
+
+	if !self.settings.ContractsEnabled() {
+		return true
+	}
+
+	return false
 }
 
-func (self *ContractManager) CloseSourceContract(sourceId Id) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	delete(self.sourceContracts, sourceId)
-}
-
-func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id, timeout time.Duration) *protocol.Contract {
-	contractQueue := self.openContractQueue(destinationId)
-	defer self.closeContractQueue(destinationId)
+func (self *ContractManager) TakeContract(
+	ctx context.Context,
+	contractKey ContractKey,
+	timeout time.Duration,
+) *protocol.Contract {
+	contractQueue := self.openContractQueue(contractKey)
+	defer self.closeContractQueue(contractKey)
 
 	enterTime := time.Now()
 	for {
@@ -422,26 +426,28 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 	}	
 }
 
-func (self *ContractManager) addContract(contract *protocol.Contract) error {
+func (self *ContractManager) addContract(contractKey ContractKey, contract *protocol.Contract) error {
 	var storedContract protocol.StoredContract
 	err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
 	if err != nil {
 		return err
 	}
 
-	sourceId, err := IdFromBytes(storedContract.SourceId)
-	if err != nil {
-		return err
+	if storedContract.StreamId == nil {
+		sourceId, err := IdFromBytes(storedContract.SourceId)
+		if err != nil {
+			return err
+		}
+
+		if sourceId != self.client.ClientId() {
+			return fmt.Errorf("Contract source must be this client: %s<>%s", sourceId, self.client.ClientId())
+		}
 	}
 
-	if sourceId != self.client.ClientId() {
-		return fmt.Errorf("Contract source must be this client: %s<>%s", sourceId, self.client.ClientId())
-	}
-
-	destinationId, err := IdFromBytes(storedContract.DestinationId)
-	if err != nil {
-		return err
-	}
+	// destinationId, err := IdFromBytes(storedContract.DestinationId)
+	// if err != nil {
+	// 	return err
+	// }
 
 	contractId, err := IdFromBytes(storedContract.ContractId)
 	if err != nil {
@@ -449,8 +455,8 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	}
 
 	func() {
-		contractQueue := self.openContractQueue(destinationId)
-		defer self.closeContractQueue(destinationId)
+		contractQueue := self.openContractQueue(contractKey)
+		defer self.closeContractQueue(contractKey)
 
 		contractQueue.Add(contract, &storedContract)
 	}()
@@ -461,41 +467,41 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 
 		self.localStats.ContractOpenCount += 1
 		self.localStats.ContractOpenByteCounts[contractId] = ByteCount(storedContract.TransferByteCount)
-		self.localStats.ContractOpenDestinationIds[contractId] = destinationId
+		self.localStats.ContractOpenKeys[contractId] = contractKey
 	}()
 
 	return nil
 }
 
-func (self *ContractManager) openContractQueue(destinationId Id) *contractQueue {
+func (self *ContractManager) openContractQueue(contractKey contractKey) *contractQueue {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	contractQueue, ok := self.destinationContracts[destinationId]
+	contractQueue, ok := self.destinationContracts[destination]
 	if !ok {
 		contractQueue = newContractQueue()
-		self.destinationContracts[destinationId] = contractQueue
+		self.destinationContracts[destination] = contractQueue
 	}
 	contractQueue.Open()
 
 	return contractQueue
 }
 
-func (self *ContractManager) closeContractQueue(destinationId Id) {
+func (self *ContractManager) closeContractQueue(contractKey contractKey) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	contractQueue, ok := self.destinationContracts[destinationId]
+	contractQueue, ok := self.destinationContracts[destination]
 	if !ok {
 		panic("Open and close must be equally paired")
 	}
 	contractQueue.Close()
 	if contractQueue.IsDone() {
-		delete(self.destinationContracts, destinationId)
+		delete(self.destinationContracts, destination)
 	}
 }
 
-func (self *ContractManager) CreateContract(destinationId Id, companionContract bool, timeout time.Duration) {
+func (self *ContractManager) CreateContract(contractKey ContractKey, forceStream bool, timeout time.Duration) {
 	
 	// look at destinationContracts and last contract to get previous contract id
 	contractQueue := self.openContractQueue(destinationId)
@@ -542,7 +548,7 @@ func (self *ContractManager) CompleteContractWithCheckpoint(
 	checkpoint bool,
 ) {
 	opened := false
-	var destinationId Id
+	var contractKey ContractKey
 
 	func() {
 		self.mutex.Lock()
@@ -551,10 +557,10 @@ func (self *ContractManager) CompleteContractWithCheckpoint(
 		if _, ok := self.localStats.ContractOpenByteCounts[contractId]; ok {
 			// opened via the contract manager
 			opened = true
-			destinationId = self.localStats.ContractOpenDestinationIds[contractId]
+			contractKey = self.localStats.ContractOpenKeys[contractId]
 			self.localStats.ContractCloseCount += 1
 			delete(self.localStats.ContractOpenByteCounts, contractId)
-			delete(self.localStats.ContractOpenDestinationIds, contractId)
+			delete(self.localStats.ContractOpenKeys, contractId)
 			self.localStats.ContractCloseByteCount += ackedByteCount
 		} else {
 			self.localStats.ReceiveContractCloseByteCount += ackedByteCount
@@ -571,8 +577,8 @@ func (self *ContractManager) CompleteContractWithCheckpoint(
 		[]*protocol.Frame{RequireToFrame(closeContract)},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err == nil && opened {
-				contractQueue := self.openContractQueue(destinationId)
-				defer self.closeContractQueue(destinationId)
+				contractQueue := self.openContractQueue(contractKey)
+				defer self.closeContractQueue(contractKey)
 
 				// the contract is partially closed on the platform now
 				// it can be safely removed from the local used list
@@ -621,7 +627,7 @@ func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 	return self.closeContracts(contracts)
 }
 
-func (self *ContractManager) FlushContractQueue(destinationId Id, resetUsedContractIds bool) []Id {
+func (self *ContractManager) FlushContractQueue(contractKey ContractKey, resetUsedContractIds bool) []Id {
 	contractQueue := self.openContractQueue(destinationId)
 	defer self.closeContractQueue(destinationId)
 

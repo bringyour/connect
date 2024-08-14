@@ -17,9 +17,8 @@ func NewStreamManager(ctx, client, streamBufferSettings *StreamBufferSettings) *
 }
 
 // ReceiveFunction
-func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-	switch sourceId {
-	case ControlId:
+func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+	if source.IsControlSource() {
 		for _, frame := range frames {
 			// ignore error
 			self.handleControlMessage(frame)
@@ -197,8 +196,8 @@ type StreamSequence struct {
 func NewStreamSequence(
 		ctx context.Context,
 		client *Client,
-		sourceId *Id
-		destinationId *Id
+		sourceId *Id,
+		destinationId *Id,
 		streamId Id,
 		streamBufferSettings *StreamBufferSettings) *StreamSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)

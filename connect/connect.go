@@ -43,6 +43,32 @@ func StreamId(streamId Id) TransferPath {
 	}
 }
 
+func TransferPathFromBytes(
+	sourceIdBytes []byte,
+	destinationIdBytes []byte,
+	streamIdBytes []byte,
+) (path TransferPath, err error) {
+	if sourceIdBytes != nil {
+		path.SourceId, err = IdFromBytes(sourceIdBytes)
+		if err != nil {
+			return
+		}
+	}
+	if destinationIdBytes != nil {
+		path.DestinationId, err = IdFromBytes(destinationIdBytes)
+		if err != nil {
+			return
+		}
+	}
+	if streamIdBytes != nil {
+		path.StreamId, err = IdFromBytes(streamIdBytes)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
 func (self TransferPath) IsControlSource() {
 	return self.StreamId == Id{} && self.SourceId == ControlId
 }
@@ -154,6 +180,25 @@ func NewMultiHopId(ids ... Id) (MultiHopId, error) {
 		multihopId.ids[i] = id
 	}
 	return multihopId, nil
+}
+
+func MultiHopIdFromBytes(multiHopIdBytes [][]byte) (MultiHopId, error) {
+	ids := []Id{}
+	for i, idBytes := range multiHopIdBytes {
+		if len(idBytes) != 16 {
+			return Id{}, errors.New("Id must be 16 bytes")
+		}
+		ids = append(ids, Id(idBytes))
+	}
+	return NewMultiHopId(ids...), nil
+}
+
+func RequireMultiHopIdFromBytes(multiHopIdBytes [][]byte) MultiHopId {
+	multiHopId, err := MultiHopIdFromBytes(multiHopIdBytes)
+	if err != nil {
+		panic(err)
+	}
+	return multiHopId
 }
 
 func (self MultiHopId) Len() int {
