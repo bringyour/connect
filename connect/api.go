@@ -363,6 +363,7 @@ type FindProviders2Args struct {
 	Specs []*ProviderSpec `json:"specs"`
 	Count int `json:"count"`
 	ExcludeClientIds []Id `json:"exclude_client_ids"`
+	Exclude [][]Id `json:"exclude,omitempty"`
 }
 
 type FindProviders2Result struct {
@@ -372,6 +373,7 @@ type FindProviders2Result struct {
 type FindProvidersProvider struct {
 	ClientId Id `json:"client_id"`
 	EstimatedBytesPerSecond ByteCount `json:"estimated_bytes_per_second"`
+	IntermediaryIds []Id `json:"intermediary_ids,omitempty"`
 }
 
 func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, callback FindProviders2Callback) {

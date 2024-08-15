@@ -209,6 +209,14 @@ func (self MultiHopId) Ids() []Id {
 	return self.ids[0:self.len]
 }
 
+func (self MultiHopId) String() string {
+	parts := []string{}
+	for i := 0; i < self.len; i += 1 {
+		parts = append(parts, self.ids[i].String())
+	}
+	return fmt.Sprintf("[%s]", strings.Join(parts, ","))
+}
+
 
 
 // use this type when counting bytes

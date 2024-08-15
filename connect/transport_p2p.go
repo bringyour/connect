@@ -1,5 +1,10 @@
 package connect
 
+import (
+	"context"
+	"net"
+)
+
 
 // Assumptions about our peer-to-peer connections:
 // - a limited transmit buffer that uses semi-reliable delivery as flow control. 
@@ -25,11 +30,22 @@ const (
 )
 
 
+type P2pTransportSettings struct {
+	
+}
+
+func DefaultP2pTransportSettings() *P2pTransportSettings {
+	return &P2pTransportSettings{}
+}
+
+
 type P2pTransport struct {
 	ctx context.Context
 	cancel context.CancelFunc
 
 	client *Client
+
+	webRtcManager *WebRtcManager,
 
 	sendRouteManager *RouteManager
 	receiveRouteManager *RouteManager
@@ -40,11 +56,14 @@ type P2pTransport struct {
 
 	sendReady chan struct{}
 	receiveReady chan struct{}
+
+	p2pTransportSettings *P2pTransportSettings
 }
 
 func NewP2pTransport(
 	ctx context.Context,
 	client *Client,
+	webRtcManager *WebRtcManager,
 	sendRouteManager *RouteManager,
 	receiveRouteManager *RouteManager,
 	peerId Id,
@@ -53,12 +72,14 @@ func NewP2pTransport(
 	peerType PeerType,
 	sendReady chan struct{},
 	receiveReady chan struct{},
+	p2pTransportSettings *P2pTransportSettings,
 ) *P2pTransport {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	p2pTransport := &P2pTransport{
 		ctx: cancelCtx,
 		cancel: cancel,
 		client: client,
+		webRtcManager: webRtcManager,
 		sendRouteManager: sendRouteManager,
 		receiveRouteManager: receiveRouteManager,
 		peerId: peerId,
@@ -66,6 +87,7 @@ func NewP2pTransport(
 		PeerType: peerType,
 		sendReady: sendReady,
 		receiveReady: receiveReady,
+		p2pTransportSettings: p2pTransportSettings,
 	}
 	return p2pTransport
 }
@@ -82,9 +104,9 @@ func (self *P2pTransport) run() {
 		// We arbitrarily choose the sender (peer is destination) as active.
 		switch peerType {
 			case PeerTypeDestination:
-				conn, err = NewP2pConnActive(self.ctx, self.peerId, self.streamId)
+				conn, err = self.webRtcManager.NewP2pConnActive(self.ctx, self.peerId, self.streamId)
 			case PeerTypeSource:
-				conn, err = NewP2pConnPassive(self.ctx, self.peerId, self.streamId)
+				conn, err = self.webRtcManager.NewP2pConnPassive(self.ctx, self.peerId, self.streamId)
 			default:
 				// unknown peer type
 				return

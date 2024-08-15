@@ -1,23 +1,68 @@
 package connect
 
+import (
+	"context"
+	"sync"
 
-type StreamManager struct {
-	ctx context.DialContext
-	
-	client *Client
-	
-	streamBuffer *StreamBuffer
+	"bringyour.com/protocol"
+)
+
+
+
+type StreamManagerSettings struct {
+
+	StreamBufferSettings *StreamBufferSettings
+
+	WebRtcSettings *WebRtcSettings
+
 }
 
-func NewStreamManager(ctx, client, streamBufferSettings *StreamBufferSettings) *StreamManager {
-	self.ctx = ctx
-	self.client = client
+func DefaultStreamManagerSettings() *StreamBufferSettings {
+	return &StreamBufferSettings{
+		StreamBufferSettings: DefaultStreamBufferSettings(),
+		WebRtcSettings: DefaultWebRtcSettings(),
+	}
+}
 
-	self.streamBuffer = NewStreamBuffer(ctx, client, streamBufferSettings)
+
+
+type StreamManager struct {
+	ctx context.Context
+	
+	client *Client
+
+	webRtcManager *WebRtcManager
+	
+	streamBuffer *StreamBuffer
+
+	streamManagerSettings *StreamManagerSettings
+}
+
+func NewStreamManager(ctx context.Context, client *Client, streamManagerSettings *StreamManagerSettings) *StreamManager {
+
+	webRtcManager := NewWebRtcManager(ctx, streamBufferSettings.WebRtcSettings)
+
+	streamBuffer := NewStreamBuffer(ctx, client, streamManagerSettings.StreamBufferSettings)
+
+	return &StreamManager{
+		ctx: ctx,
+		client: client,
+		webRtcManager: webRtcManager,
+		streamBuffer: streamBuffer,
+		streamManagerSettings: streamManagerSettings,
+	}
+}
+
+func (self *StreamManager) Client() *Client {
+
+}
+
+func (self *StreamManager) WebRtcManager() *WebRtcManager {
+	
 }
 
 // ReceiveFunction
-func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *StreamManager) Receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 	if source.IsControlSource() {
 		for _, frame := range frames {
 			// ignore error
@@ -26,7 +71,7 @@ func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Fra
 	}
 }
 
-func (self *ContractManager) handleControlMessage(frame *protocol.Frame) error {
+func (self *StreamManager) handleControlMessage(frame *protocol.Frame) error {
 	if message, err := FromFrame(frame); err == nil {
 		switch v := message.(type) {
 		case *protocol.StreamOpen:
@@ -65,6 +110,19 @@ func (self *ContractManager) handleControlMessage(frame *protocol.Frame) error {
 		}
 	}
 }
+
+
+
+type StreamBufferSettings struct {
+	P2pTransportSettings *P2pTransportSettings
+}
+
+func DefaultStreamBufferSettings() *StreamBufferSettings {
+	return &StreamBufferSettings{
+		P2pTransportSettings: DefaultP2pTransportSettings(),
+	}
+}
+
 
 
 type streamSequenceId struct {
@@ -249,6 +307,8 @@ func (self *StreamSequence) Run() {
 				PeerTypeSource,
 				sendReady,
 				receiveReady,
+				self.p2pTran,
+				self.streamBufferSettings.P2pTransportSettings,
 			)
 		} else {
 			p2pTransport := NewP2pTransport(
@@ -261,6 +321,7 @@ func (self *StreamSequence) Run() {
 				PeerTypeDestination,
 				sendReady,
 				receiveReady,
+				self.streamBufferSettings.P2pTransportSettings,
 			)
 		}
 		// this will propagate to the other side of the stream
