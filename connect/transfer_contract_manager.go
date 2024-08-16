@@ -212,38 +212,64 @@ func parseControlFrame(frame *protocol.Frame) (
 	contracts map[*protocol.Contract]ContractKey,
 	contractErrors []protocol.ContractError,
 ) {
+	contracts = map[*protocol.Contract]ContractKey{}
+	contractErrors = []protocol.ContractError{}
 	if message, err := FromFrame(frame); err == nil {
 		switch v := message.(type) {
 		case *protocol.CreateContractResult:
 			if contractError := v.Error; contractError != nil {
 				contractErrors = append(contractErrors, *contractError)
 			} else if contract := v.Contract; contract != nil {
-				destination, err := TransferPathFromBytes(
-					nil,
-					v.CreateContract.DestinationId,
-					v.CreateContract.StreamId,
-				)
-				if err != nil {
-					return
-				}
 				
-				intermediaryIds := MultiHopId{}
-				companionContract := false
+				contractKey := ContractKey{}
+
 				if v.CreateContract != nil {
+					contractKey.Destination, err = TransferPathFromBytes(
+						nil,
+						v.CreateContract.DestinationId,
+						v.CreateContract.StreamId,
+					)
+					if err != nil {
+						return
+					}
+
 					if v.CreateContract.IntermediaryIds != nil {
-						intermediaryIds, err = MultiHopIdFromBytes(v.CreateContract.IntermediaryIds)
+						contractKey.IntermediaryIds, err = MultiHopIdFromBytes(v.CreateContract.IntermediaryIds)
 						if err != nil {
 							return
 						}
 					}
 
-					companionContract = v.CreateContract.Companion
+					contractKey.CompanionContract = v.CreateContract.Companion
+				} else {
+					var storedContract protocol.StoredContract
+					err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
+					if err != nil {
+						return
+					}
+
+					if storedContract.StreamId != nil {
+						contractKey.Destination, err = TransferPathFromBytes(
+							nil,
+							nil,
+							storedContract.StreamId,
+						)
+						if err != nil {
+							return
+						}
+					} else {
+						contractKey.Destination, err = TransferPathFromBytes(
+							nil,
+							storedContract.DestinationId,
+							nil,
+						)
+						if err != nil {
+							return
+						}
+					}
+					
 				}
-				contracts[contract] = ContractKey{
-					Destination: destination,
-					IntermediaryIds: intermediaryIds,
-					CompanionContract: companionContract,
-				}
+				contracts[contract] = contractKey
 			}
 		}
 	}

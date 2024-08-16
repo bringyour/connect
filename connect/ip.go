@@ -2033,7 +2033,7 @@ func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpPro
             // ack := make(chan error)
             sent := self.client.SendWithTimeout(
                 frame,
-                source,
+                source.Reverse(),
                 func(err error) {},
                 self.settings.WriteTimeout,
                 opts...,
@@ -2052,7 +2052,7 @@ func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpPro
         c := func()(bool) {
             return self.client.SendWithTimeout(
                 frame,
-                source,
+                source.Reverse(),
                 func(err error) {},
                 self.settings.WriteTimeout,
                 opts...,

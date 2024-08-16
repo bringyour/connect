@@ -384,11 +384,7 @@ func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeou
 		return false, err
 	}
 
-	destination, err := TransferPathFromBytes(
-		filteredTransferFrame.TransferPath.SourceId,
-		filteredTransferFrame.TransferPath.DestinationId,
-		filteredTransferFrame.TransferPath.StreamId,
-	)
+	destination, err := TransferPathFromProtobuf(filteredTransferFrame.TransferPath)
 	if err != nil {
 		// bad protobuf
 		return false, err
@@ -488,6 +484,10 @@ func (self *Client) sendWithTimeoutDetailed(
 	timeout time.Duration,
 	opts ...any,
 ) (bool, error) {
+	if !destination.IsDestinationMask() {
+		panic(fmt.Errorf("Destination is incorrect: %s", destination))
+	}
+
 	select {
 	case <- self.ctx.Done():
 		return false, errors.New("Done")
@@ -509,6 +509,8 @@ func (self *Client) sendWithTimeoutDetailed(
 			transferOpts = v
 		case transferOptionsSetAck:
 			transferOpts.Ack = v.Ack
+		case transferOptionsSetForceStream:
+			transferOpts.ForceStream = v.ForceStream
 		case transferOptionsSetCompanionContract:
 			transferOpts.CompanionContract = v.CompanionContract
 		}
@@ -707,11 +709,7 @@ func (self *Client) run() {
 			// bad protobuf (unexpected, see route note above)
 			continue
 		}
-		path, err := TransferPathFromBytes(
-			filteredTransferFrame.TransferPath.SourceId,
-			filteredTransferFrame.TransferPath.DestinationId,
-			filteredTransferFrame.TransferPath.StreamId,
-		)
+		path, err := TransferPathFromProtobuf(filteredTransferFrame.TransferPath)
 		if err != nil {
 			// bad protobuf (unexpected, see route note above)
 			continue
@@ -733,8 +731,6 @@ func (self *Client) run() {
 			}
 			frame := transferFrame.GetFrame()
 
-			// TODO apply source verification+decryption with pke
-
 			switch frame.GetMessageType() {
 			case protocol.MessageType_TransferAck:
 				ack := &protocol.Ack{}
@@ -747,10 +743,7 @@ func (self *Client) run() {
 				}
 				c := func()(bool) {
 					return self.sendBuffer.Ack(
-						TransferPath{
-							DestinationId: path.SourceId,
-							StreamId: path.StreamId,
-						},
+						source.Reverse(),
 						ack,
 						self.settings.BufferTimeout,
 					)
@@ -1723,12 +1716,7 @@ func (self *SendSequence) sendWithSetContract(
 	packBytes, _ := proto.Marshal(pack)
 
 	transferFrame := &protocol.TransferFrame{
-		TransferPath: &protocol.TransferPath{
-			// FIXME use the values from the contract
-			DestinationId: self.destination.DestinationId.Bytes(),
-			SourceId: self.client.ClientId().Bytes(),
-			// StreamId: DirectStreamId.Bytes(),
-		},
+		TransferPath: self.destination.AddSource(self.client.ClientId()).ToProtobuf(),
 		Frame: &protocol.Frame{
 			MessageType: protocol.MessageType_TransferPack,
 			MessageBytes: packBytes,
@@ -2242,7 +2230,9 @@ func (self *ReceiveSequence) Run() {
 	go func() {
 		defer self.cancel()
 
-		multiRouteWriter := self.client.RouteManager().OpenMultiRouteWriter(self.source)
+		multiRouteWriter := self.client.RouteManager().OpenMultiRouteWriter(
+			self.source.Reverse(),
+		)
 		defer self.client.RouteManager().CloseMultiRouteWriter(multiRouteWriter)
 
 		writeAck := func(sendAck *sequenceAck) {
@@ -2255,13 +2245,7 @@ func (self *ReceiveSequence) Run() {
 			ackBytes, _ := proto.Marshal(ack)
 
 			transferFrame := &protocol.TransferFrame{
-				TransferPath: &protocol.TransferPath{
-					// FIXME use the values from the contract
-					DestinationId: self.source.SourceId.Bytes(),
-					SourceId: self.client.ClientId().Bytes(),
-					// FIXME
-					// StreamId: DirectStreamId.Bytes(),
-				},
+				TransferPath: self.source.Reverse().AddSource(self.client.ClientId()).ToProtobuf(),
 				Frame: &protocol.Frame{
 					MessageType: protocol.MessageType_TransferAck,
 					MessageBytes: ackBytes,

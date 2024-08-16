@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/oklog/ulid/v2"
+
+	"bringyour.com/protocol"
 )
 
 
@@ -18,6 +20,10 @@ const MaxMultihopLength = 8
 // id for message to/from the platform
 var ControlId = Id{}
 
+
+// TODO consider having directed transfer paths
+// TODO SourceTransferPath, DestinationTransferPath
+// TODO this would avoid the need to check the "masks"
 
 // comparable
 type TransferPath struct {
@@ -42,6 +48,16 @@ func StreamId(streamId Id) TransferPath {
 	return TransferPath{
 		StreamId: streamId,
 	}
+}
+
+func TransferPathFromProtobuf(
+	protoTransferPath *protocol.TransferPath,
+) (path TransferPath, err error) {
+	return TransferPathFromBytes(
+		protoTransferPath.SourceId,
+		protoTransferPath.DestinationId,
+		protoTransferPath.StreamId,
+	)
 }
 
 func TransferPathFromBytes(
@@ -82,6 +98,22 @@ func (self TransferPath) IsStream() bool {
 	return self.StreamId != Id{}
 }
 
+func (self TransferPath) IsSourceMask() bool {
+	if self.IsStream() {
+		return self.SourceId == Id{} && self.DestinationId == Id{}
+	} else {
+		return self.DestinationId == Id{}
+	}
+}
+
+func (self TransferPath) IsDestinationMask() bool {
+	if self.IsStream() {
+		return self.SourceId == Id{} && self.DestinationId == Id{}
+	} else {
+		return self.SourceId == Id{}
+	}
+}
+
 func (self TransferPath) Source() TransferPath {
 	return TransferPath{
 		SourceId: self.SourceId,
@@ -96,12 +128,51 @@ func (self TransferPath) Destination() TransferPath {
 	}
 }
 
+func (self TransferPath) Reverse() TransferPath {
+	return TransferPath{
+		SourceId: self.DestinationId,
+		DestinationId: self.SourceId,
+		StreamId: self.StreamId,
+	}
+}
+
+func (self TransferPath) AddSource(sourceId Id) TransferPath {
+	if self.IsStream() {
+		return self
+	}
+	return TransferPath{
+		SourceId: sourceId,
+		DestinationId: self.DestinationId,
+	}
+}
+
+func (self TransferPath) AddDestination(destinationId Id) TransferPath {
+	if self.IsStream() {
+		return self
+	}
+	return TransferPath{
+		SourceId: self.SourceId,
+		DestinationId: destinationId,
+	}
+}
+
 func (self TransferPath) String() string {
 	if (self.StreamId != Id{}) {
 		return fmt.Sprintf("s(%s)", self.StreamId)
 	} else {
 		return fmt.Sprintf("%s->%s", self.SourceId, self.DestinationId)
 	}
+}
+
+func (self TransferPath) ToProtobuf() *protocol.TransferPath {
+	protoTransferPath := &protocol.TransferPath{}
+	if self.IsStream() {
+		protoTransferPath.StreamId = self.StreamId.Bytes()
+	} else {
+		protoTransferPath.SourceId = self.SourceId.Bytes()
+		protoTransferPath.DestinationId = self.DestinationId.Bytes()
+	}
+	return protoTransferPath
 }
 
 
@@ -196,6 +267,14 @@ type MultiHopId struct {
 	len int
 }
 
+func RequireMultiHopId(ids ... Id) MultiHopId {
+	multiHopId, err := NewMultiHopId(ids...)
+	if err != nil {
+		panic(err)
+	}
+	return multiHopId
+}
+
 func NewMultiHopId(ids ... Id) (MultiHopId, error) {
 	if MaxMultihopLength < len(ids) {
 		return MultiHopId{}, fmt.Errorf("Multihop length exceeds maximum: %d < %d", MaxMultihopLength, len(ids))
@@ -244,18 +323,27 @@ func (self MultiHopId) Bytes() [][]byte {
 	return idsBytes
 }
 
+func (self MultiHopId) Tail() Id {
+	if self.len == 0 {
+		panic(errors.New("Cannot call tail on empty."))
+	}
+	return self.ids[self.len - 1]
+}
+
 func (self MultiHopId) SplitTail() (MultiHopId, Id) {
 	if self.len == 0 {
-		return MultiHopId{}, Id{}
+		panic(errors.New("Cannot call split tail on empty."))
 	}
 	if self.len == 1 {
 		return MultiHopId{}, self.ids[0]
 	}
 	intermediaryIds := MultiHopId{
-		len: self.len  - 1,
+		len: self.len - 1,
 	}
-	copy(intermediaryIds.ids[0:self.len  - 1], self.ids[0:self.len  - 1])
-	return intermediaryIds, self.ids[self.len  - 1]
+	if 0 < self.len - 1 {
+		copy(intermediaryIds.ids[0:self.len - 1], self.ids[0:self.len - 1])
+	}
+	return intermediaryIds, self.ids[self.len - 1]
 }
 
 func (self MultiHopId) String() string {
