@@ -22,12 +22,6 @@ func ToFrame(message proto.Message) (*protocol.Frame, error) {
         messageType = protocol.MessageType_TransferProvide
     case *protocol.Auth:
         messageType = protocol.MessageType_TransferAuth
-    case *protocol.CreateStream:
-        messageType = protocol.MessageType_TransferCreateStream
-    case *protocol.CreateStreamResult:
-        messageType = protocol.MessageType_TransferCreateStreamResult
-    case *protocol.CloseStream:
-        messageType = protocol.MessageType_TransferCloseStream
     case *protocol.StreamOpen:
         messageType = protocol.MessageType_TransferStreamOpen
     case *protocol.StreamClose:
@@ -84,12 +78,6 @@ func FromFrame(frame *protocol.Frame) (proto.Message, error) {
         message = &protocol.Provide{}
     case protocol.MessageType_TransferAuth:
         message = &protocol.Auth{}
-    case protocol.MessageType_TransferCreateStream:
-        message = &protocol.CreateStream{}
-    case protocol.MessageType_TransferCreateStreamResult:
-        message = &protocol.CreateStreamResult{}
-    case protocol.MessageType_TransferCloseStream:
-        message = &protocol.CloseStream{}
     case protocol.MessageType_TransferStreamOpen:
         message = &protocol.StreamOpen{}
     case protocol.MessageType_TransferStreamClose:

@@ -320,7 +320,7 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 
 // `SendPacketFunction`
 func (self *RemoteUserNatMultiClient) SendPacket(
-    source Path,
+    source TransferPath,
     provideMode protocol.ProvideMode,
     packet []byte,
     timeout time.Duration,
@@ -351,7 +351,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(
             orderedClients, removedClients := self.window.OrderedClients()
             
             for _, client := range removedClients {
-                glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.DestinationId) 
+                glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.Destination) 
                 self.removeClient(client)
             }
 
@@ -532,8 +532,8 @@ func NewApiMultiClientGenerator(
 
 func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
     excludeDestinationsIds := [][]Id{}
-    for _, excludeDestination := range excludeDestinationsIds {
-        excludeDestinationsIds = append(excludeDestinationIds, excludeDestination.Ids())
+    for _, excludeDestination := range excludeDestinations {
+        excludeDestinationsIds = append(excludeDestinationsIds, excludeDestination.Ids())
     }
     findProviders2 := &FindProviders2Args{
         Specs: self.specs,
@@ -549,11 +549,13 @@ func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinat
     clientIdEstimatedBytesPerSecond := map[MultiHopId]ByteCount{}
     for _, provider := range result.Providers {
         ids := []Id{}
-        if 0 < len(result.IntermediaryIds) {
-            ids = append(ids, result.IntermediaryIds...)
+        if 0 < len(provider.IntermediaryIds) {
+            ids = append(ids, provider.IntermediaryIds...)
         }
         ids = append(ids, provider.ClientId)
-        clientIdEstimatedBytesPerSecond[NewMultiHopId(ids...)] = provider.EstimatedBytesPerSecond
+        if destination, err := NewMultiHopId(ids...); err == nil {
+            clientIdEstimatedBytesPerSecond[destination] = provider.EstimatedBytesPerSecond
+        }
     }
 
     return clientIdEstimatedBytesPerSecond, nil
@@ -633,7 +635,8 @@ func (self *ApiMultiClientGenerator) NewClient(
         self.platformUrl,
         args.ClientAuth,
         client.RouteManager(),
-        p2pOnly,
+        // FIXME if p2pOnly, send only allows send to controlId
+        // p2pOnly,
     )
     // enable return traffic for this client
     ack := make(chan struct{})
@@ -740,7 +743,7 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 break
             } else {
                 // reset
-                visitedDestinationIds = map[Id]bool{}
+                visitedDestinations = map[MultiHopId]bool{}
                 select {
                 case <- self.ctx.Done():
                     return
@@ -856,9 +859,9 @@ func (self *multiClientWindow) resize() {
                 }
             }
 
-            destinationClients := map[Id]*multiClientChannel{}
+            destinationClients := map[MultiHopId]*multiClientChannel{}
             for _, client := range clients {
-                destinationClients[client.DestinationId()] = client
+                destinationClients[client.Destination()] = client
             }
             self.destinationClients = destinationClients
 
@@ -948,7 +951,7 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
             func() {
                 self.stateLock.Lock()
                 defer self.stateLock.Unlock()
-                _, ok = self.destinationClients[args.DestinationId]
+                _, ok = self.destinationClients[args.Destination]
             }()
 
             if ok {
@@ -978,7 +981,7 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
                                 func () {
                                     self.stateLock.Lock()
                                     defer self.stateLock.Unlock()
-                                    self.destinationClients[args.DestinationId] = client
+                                    self.destinationClients[args.Destination] = client
                                 }()
                                 func() {
                                     mutex.Lock()
@@ -1071,7 +1074,7 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
             defer self.stateLock.Unlock()
             for _, client := range removedClients {
                 client.Cancel()
-                delete(self.destinationClients, client.DestinationId())
+                delete(self.destinationClients, client.Destination())
             }
         }()
         for _, client := range removedClients {
@@ -1326,7 +1329,9 @@ func (self *multiClientChannel) SendDetailed(parsedPacket *parsedPacket, timeout
             }
         }
 
-        opts := []any{}
+        opts := []any{
+            ForceStream(),
+        }
         switch parsedPacket.ipPath.Protocol {
         case IpProtocolUdp:
             opts = append(opts, NoAck())
@@ -1350,6 +1355,7 @@ func (self *multiClientChannel) SendDetailedMessage(message proto.Message, timeo
             self.args.Destination,
             ackCallback,
             timeout,
+            ForceStream(),
         )
     }
 }
@@ -1362,7 +1368,7 @@ func (self *multiClientChannel) Done() <-chan struct{} {
     return self.ctx.Done()
 }
 
-func (self *multiClientChannel) Destination() MultiHop {
+func (self *multiClientChannel) Destination() MultiHopId {
     return self.args.Destination
 }
 
@@ -1720,7 +1726,7 @@ func (self *multiClientChannel) clientReceive(source TransferPath, frames []*pro
 
                 self.receivePacketCallback(source, IpProtocolUnknown, packet)
             } else {
-                glog.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.DestinationId, err)
+                glog.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.Destination, err)
             }
         default:
             // unknown message, drop

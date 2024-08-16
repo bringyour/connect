@@ -3,9 +3,34 @@ package connect
 import (
 	"context"
 	"sync"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/golang/glog"
 
 	"bringyour.com/protocol"
 )
+
+
+
+
+func DefaultStreamManagerSettings() *StreamManagerSettings {
+	return &StreamManagerSettings{
+		StreamBufferSettings: DefaultStreamBufferSettings(),
+		WebRtcSettings: DefaultWebRtcSettings(),
+	}
+}
+
+
+func DefaultStreamBufferSettings() *StreamBufferSettings {
+	return &StreamBufferSettings{
+		ReadTimeout: time.Duration(-1),
+		WriteTimeout: time.Duration(-1),
+		P2pTransportSettings: DefaultP2pTransportSettings(),
+	}
+}
+
 
 
 
@@ -17,12 +42,6 @@ type StreamManagerSettings struct {
 
 }
 
-func DefaultStreamManagerSettings() *StreamBufferSettings {
-	return &StreamBufferSettings{
-		StreamBufferSettings: DefaultStreamBufferSettings(),
-		WebRtcSettings: DefaultWebRtcSettings(),
-	}
-}
 
 
 
@@ -39,26 +58,30 @@ type StreamManager struct {
 }
 
 func NewStreamManager(ctx context.Context, client *Client, streamManagerSettings *StreamManagerSettings) *StreamManager {
-
-	webRtcManager := NewWebRtcManager(ctx, streamBufferSettings.WebRtcSettings)
-
-	streamBuffer := NewStreamBuffer(ctx, client, streamManagerSettings.StreamBufferSettings)
-
-	return &StreamManager{
+	streamManager := &StreamManager{
 		ctx: ctx,
 		client: client,
-		webRtcManager: webRtcManager,
-		streamBuffer: streamBuffer,
 		streamManagerSettings: streamManagerSettings,
 	}
+
+	webRtcManager := NewWebRtcManager(ctx, streamManagerSettings.WebRtcSettings)
+
+	streamManager.initBuffers(webRtcManager)
+
+	return streamManager
+}
+
+func (self *StreamManager) initBuffers(webRtcManager *WebRtcManager) {
+	self.webRtcManager = webRtcManager
+	self.streamBuffer = NewStreamBuffer(self.ctx, self, self.streamManagerSettings.StreamBufferSettings)
 }
 
 func (self *StreamManager) Client() *Client {
-
+	return self.client
 }
 
 func (self *StreamManager) WebRtcManager() *WebRtcManager {
-	
+	return self.webRtcManager
 }
 
 // ReceiveFunction
@@ -66,36 +89,36 @@ func (self *StreamManager) Receive(source TransferPath, frames []*protocol.Frame
 	if source.IsControlSource() {
 		for _, frame := range frames {
 			// ignore error
-			self.handleControlMessage(frame)
+			self.handleControlFrame(frame)
 		}
 	}
 }
 
-func (self *StreamManager) handleControlMessage(frame *protocol.Frame) error {
+func (self *StreamManager) handleControlFrame(frame *protocol.Frame) error {
 	if message, err := FromFrame(frame); err == nil {
 		switch v := message.(type) {
 		case *protocol.StreamOpen:
 			var sourceId *Id
-			if v.HasSourceId() {
+			if v.SourceId != nil {
 				sourceId_, err := IdFromBytes(v.SourceId)
 				if err != nil {
-					return
+					return err
 				}
 				sourceId = &sourceId_
 			}
 
 			var destinationId *Id
-			if v.HasDestinationId() {
+			if v.DestinationId != nil {
 				destinationId_, err := IdFromBytes(v.DestinationId)
 				if err != nil {
-					return
+					return err
 				}
 				destinationId = &destinationId_
 			}
 			
 			streamId, err := IdFromBytes(v.StreamId)
 			if err != nil {
-				return
+				return err
 			}
 
 			self.streamBuffer.OpenStream(sourceId, destinationId, streamId)
@@ -103,31 +126,34 @@ func (self *StreamManager) handleControlMessage(frame *protocol.Frame) error {
 		case *protocol.StreamClose:
 			streamId, err := IdFromBytes(v.StreamId)
 			if err != nil {
-				return
+				return err
 			}
 
 			self.streamBuffer.CloseStream(streamId)
 		}
 	}
+	return nil
+}
+
+func (self *StreamManager) IsStreamOpen(streamId Id) bool {
+	return self.streamBuffer.IsStreamOpen(streamId)
 }
 
 
 
 type StreamBufferSettings struct {
+	ReadTimeout time.Duration
+	WriteTimeout time.Duration
+
 	P2pTransportSettings *P2pTransportSettings
 }
-
-func DefaultStreamBufferSettings() *StreamBufferSettings {
-	return &StreamBufferSettings{
-		P2pTransportSettings: DefaultP2pTransportSettings(),
-	}
-}
-
 
 
 type streamSequenceId struct {
 	SourceId Id
+	HasSource bool
 	DestinationId Id
+	HasDestination bool
 	StreamId Id
 }
 
@@ -137,9 +163,11 @@ func newStreamSequenceId(sourceId *Id, destinationId *Id, streamId Id) streamSeq
 	}
 	if sourceId != nil {
 		streamSequenceId.SourceId = *sourceId
+		streamSequenceId.HasSource = true
 	}
 	if destinationId != nil {
 		streamSequenceId.DestinationId = *destinationId
+		streamSequenceId.HasDestination = true
 	}
 	return streamSequenceId
 }
@@ -148,7 +176,7 @@ func newStreamSequenceId(sourceId *Id, destinationId *Id, streamId Id) streamSeq
 type StreamBuffer struct {
 	ctx context.Context
 
-	client *Client
+	streamManager *StreamManager
 
 	streamBufferSettings *StreamBufferSettings
 
@@ -157,10 +185,10 @@ type StreamBuffer struct {
 	streamSequencesByStreamId map[Id]*StreamSequence
 }
 
-func NewStreamBuffer(ctx context.Context, client *Client, streamBufferSettings *StreamBufferSettings) *StreamBuffer {
+func NewStreamBuffer(ctx context.Context, streamManager *StreamManager, streamBufferSettings *StreamBufferSettings) *StreamBuffer {
 	return &StreamBuffer{
 		ctx: ctx,
-		client: client,
+		streamManager: streamManager,
 		streamBufferSettings: streamBufferSettings,
 		streamSequences: map[streamSequenceId]*StreamSequence{},
 		streamSequencesByStreamId: map[Id]*StreamSequence{},
@@ -171,10 +199,10 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 	streamSequenceId := newStreamSequenceId(sourceId, destinationId, streamId)
 
 	initStreamSequence := func(skip *StreamSequence) *StreamSequence {
-		mutex.Lock()
-		defer mutex.Unlock()
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
 
-		streamSequence, ok := streamSequences[streamSequenceId]
+		streamSequence, ok := self.streamSequences[streamSequenceId]
 		if ok {
 			if skip == nil || skip != streamSequence {
 				return streamSequence
@@ -189,7 +217,7 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 			delete(self.streamSequencesByStreamId, streamId)
 		}
 
-		streamSequence := NewStreamSequence()
+		streamSequence = NewStreamSequence(self.ctx, self.streamManager, sourceId, destinationId, streamId, self.streamBufferSettings)
 
 		self.streamSequences[streamSequenceId] = streamSequence
 		self.streamSequencesByStreamId[streamId] = streamSequence
@@ -207,7 +235,7 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 				delete(self.streamSequencesByStreamId, streamId)
 			}
 		}()
-		return sendSequence
+		return streamSequence
 	}
 
 	var streamSequence *StreamSequence
@@ -229,12 +257,20 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 }
 
 func (self *StreamBuffer) CloseStream(streamId Id) {
-	mutex.Lock()
-	defer mutex.Unlock()
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
 
-	if streamSequenceByStreamId, ok := self.streamSequencesByStreamId[streamId]; ok {
-		streamSequenceByStreamId.Cancel()
+	if streamSequence, ok := self.streamSequencesByStreamId[streamId]; ok {
+		streamSequence.Cancel()
 	}
+}
+
+func (self *StreamBuffer) IsStreamOpen(streamId Id) bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	_, ok := self.streamSequencesByStreamId[streamId]
+	return ok
 }
 
 
@@ -242,7 +278,9 @@ type StreamSequence struct {
 	ctx context.Context
 	cancel context.CancelFunc
 
-	client *Client
+	streamManager *StreamManager
+
+	streamBufferSettings *StreamBufferSettings
 
 	sourceId *Id
 	destinationId *Id
@@ -253,7 +291,7 @@ type StreamSequence struct {
 
 func NewStreamSequence(
 		ctx context.Context,
-		client *Client,
+		streamManager *StreamManager,
 		sourceId *Id,
 		destinationId *Id,
 		streamId Id,
@@ -263,7 +301,8 @@ func NewStreamSequence(
 	return &StreamSequence{
 		ctx: cancelCtx,
 		cancel: cancel,
-		client: client,
+		streamManager: streamManager,
+		streamBufferSettings: streamBufferSettings,
 		sourceId: sourceId,
 		destinationId: destinationId,
 		streamId: streamId,
@@ -291,70 +330,80 @@ func (self *StreamSequence) Run() {
 	defer self.cancel()
 
 	if self.sourceId == nil || self.destinationId == nil {
-		clientRouteManager := client.RouteManager()
+		clientRouteManager := self.streamManager.Client().RouteManager()
 
 		sendReady := make(chan struct{})
 		receiveReady := make(chan struct{})
-		var p2pTransport *P2pTransport
 		if self.sourceId != nil {
-			p2pTransport := NewP2pTransport(
+			NewP2pTransport(
 				self.ctx,
-				self.client,
+				self.streamManager.Client(),
+				self.streamManager.WebRtcManager(),
 				clientRouteManager,
 				clientRouteManager,
-				self.sourceId,
+				*self.sourceId,
 				self.streamId,
 				PeerTypeSource,
 				sendReady,
 				receiveReady,
-				self.p2pTran,
 				self.streamBufferSettings.P2pTransportSettings,
 			)
-		} else {
-			p2pTransport := NewP2pTransport(
+		} else if self.destinationId != nil {
+			NewP2pTransport(
 				self.ctx,
-				self.client,
+				self.streamManager.Client(),
+				self.streamManager.WebRtcManager(),
 				clientRouteManager,
 				clientRouteManager,
-				self.destinationId,
+				*self.destinationId,
 				self.streamId,
 				PeerTypeDestination,
 				sendReady,
 				receiveReady,
 				self.streamBufferSettings.P2pTransportSettings,
 			)
+		} else {
+			// the stream must have one of source or destination
+			glog.V(1).Infof("[sm] s(%s) missing source or destination.\n", self.streamId)
+			return
 		}
+
 		// this will propagate to the other side of the stream
 		// p2pTransport.SetReceiveReady(true)
 		close(receiveReady)
 	} else {
-		p2pToDestinationRouteManager := NewRouteManager(ctx, fmt.Sprintf("->s(%s)", self.streamId))
-		p2pToSourceRouteManager := NewRouteManager(ctx, fmt.Sprintf("<-s(%s)", self.streamId))
+		p2pToDestinationRouteManager := NewRouteManager(self.ctx, fmt.Sprintf("->s(%s)", self.streamId))
+		p2pToSourceRouteManager := NewRouteManager(self.ctx, fmt.Sprintf("<-s(%s)", self.streamId))
 
 		toDestinationReady := make(chan struct{})
 		toSourceReady := make(chan struct{})
-		toDestinationTransport := NewP2pTransport(
+		// to destination
+		NewP2pTransport(
 			self.ctx,
-			self.client,
+			self.streamManager.Client(),
+			self.streamManager.WebRtcManager(),
 			p2pToDestinationRouteManager,
 			p2pToSourceRouteManager,
-			self.destinationId,
+			*self.destinationId,
 			self.streamId,
 			PeerTypeDestination,
 			toDestinationReady,
 			toSourceReady,
+			self.streamBufferSettings.P2pTransportSettings,
 		)
-		toSourceTransport := NewP2pTransport(
+		// to source
+		NewP2pTransport(
 			self.ctx,
-			self.client,
-			registerRouteManager,
+			self.streamManager.Client(),
+			self.streamManager.WebRtcManager(),
 			p2pToSourceRouteManager,
 			p2pToDestinationRouteManager,
-			self.sourceId,
+			*self.sourceId,
 			self.streamId,
 			PeerTypeSource,
 			toSourceReady,
 			toDestinationReady,
+			self.streamBufferSettings.P2pTransportSettings,
 		)
 
 		forward := func(routeManager *RouteManager) {
@@ -376,7 +425,7 @@ func (self *StreamSequence) Run() {
 				}
 
 				checkpointId := self.idleCondition.Checkpoint()
-				transferFrameBytes, err := mrr.Read(self.ctx, TIMEOUT)
+				transferFrameBytes, err := mrr.Read(self.ctx, self.streamBufferSettings.ReadTimeout)
 				if transferFrameBytes == nil && err == nil {
 					// idle timeout
 					if self.idleCondition.Close(checkpointId) {
@@ -386,12 +435,15 @@ func (self *StreamSequence) Run() {
 					// else the sequence was opened again
 					continue
 				}
-				success, err := mrw.Write(self.ctx, transferFrameBytes, WRITE_TIMEOUT)
+				success, err := mrw.WriteDetailed(self.ctx, transferFrameBytes, self.streamBufferSettings.WriteTimeout)
+				if err != nil {
+					return
+				}
 				if !success {
 					// drop it
 				}
 			}
-		}()
+		}
 
 		go forward(p2pToDestinationRouteManager)
 		go forward(p2pToSourceRouteManager)
@@ -403,7 +455,11 @@ func (self *StreamSequence) Run() {
 	}
 }
 
+func (self *StreamSequence) Cancel() {
+	self.cancel()
+}
+
 func (self *StreamSequence) Close() {
-	cancel()
+	self.cancel()
 }
 

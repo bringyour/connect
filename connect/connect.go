@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"encoding/hex"
 	"bytes"
+	"strings"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -69,12 +70,38 @@ func TransferPathFromBytes(
 	return
 }
 
-func (self TransferPath) IsControlSource() {
+func (self TransferPath) IsControlSource() bool {
 	return self.StreamId == Id{} && self.SourceId == ControlId
 }
 
-func (self TransferPath) IsControlDestination() {
+func (self TransferPath) IsControlDestination() bool {
 	return self.StreamId == Id{} && self.DestinationId == ControlId
+}
+
+func (self TransferPath) IsStream() bool {
+	return self.StreamId != Id{}
+}
+
+func (self TransferPath) Source() TransferPath {
+	return TransferPath{
+		SourceId: self.SourceId,
+		StreamId: self.StreamId,
+	}
+}
+
+func (self TransferPath) Destination() TransferPath {
+	return TransferPath{
+		DestinationId: self.DestinationId,
+		StreamId: self.StreamId,
+	}
+}
+
+func (self TransferPath) String() string {
+	if (self.StreamId != Id{}) {
+		return fmt.Sprintf("s(%s)", self.StreamId)
+	} else {
+		return fmt.Sprintf("%s->%s", self.SourceId, self.DestinationId)
+	}
 }
 
 
@@ -171,26 +198,26 @@ type MultiHopId struct {
 
 func NewMultiHopId(ids ... Id) (MultiHopId, error) {
 	if MaxMultihopLength < len(ids) {
-		return MultihopId{}, fmt.Errorf("Multihop length exceeds maximum: %d < %d", MaxMultihopLength, len(ids))
+		return MultiHopId{}, fmt.Errorf("Multihop length exceeds maximum: %d < %d", MaxMultihopLength, len(ids))
 	}
-	multihopId := MultihopId{
+	multiHopId := MultiHopId{
 		len: len(ids),
 	}
 	for i, id := range ids {
-		multihopId.ids[i] = id
+		multiHopId.ids[i] = id
 	}
-	return multihopId, nil
+	return multiHopId, nil
 }
 
 func MultiHopIdFromBytes(multiHopIdBytes [][]byte) (MultiHopId, error) {
-	ids := []Id{}
+	ids := make([]Id, len(multiHopIdBytes))
 	for i, idBytes := range multiHopIdBytes {
 		if len(idBytes) != 16 {
-			return Id{}, errors.New("Id must be 16 bytes")
+			return MultiHopId{}, errors.New("Id must be 16 bytes")
 		}
-		ids = append(ids, Id(idBytes))
+		ids[i] = Id(idBytes)
 	}
-	return NewMultiHopId(ids...), nil
+	return NewMultiHopId(ids...)
 }
 
 func RequireMultiHopIdFromBytes(multiHopIdBytes [][]byte) MultiHopId {
@@ -207,6 +234,28 @@ func (self MultiHopId) Len() int {
 
 func (self MultiHopId) Ids() []Id {
 	return self.ids[0:self.len]
+}
+
+func (self MultiHopId) Bytes() [][]byte {
+	idsBytes := make([][]byte, self.len)
+	for i := 0; i < self.len; i += 1 {
+		idsBytes[i] = self.ids[i].Bytes()
+	}
+	return idsBytes
+}
+
+func (self MultiHopId) SplitTail() (MultiHopId, Id) {
+	if self.len == 0 {
+		return MultiHopId{}, Id{}
+	}
+	if self.len == 1 {
+		return MultiHopId{}, self.ids[0]
+	}
+	intermediaryIds := MultiHopId{
+		len: self.len  - 1,
+	}
+	copy(intermediaryIds.ids[0:self.len  - 1], self.ids[0:self.len  - 1])
+	return intermediaryIds, self.ids[self.len  - 1]
 }
 
 func (self MultiHopId) String() string {

@@ -243,5 +243,7 @@ message PeerAudit {
     uint64 send_count = 10;
     uint64 resend_byte_count = 11;
     uint64 resend_count = 12;
+    // ulid
+    bytes stream_id = 13;
 }
 

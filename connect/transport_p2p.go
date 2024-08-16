@@ -3,6 +3,9 @@ package connect
 import (
 	"context"
 	"net"
+	"time"
+	"io"
+	"slices"
 )
 
 
@@ -21,6 +24,18 @@ import (
 //   initializtion either.
 
 
+// important - changing this will break compatibility with older clients
+const ReadyHeader = "rdy"
+
+
+func DefaultP2pTransportSettings() *P2pTransportSettings {
+	return &P2pTransportSettings{
+		MaxMessageSize: ByteCount(1024 * 1024),
+		ReconnectTimeout: 5 * time.Second,
+	}
+}
+
+
 type PeerType = string
 const (
 	// the peer who initiates the transfer
@@ -31,11 +46,8 @@ const (
 
 
 type P2pTransportSettings struct {
-	
-}
-
-func DefaultP2pTransportSettings() *P2pTransportSettings {
-	return &P2pTransportSettings{}
+	MaxMessageSize ByteCount
+	ReconnectTimeout time.Duration
 }
 
 
@@ -45,7 +57,7 @@ type P2pTransport struct {
 
 	client *Client
 
-	webRtcManager *WebRtcManager,
+	webRtcManager *WebRtcManager
 
 	sendRouteManager *RouteManager
 	receiveRouteManager *RouteManager
@@ -84,7 +96,7 @@ func NewP2pTransport(
 		receiveRouteManager: receiveRouteManager,
 		peerId: peerId,
 		streamId: streamId,
-		PeerType: peerType,
+		peerType: peerType,
 		sendReady: sendReady,
 		receiveReady: receiveReady,
 		p2pTransportSettings: p2pTransportSettings,
@@ -102,7 +114,7 @@ func (self *P2pTransport) run() {
 		var err error
 		// note, one side of the P2P connection will be driving the setup process (active).
 		// We arbitrarily choose the sender (peer is destination) as active.
-		switch peerType {
+		switch self.peerType {
 			case PeerTypeDestination:
 				conn, err = self.webRtcManager.NewP2pConnActive(self.ctx, self.peerId, self.streamId)
 			case PeerTypeSource:
@@ -116,7 +128,7 @@ func (self *P2pTransport) run() {
 			select {
 	        case <- self.ctx.Done():
 	            return
-	        case <- time.After(self.settings.ReconnectTimeout):
+	        case <- time.After(self.p2pTransportSettings.ReconnectTimeout):
 	        }
 	        continue
 		}
@@ -130,29 +142,29 @@ func (self *P2pTransport) run() {
 			defer handleCancel()
 
 			go func() {
-				defer cancel()
+				defer self.cancel()
 
 				select {
 				case <- handleCtx.Done():
 					return
-				case <- receiveReady:
+				case <- self.receiveReady:
 				}
 
-				n, err := conn.Write(READY)
+				_, err := conn.Write([]byte(ReadyHeader))
 				if err != nil {
 					return
 				}
 
-				t, route := NewP2pReceiveTransport(handleCtx, handleCancel, conn, streamId)
+				t, route := NewP2pReceiveTransport(handleCtx, handleCancel, conn, self.streamId, self.p2pTransportSettings)
 
-				receiveRouteManager.UpdateTransport(t, []Route{receive})
-				defer receiveRouteManager.RemoveTransport(t)
+				self.receiveRouteManager.UpdateTransport(t, []Route{route})
+				defer self.receiveRouteManager.RemoveTransport(t)
 
 				select {
 				case <- handleCtx.Done():
 					return
 				}
-			}
+			}()
 
 			go func() {
 				defer self.cancel()
@@ -163,30 +175,30 @@ func (self *P2pTransport) run() {
 				default:
 				}
 
-				header := make([]byte, len(READY))
-				n, err := conn.Read(header)
+				header := make([]byte, len(ReadyHeader))
+				_, err := io.ReadFull(conn, header)
 				if err != nil {
 					return
 				}
-				if !slices.Equal(header, READY) {
+				if !slices.Equal(header, []byte(ReadyHeader)) {
 					return
 				}
 
-				close(sendReady)
+				close(self.sendReady)
 
-				t, route := NewP2pSendTransport(handleCtx, handleCancel, conn, streamId)
+				t, route := NewP2pSendTransport(handleCtx, handleCancel, conn, self.streamId, self.p2pTransportSettings)
 
-				sendRouteManager.UpdateTransport(t, []Route{receive})
-				defer sendRouteManager.RemoveTransport(t)
+				self.sendRouteManager.UpdateTransport(t, []Route{route})
+				defer self.sendRouteManager.RemoveTransport(t)
 
 				select {
 				case <- handleCtx.Done():
 					return
 				}
-			}
+			}()
 
 			select {
-	        case <- self.handleCtx.Done():
+	        case <- handleCtx.Done():
 	            return
 	        }
 	    }
@@ -196,7 +208,7 @@ func (self *P2pTransport) run() {
 		select {
         case <- self.ctx.Done():
             return
-        case <- time.After(self.settings.ReconnectTimeout):
+        case <- time.After(self.p2pTransportSettings.ReconnectTimeout):
         }
 	}
 }
@@ -210,6 +222,8 @@ type P2pSendTransport struct {
 	conn net.Conn
 	streamId Id
 	send chan []byte
+
+	p2pTransportSettings *P2pTransportSettings
 }
 
 func NewP2pSendTransport(
@@ -217,6 +231,7 @@ func NewP2pSendTransport(
 	cancel context.CancelFunc,
 	conn net.Conn,
 	streamId Id,
+	p2pTransportSettings *P2pTransportSettings,
 ) (Transport, Route) {
 	send := make(chan []byte)
 	p2pSendTransport := &P2pSendTransport{
@@ -226,6 +241,7 @@ func NewP2pSendTransport(
 		conn: conn,
 		streamId: streamId,
 		send: send,
+		p2pTransportSettings: p2pTransportSettings,
 	}
 	go p2pSendTransport.run()
 	return p2pSendTransport, send
@@ -236,15 +252,15 @@ func (self *P2pSendTransport) run() {
 
 	for {
 		select {
-		case <- ctx.Done():
+		case <- self.ctx.Done():
 			return
 		case transferFrameBytes, ok := <- self.send:
 			if !ok {
 				return
 			}
 
-			if len(transferFrameBytes) <= MaxMessageSize {
-				_, err := conn.Write(transferFrameBytes)
+			if ByteCount(len(transferFrameBytes)) <= self.p2pTransportSettings.MaxMessageSize {
+				_, err := self.conn.Write(transferFrameBytes)
 				if err != nil {
 					return
 				}
@@ -297,9 +313,17 @@ type P2pReceiveTransport struct {
 	conn net.Conn
 	streamId Id
 	receive chan []byte
+
+	p2pTransportSettings *P2pTransportSettings
 }
 
-func NewP2pReceiveTransport(handleCtx, handleCancel, conn, streamId) (Transport, Route) {
+func NewP2pReceiveTransport(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	conn net.Conn,
+	streamId Id,
+	p2pTransportSettings *P2pTransportSettings,
+) (Transport, Route) {
 	receive := make(chan []byte)
 	p2pReceiveTransport := &P2pReceiveTransport{
 		transportId: NewId(),
@@ -307,7 +331,8 @@ func NewP2pReceiveTransport(handleCtx, handleCancel, conn, streamId) (Transport,
 		cancel: cancel,
 		conn: conn,
 		streamId: streamId,
-		send: send,
+		receive: receive,
+		p2pTransportSettings: p2pTransportSettings,
 	}
 	go p2pReceiveTransport.run()
 	return p2pReceiveTransport, receive
@@ -316,16 +341,16 @@ func NewP2pReceiveTransport(handleCtx, handleCancel, conn, streamId) (Transport,
 func (self *P2pReceiveTransport) run() {
 	defer self.cancel()
 
-	buffer := make([]byte, MaxMessageSize)
+	buffer := make([]byte, self.p2pTransportSettings.MaxMessageSize)
 
 	for {
 		select {
-		case <- ctx.Done():
+		case <- self.ctx.Done():
 			return
 		default:
 		}
 
-		n, err := conn.Read(buffer)
+		n, err := self.conn.Read(buffer)
 		if err != nil {
 			return
 		}
@@ -333,7 +358,7 @@ func (self *P2pReceiveTransport) run() {
 			transferFrameBytes := make([]byte, n)
 			copy(transferFrameBytes, buffer[0:n])
 			select {
-			case <- ctx.Done():
+			case <- self.ctx.Done():
 				return
 			case self.receive <- transferFrameBytes:
 			}

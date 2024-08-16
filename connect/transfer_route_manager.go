@@ -51,6 +51,7 @@ type Transport interface {
 
 type MultiRouteWriter interface {
     Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) error
+    WriteDetailed(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) (bool, error)
     GetActiveRoutes() []Route
     GetInactiveRoutes() []Route
 }
@@ -200,7 +201,7 @@ func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiR
     for transport, routes := range self.transportRoutes {
         matchedDestinations, ok := self.transportMatchedDestinations[transport]
         if !ok {
-            matchedDestinations := map[Id]bool{}
+            matchedDestinations := map[TransferPath]bool{}
             self.transportMatchedDestinations[transport] = matchedDestinations
         }
 
@@ -275,7 +276,7 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
 }
 
 func (self *MatchState) Downgrade(source TransferPath) {
-    for transport, _ := range transportRoutes {
+    for transport, _ := range self.transportRoutes {
         transport.Downgrade(source)
     }
 }
@@ -552,23 +553,34 @@ func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int
     stats.receiveByteCount += receiveByteCount
 }
 
+func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) error {
+    success, err := self.WriteDetailed(ctx, transferFrameBytes, timeout)
+    if err != nil {
+        return err
+    }
+    if !success {
+        return errors.New("Timeout.")
+    }
+    return nil
+}
+
 // MultiRouteWriter
-func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) (bool, error) {
+func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) (bool, error) {
     // write to the first channel available, in random priority
     enterTime := time.Now()
     for {
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
-        glog.V(2).Infof("[mrw] %s->%s routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
+        glog.V(2).Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
         // non-blocking priority 
         for _, route := range activeRoutes {
             select {
             case route <- transferFrameBytes:
-                glog.V(2).Infof("[mrw]nb %s->%s\n", self.clientTag, self.destinationId)
+                glog.V(2).Infof("[mrw]nb %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
                 self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
-                return nil
+                return true, nil
             default:
             }
         }
@@ -634,23 +646,23 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []
         }
 
         chosenIndex, _, _ := reflect.Select(selectCases)
-        glog.V(2).Infof("[mrw]b %s->%s\n", self.clientTag, self.destinationId)
+        glog.V(2).Infof("[mrw]b %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.SourceId)
 
         switch chosenIndex {
         case contextDoneIndex:
-            return errors.New("Context done")
+            return false, errors.New("Context done")
         case doneIndex:
-            return errors.New("Done")
+            return false, errors.New("Done")
         case transportUpdateIndex:
             // new routes, try again
         case timeoutIndex:
-            return errors.New("Timeout")
+            return false, nil
         default:
             // a route
             routeIndex := chosenIndex - routeStartIndex
             route := activeRoutes[routeIndex]
             self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
-            return nil
+            return true, nil
         }
     }
 }
@@ -663,7 +675,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
-        glog.V(2).Infof("[mrr] %s/%s<- routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
+        glog.V(2).Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
         // non-blocking priority
         retry := false
@@ -671,7 +683,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
             select {
             case transferFrameBytes, ok := <- route:
                 if ok {
-                    glog.V(2).Infof("[mrr]nb %s/%s<-\n", self.clientTag, self.destinationId)
+                    glog.V(2).Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
                     self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
                     return transferFrameBytes, nil
                 } else {
@@ -745,7 +757,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         }
 
         chosenIndex, value, ok := reflect.Select(selectCases)
-        glog.V(2).Infof("[mrr]b %s/%s<-\n", self.clientTag, self.destinationId)
+        glog.V(2).Infof("[mrr]b %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 
         switch chosenIndex {
         case contextDoneIndex:

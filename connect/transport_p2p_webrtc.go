@@ -2,6 +2,8 @@ package connect
 
 import (
 	"context"
+	"net"
+	"fmt"
 )
 
 
@@ -17,7 +19,7 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 }
 
 
-type WebRtcMananager struct {
+type WebRtcManager struct {
 	ctx context.Context
 
 	// FIXME api
@@ -25,16 +27,21 @@ type WebRtcMananager struct {
 	webRtcSettings *WebRtcSettings
 }
 
+func NewWebRtcManager(ctx context.Context, webRtcSettings *WebRtcSettings) *WebRtcManager {
+	return &WebRtcManager{
+		ctx: ctx,
+		webRtcSettings: webRtcSettings,
+	}
+}
 
 // this should return an active, tested connection
-func (self *WebRtcMananager) NewP2pConnActive(ctx context.Context, peerId Id, streamId Id) (net.Conn, error) {
+func (self *WebRtcManager) NewP2pConnActive(ctx context.Context, peerId Id, streamId Id) (net.Conn, error) {
 	// FIXME
 	return nil, fmt.Errorf("Not implemented.")
 }
 
-
 // this should return an active, tested connection
-func (self *WebRtcMananager) NewP2pConnPassive(ctx context.Context, peerId Id, streamId Id) (net.Conn, error) {
+func (self *WebRtcManager) NewP2pConnPassive(ctx context.Context, peerId Id, streamId Id) (net.Conn, error) {
 	// FIXME
 	return nil, fmt.Errorf("Not implemented.")
 }

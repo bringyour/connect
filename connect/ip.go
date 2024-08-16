@@ -249,7 +249,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send udp4 %s<-%s", self.clientTag, sendPacket.source.ClientId),
+                            fmt.Sprintf("[lnr]send udp4 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
                             c,
                         )
                     } else {
@@ -271,7 +271,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send tcp4 %s<-%s", self.clientTag, sendPacket.source.ClientId),
+                            fmt.Sprintf("[lnr]send tcp4 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
                             c,
                         )
                     } else {
@@ -300,7 +300,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send udp6 %s<-%s", self.clientTag, sendPacket.source.ClientId),
+                            fmt.Sprintf("[lnr]send udp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
                             c,
                         )
                     } else {
@@ -322,7 +322,7 @@ func (self *LocalUserNat) Run() {
                     }
                     if glog.V(2) {
                         TraceWithReturn(
-                            fmt.Sprintf("[lnr]send tcp6 %s<-%s", self.clientTag, sendPacket.source.ClientId),
+                            fmt.Sprintf("[lnr]send tcp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
                             c,
                         )
                     } else {
@@ -2006,9 +2006,9 @@ func NewRemoteUserNatProvider(
 
 // `ReceivePacketFunction`
 func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpProtocol, packet []byte) {
-    if self.client.ClientId() == source.ClientId {
+    if self.client.ClientId() == source.SourceId {
         // locally generated traffic should use a separate local user nat
-        glog.V(2).Infof("drop remote user nat provider s packet ->%s\n", source.ClientId)
+        glog.V(2).Infof("drop remote user nat provider s packet ->%s\n", source.SourceId)
         return
     }
 
@@ -2019,7 +2019,7 @@ func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpPro
     }
     frame, err := ToFrame(ipPacketFromProvider)
     if err != nil {
-        glog.V(2).Infof("drop remote user nat provider s packet ->%s = %s\n", source.ClientId, err)
+        glog.V(2).Infof("drop remote user nat provider s packet ->%s = %s\n", source.SourceId, err)
         panic(err)
     }
 
@@ -2033,7 +2033,7 @@ func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpPro
             // ack := make(chan error)
             sent := self.client.SendWithTimeout(
                 frame,
-                source.ClientId,
+                source,
                 func(err error) {},
                 self.settings.WriteTimeout,
                 opts...,
@@ -2042,7 +2042,7 @@ func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpPro
         }
         if glog.V(2) {
             TraceWithReturn(
-                fmt.Sprintf("[unps]udp %s->%s", self.client.ClientTag(), source.ClientId),
+                fmt.Sprintf("[unps]udp %s->%s s(%s)", self.client.ClientTag(), source.SourceId, source.StreamId),
                 c,
             )
         } else {
@@ -2052,7 +2052,7 @@ func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpPro
         c := func()(bool) {
             return self.client.SendWithTimeout(
                 frame,
-                source.ClientId,
+                source,
                 func(err error) {},
                 self.settings.WriteTimeout,
                 opts...,
@@ -2060,7 +2060,7 @@ func (self *RemoteUserNatProvider) Receive(source TransferPath, ipProtocol IpPro
         }
         if glog.V(2) {
             TraceWithReturn(
-                fmt.Sprintf("[unps]tcp %s->%s", self.client.ClientTag(), source.ClientId),
+                fmt.Sprintf("[unps]tcp %s->%s s(%s)", self.client.ClientTag(), source.SourceId, source.StreamId),
                 c,
             )
         } else {
@@ -2090,14 +2090,14 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
                 }
                 if glog.V(2) {
                     TraceWithReturn(
-                        fmt.Sprintf("[unpr] %s<-%s", self.client.ClientTag(), sourceId),
+                        fmt.Sprintf("[unpr] %s<-%s s(%s)", self.client.ClientTag(), source.SourceId, source.StreamId),
                         c,
                     )
                 } else {
                     c()
                 }
             case SecurityPolicyResultIncident:
-                self.client.ReportAbuse(sourceId)
+                self.client.ReportAbuse(source)
             }
         }
     }
@@ -2117,7 +2117,6 @@ type RemoteUserNatClient struct {
     receivePacketCallback ReceivePacketFunction
     securityPolicy *SecurityPolicy
     pathTable *pathTable
-    sourceFilter map[MultiHopId]bool
     // the provide mode of the source packets
     // for locally generated packets this is `ProvideMode_Network`
     provideMode protocol.ProvideMode
@@ -2135,17 +2134,11 @@ func NewRemoteUserNatClient(
         return nil, err
     }
 
-    sourceFilter := map[MultiHopId]bool{}
-    for _, destination := range destinations {
-        sourceFilter[destination] = true
-    }
-
     userNatClient := &RemoteUserNatClient{
         client: client,
         receivePacketCallback: receivePacketCallback,
         securityPolicy: DefaultSecurityPolicy(),
         pathTable: pathTable,
-        sourceFilter: sourceFilter,
         provideMode: provideMode,
     }
 
@@ -2184,7 +2177,7 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
         case IpProtocolUdp:
             opts = append(opts, NoAck())
         }
-        success := self.client.SendWithTimeout(frame, destination.ClientId, func(err error) {}, timeout, opts...)
+        success := self.client.SendMultiHopWithTimeout(frame, destination, func(err error) {}, timeout, opts...)
         return success
     default:
         return false
@@ -2194,9 +2187,9 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 // `connect.ReceiveFunction`
 func (self *RemoteUserNatClient) ClientReceive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
     // only process frames from the destinations
-    if allow := self.sourceFilter[source]; !allow {
-        return
-    }
+    // if allow := self.sourceFilter[source]; !allow {
+    //     return
+    // }
 
     for _, frame := range frames {
         switch frame.MessageType {
@@ -2272,7 +2265,7 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
         return destination, nil
     default:
         // no support for this version
-        return MultihopId{}, fmt.Errorf("No support for ip version %d", ipPath.Version)
+        return MultiHopId{}, fmt.Errorf("No support for ip version %d", ipPath.Version)
     }
 }
 

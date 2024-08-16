@@ -363,7 +363,7 @@ type FindProviders2Args struct {
 	Specs []*ProviderSpec `json:"specs"`
 	Count int `json:"count"`
 	ExcludeClientIds []Id `json:"exclude_client_ids"`
-	Exclude [][]Id `json:"exclude,omitempty"`
+	ExcludeDestinations [][]Id `json:"exclude_destinations,omitempty"`
 }
 
 type FindProviders2Result struct {
