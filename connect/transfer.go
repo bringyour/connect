@@ -385,11 +385,13 @@ func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeou
 		return false, err
 	}
 
-	destination, err := TransferPathFromProtobuf(filteredTransferFrame.TransferPath)
+	path, err := TransferPathFromProtobuf(filteredTransferFrame.TransferPath)
 	if err != nil {
 		// bad protobuf
 		return false, err
 	}
+
+	destination := path.DestinationMask()
 
 	forwardPack := &ForwardPack{
 		Destination: destination,
@@ -486,7 +488,7 @@ func (self *Client) sendWithTimeoutDetailed(
 	opts ...any,
 ) (bool, error) {
 	if !destination.IsDestinationMask() {
-		panic(fmt.Errorf("Destination is incorrect: %s", destination))
+		panic(fmt.Errorf("Destination required for send: %s", destination))
 	}
 
 	select {

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
     "fmt"
+    // "runtime/debug"
 
 	"golang.org/x/exp/maps"
 
@@ -90,7 +91,7 @@ func (self *RouteManager) DowngradeReceiverConnection(source TransferPath) {
 
 func (self *RouteManager) OpenMultiRouteWriter(destination TransferPath) MultiRouteWriter {
     if !destination.IsDestinationMask() {
-        panic(fmt.Errorf("Destination required: %s", destination))
+        panic(fmt.Errorf("Destination required for writer: %s", destination))
     }
 
     self.mutex.Lock()
@@ -108,7 +109,7 @@ func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
 
 func (self *RouteManager) OpenMultiRouteReader(destination TransferPath) MultiRouteReader {
     if !destination.IsDestinationMask() {
-        panic(fmt.Errorf("Destination required: %s", destination))
+        panic(fmt.Errorf("Destination required for reader: %s", destination))
     }
 
     self.mutex.Lock()
