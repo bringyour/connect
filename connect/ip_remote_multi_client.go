@@ -56,8 +56,9 @@ type MultiClientGenerator interface {
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
         WindowSizeMin: 2,
+        // TODO increase this when p2p is deployed
+        WindowSizeMinP2pOnly: 0,
         WindowSizeMax: 8,
-        // FIXME WindowSizeMinP2p
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
         WriteRetryTimeout: 200 * time.Millisecond,
@@ -88,6 +89,8 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 
 type MultiClientSettings struct {
     WindowSizeMin int
+    // the minimumum number of items in the windows that must be connected via p2p only
+    WindowSizeMinP2pOnly int
     WindowSizeMax int
     // reconnects per source
     WindowSizeReconnectScale float64
@@ -452,6 +455,7 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 type MultiClientGeneratorClientArgs struct {
     ClientId Id
     ClientAuth *ClientAuth
+    P2pOnly bool
 }
 
 
@@ -631,13 +635,21 @@ func (self *ApiMultiClientGenerator) NewClient(
     }
     clientOob := NewApiOutOfBandControl(ctx, args.ClientAuth.ByJwt, self.apiUrl)
     client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings)
-    NewPlatformTransportWithDefaults(
+    settings := DefaultPlatformTransportSettings()
+    if args.P2pOnly {
+        settings.TransportGenerator = func()(sendTransport Transport, receiveTransport Transport) {
+            // only use the platform transport for control
+            sendTransport = NewSendClientTransport(DestinationId(ControlId))
+            receiveTransport = NewReceiveGatewayTransport()
+            return
+        }
+    }
+    NewPlatformTransportWithDefaultDialer(
         client.Ctx(),
         self.platformUrl,
         args.ClientAuth,
         client.RouteManager(),
-        // FIXME if p2pOnly, send only allows send to controlId
-        // p2pOnly,
+        settings,
     )
     // enable return traffic for this client
     ack := make(chan struct{})
@@ -869,7 +881,13 @@ func (self *multiClientWindow) resize() {
             return n
         }
 
-        if expandWindowSize <= targetWindowSize && len(clients) < expandWindowSize {
+        p2pOnlyWindowSize := 0
+        for _, client := range clients {
+            if client.IsP2pOnly() {
+                p2pOnlyWindowSize += 1
+            }
+        }
+        if expandWindowSize <= targetWindowSize && len(clients) < expandWindowSize || p2pOnlyWindowSize < self.settings.WindowSizeMinP2pOnly {
             // collapse badly performing clients before expanding
             n := collapseLowestWeighted(0)
             if 0 < n {
@@ -881,7 +899,7 @@ func (self *multiClientWindow) resize() {
             self.monitor.AddWindowExpandEvent(len(clients), expandWindowSize)
             overN := int(math.Ceil(expandOvershotScale * float64(n)))
             glog.Infof("[multi]window expand +%d(%d) %d->%d\n", n, overN, len(clients), expandWindowSize)
-            self.expand(len(clients), expandWindowSize, overN)
+            self.expand(len(clients), p2pOnlyWindowSize, expandWindowSize, overN)
 
             // evaluate the next overshot scale
             func () {
@@ -927,12 +945,14 @@ func (self *multiClientWindow) resize() {
     }
 }
 
-func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize int, n int) {
+func (self *multiClientWindow) expand(currentWindowSize int, currentP2pOnlyWindowSize int, targetWindowSize int, n int) {
     mutex := sync.Mutex{}
     addedCount := 0
 
     endTime := time.Now().Add(self.settings.WindowExpandTimeout)
     pendingPingDones := []chan struct{}{}
+    added := 0
+    addedP2pOnly := 0
     for i := 0; i < n; i += 1 {
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
@@ -959,6 +979,19 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
                 // already have a client in the window for this destination
                 self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
             } else {
+                // randomly set to p2p only to meet the minimum requirement
+                if !args.MultiClientGeneratorClientArgs.P2pOnly {
+                    a := max(self.settings.WindowSizeMin - (currentWindowSize + added), 0)
+                    b := max(self.settings.WindowSizeMinP2pOnly - (currentP2pOnlyWindowSize + addedP2pOnly), 0)
+                    var p2pOnlyP float32
+                    if a + b == 0 {
+                        p2pOnlyP = 0
+                    } else {
+                        p2pOnlyP = float32(b) / float32(a + b)
+                    }
+                    args.MultiClientGeneratorClientArgs.P2pOnly = mathrand.Float32() < p2pOnlyP
+                }
+
                 client, err := newMultiClientChannel(
                     self.ctx,
                     args,
@@ -967,6 +1000,11 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
                     self.settings,
                 )
                 if err == nil {
+                    added += 1
+                    if client.IsP2pOnly() {
+                        addedP2pOnly += 1
+                    }
+
                     self.monitor.AddProviderEvent(args.ClientId, ProviderStateInEvaluation)
 
                     // send an initial ping on the client and let the ack timeout close it
@@ -1302,6 +1340,10 @@ func newMultiClientChannel(
 
 func (self *multiClientChannel) ClientId() Id {
     return self.client.ClientId()
+}
+
+func (self *multiClientChannel) IsP2pOnly() bool {
+    return self.args.MultiClientGeneratorClientArgs.P2pOnly
 }
 
 func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Duration) bool {

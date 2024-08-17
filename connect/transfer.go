@@ -107,7 +107,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		WriteTimeout: 30 * time.Second,
 		ResendQueueMaxByteCount: mib(1),
 		ContractFillFraction: 0.5,
-		// FIXME change this once main has been deployed with the p2p contract changes
+		// TODO change this once main has been deployed with the p2p contract changes
 		LegacyCreateContract: true,
 	}
 }
