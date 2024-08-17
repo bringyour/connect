@@ -115,16 +115,26 @@ func (self TransferPath) IsDestinationMask() bool {
 }
 
 func (self TransferPath) Source() TransferPath {
-	return TransferPath{
-		SourceId: self.SourceId,
-		StreamId: self.StreamId,
+	if self.IsStream() {
+		return TransferPath{
+			StreamId: self.StreamId,
+		}
+	} else {
+		return TransferPath{
+			SourceId: self.SourceId,
+		}
 	}
 }
 
 func (self TransferPath) Destination() TransferPath {
-	return TransferPath{
-		DestinationId: self.DestinationId,
-		StreamId: self.StreamId,
+	if self.IsStream() {
+		return TransferPath{
+			StreamId: self.StreamId,
+		}
+	} else {
+		return TransferPath{
+			DestinationId: self.DestinationId,
+		}
 	}
 }
 

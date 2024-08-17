@@ -29,6 +29,7 @@ type ContractKey struct {
 	Destination TransferPath
 	IntermediaryIds MultiHopId
 	CompanionContract bool
+	ForceStream bool
 }
 
 
@@ -241,6 +242,9 @@ func parseControlFrame(frame *protocol.Frame) (
 					}
 
 					contractKey.CompanionContract = v.CreateContract.Companion
+					if v.CreateContract.ForceStream != nil {
+						contractKey.ForceStream = *v.CreateContract.ForceStream
+					}
 				} else {
 					var storedContract protocol.StoredContract
 					err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
@@ -542,8 +546,7 @@ func (self *ContractManager) closeContractQueue(contractKey ContractKey) {
 	}
 }
 
-func (self *ContractManager) CreateContract(contractKey ContractKey, forceStream bool, timeout time.Duration) {
-	
+func (self *ContractManager) CreateContract(contractKey ContractKey, timeout time.Duration) {
 	// look at destinationContracts and last contract to get previous contract id
 	contractQueue := self.openContractQueue(contractKey)
 	defer self.closeContractQueue(contractKey)
@@ -554,6 +557,7 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, forceStream
 		StreamId: contractKey.Destination.StreamId.Bytes(),
 		TransferByteCount: uint64(self.settings.StandardContractTransferByteCount),
 		Companion: contractKey.CompanionContract,
+		ForceStream: &contractKey.ForceStream,
 		UsedContractIds: contractQueue.UsedContractIdBytes(),
 	}
 	self.client.ClientOob().SendControl(

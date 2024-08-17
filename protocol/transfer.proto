@@ -193,14 +193,6 @@ message Contract {
     bytes stored_contract_hmac = 2;
     // the client must always verify the provide mode by matching the `provider_secret_key` for that mode to the hmac
     ProvideMode provide_mode = 3;
-
-    // relative priority
-    // 0 (missing) is least priority
-    // any positive priority value is 100% more than 0
-    // generally only positive priority data will matter for the community payouts,
-    // and priority will scale the payout amount,
-    // so it is in a provider's interest to prioritize data with positive priority
-    optional uint32 priority = 4;
 }
 
 
@@ -214,6 +206,14 @@ message StoredContract {
     optional bytes destination_id = 4;
     // ulid
     optional bytes stream_id = 5;
+    
+    // relative priority
+    // 0 (missing) is least priority
+    // any positive priority value is 100% more than 0
+    // generally only positive priority data will matter for the community payouts,
+    // and priority will scale the payout amount,
+    // so it is in a provider's interest to prioritize data with positive priority
+    optional uint32 priority = 6;
 }
 
 
