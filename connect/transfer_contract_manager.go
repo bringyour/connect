@@ -220,59 +220,36 @@ func parseControlFrame(frame *protocol.Frame) (
 		case *protocol.CreateContractResult:
 			if contractError := v.Error; contractError != nil {
 				contractErrors = append(contractErrors, *contractError)
-			} else if contract := v.Contract; contract != nil {
-				
+			} else if contract := v.Contract; contract != nil {				
 				contractKey := ContractKey{}
 
+				var storedContract protocol.StoredContract
+				err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
+				if err != nil {
+					return
+				}
+
+				contractKey.Destination, err = TransferPathFromBytes(
+					nil,
+					storedContract.DestinationId,
+					storedContract.StreamId,
+				)
+				if err != nil {
+					return
+				}
+
 				if v.CreateContract != nil {
-					contractKey.Destination, err = TransferPathFromBytes(
-						nil,
-						v.CreateContract.DestinationId,
-						v.CreateContract.StreamId,
-					)
-					if err != nil {
-						return
-					}
-
-					if v.CreateContract.IntermediaryIds != nil {
-						contractKey.IntermediaryIds, err = MultiHopIdFromBytes(v.CreateContract.IntermediaryIds)
-						if err != nil {
-							return
-						}
-					}
-
 					contractKey.CompanionContract = v.CreateContract.Companion
 					if v.CreateContract.ForceStream != nil {
 						contractKey.ForceStream = *v.CreateContract.ForceStream
 					}
-				} else {
-					var storedContract protocol.StoredContract
-					err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
-					if err != nil {
-						return
-					}
-
-					if storedContract.StreamId != nil {
-						contractKey.Destination, err = TransferPathFromBytes(
-							nil,
-							nil,
-							storedContract.StreamId,
-						)
-						if err != nil {
-							return
-						}
-					} else {
-						contractKey.Destination, err = TransferPathFromBytes(
-							nil,
-							storedContract.DestinationId,
-							nil,
-						)
-						if err != nil {
-							return
+					if v.CreateContract.IntermediaryIds != nil {
+						if intermediaryIds, err := MultiHopIdFromBytes(v.CreateContract.IntermediaryIds); err == nil {
+							contractKey.IntermediaryIds = intermediaryIds
 						}
 					}
-					
 				}
+
 				contracts[contract] = contractKey
 			}
 		}
@@ -478,21 +455,18 @@ func (self *ContractManager) addContract(contractKey ContractKey, contract *prot
 		return err
 	}
 
-	if storedContract.StreamId == nil {
-		sourceId, err := IdFromBytes(storedContract.SourceId)
-		if err != nil {
-			return err
-		}
-
-		if sourceId != self.client.ClientId() {
-			return fmt.Errorf("Contract source must be this client: %s<>%s", sourceId, self.client.ClientId())
-		}
+	path, err := TransferPathFromBytes(
+		storedContract.SourceId,
+		storedContract.DestinationId,
+		storedContract.StreamId,
+	)
+	if err != nil {
+		return err
 	}
 
-	// destinationId, err := IdFromBytes(storedContract.DestinationId)
-	// if err != nil {
-	// 	return err
-	// }
+	if !path.IsStream() && path.SourceId != self.client.ClientId() {
+		return fmt.Errorf("Contract source must be this client: %s<>%s", path.SourceId, self.client.ClientId())
+	}
 
 	contractId, err := IdFromBytes(storedContract.ContractId)
 	if err != nil {

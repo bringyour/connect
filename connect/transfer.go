@@ -1020,9 +1020,10 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 		go func() {
 			HandleError(sendSequence.Run)
 
+			sendSequence.Close()
+
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
-			sendSequence.Close()
 			// clean up
 			if sendSequence == self.sendSequences[sendSequenceId] {
 				delete(self.sendSequences, sendSequenceId)
@@ -1180,7 +1181,9 @@ type SendSequence struct {
 	// these contracts are waiting for acks to close
 	openSendContracts map[Id]*sequenceContract
 
+	packMutex sync.Mutex
 	packs chan *SendPack
+	ackMutex sync.Mutex
 	acks chan *protocol.Ack
 
 	resendQueue *resendQueue
@@ -1233,6 +1236,9 @@ func (self *SendSequence) ResendQueueSize() (int, ByteCount, Id) {
 
 // success, error
 func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool, error) {
+	self.packMutex.Lock()
+	defer self.packMutex.Unlock()
+
 	select {
 	case <- self.ctx.Done():
 		return false, errors.New("Done.")
@@ -1273,6 +1279,9 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 }
 
 func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, error) {
+	self.ackMutex.Lock()
+	defer self.ackMutex.Unlock()
+
 	sequenceId, err := IdFromBytes(ack.SequenceId)
 	if err != nil {
 		return false, err
@@ -1987,8 +1996,18 @@ func (self *SendSequence) closeContractMultiRouteWriter() {
 func (self *SendSequence) Close() {
 	self.cancel()
 	self.idleCondition.WaitForClose()
-	close(self.packs)
-	close(self.acks)
+
+	func() {
+		self.packMutex.Lock()
+		defer self.packMutex.Unlock()
+		close(self.packs)
+	}()
+
+	func() {
+		self.ackMutex.Lock()
+		defer self.ackMutex.Unlock()
+		close(self.acks)
+	}()
 
 	// drain the channel
 	func() {
@@ -2126,9 +2145,10 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 		go func() {
 			HandleError(receiveSequence.Run)
 
+			receiveSequence.Close()
+
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
-			receiveSequence.Close()
 			// clean up
 			if receiveSequence == self.receiveSequences[receiveSequenceId] {
 				delete(self.receiveSequences, receiveSequenceId)
@@ -2216,6 +2236,7 @@ type ReceiveSequence struct {
 
 	receiveContract *sequenceContract
 
+	packMutex sync.Mutex
 	packs chan *ReceivePack
 
 	receiveQueue *receiveQueue
@@ -2257,6 +2278,9 @@ func (self *ReceiveSequence) ReceiveQueueSize() (int, ByteCount) {
 
 // success, error
 func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duration) (bool, error) {
+	self.packMutex.Lock()
+	defer self.packMutex.Unlock()
+
 	select {
 	case <- self.ctx.Done():
 		return false, errors.New("Done.")
@@ -2848,7 +2872,13 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 func (self *ReceiveSequence) Close() {
 	self.cancel()
 	self.idleCondition.WaitForClose()
-	close(self.packs)
+
+	func() {
+		self.packMutex.Lock()
+		defer self.packMutex.Unlock()
+
+		close(self.packs)
+	}()
 }
 
 func (self *ReceiveSequence) Cancel() {
@@ -3123,10 +3153,10 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 		self.forwardSequences[forwardPack.Destination] = forwardSequence
 		go func() {
 			HandleError(forwardSequence.Run)
+			forwardSequence.Close()
 
 			self.mutex.Lock()
 			defer self.mutex.Unlock()
-			forwardSequence.Close()
 			// clean up
 			if forwardSequence == self.forwardSequences[forwardPack.Destination] {
 				delete(self.forwardSequences, forwardPack.Destination)
@@ -3199,11 +3229,14 @@ type ForwardSequence struct {
 
 	forwardBufferSettings *ForwardBufferSettings
 
+	packMutex sync.Mutex
 	packs chan *ForwardPack
 
 	idleCondition *IdleCondition
 
 	multiRouteWriter MultiRouteWriter
+
+
 }
 
 func NewForwardSequence(
@@ -3225,6 +3258,9 @@ func NewForwardSequence(
 
 // success, error
 func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duration) (bool, error) {
+	self.packMutex.Lock()
+	defer self.packMutex.Unlock()
+	
 	select {
 	case <- self.ctx.Done():
 		return false, errors.New("Done.")
@@ -3306,7 +3342,12 @@ func (self *ForwardSequence) Run() {
 func (self *ForwardSequence) Close() {
 	self.cancel()
 	self.idleCondition.WaitForClose()
-	close(self.packs)
+
+	func() {
+		self.packMutex.Lock()
+		defer self.packMutex.Unlock()
+		close(self.packs)
+	}()
 }
 
 func (self *ForwardSequence) Cancel() {
