@@ -76,18 +76,17 @@ func TransferPathFromBytes(
 		if err != nil {
 			return
 		}
-	} else {
-		if sourceIdBytes != nil {
-			path.SourceId, err = IdFromBytes(sourceIdBytes)
-			if err != nil {
-				return
-			}
+	}
+	if sourceIdBytes != nil {
+		path.SourceId, err = IdFromBytes(sourceIdBytes)
+		if err != nil {
+			return
 		}
-		if destinationIdBytes != nil {
-			path.DestinationId, err = IdFromBytes(destinationIdBytes)
-			if err != nil {
-				return
-			}
+	}
+	if destinationIdBytes != nil {
+		path.DestinationId, err = IdFromBytes(destinationIdBytes)
+		if err != nil {
+			return
 		}
 	}
 	return
@@ -122,26 +121,16 @@ func (self TransferPath) IsDestinationMask() bool {
 }
 
 func (self TransferPath) SourceMask() TransferPath {
-	if self.IsStream() {
-		return TransferPath{
-			StreamId: self.StreamId,
-		}
-	} else {
-		return TransferPath{
-			SourceId: self.SourceId,
-		}
+	return TransferPath{
+		SourceId: self.SourceId,
+		StreamId: self.StreamId,
 	}
 }
 
 func (self TransferPath) DestinationMask() TransferPath {
-	if self.IsStream() {
-		return TransferPath{
-			StreamId: self.StreamId,
-		}
-	} else {
-		return TransferPath{
-			DestinationId: self.DestinationId,
-		}
+	return TransferPath{
+		DestinationId: self.DestinationId,
+		StreamId: self.StreamId,
 	}
 }
 

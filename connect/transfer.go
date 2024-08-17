@@ -1630,7 +1630,6 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 					contractKey,
 					self.client.settings.ControlWriteTimeout,
 				)
-
 				return true
 			} else {
 				return false
@@ -2348,8 +2347,9 @@ func (self *ReceiveSequence) Run() {
 
 			ackBytes, _ := proto.Marshal(ack)
 
+			path := self.source.Reverse().AddSource(self.client.ClientId())
 			transferFrame := &protocol.TransferFrame{
-				TransferPath: self.source.Reverse().AddSource(self.client.ClientId()).ToProtobuf(),
+				TransferPath: path.ToProtobuf(),
 				Frame: &protocol.Frame{
 					MessageType: protocol.MessageType_TransferAck,
 					MessageBytes: ackBytes,

@@ -558,6 +558,10 @@ func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinat
             ids = append(ids, provider.IntermediaryIds...)
         }
         ids = append(ids, provider.ClientId)
+        // use the tail if the length exceeds the allowed maximum
+        if MaxMultihopLength < len(ids) {
+            ids = ids[len(ids)-MaxMultihopLength:len(ids)]
+        }
         if destination, err := NewMultiHopId(ids...); err == nil {
             clientIdEstimatedBytesPerSecond[destination] = provider.EstimatedBytesPerSecond
         }
