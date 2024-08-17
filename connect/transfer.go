@@ -715,7 +715,7 @@ func (self *Client) run() {
 			// bad protobuf (unexpected, see route note above)
 			continue
 		}
-		source := path.Source()
+		source := path.SourceMask()
 
 		glog.V(1).Infof("[cr] %s %s<-%s s(%s)\n", self.clientTag, path.DestinationId, path.SourceId, path.StreamId)
 
@@ -1337,19 +1337,6 @@ func (self *SendSequence) Run() {
 		for _, item := range self.resendQueue.orderedItems {
 			item.ackCallback(errors.New("Send sequence closed."))
 		}
-
-		// drain the channel
-		func() {
-			for {
-				select {
-				case sendPack, ok := <- self.packs:
-					if !ok {
-						return
-					}
-					sendPack.AckCallback(errors.New("Send sequence closed."))
-				}
-			}
-		}()
 
 		// flush queued up contracts
 		// remove used contract ids because all used contracts were closed above
@@ -1973,7 +1960,7 @@ func (self *SendSequence) openContractMultiRouteWriter() MultiRouteWriter {
 	if self.sendContract == nil {
 		destination = self.destination
 	} else {
-		destination = self.sendContract.path.Destination()
+		destination = self.sendContract.path.DestinationMask()
 	}
 	if self.contractMultiRouteWriter == nil || self.contractMultiRouteWriterDestination != destination {
 		if self.contractMultiRouteWriter != nil {
@@ -2001,6 +1988,21 @@ func (self *SendSequence) Close() {
 	self.idleCondition.WaitForClose()
 	close(self.packs)
 	close(self.acks)
+
+	// drain the channel
+	func() {
+		for {
+			select {
+			case sendPack, ok := <- self.packs:
+				if !ok {
+					return
+				}
+				sendPack.AckCallback(errors.New("Send sequence closed."))
+			default:
+				return
+			}
+		}
+	}()
 }
 
 func (self *SendSequence) Cancel() {

@@ -25,6 +25,12 @@ var ControlId = Id{}
 // TODO SourceTransferPath, DestinationTransferPath
 // TODO this would avoid the need to check the "masks"
 
+// there are three types of transfer paths:
+// 1. a full path, which can have either source id and destination id, or stream id
+// 2. a source, which can have either source id or stream id.
+//    This is called the "source mask".
+// 3. a destination, which can have either destination id or stream id.
+//    This is called the "destination mask".
 // comparable
 type TransferPath struct {
 	SourceId Id
@@ -65,33 +71,34 @@ func TransferPathFromBytes(
 	destinationIdBytes []byte,
 	streamIdBytes []byte,
 ) (path TransferPath, err error) {
-	if sourceIdBytes != nil {
-		path.SourceId, err = IdFromBytes(sourceIdBytes)
-		if err != nil {
-			return
-		}
-	}
-	if destinationIdBytes != nil {
-		path.DestinationId, err = IdFromBytes(destinationIdBytes)
-		if err != nil {
-			return
-		}
-	}
 	if streamIdBytes != nil {
 		path.StreamId, err = IdFromBytes(streamIdBytes)
 		if err != nil {
 			return
+		}
+	} else {
+		if sourceIdBytes != nil {
+			path.SourceId, err = IdFromBytes(sourceIdBytes)
+			if err != nil {
+				return
+			}
+		}
+		if destinationIdBytes != nil {
+			path.DestinationId, err = IdFromBytes(destinationIdBytes)
+			if err != nil {
+				return
+			}
 		}
 	}
 	return
 }
 
 func (self TransferPath) IsControlSource() bool {
-	return self.StreamId == Id{} && self.SourceId == ControlId
+	return !self.IsStream() && self.SourceId == ControlId
 }
 
 func (self TransferPath) IsControlDestination() bool {
-	return self.StreamId == Id{} && self.DestinationId == ControlId
+	return !self.IsStream() && self.DestinationId == ControlId
 }
 
 func (self TransferPath) IsStream() bool {
@@ -114,7 +121,7 @@ func (self TransferPath) IsDestinationMask() bool {
 	}
 }
 
-func (self TransferPath) Source() TransferPath {
+func (self TransferPath) SourceMask() TransferPath {
 	if self.IsStream() {
 		return TransferPath{
 			StreamId: self.StreamId,
@@ -126,7 +133,7 @@ func (self TransferPath) Source() TransferPath {
 	}
 }
 
-func (self TransferPath) Destination() TransferPath {
+func (self TransferPath) DestinationMask() TransferPath {
 	if self.IsStream() {
 		return TransferPath{
 			StreamId: self.StreamId,

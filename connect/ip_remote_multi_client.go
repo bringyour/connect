@@ -57,6 +57,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
         WindowSizeMin: 2,
         WindowSizeMax: 8,
+        // FIXME WindowSizeMinP2p
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
         WriteRetryTimeout: 200 * time.Millisecond,
