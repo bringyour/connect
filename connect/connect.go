@@ -56,6 +56,15 @@ func StreamId(streamId Id) TransferPath {
 	}
 }
 
+func NewTransferPath(sourceId Id, destinationId Id, streamId Id) (path TransferPath) {
+	path.StreamId = streamId
+	if (path.StreamId == Id{}) {
+		path.SourceId = sourceId
+		path.DestinationId = destinationId
+	}
+	return
+}
+
 func TransferPathFromProtobuf(
 	protoTransferPath *protocol.TransferPath,
 ) (path TransferPath, err error) {
@@ -77,27 +86,29 @@ func TransferPathFromBytes(
 			return
 		}
 	}
-	if sourceIdBytes != nil {
-		path.SourceId, err = IdFromBytes(sourceIdBytes)
-		if err != nil {
-			return
+	if (path.StreamId == Id{}) {
+		if sourceIdBytes != nil {
+			path.SourceId, err = IdFromBytes(sourceIdBytes)
+			if err != nil {
+				return
+			}
 		}
-	}
-	if destinationIdBytes != nil {
-		path.DestinationId, err = IdFromBytes(destinationIdBytes)
-		if err != nil {
-			return
+		if destinationIdBytes != nil {
+			path.DestinationId, err = IdFromBytes(destinationIdBytes)
+			if err != nil {
+				return
+			}
 		}
 	}
 	return
 }
 
 func (self TransferPath) IsControlSource() bool {
-	return !self.IsStream() && self.SourceId == ControlId
+	return self.IsSourceMask() && !self.IsStream() && self.SourceId == ControlId
 }
 
 func (self TransferPath) IsControlDestination() bool {
-	return !self.IsStream() && self.DestinationId == ControlId
+	return self.IsDestinationMask() && !self.IsStream() && self.DestinationId == ControlId
 }
 
 func (self TransferPath) IsStream() bool {
@@ -273,14 +284,6 @@ type MultiHopId struct {
 	len int
 }
 
-func RequireMultiHopId(ids ... Id) MultiHopId {
-	multiHopId, err := NewMultiHopId(ids...)
-	if err != nil {
-		panic(err)
-	}
-	return multiHopId
-}
-
 func NewMultiHopId(ids ... Id) (MultiHopId, error) {
 	if MaxMultihopLength < len(ids) {
 		return MultiHopId{}, fmt.Errorf("Multihop length exceeds maximum: %d < %d", MaxMultihopLength, len(ids))
@@ -292,6 +295,14 @@ func NewMultiHopId(ids ... Id) (MultiHopId, error) {
 		multiHopId.ids[i] = id
 	}
 	return multiHopId, nil
+}
+
+func RequireMultiHopId(ids ... Id) MultiHopId {
+	multiHopId, err := NewMultiHopId(ids...)
+	if err != nil {
+		panic(err)
+	}
+	return multiHopId
 }
 
 func MultiHopIdFromBytes(multiHopIdBytes [][]byte) (MultiHopId, error) {
@@ -331,14 +342,14 @@ func (self MultiHopId) Bytes() [][]byte {
 
 func (self MultiHopId) Tail() Id {
 	if self.len == 0 {
-		panic(errors.New("Cannot call tail on empty."))
+		panic(errors.New("Cannot call tail on empty multi hop id."))
 	}
 	return self.ids[self.len - 1]
 }
 
 func (self MultiHopId) SplitTail() (MultiHopId, Id) {
 	if self.len == 0 {
-		panic(errors.New("Cannot call split tail on empty."))
+		panic(errors.New("Cannot call split tail on empty multi hop id."))
 	}
 	if self.len == 1 {
 		return MultiHopId{}, self.ids[0]
