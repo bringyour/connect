@@ -1,8 +1,6 @@
 syntax = "proto3";
 package bringyour;
 
-import "frame.proto";
-
 option go_package = "bringyour.com/protocol";
 
 

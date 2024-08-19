@@ -39,8 +39,11 @@ import (
 //   `RemoveClientWithArgs` will be called if a client was created for the args,
 //   else `RemoveClientArgs`
 type MultiClientGenerator interface {
-    // client id -> estimated byte count per second
-    NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
+    // path -> estimated byte count per second
+    // the enumeration should typically
+    // 1. not repeat final destination ids from any path
+    // 2. not repeat intermediary elements from any path
+    NextDestinations(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error)
     // client id, client auth
     NewClientArgs() (*MultiClientGeneratorClientArgs, error)
     RemoveClientArgs(args *MultiClientGeneratorClientArgs)
@@ -53,6 +56,8 @@ type MultiClientGenerator interface {
 func DefaultMultiClientSettings() *MultiClientSettings {
     return &MultiClientSettings{
         WindowSizeMin: 2,
+        // TODO increase this when p2p is deployed
+        WindowSizeMinP2pOnly: 0,
         WindowSizeMax: 8,
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
@@ -84,6 +89,8 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 
 type MultiClientSettings struct {
     WindowSizeMin int
+    // the minimumum number of items in the windows that must be connected via p2p only
+    WindowSizeMinP2pOnly int
     WindowSizeMax int
     // reconnects per source
     WindowSizeReconnectScale float64
@@ -317,7 +324,7 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 
 // `SendPacketFunction`
 func (self *RemoteUserNatMultiClient) SendPacket(
-    source Path,
+    source TransferPath,
     provideMode protocol.ProvideMode,
     packet []byte,
     timeout time.Duration,
@@ -348,7 +355,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(
             orderedClients, removedClients := self.window.OrderedClients()
             
             for _, client := range removedClients {
-                glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.DestinationId) 
+                glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.Destination) 
                 self.removeClient(client)
             }
 
@@ -448,6 +455,7 @@ func newParsedPacket(packet []byte) (*parsedPacket, error) {
 type MultiClientGeneratorClientArgs struct {
     ClientId Id
     ClientAuth *ClientAuth
+    P2pOnly bool
 }
 
 
@@ -527,10 +535,14 @@ func NewApiMultiClientGenerator(
     }
 }
 
-func (self *ApiMultiClientGenerator) NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
+func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
+    excludeDestinationsIds := [][]Id{}
+    for _, excludeDestination := range excludeDestinations {
+        excludeDestinationsIds = append(excludeDestinationsIds, excludeDestination.Ids())
+    }
     findProviders2 := &FindProviders2Args{
         Specs: self.specs,
-        ExcludeClientIds: excludedClientIds,
+        ExcludeDestinations: excludeDestinationsIds,
         Count: count,
     }
 
@@ -539,9 +551,20 @@ func (self *ApiMultiClientGenerator) NextDestintationIds(count int, excludedClie
         return nil, err
     }
 
-    clientIdEstimatedBytesPerSecond := map[Id]ByteCount{}
+    clientIdEstimatedBytesPerSecond := map[MultiHopId]ByteCount{}
     for _, provider := range result.Providers {
-        clientIdEstimatedBytesPerSecond[provider.ClientId] = provider.EstimatedBytesPerSecond
+        ids := []Id{}
+        if 0 < len(provider.IntermediaryIds) {
+            ids = append(ids, provider.IntermediaryIds...)
+        }
+        ids = append(ids, provider.ClientId)
+        // use the tail if the length exceeds the allowed maximum
+        if MaxMultihopLength < len(ids) {
+            ids = ids[len(ids)-MaxMultihopLength:len(ids)]
+        }
+        if destination, err := NewMultiHopId(ids...); err == nil {
+            clientIdEstimatedBytesPerSecond[destination] = provider.EstimatedBytesPerSecond
+        }
     }
 
     return clientIdEstimatedBytesPerSecond, nil
@@ -616,11 +639,21 @@ func (self *ApiMultiClientGenerator) NewClient(
     }
     clientOob := NewApiOutOfBandControl(ctx, args.ClientAuth.ByJwt, self.apiUrl)
     client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings)
-    NewPlatformTransportWithDefaults(
+    settings := DefaultPlatformTransportSettings()
+    if args.P2pOnly {
+        settings.TransportGenerator = func()(sendTransport Transport, receiveTransport Transport) {
+            // only use the platform transport for control
+            sendTransport = NewSendClientTransport(DestinationId(ControlId))
+            receiveTransport = NewReceiveGatewayTransport()
+            return
+        }
+    }
+    NewPlatformTransportWithDefaultDialer(
         client.Ctx(),
         self.platformUrl,
         args.ClientAuth,
         client.RouteManager(),
+        settings,
     )
     // enable return traffic for this client
     ack := make(chan struct{})
@@ -654,7 +687,7 @@ type multiClientWindow struct {
     monitor *RemoteUserNatMultiClientMonitor
 
     stateLock sync.Mutex
-    destinationClients map[Id]*multiClientChannel
+    destinationClients map[MultiHopId]*multiClientChannel
 }
 
 func newMultiClientWindow(
@@ -672,7 +705,7 @@ func newMultiClientWindow(
         settings: settings,
         clientChannelArgs: make(chan *multiClientChannelArgs, settings.WindowSizeMin),
         monitor: NewRemoteUserNatMultiClientMonitor(&settings.RemoteUserNatMultiClientMonitorSettings),
-        destinationClients: map[Id]*multiClientChannel{},
+        destinationClients: map[MultiHopId]*multiClientChannel{},
     }
 
     go HandleError(window.randomEnumerateClientArgs, cancel)
@@ -700,18 +733,18 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
     }()
 
     // continually reset the visited set when there are no more
-    visitedDestinationIds := map[Id]bool{}
+    visitedDestinations := map[MultiHopId]bool{}
     for {
-        destinationIdEstimatedBytesPerSecond := map[Id]ByteCount{}
+        destinationEstimatedBytesPerSecond := map[MultiHopId]ByteCount{}
         for {
-            next := func(count int) (map[Id]ByteCount, error) {
-                return self.generator.NextDestintationIds(
+            next := func(count int) (map[MultiHopId]ByteCount, error) {
+                return self.generator.NextDestinations(
                     count,
-                    maps.Keys(visitedDestinationIds),
+                    maps.Keys(visitedDestinations),
                 )
             }
 
-            nextDestinationIdEstimatedBytesPerSecond, err := next(1)
+            nextDestinationEstimatedBytesPerSecond, err := next(1)
             if err != nil {
                 select {
                 case <- self.ctx.Done():
@@ -719,15 +752,15 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
                 case <- time.After(self.settings.WindowEnumerateErrorTimeout):
                     glog.V(2).Infof("[multi]window enumerate error timeout.\n")
                 }
-            } else if 0 < len(nextDestinationIdEstimatedBytesPerSecond) {
-                for destinationId, estimatedBytesPerSecond := range nextDestinationIdEstimatedBytesPerSecond {
-                    destinationIdEstimatedBytesPerSecond[destinationId] = estimatedBytesPerSecond
-                    visitedDestinationIds[destinationId] = true
+            } else if 0 < len(nextDestinationEstimatedBytesPerSecond) {
+                for destination, estimatedBytesPerSecond := range nextDestinationEstimatedBytesPerSecond {
+                    destinationEstimatedBytesPerSecond[destination] = estimatedBytesPerSecond
+                    visitedDestinations[destination] = true
                 }
                 break
             } else {
                 // reset
-                visitedDestinationIds = map[Id]bool{}
+                visitedDestinations = map[MultiHopId]bool{}
                 select {
                 case <- self.ctx.Done():
                     return
@@ -741,15 +774,15 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
         func() {
             self.stateLock.Lock()
             defer self.stateLock.Unlock()
-            for destinationId, _ := range self.destinationClients {
-                delete(destinationIdEstimatedBytesPerSecond, destinationId)
+            for destination, _ := range self.destinationClients {
+                delete(destinationEstimatedBytesPerSecond, destination)
             }
         }()
         
-        for destinationId, estimatedBytesPerSecond := range destinationIdEstimatedBytesPerSecond {
+        for destination, estimatedBytesPerSecond := range destinationEstimatedBytesPerSecond {
             if clientArgs, err := self.generator.NewClientArgs(); err == nil {
                 args := &multiClientChannelArgs{
-                    DestinationId: destinationId,
+                    Destination: destination,
                     EstimatedBytesPerSecond: estimatedBytesPerSecond,
                     MultiClientGeneratorClientArgs: *clientArgs,
                 }
@@ -843,16 +876,22 @@ func (self *multiClientWindow) resize() {
                 }
             }
 
-            destinationClients := map[Id]*multiClientChannel{}
+            destinationClients := map[MultiHopId]*multiClientChannel{}
             for _, client := range clients {
-                destinationClients[client.DestinationId()] = client
+                destinationClients[client.Destination()] = client
             }
             self.destinationClients = destinationClients
 
             return n
         }
 
-        if expandWindowSize <= targetWindowSize && len(clients) < expandWindowSize {
+        p2pOnlyWindowSize := 0
+        for _, client := range clients {
+            if client.IsP2pOnly() {
+                p2pOnlyWindowSize += 1
+            }
+        }
+        if expandWindowSize <= targetWindowSize && len(clients) < expandWindowSize || p2pOnlyWindowSize < self.settings.WindowSizeMinP2pOnly {
             // collapse badly performing clients before expanding
             n := collapseLowestWeighted(0)
             if 0 < n {
@@ -864,7 +903,7 @@ func (self *multiClientWindow) resize() {
             self.monitor.AddWindowExpandEvent(len(clients), expandWindowSize)
             overN := int(math.Ceil(expandOvershotScale * float64(n)))
             glog.Infof("[multi]window expand +%d(%d) %d->%d\n", n, overN, len(clients), expandWindowSize)
-            self.expand(len(clients), expandWindowSize, overN)
+            self.expand(len(clients), p2pOnlyWindowSize, expandWindowSize, overN)
 
             // evaluate the next overshot scale
             func () {
@@ -910,12 +949,14 @@ func (self *multiClientWindow) resize() {
     }
 }
 
-func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize int, n int) {
+func (self *multiClientWindow) expand(currentWindowSize int, currentP2pOnlyWindowSize int, targetWindowSize int, n int) {
     mutex := sync.Mutex{}
     addedCount := 0
 
     endTime := time.Now().Add(self.settings.WindowExpandTimeout)
     pendingPingDones := []chan struct{}{}
+    added := 0
+    addedP2pOnly := 0
     for i := 0; i < n; i += 1 {
         timeout := endTime.Sub(time.Now())
         if timeout < 0 {
@@ -935,13 +976,26 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
             func() {
                 self.stateLock.Lock()
                 defer self.stateLock.Unlock()
-                _, ok = self.destinationClients[args.DestinationId]
+                _, ok = self.destinationClients[args.Destination]
             }()
 
             if ok {
                 // already have a client in the window for this destination
                 self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
             } else {
+                // randomly set to p2p only to meet the minimum requirement
+                if !args.MultiClientGeneratorClientArgs.P2pOnly {
+                    a := max(self.settings.WindowSizeMin - (currentWindowSize + added), 0)
+                    b := max(self.settings.WindowSizeMinP2pOnly - (currentP2pOnlyWindowSize + addedP2pOnly), 0)
+                    var p2pOnlyP float32
+                    if a + b == 0 {
+                        p2pOnlyP = 0
+                    } else {
+                        p2pOnlyP = float32(b) / float32(a + b)
+                    }
+                    args.MultiClientGeneratorClientArgs.P2pOnly = mathrand.Float32() < p2pOnlyP
+                }
+
                 client, err := newMultiClientChannel(
                     self.ctx,
                     args,
@@ -950,6 +1004,11 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
                     self.settings,
                 )
                 if err == nil {
+                    added += 1
+                    if client.IsP2pOnly() {
+                        addedP2pOnly += 1
+                    }
+
                     self.monitor.AddProviderEvent(args.ClientId, ProviderStateInEvaluation)
 
                     // send an initial ping on the client and let the ack timeout close it
@@ -965,7 +1024,7 @@ func (self *multiClientWindow) expand(currentWindowSize int, targetWindowSize in
                                 func () {
                                     self.stateLock.Lock()
                                     defer self.stateLock.Unlock()
-                                    self.destinationClients[args.DestinationId] = client
+                                    self.destinationClients[args.Destination] = client
                                 }()
                                 func() {
                                     mutex.Lock()
@@ -1058,7 +1117,7 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
             defer self.stateLock.Unlock()
             for _, client := range removedClients {
                 client.Cancel()
-                delete(self.destinationClients, client.DestinationId())
+                delete(self.destinationClients, client.Destination())
             }
         }()
         for _, client := range removedClients {
@@ -1138,7 +1197,7 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
 type multiClientChannelArgs struct {
     MultiClientGeneratorClientArgs
 
-    DestinationId Id
+    Destination MultiHopId
     EstimatedBytesPerSecond ByteCount
 }
 
@@ -1213,7 +1272,7 @@ type multiClientChannel struct {
 
     settings *MultiClientSettings
 
-    sourceFilter map[Path]bool
+    // sourceFilter map[TransferPath]bool
 
     client *Client
 
@@ -1257,9 +1316,9 @@ func newMultiClientChannel(
         generator.RemoveClientWithArgs(client, &args.MultiClientGeneratorClientArgs)
     }, cancel)
 
-    sourceFilter := map[Path]bool{
-        Path{ClientId:args.DestinationId}: true,
-    }
+    // sourceFilter := map[TransferPath]bool{
+    //     Path{ClientId:args.DestinationId}: true,
+    // }
 
     clientChannel := &multiClientChannel{
         ctx: cancelCtx,
@@ -1267,7 +1326,7 @@ func newMultiClientChannel(
         args: args,
         receivePacketCallback: receivePacketCallback,
         settings: settings,
-        sourceFilter: sourceFilter,
+        // sourceFilter: sourceFilter,
         client: client,
         eventBuckets: []*multiClientEventBucket{},
         ip4DestinationSourceCount: map[Ip4Path]map[Ip4Path]int{},
@@ -1285,6 +1344,10 @@ func newMultiClientChannel(
 
 func (self *multiClientChannel) ClientId() Id {
     return self.client.ClientId()
+}
+
+func (self *multiClientChannel) IsP2pOnly() bool {
+    return self.args.MultiClientGeneratorClientArgs.P2pOnly
 }
 
 func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Duration) bool {
@@ -1313,14 +1376,16 @@ func (self *multiClientChannel) SendDetailed(parsedPacket *parsedPacket, timeout
             }
         }
 
-        opts := []any{}
+        opts := []any{
+            ForceStream(),
+        }
         switch parsedPacket.ipPath.Protocol {
         case IpProtocolUdp:
             opts = append(opts, NoAck())
         }
-        return self.client.SendWithTimeoutDetailed(
+        return self.client.SendMultiHopWithTimeoutDetailed(
             frame,
-            self.args.DestinationId,
+            self.args.Destination,
             ackCallback,
             timeout,
             opts...,
@@ -1332,11 +1397,12 @@ func (self *multiClientChannel) SendDetailedMessage(message proto.Message, timeo
     if frame, err := ToFrame(message); err != nil {
         return false, err
     } else {
-        return self.client.SendWithTimeoutDetailed(
+        return self.client.SendMultiHopWithTimeoutDetailed(
             frame,
-            self.args.DestinationId,
+            self.args.Destination,
             ackCallback,
             timeout,
+            ForceStream(),
         )
     }
 }
@@ -1349,8 +1415,8 @@ func (self *multiClientChannel) Done() <-chan struct{} {
     return self.ctx.Done()
 }
 
-func (self *multiClientChannel) DestinationId() Id {
-    return self.args.DestinationId
+func (self *multiClientChannel) Destination() MultiHopId {
+    return self.args.Destination
 }
 
 func (self *multiClientChannel) detectBlackhole() {
@@ -1370,7 +1436,7 @@ func (self *multiClientChannel) detectBlackhole() {
                     // the client has sent data but received nothing back
                     // this looks like a blackhole
                     glog.Infof("[multi]routing %s blackhole: %d %dB <> %d %dB\n",
-                        self.args.DestinationId,
+                        self.args.Destination,
                         windowStats.sendAckCount,
                         windowStats.sendAckByteCount,
                         windowStats.receiveAckCount,
@@ -1384,7 +1450,7 @@ func (self *multiClientChannel) detectBlackhole() {
                 } else {
                     glog.Infof(
                         "[multi]routing ok %s: %d %dB <> %d %dB\n",
-                        self.args.DestinationId,
+                        self.args.Destination,
                         windowStats.sendAckCount,
                         windowStats.sendAckByteCount,
                         windowStats.receiveAckCount,
@@ -1682,20 +1748,18 @@ func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientW
 }
 
 // `connect.ReceiveFunction`
-func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+func (self *multiClientChannel) clientReceive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
     select {
     case <- self.ctx.Done():
         return
     default:
     }
 
-    source := Path{ClientId: sourceId}
-
     // only process frames from the destinations
-    if allow := self.sourceFilter[source]; !allow {
-        glog.V(2).Infof("[multi]receive drop %d %s<-\n", len(frames), self.args.DestinationId)
-        return
-    }
+    // if allow := self.sourceFilter[source]; !allow {
+    //     glog.V(2).Infof("[multi]receive drop %d %s<-\n", len(frames), self.args.DestinationId)
+    //     return
+    // }
 
     for _, frame := range frames {
         switch frame.MessageType {
@@ -1709,7 +1773,7 @@ func (self *multiClientChannel) clientReceive(sourceId Id, frames []*protocol.Fr
 
                 self.receivePacketCallback(source, IpProtocolUnknown, packet)
             } else {
-                glog.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.DestinationId, err)
+                glog.V(2).Infof("[multi]receive drop %s<- = %s\n", self.args.Destination, err)
             }
         default:
             // unknown message, drop

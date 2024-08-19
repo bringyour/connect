@@ -159,7 +159,7 @@ func TestWeightedShuffle(t *testing.T) {
 	// the average position order should trend with the weight order
 	
 	k := 64
-	n := 256
+	n := 512
 
 	netIndexes := map[int]int64{}
 

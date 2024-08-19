@@ -14,7 +14,7 @@ enum MessageType {
     TransferAuth = 4;
     TransferCreateStream = 5;
     TransferCreateStreamResult = 6;
-    TransferCloseStream = 7;
+    /* REMOVED */ TransferCloseStream = 7;
     TransferStreamOpen = 8;
     TransferStreamClose = 9;
     TransferCreateContract = 10;

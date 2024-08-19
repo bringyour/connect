@@ -346,7 +346,7 @@ func testingNewClient(ctx context.Context, providerClient *Client, receivePacket
 
 	client.ContractManager().AddNoContractPeer(providerClient.ClientId())
 
-	providerTransportSend := NewSendClientTransport(client.ClientId())
+	providerTransportSend := NewSendClientTransport(DestinationId(client.ClientId()))
 	providerTransportReceive := NewReceiveGatewayTransport()
 	providerClient.RouteManager().UpdateTransport(providerTransportReceive, routesSend)
 	providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
@@ -356,8 +356,8 @@ func testingNewClient(ctx context.Context, providerClient *Client, receivePacket
 	return NewRemoteUserNatClient(
 		client,
 		receivePacketCallback,
-		[]Path{
-			Path{ClientId: providerClient.ClientId()},
+		[]MultiHopId{
+			RequireMultiHopId(providerClient.ClientId()),
 		},
 		protocol.ProvideMode_Network,
 	)
@@ -420,14 +420,14 @@ func testClient[P comparable](
 
 
 	type receivePacket struct {
-		sourceId Id
+		source TransferPath
 		packet []byte
 	}
 
 	receivePackets := make(chan *receivePacket)
 
 
-	receivePacketCallback := func(source Path, ipProtocol IpProtocol, packet []byte) {
+	receivePacketCallback := func(source TransferPath, ipProtocol IpProtocol, packet []byte) {
 		// record the echo packet
 
 		// cMutex.Lock()
@@ -436,7 +436,7 @@ func testClient[P comparable](
 		// cMutex.Unlock()
 
         receivePacket := &receivePacket{
-        	sourceId: source.ClientId,
+        	source: source,
         	packet: packet,
         }
 
@@ -448,7 +448,7 @@ func testClient[P comparable](
 	assert.Equal(t, err, nil)
 
 
-	providerClient.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+	providerClient.AddReceiveCallback(func(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 		// cMutex.Lock()
 		// cReceiveCount += 1
 		// // fmt.Printf("C Receive %d/%d (%.2f%%)\n", cReceiveCount, totalCount, 100.0 * float32(cReceiveCount) / float32(totalCount))
@@ -465,7 +465,7 @@ func testClient[P comparable](
 		        panic(err)
 		    }
 
-		    success := providerClient.SendWithTimeout(frame, sourceId, func(err error) {}, -1)
+		    success := providerClient.SendWithTimeout(frame, source.Reverse(), func(err error) {}, -1)
 		    assert.Equal(t, true, success)
 
 		    // cMutex.Lock()
@@ -479,7 +479,7 @@ func testClient[P comparable](
 		            packet := ipPacketToProvider.IpPacket.PacketBytes
 
 		            receivePacket := &receivePacket{
-		            	sourceId: sourceId,
+		            	source: source,
 		            	packet: packet,
 		            }
 
@@ -500,7 +500,7 @@ func testClient[P comparable](
 
 	for p := 0; p < parallelCount; p += 1 {
 		go func() {
-			source := Path{ClientId:clientId}
+			source := SourceId(clientId)
 			for s := 0; s < m; s += 1 {
 				for i := 0; i < n; i += 1 {
 					for j := 0; j < n; j += 1 {
@@ -527,7 +527,7 @@ func testClient[P comparable](
 
 
 	comparableIpPathPayloads := map[P][][]byte{}
-	comparableIpPathSources := map[P]map[Id]bool{}
+	comparableIpPathSources := map[P]map[TransferPath]bool{}
 
 	for i := 0; i < totalCount; i += 1 {
 		fmt.Printf("[testr]%d/%d (%.2f%%)\n", i, totalCount, 100 * float32(i) / float32(totalCount))
@@ -566,12 +566,12 @@ func testClient[P comparable](
 
 			sources, ok := comparableIpPathSources[comparableIpPath]
 			if !ok {
-				sources = map[Id]bool{}
+				sources = map[TransferPath]bool{}
 				comparableIpPathSources[comparableIpPath] = sources
 			}
-			sources[receivePacket.sourceId] = true
+			sources[receivePacket.source] = true
 		case <- time.After(timeout):
-			t.Fail()
+			t.FailNow()
 		}
 	}
 

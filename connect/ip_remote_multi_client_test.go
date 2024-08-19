@@ -5,7 +5,7 @@ import (
     "testing"
     "time"
     "math"
-    "slices"
+    // "slices"
     "sync"
 
     "github.com/go-playground/assert/v2"
@@ -39,10 +39,18 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 
 
 	generator := &TestMultiClientGenerator{
-		nextDestintationIds: func(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
-			next := map[Id]ByteCount{}
-			if !slices.Contains(excludedClientIds, providerClient.ClientId()) {
-				 next[providerClient.ClientId()] = ByteCount(0)
+		nextDestinations: func(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
+			next := map[MultiHopId]ByteCount{}
+			containsTail := func()(bool) {
+				for _, destination := range excludeDestinations {
+					if 0 < destination.Len() && destination.Tail() == providerClient.ClientId() {
+						return true
+					}
+				}
+				return false
+			}
+			if !containsTail() {
+				 next[RequireMultiHopId(providerClient.ClientId())] = ByteCount(0)
 			}
 			return next, nil
 		},
@@ -97,7 +105,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 
 			client.ContractManager().AddNoContractPeer(providerClient.ClientId())
 
-			providerTransportSend := NewSendClientTransport(args.ClientId)
+			providerTransportSend := NewSendClientTransport(DestinationId(args.ClientId))
 			providerTransportReceive := NewReceiveGatewayTransport()
 			providerClient.RouteManager().UpdateTransport(providerTransportReceive, routesSend)
 			providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
@@ -133,7 +141,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 
 
 type TestMultiClientGenerator struct {
-	nextDestintationIds func(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
+	nextDestinations func(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error)
     newClientArgs func()(*MultiClientGeneratorClientArgs, error)
     removeClientArgs func(args *MultiClientGeneratorClientArgs)
     removeClientWithArgs func(client *Client, args *MultiClientGeneratorClientArgs)
@@ -141,8 +149,8 @@ type TestMultiClientGenerator struct {
     newClient func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
 
-func (self *TestMultiClientGenerator) NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
-	return self.nextDestintationIds(count, excludedClientIds)
+func (self *TestMultiClientGenerator) NextDestinations(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
+	return self.nextDestinations(count, excludeDestinations)
 }
 
 func (self *TestMultiClientGenerator) NewClientArgs() (*MultiClientGeneratorClientArgs, error) {
@@ -181,7 +189,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	parallelCount := 6
 
 	generator := &TestMultiClientGenerator{
-		nextDestintationIds: func(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
+		nextDestinations: func(count int, excludedDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
 			// not used
 			return nil, nil
 		},
@@ -202,7 +210,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	    },
 	}
 
-	receivePacket := func(source Path, ipProtocol IpProtocol, packet []byte) {
+	receivePacket := func(source TransferPath, ipProtocol IpProtocol, packet []byte) {
 		// Do nothing
 	}
 
@@ -217,7 +225,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	args, err := generator.NewClientArgs()
 	channelArgs := &multiClientChannelArgs{
 		MultiClientGeneratorClientArgs: *args,
-		DestinationId: NewId(),
+		Destination: RequireMultiHopId(NewId()),
 		EstimatedBytesPerSecond: 0,
 	}
 	assert.Equal(t, nil, err)

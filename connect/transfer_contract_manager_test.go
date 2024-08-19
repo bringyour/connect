@@ -76,7 +76,7 @@ func TestTakeContract(t *testing.T) {
 			assert.Equal(t, nil, err)
 
 
-			contractManager.Receive(ControlId, []*protocol.Frame{frame}, protocol.ProvideMode_Network)
+			contractManager.Receive(SourceId(ControlId), []*protocol.Frame{frame}, protocol.ProvideMode_Network)
 		}
 	}()
 
@@ -84,7 +84,10 @@ func TestTakeContract(t *testing.T) {
 		go func() {
 			for i := 0; i < n; {
 
-				if contract := contractManager.TakeContract(ctx, destinationId, timeout); contract != nil {
+				contractKey := ContractKey{
+					Destination: DestinationId(destinationId),
+				}
+				if contract := contractManager.TakeContract(ctx, contractKey, timeout); contract != nil {
 					// if mathrand.Float32() < contractReturnP {
 					// 	// put back
 					// 	contractManager.ReturnContract(ctx, destinationId, contract)
@@ -127,7 +130,10 @@ func TestTakeContract(t *testing.T) {
 	assert.Equal(t, k * n, len(contractIds))
 
 	// no more
-	contract := contractManager.TakeContract(ctx, destinationId, 0)
+	contractKey := ContractKey{
+		Destination: DestinationId(destinationId),
+	}
+	contract := contractManager.TakeContract(ctx, contractKey, 0)
 	assert.Equal(t, nil, contract)
 
 	// all the contracts are accounted for

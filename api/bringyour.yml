@@ -1737,6 +1737,13 @@ components:
                     items:
                         description: udid
                         type: string
+                exclude_destinations:
+                    type: array
+                    items:
+                        type: array
+                        items:
+                            description: udid
+                            type: string
 
         FindProviders2Result:
             type: object
@@ -1751,6 +1758,11 @@ components:
                                 type: string
                             estimated_bytes_per_second:
                                 type: integer
+                        intermediary_ids:
+                            type: array
+                            items:
+                                description: udid
+                                type: string
 
         CreateProviderSpecArgs:
             type: object

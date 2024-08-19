@@ -39,6 +39,7 @@ type PlatformTransportSettings struct {
     PingTimeout time.Duration
     WriteTimeout time.Duration
     ReadTimeout time.Duration
+    TransportGenerator func()(sendTransport Transport, receiveTransport Transport)
 }
 
 
@@ -94,8 +95,22 @@ func NewPlatformTransportWithDefaults(
     auth *ClientAuth,
     routeManager *RouteManager,
 ) *PlatformTransport {
-    settings := DefaultPlatformTransportSettings()
+    return NewPlatformTransportWithDefaultDialer(
+        ctx,
+        platformUrl,
+        auth,
+        routeManager,
+        DefaultPlatformTransportSettings(),
+    )
+}
 
+func NewPlatformTransportWithDefaultDialer(
+    ctx context.Context,
+    platformUrl string,
+    auth *ClientAuth,
+    routeManager *RouteManager,
+    settings *PlatformTransportSettings,
+) *PlatformTransport {
     dialContextGen := func()(DialContextFunc) {
         dialer := &net.Dialer{
             Timeout: settings.HttpConnectTimeout,
@@ -230,8 +245,14 @@ func (self *PlatformTransport) run() {
 
             // the platform can route any destination,
             // since every client has a platform transport
-            sendTransport := NewSendGatewayTransport()
-            receiveTransport := NewReceiveGatewayTransport()
+            var sendTransport Transport
+            var receiveTransport Transport
+            if self.settings.TransportGenerator != nil {
+                sendTransport, receiveTransport = self.settings.TransportGenerator()
+            } else {
+                 sendTransport = NewSendGatewayTransport()
+                 receiveTransport = NewReceiveGatewayTransport()
+            }
 
             self.routeManager.UpdateTransport(sendTransport, []Route{send})
             self.routeManager.UpdateTransport(receiveTransport, []Route{receive})

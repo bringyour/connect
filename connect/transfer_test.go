@@ -106,7 +106,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	acks := make(chan error)
 	receives := make(chan *protocol.SimpleMessage)
 
-	b.AddReceiveCallback(func(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+	b.AddReceiveCallback(func(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
 		for _, frame := range frames {
 			switch v := RequireFromFrame(frame).(type) {
 			case *protocol.SimpleMessage:
@@ -140,7 +140,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 				Content: fmt.Sprintf("hi %d", i),
 			}
 			frame := RequireToFrame(message)
-			a.Send(frame, bClientId, func(err error) {
+			a.Send(frame, DestinationId(bClientId), func(err error) {
 				acks <- err
 			})
 		}
@@ -221,7 +221,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 				Content: fmt.Sprintf("hi %d", i),
 			}
 			frame := RequireToFrame(message)
-			a2.Send(frame, bClientId, func(err error) {
+			a2.Send(frame, DestinationId(bClientId), func(err error) {
 				acks <- err
 			})
 		}
@@ -339,7 +339,7 @@ func createTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId 
 		TransferPath: &protocol.TransferPath{
 			SourceId: sourceId.Bytes(),
 			DestinationId: destinationId.Bytes(),
-			StreamId: DirectStreamId.Bytes(),
+			// StreamId: DirectStreamId.Bytes(),
 		},
 		Frame: frame,
 	}
