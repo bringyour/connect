@@ -107,8 +107,6 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		WriteTimeout: 30 * time.Second,
 		ResendQueueMaxByteCount: mib(1),
 		ContractFillFraction: 0.5,
-		// TODO change this once main has been deployed with the p2p contract changes
-		LegacyCreateContract: true,
 	}
 }
 
@@ -859,11 +857,11 @@ func (self *Client) run() {
 	}
 }
 
-func (self *Client) ResendQueueSize(destination TransferPath, intermediaryIds MultiHopId, companionContract bool) (int, ByteCount, Id) {
+func (self *Client) ResendQueueSize(destination TransferPath, intermediaryIds MultiHopId, companionContract bool, forceStream bool) (int, ByteCount, Id) {
 	if self.sendBuffer == nil {
 		return 0, 0, Id{}
 	} else {
-		return self.sendBuffer.ResendQueueSize(destination, intermediaryIds, companionContract)
+		return self.sendBuffer.ResendQueueSize(destination, intermediaryIds, companionContract, forceStream)
 	}
 }
 
@@ -947,8 +945,6 @@ type SendBufferSettings struct {
 
 	// as this ->1, there is more risk that noack messages will get dropped due to out of sync contracts
 	ContractFillFraction float32
-
-	LegacyCreateContract bool
 }
 
 type sendSequenceId struct {
@@ -1088,7 +1084,7 @@ func (self *SendBuffer) Ack(destination TransferPath, ack *protocol.Ack, timeout
 	return anySuccess
 }
 
-func (self *SendBuffer) ResendQueueSize(destination TransferPath, intermediaryIds MultiHopId, companionContract bool) (int, ByteCount, Id) {
+func (self *SendBuffer) ResendQueueSize(destination TransferPath, intermediaryIds MultiHopId, companionContract bool, forceStream bool) (int, ByteCount, Id) {
 	sendSequence := func()(*SendSequence) {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
@@ -1096,6 +1092,7 @@ func (self *SendBuffer) ResendQueueSize(destination TransferPath, intermediaryId
 			Destination: destination,
 			IntermediaryIds: intermediaryIds,
 			CompanionContract: companionContract,
+			ForceStream: forceStream,
 		}]
 	}
 
@@ -1337,7 +1334,7 @@ func (self *SendSequence) Run() {
 
 		// close contract
 		for _, sendContract := range self.openSendContracts {
-			self.client.ContractManager().CompleteContract(
+			self.client.ContractManager().CloseContract(
 				sendContract.contractId,
 				sendContract.ackedByteCount,
 				sendContract.unackedByteCount,
@@ -1351,19 +1348,11 @@ func (self *SendSequence) Run() {
 
 		// flush queued up contracts
 		// remove used contract ids because all used contracts were closed above
-		var contractKey ContractKey
-		if self.sendBufferSettings.LegacyCreateContract {
-			// older CreateContractResult will not have a complete contract key
-			contractKey = ContractKey{
-				Destination: self.destination,
-			}
-		} else {
-			contractKey = ContractKey{
-				Destination: self.destination,
-				IntermediaryIds: self.intermediaryIds,
-				CompanionContract: self.companionContract,
-				ForceStream: self.forceStream,
-			}
+		contractKey := ContractKey{
+			Destination: self.destination,
+			IntermediaryIds: self.intermediaryIds,
+			CompanionContract: self.companionContract,
+			ForceStream: self.forceStream,
 		}
 		self.client.ContractManager().FlushContractQueue(contractKey, true)
 
@@ -1609,34 +1598,20 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				// the contract was requested with the correct size, so this is an error somewhere
 				// just close it and let the platform time out the other side
 				glog.Infof("[s]%s->%s...%s s(%s) contract too small %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
-				self.client.ContractManager().CompleteContract(nextSendContract.contractId, 0, 0)
+				self.client.ContractManager().CloseContract(nextSendContract.contractId, 0, 0)
 				return false
 			}
 		}
 
 		nextContract := func(timeout time.Duration)(bool) {
-			var contractKey ContractKey
-			if self.sendBufferSettings.LegacyCreateContract {
-				// older CreateContractResult will not have a complete contract key
-				contractKey = ContractKey{
-					Destination: self.destination,
-				}
-			} else {
-				contractKey = ContractKey{
-					Destination: self.destination,
-					IntermediaryIds: self.intermediaryIds,
-					CompanionContract: self.companionContract,
-					ForceStream: self.forceStream,
-				}
+			contractKey := ContractKey{
+				Destination: self.destination,
+				IntermediaryIds: self.intermediaryIds,
+				CompanionContract: self.companionContract,
+				ForceStream: self.forceStream,
 			}
 			if contract := self.client.ContractManager().TakeContract(self.ctx, contractKey, timeout); contract != nil && setNextContract(contract) {
 				// async queue up the next contract
-				contractKey = ContractKey{
-					Destination: self.destination,
-					IntermediaryIds: self.intermediaryIds,
-					CompanionContract: self.companionContract,
-					ForceStream: self.forceStream,
-				}
 				self.client.ContractManager().CreateContract(
 					contractKey,
 					self.client.settings.ControlWriteTimeout,
@@ -1712,7 +1687,7 @@ func (self *SendSequence) setContract(nextSendContract *sequenceContract) {
 	// do not close the current contract unless it has no pending data
 	// the contract is stracked in `openSendContracts` and will be closed on ack
 	if self.sendContract != nil && self.sendContract.unackedByteCount == 0 {
-		self.client.ContractManager().CompleteContract(
+		self.client.ContractManager().CloseContract(
 			self.sendContract.contractId,
 			self.sendContract.ackedByteCount,
 			self.sendContract.unackedByteCount,
@@ -1954,7 +1929,7 @@ func (self *SendSequence) ackItem(item *sendItem) {
 		itemSendContract.ack(item.messageByteCount)
 		// not current and closed
 		if self.sendContract != itemSendContract && itemSendContract.unackedByteCount == 0 {
-			self.client.ContractManager().CompleteContract(
+			self.client.ContractManager().CloseContract(
 				itemSendContract.contractId,
 				itemSendContract.ackedByteCount,
 				itemSendContract.unackedByteCount,
@@ -2845,7 +2820,7 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 
 	// close out the previous contract
 	if self.receiveContract != nil {
-		self.client.ContractManager().CompleteContract(
+		self.client.ContractManager().CloseContract(
 			self.receiveContract.contractId,
 			self.receiveContract.ackedByteCount,
 			self.receiveContract.unackedByteCount,

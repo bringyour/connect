@@ -32,6 +32,12 @@ type ContractKey struct {
 	ForceStream bool
 }
 
+func (self ContractKey) Legacy() ContractKey {
+	return ContractKey{
+		Destination: self.Destination,
+	}
+}
+
 
 type ContractErrorFunction = func(contractError protocol.ContractError)
 
@@ -78,6 +84,9 @@ func DefaultContractManagerSettings() *ContractManagerSettings {
 		StandardContractTransferByteCount: mib(32),
 
 		NetworkEventTimeEnableContracts: networkEventTimeEnableContracts,
+
+		// TODO change this once main has been deployed with the p2p contract changes
+		LegacyCreateContract: true,
 	}
 }
 
@@ -94,6 +103,8 @@ type ContractManagerSettings struct {
 	// enable contracts on the network
 	// this can be removed after wide adoption
 	NetworkEventTimeEnableContracts time.Time
+
+	LegacyCreateContract bool
 }
 
 func (self *ContractManagerSettings) ContractsEnabled() bool {
@@ -175,7 +186,7 @@ func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Fra
 		contracts := map[*protocol.Contract]ContractKey{}
 		contractErrors := []protocol.ContractError{}
 		for _, frame := range frames {
-			frameContracts, frameContractErrors := parseControlFrame(frame)
+			frameContracts, frameContractErrors := self.parseControlFrame(frame)
 			maps.Copy(contracts, frameContracts)
 			contractErrors = append(contractErrors, frameContractErrors...)
 		}
@@ -209,7 +220,7 @@ func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Fra
 }
 
 // frames are verified before calling to be from source ControlId
-func parseControlFrame(frame *protocol.Frame) (
+func (self *ContractManager) parseControlFrame(frame *protocol.Frame) (
 	contracts map[*protocol.Contract]ContractKey,
 	contractErrors []protocol.ContractError,
 ) {
@@ -492,34 +503,6 @@ func (self *ContractManager) addContract(contractKey ContractKey, contract *prot
 	return nil
 }
 
-func (self *ContractManager) openContractQueue(contractKey ContractKey) *contractQueue {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	contractQueue, ok := self.destinationContracts[contractKey]
-	if !ok {
-		contractQueue = newContractQueue()
-		self.destinationContracts[contractKey] = contractQueue
-	}
-	contractQueue.Open()
-
-	return contractQueue
-}
-
-func (self *ContractManager) closeContractQueue(contractKey ContractKey) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	contractQueue, ok := self.destinationContracts[contractKey]
-	if !ok {
-		panic("Open and close must be equally paired")
-	}
-	contractQueue.Close()
-	if contractQueue.IsDone() {
-		delete(self.destinationContracts, contractKey)
-	}
-}
-
 func (self *ContractManager) CreateContract(contractKey ContractKey, timeout time.Duration) {
 	// look at destinationContracts and last contract to get previous contract id
 	contractQueue := self.openContractQueue(contractKey)
@@ -551,18 +534,18 @@ func (self *ContractManager) CheckpointContract(
 	ackedByteCount ByteCount,
 	unackedByteCount ByteCount,
 ) {
-	self.CompleteContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
+	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
 }
 
-func (self *ContractManager) CompleteContract(
+func (self *ContractManager) CloseContract(
 	contractId Id,
 	ackedByteCount ByteCount,
 	unackedByteCount ByteCount,
 ) {
-	self.CompleteContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, false)
+	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, false)
 }
 
-func (self *ContractManager) CompleteContractWithCheckpoint(
+func (self *ContractManager) CloseContractWithCheckpoint(
 	contractId Id,
 	ackedByteCount ByteCount,
 	unackedByteCount ByteCount,
@@ -650,7 +633,7 @@ func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 
 func (self *ContractManager) FlushContractQueue(contractKey ContractKey, resetUsedContractIds bool) []Id {
 	contractQueue := self.openContractQueue(contractKey)
-	defer self.closeContractQueue(contractKey)
+	defer self.closeContractQueueWithForceRemove(contractKey, true)
 
 	contracts := contractQueue.Flush(resetUsedContractIds)
 
@@ -664,11 +647,51 @@ func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id
 		if err := proto.Unmarshal(contract.StoredContractBytes, &storedContract); err == nil {
 			if contractId, err := IdFromBytes(storedContract.ContractId); err == nil {
 				contractIds = append(contractIds, contractId)
-				self.CompleteContract(contractId, ByteCount(0), ByteCount(0))
+				self.CloseContract(contractId, ByteCount(0), ByteCount(0))
 			}
 		}
 	}
 	return contractIds
+}
+
+func (self *ContractManager) openContractQueue(contractKey ContractKey) *contractQueue {
+	if self.settings.LegacyCreateContract {
+		contractKey = contractKey.Legacy()
+	}
+
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	contractQueue, ok := self.destinationContracts[contractKey]
+	if !ok {
+		contractQueue = newContractQueue()
+		self.destinationContracts[contractKey] = contractQueue
+	}
+	contractQueue.Open()
+
+	return contractQueue
+}
+
+func (self *ContractManager) closeContractQueue(contractKey ContractKey) {
+	self.closeContractQueueWithForceRemove(contractKey, false)
+}
+
+func (self *ContractManager) closeContractQueueWithForceRemove(contractKey ContractKey, forceRemove bool) {
+	if self.settings.LegacyCreateContract {
+		contractKey = contractKey.Legacy()
+	}
+
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	contractQueue, ok := self.destinationContracts[contractKey]
+	if !ok {
+		panic("Open and close must be equally paired")
+	}
+	contractQueue.Close()
+	if contractQueue.IsDone() || forceRemove {
+		delete(self.destinationContracts, contractKey)
+	}
 }
 
 
@@ -732,11 +755,12 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 
 	if self.usedContractIds[contractId] {
 		glog.V(2).Infof("[contract]add already used %s\n", contractId)
-		// update contract
+		// update contract if present
 		if _, ok := self.contracts[contractId]; ok {
 			self.contracts[contractId] = contract
 			self.updateMonitor.NotifyAll()
 		}
+		// else drop this contract. it has already been used locally
 	} else {
 		glog.V(2).Infof("[contract]add %s\n", contractId)
 		self.usedContractIds[contractId] = true
