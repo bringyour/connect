@@ -8,7 +8,8 @@ import (
 	mathrand "math/rand"
 	"reflect"
 	"slices"
-    // "fmt"
+    "fmt"
+    // "runtime/debug"
 
 	"golang.org/x/exp/maps"
 
@@ -40,17 +41,18 @@ type Transport interface {
     // call `rematchTransport` to re-evaluate the weights. this is used for a control loop where the weight is adjusted to match the actual distribution
     RouteWeight(stats *RouteStats, remainingStats map[Transport]*RouteStats) float32
     
-    MatchesSend(destinationId Id) bool
-    MatchesReceive(destinationId Id) bool
+    MatchesSend(destination TransferPath) bool
+    MatchesReceive(destination TransferPath) bool
 
     // request that p2p and direct connections be re-established that include the source
     // connections will be denied for sources that have bad audits
-    Downgrade(sourceId Id)
+    Downgrade(source TransferPath)
 }
 
 
 type MultiRouteWriter interface {
-    Write(ctx context.Context, transportFrameBytes []byte, timeout time.Duration) error
+    Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) error
+    WriteDetailed(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) (bool, error)
     GetActiveRoutes() []Route
     GetInactiveRoutes() []Route
 }
@@ -83,15 +85,19 @@ func NewRouteManager(ctx context.Context, clientTag string) *RouteManager {
     }
 }
 
-func (self *RouteManager) DowngradeReceiverConnection(sourceId Id) {
-    self.readerMatchState.Downgrade(sourceId)
+func (self *RouteManager) DowngradeReceiverConnection(source TransferPath) {
+    self.readerMatchState.Downgrade(source)
 }
 
-func (self *RouteManager) OpenMultiRouteWriter(destinationId Id) MultiRouteWriter {
+func (self *RouteManager) OpenMultiRouteWriter(destination TransferPath) MultiRouteWriter {
+    if !destination.IsDestinationMask() {
+        panic(fmt.Errorf("Destination required for writer: %s", destination))
+    }
+
     self.mutex.Lock()
     defer self.mutex.Unlock()
 
-    return MultiRouteWriter(self.writerMatchState.openMultiRouteSelector(destinationId))
+    return MultiRouteWriter(self.writerMatchState.openMultiRouteSelector(destination))
 }
 
 func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
@@ -101,11 +107,15 @@ func (self *RouteManager) CloseMultiRouteWriter(w MultiRouteWriter) {
     self.writerMatchState.closeMultiRouteSelector(w.(*MultiRouteSelector))
 }
 
-func (self *RouteManager) OpenMultiRouteReader(destinationId Id) MultiRouteReader {
+func (self *RouteManager) OpenMultiRouteReader(destination TransferPath) MultiRouteReader {
+    if !destination.IsDestinationMask() {
+        panic(fmt.Errorf("Destination required for reader: %s", destination))
+    }
+
     self.mutex.Lock()
     defer self.mutex.Unlock()
 
-    return MultiRouteReader(self.readerMatchState.openMultiRouteSelector(destinationId))
+    return MultiRouteReader(self.readerMatchState.openMultiRouteSelector(destination))
 }
 
 func (self *RouteManager) CloseMultiRouteReader(r MultiRouteReader) {
@@ -142,38 +152,38 @@ type MatchState struct {
     clientTag string
 
     weightedRoutes bool
-    matches func(Transport, Id)(bool)
+    matches func(Transport, TransferPath)(bool)
 
     transportRoutes map[Transport][]Route
 
-    // destination id -> multi route selectors
-    destinationMultiRouteSelectors map[Id]map[*MultiRouteSelector]bool
+    // destination -> multi route selectors
+    destinationMultiRouteSelectors map[TransferPath]map[*MultiRouteSelector]bool
 
-    // transport -> destination ids
-    transportMatchedDestinations map[Transport]map[Id]bool
+    // transport -> destinations
+    transportMatchedDestinations map[Transport]map[TransferPath]bool
 }
 
 // note weighted routes typically are used by the sender not receiver
-func NewMatchState(ctx context.Context, clientTag string, weightedRoutes bool, matches func(Transport, Id)(bool)) *MatchState {
+func NewMatchState(ctx context.Context, clientTag string, weightedRoutes bool, matches func(Transport, TransferPath)(bool)) *MatchState {
     return &MatchState{
     	ctx: ctx,
         clientTag: clientTag,
         weightedRoutes: weightedRoutes,
         matches: matches,
         transportRoutes: map[Transport][]Route{},
-        destinationMultiRouteSelectors: map[Id]map[*MultiRouteSelector]bool{},
-        transportMatchedDestinations: map[Transport]map[Id]bool{},
+        destinationMultiRouteSelectors: map[TransferPath]map[*MultiRouteSelector]bool{},
+        transportMatchedDestinations: map[Transport]map[TransferPath]bool{},
     }
 }
 
 func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
-    destinationIds, ok := self.transportMatchedDestinations[transport]
+    destinations, ok := self.transportMatchedDestinations[transport]
     if !ok {
         return nil
     }
     netStats := NewRouteStats()
-    for destinationId, _ := range destinationIds {
-        if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]; ok {
+    for destination, _ := range destinations {
+        if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destination]; ok {
             for multiRouteSelector, _  := range multiRouteSelectors {
                 if stats := multiRouteSelector.getTransportStats(transport); stats != nil {
                     netStats.sendCount += stats.sendCount
@@ -187,26 +197,26 @@ func (self *MatchState) getTransportStats(transport Transport) *RouteStats {
     return netStats
 }
 
-func (self *MatchState) openMultiRouteSelector(destinationId Id) *MultiRouteSelector {
-    multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, destinationId, self.weightedRoutes)
+func (self *MatchState) openMultiRouteSelector(destination TransferPath) *MultiRouteSelector {
+    multiRouteSelector := NewMultiRouteSelector(self.ctx, self.clientTag, destination, self.weightedRoutes)
 
-    multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]
+    multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destination]
     if !ok {
         multiRouteSelectors = map[*MultiRouteSelector]bool{}
-        self.destinationMultiRouteSelectors[destinationId] = multiRouteSelectors
+        self.destinationMultiRouteSelectors[destination] = multiRouteSelectors
     }
     multiRouteSelectors[multiRouteSelector] = true
 
     for transport, routes := range self.transportRoutes {
         matchedDestinations, ok := self.transportMatchedDestinations[transport]
         if !ok {
-            matchedDestinations := map[Id]bool{}
+            matchedDestinations := map[TransferPath]bool{}
             self.transportMatchedDestinations[transport] = matchedDestinations
         }
 
         // use the latest matches state
-        if self.matches(transport, destinationId) {
-            matchedDestinations[destinationId] = true
+        if self.matches(transport, destination) {
+            matchedDestinations[destination] = true
             multiRouteSelector.updateTransport(transport, routes)
         }
     }
@@ -217,8 +227,8 @@ func (self *MatchState) openMultiRouteSelector(destinationId Id) *MultiRouteSele
 func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSelector) {
     // TODO readers do not need to prioritize routes
 
-    destinationId := multiRouteSelector.destinationId
-    multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]
+    destination := multiRouteSelector.destination
+    multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destination]
     if !ok {
         // not present
         return
@@ -228,7 +238,7 @@ func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSe
     if len(multiRouteSelectors) == 0 {
         // clean up the destination
         for _, matchedDestinations := range self.transportMatchedDestinations {
-            delete(matchedDestinations, destinationId)
+            delete(matchedDestinations, destination)
         }
     }
 }
@@ -236,8 +246,8 @@ func (self *MatchState) closeMultiRouteSelector(multiRouteSelector *MultiRouteSe
 func (self *MatchState) updateTransport(transport Transport, routes []Route) {
     if len(routes) == 0 {
         if currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]; ok {
-            for destinationId, _ := range currentMatchedDestinations {
-                if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destinationId]; ok {
+            for destination, _ := range currentMatchedDestinations {
+                if multiRouteSelectors, ok := self.destinationMultiRouteSelectors[destination]; ok {
                     for multiRouteSelector, _ := range multiRouteSelectors {
                         multiRouteSelector.updateTransport(transport, nil)
                     }
@@ -248,20 +258,20 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
         delete(self.transportMatchedDestinations, transport)
         delete(self.transportRoutes, transport)
     } else {
-        matchedDestinations := map[Id]bool{}
+        matchedDestinations := map[TransferPath]bool{}
 
         currentMatchedDestinations, ok := self.transportMatchedDestinations[transport]
         if !ok {
-            currentMatchedDestinations = map[Id]bool{}
+            currentMatchedDestinations = map[TransferPath]bool{}
         }
 
-        for destinationId, multiRouteSelectors := range self.destinationMultiRouteSelectors {
-            if self.matches(transport, destinationId) {
-                matchedDestinations[destinationId] = true
+        for destination, multiRouteSelectors := range self.destinationMultiRouteSelectors {
+            if self.matches(transport, destination) {
+                matchedDestinations[destination] = true
                 for multiRouteSelector, _ := range multiRouteSelectors {
                     multiRouteSelector.updateTransport(transport, routes)
                 }
-            } else if _, ok := currentMatchedDestinations[destinationId]; ok {
+            } else if _, ok := currentMatchedDestinations[destination]; ok {
                 // no longer matches
                 for multiRouteSelector, _ := range multiRouteSelectors {
                     multiRouteSelector.updateTransport(transport, nil)
@@ -274,8 +284,10 @@ func (self *MatchState) updateTransport(transport Transport, routes []Route) {
     }
 }
 
-func (self *MatchState) Downgrade(sourceId Id) {
-    // FIXME request downgrade from the transports
+func (self *MatchState) Downgrade(source TransferPath) {
+    for transport, _ := range self.transportRoutes {
+        transport.Downgrade(source)
+    }
 }
 
 
@@ -284,7 +296,7 @@ type MultiRouteSelector struct {
     cancel context.CancelFunc
     clientTag string
 
-    destinationId Id
+    destination TransferPath
     weightedRoutes bool
 
     transportUpdate *Monitor
@@ -296,13 +308,13 @@ type MultiRouteSelector struct {
     routeWeight map[Route]float32
 }
 
-func NewMultiRouteSelector(ctx context.Context, clientTag string, destinationId Id, weightedRoutes bool) *MultiRouteSelector {
+func NewMultiRouteSelector(ctx context.Context, clientTag string, destination TransferPath, weightedRoutes bool) *MultiRouteSelector {
 	cancelCtx, cancel := context.WithCancel(ctx)
     return &MultiRouteSelector{
         ctx: cancelCtx,
         cancel: cancel,
         clientTag: clientTag,
-        destinationId: destinationId,
+        destination: destination,
         weightedRoutes: weightedRoutes,
         transportUpdate: NewMonitor(),
         transportRoutes: map[Transport][]Route{},
@@ -550,23 +562,34 @@ func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int
     stats.receiveByteCount += receiveByteCount
 }
 
+func (self *MultiRouteSelector) Write(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) error {
+    success, err := self.WriteDetailed(ctx, transferFrameBytes, timeout)
+    if err != nil {
+        return err
+    }
+    if !success {
+        return errors.New("Timeout.")
+    }
+    return nil
+}
+
 // MultiRouteWriter
-func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes []byte, timeout time.Duration) error {
+func (self *MultiRouteSelector) WriteDetailed(ctx context.Context, transferFrameBytes []byte, timeout time.Duration) (bool, error) {
     // write to the first channel available, in random priority
     enterTime := time.Now()
     for {
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
-        glog.V(2).Infof("[mrw] %s->%s routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
+        glog.V(2).Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
         // non-blocking priority 
         for _, route := range activeRoutes {
             select {
-            case route <- transportFrameBytes:
-                glog.V(2).Infof("[mrw]nb %s->%s\n", self.clientTag, self.destinationId)
-                self.updateSendStats(route, 1, ByteCount(len(transportFrameBytes)))
-                return nil
+            case route <- transferFrameBytes:
+                glog.V(2).Infof("[mrw]nb %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+                self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
+                return true, nil
             default:
             }
         }
@@ -604,7 +627,7 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         // add all the route
         routeStartIndex := len(selectCases)
         if 0 < len(activeRoutes) {
-            sendValue := reflect.ValueOf(transportFrameBytes)
+            sendValue := reflect.ValueOf(transferFrameBytes)
             for _, route := range activeRoutes {
                 selectCases = append(selectCases, reflect.SelectCase{
                     Dir: reflect.SelectSend,
@@ -632,23 +655,23 @@ func (self *MultiRouteSelector) Write(ctx context.Context, transportFrameBytes [
         }
 
         chosenIndex, _, _ := reflect.Select(selectCases)
-        glog.V(2).Infof("[mrw]b %s->%s\n", self.clientTag, self.destinationId)
+        glog.V(2).Infof("[mrw]b %s->%s s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.SourceId)
 
         switch chosenIndex {
         case contextDoneIndex:
-            return errors.New("Context done")
+            return false, errors.New("Context done")
         case doneIndex:
-            return errors.New("Done")
+            return false, errors.New("Done")
         case transportUpdateIndex:
             // new routes, try again
         case timeoutIndex:
-            return errors.New("Timeout")
+            return false, nil
         default:
             // a route
             routeIndex := chosenIndex - routeStartIndex
             route := activeRoutes[routeIndex]
-            self.updateSendStats(route, 1, ByteCount(len(transportFrameBytes)))
-            return nil
+            self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
+            return true, nil
         }
     }
 }
@@ -661,17 +684,17 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         notify := self.transportUpdate.NotifyChannel()
         activeRoutes := self.GetActiveRoutes()
 
-        glog.V(2).Infof("[mrr] %s/%s<- routes = %d\n", self.clientTag, self.destinationId, len(activeRoutes))
+        glog.V(2).Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
         // non-blocking priority
         retry := false
         for _, route := range activeRoutes {
             select {
-            case transportFrameBytes, ok := <- route:
+            case transferFrameBytes, ok := <- route:
                 if ok {
-                    glog.V(2).Infof("[mrr]nb %s/%s<-\n", self.clientTag, self.destinationId)
-                    self.updateReceiveStats(route, 1, ByteCount(len(transportFrameBytes)))
-                    return transportFrameBytes, nil
+                    glog.V(2).Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+                    self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
+                    return transferFrameBytes, nil
                 } else {
                     // mark the route as closed, try again
                     self.setActive(route, false)
@@ -743,7 +766,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
         }
 
         chosenIndex, value, ok := reflect.Select(selectCases)
-        glog.V(2).Infof("[mrr]b %s/%s<-\n", self.clientTag, self.destinationId)
+        glog.V(2).Infof("[mrr]b %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 
         switch chosenIndex {
         case contextDoneIndex:
@@ -754,15 +777,15 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
             // new routes, try again
         case timeoutIndex:
             // FIXME return nil, nil? don't use errors for timeouts
-            return nil, errors.New("Timeout")
+            return nil, nil
         default:
             // a route
             routeIndex := chosenIndex - routeStartIndex
             route := activeRoutes[routeIndex]
             if ok {
-                transportFrameBytes := value.Bytes()
-                self.updateReceiveStats(route, 1, ByteCount(len(transportFrameBytes)))
-                return transportFrameBytes, nil
+                transferFrameBytes := value.Bytes()
+                self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
+                return transferFrameBytes, nil
             } else {
                 // mark the route as closed, try again
                 self.setActive(route, false)
@@ -821,15 +844,15 @@ func (self *sendGatewayTransport) RouteWeight(stats *RouteStats, remainingStats 
 	return 1.0 / float32(1 + len(remainingStats))
 }
 
-func (self *sendGatewayTransport) MatchesSend(destinationId Id) bool {
+func (self *sendGatewayTransport) MatchesSend(destination TransferPath) bool {
 	return true
 }
 
-func (self *sendGatewayTransport) MatchesReceive(destinationId Id) bool {
+func (self *sendGatewayTransport) MatchesReceive(destination TransferPath) bool {
 	return false
 }
 
-func (self *sendGatewayTransport) Downgrade(sourceId Id) {
+func (self *sendGatewayTransport) Downgrade(source TransferPath) {
 	// nothing to downgrade
 }
 
@@ -838,22 +861,22 @@ func (self *sendGatewayTransport) Downgrade(sourceId Id) {
 type sendClientTransport struct {
     transportId Id
     complement bool
-    destinationIds map[Id]bool
+    destinations map[TransferPath]bool
 }
 
-func NewSendClientTransport(destinationIds ...Id) *sendClientTransport {
-    return NewSendClientTransportWithComplement(false, destinationIds...)
+func NewSendClientTransport(destinations ...TransferPath) *sendClientTransport {
+    return NewSendClientTransportWithComplement(false, destinations...)
 }
 
-func NewSendClientTransportWithComplement(complement bool, destinationIds ...Id) *sendClientTransport {
-    destinationIds_ := map[Id]bool{}
-    for _, destinationId := range destinationIds {
-        destinationIds_[destinationId] = true
+func NewSendClientTransportWithComplement(complement bool, destinations ...TransferPath) *sendClientTransport {
+    destinations_ := map[TransferPath]bool{}
+    for _, destination := range destinations {
+        destinations_[destination] = true
     }
     return &sendClientTransport{
         transportId: NewId(),
         complement: complement,
-        destinationIds: destinationIds_,
+        destinations: destinations_,
     }
 }
 
@@ -874,15 +897,15 @@ func (self *sendClientTransport) RouteWeight(stats *RouteStats, remainingStats m
     return 1.0 / float32(1 + len(remainingStats))
 }
 
-func (self *sendClientTransport) MatchesSend(destinationId Id) bool {
-    return self.complement != self.destinationIds[destinationId]
+func (self *sendClientTransport) MatchesSend(destination TransferPath) bool {
+    return self.complement != self.destinations[destination]
 }
 
-func (self *sendClientTransport) MatchesReceive(destinationId Id) bool {
+func (self *sendClientTransport) MatchesReceive(destination TransferPath) bool {
     return false
 }
 
-func (self *sendClientTransport) Downgrade(sourceId Id) {
+func (self *sendClientTransport) Downgrade(source TransferPath) {
     // nothing to downgrade
 }
 
@@ -915,15 +938,15 @@ func (self *receiveGatewayTransport) RouteWeight(stats *RouteStats, remainingSta
 	return 1.0 / float32(1 + len(remainingStats))
 }
 
-func (self *receiveGatewayTransport) MatchesSend(destinationId Id) bool {
+func (self *receiveGatewayTransport) MatchesSend(destination TransferPath) bool {
 	return false
 }
 
-func (self *receiveGatewayTransport) MatchesReceive(destinationId Id) bool {
+func (self *receiveGatewayTransport) MatchesReceive(destination TransferPath) bool {
 	return true
 }
 
-func (self *receiveGatewayTransport) Downgrade(sourceId Id) {
+func (self *receiveGatewayTransport) Downgrade(source TransferPath) {
 	// nothing to downgrade
 }
 

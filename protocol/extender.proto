@@ -4,23 +4,8 @@ package bringyour;
 option go_package = "bringyour.com/protocol";
 
 
-
 message ExtenderHeader {
-// FIXME this should be a signature not the secret to avoid revealing the secret
-    string Secret = 1;
-    string DestinationHost = 2;
-    uint32 DestinationPort = 3;
-
-    // Timestamp
-    // Signature
-}
-
-
-message ExtenderUdpPack {
-    uint64 PacketNumber = 1;
-    bytes MessageBytes = 2;
-}
-
-message ExtenderUdpAck {
-    uint64 PacketNumber = 1;
+    string DestinationHost = 1;
+    uint32 DestinationPort = 2;
+    // FIXME add an authentication id, timestamp, and signature
 }

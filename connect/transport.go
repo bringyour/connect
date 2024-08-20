@@ -92,7 +92,17 @@ func NewPlatformTransportWithDefaults(
     routeManager *RouteManager,
 ) *PlatformTransport {
     settings := DefaultPlatformTransportSettings()
+    return NewPlatformTransportWithDefaultDialer(ctx, platformUrl, auth, routeManager, settings)
+}
 
+// FIXME replace this with ClientStrategy
+func NewPlatformTransportWithDefaultDialer(
+    ctx context.Context,
+    platformUrl string,
+    auth *ClientAuth,
+    routeManager *RouteManager,
+    settings *PlatformTransportSettings,
+) *PlatformTransport {
     dialer := &net.Dialer{
         Timeout: settings.HttpConnectTimeout,
     }
@@ -111,6 +121,7 @@ func NewPlatformTransport(
     ctx context.Context,
     platformUrl string,
     auth *ClientAuth,
+    // FIXME replace this with ClientStrrategy
     dialer *net.Dialer,
     settings *PlatformTransportSettings,
     routeManager *RouteManager,

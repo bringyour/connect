@@ -334,7 +334,7 @@ func NewExtenderTlsDialContext(
         // return serverConn, nil
 
         tlsServerConn := tls.Client(
-            serverConn
+            serverConn,
             tlsConfig,
         )
 
@@ -606,18 +606,18 @@ func (self *ExtenderServer) ListenAndServe() error {
     
     for _, port := range self.ports {
         fmt.Printf("listen quic %d\n", port)
-        certPemBytes, keyPemBytes, err := selfSign(
-            []string{"example.org"},
-            guessOrganizationName("example.org"),
-        )
-        if err != nil {
-            return err
-        }
-        // X509KeyPair
-        cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
-        if err != nil {
-            return err
-        }
+        // certPemBytes, keyPemBytes, err := selfSign(
+        //     []string{"example.org"},
+        //     guessOrganizationName("example.org"),
+        // )
+        // if err != nil {
+        //     return err
+        // }
+        // // X509KeyPair
+        // cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
+        // if err != nil {
+        //     return err
+        // }
 
         tlsConfig := &tls.Config{
             GetConfigForClient: func(clientHello *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -885,6 +885,12 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 
 	// read extender header
     headerBytes := make([]byte, 1024)
+
+
+    // TODO is header parsing doesn't work, forward the traffic to the SNI site and write the header bytes
+
+
+
 
     clientConn.SetReadDeadline(time.Now().Add(ReadTimeout))
     for i := 0; i < 4; {

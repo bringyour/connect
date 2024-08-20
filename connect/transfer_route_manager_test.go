@@ -36,9 +36,9 @@ func TestMultiRoute(t *testing.T) {
 	transportCount := 20
 	burstSize := 2048
 	
-	multiRouteWriter := routeManager.OpenMultiRouteWriter(clientId)
+	multiRouteWriter := routeManager.OpenMultiRouteWriter(DestinationId(clientId))
 
-	multiRouteReader := routeManager.OpenMultiRouteReader(clientId)
+	multiRouteReader := routeManager.OpenMultiRouteReader(DestinationId(clientId))
 
 
 	for i := 0; i < transportCount; i += 1 {
