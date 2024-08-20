@@ -473,6 +473,7 @@ type ApiMultiClientGeneratorSettings struct {
 
 type ApiMultiClientGenerator struct {
     specs []*ProviderSpec
+    excludeClientIds []Id
     apiUrl string
     byJwt string
     platformUrl string
@@ -487,6 +488,7 @@ type ApiMultiClientGenerator struct {
 
 func NewApiMultiClientGeneratorWithDefaults(
     specs []*ProviderSpec,
+    excludeClientIds []Id,
     apiUrl string,
     byJwt string,
     platformUrl string,
@@ -496,6 +498,7 @@ func NewApiMultiClientGeneratorWithDefaults(
 ) *ApiMultiClientGenerator {
     return NewApiMultiClientGenerator(
         specs,
+        excludeClientIds,
         apiUrl,
         byJwt,
         platformUrl,
@@ -509,6 +512,7 @@ func NewApiMultiClientGeneratorWithDefaults(
 
 func NewApiMultiClientGenerator(
     specs []*ProviderSpec,
+    excludeClientIds []Id,
     apiUrl string,
     byJwt string,
     platformUrl string,
@@ -523,6 +527,7 @@ func NewApiMultiClientGenerator(
 
     return &ApiMultiClientGenerator{
         specs: specs,
+        excludeClientIds: excludeClientIds,
         apiUrl: apiUrl,
         byJwt: byJwt,
         platformUrl: platformUrl,
@@ -536,12 +541,14 @@ func NewApiMultiClientGenerator(
 }
 
 func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
+    excludeClientIds := slices.Clone(self.excludeClientIds)
     excludeDestinationsIds := [][]Id{}
     for _, excludeDestination := range excludeDestinations {
         excludeDestinationsIds = append(excludeDestinationsIds, excludeDestination.Ids())
     }
     findProviders2 := &FindProviders2Args{
         Specs: self.specs,
+        ExcludeClientIds: excludeClientIds,
         ExcludeDestinations: excludeDestinationsIds,
         Count: count,
     }
