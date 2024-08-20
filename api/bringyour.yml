@@ -1758,11 +1758,11 @@ components:
                                 type: string
                             estimated_bytes_per_second:
                                 type: integer
-                        intermediary_ids:
-                            type: array
-                            items:
-                                description: udid
-                                type: string
+                            intermediary_ids:
+                                type: array
+                                items:
+                                    description: udid
+                                    type: string
 
         CreateProviderSpecArgs:
             type: object
