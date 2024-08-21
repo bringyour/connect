@@ -17,48 +17,68 @@ type ExtenderProfile struct {
 }
 
 
-
-
-
-// randomly enumerate n extender profiles
+// randomly enumerate up to n extender profiles
 func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) map[ExtenderProfile]bool {
-	
-	// FIXME
-		
-	// weighted choose service or mail
-	// choose random host
-	// choose random port
+	out := map[ExtenderProfile]bool{}
 
+	maxIterations := 32 * n
+	for i := 0; len(out) < n && i < maxIterations; i += 1 {
+		var hosts []string
+		var portExtenderTransportModes map[int][]ExtenderTransportMode
 
+		c := float32(len(ServicePorts)) / float32(len(ServicePorts) + len(MailPorts))
+		if mathrand.Float32() < c {
+			hosts = serviceHosts
+			portExtenderTransportModes = ServicePorts
+		} else {
+			hosts = mailHosts
+			portExtenderTransportModes = MailPorts
+		}
+
+		host := hosts[mathrand.Intn(len(hosts))]
+		ports := maps.Keys(portExtenderTransportModes)
+		port := ports[mathrand.Intn(len(ports))]
+		extenderTransportModes := portExtenderTransportModes[port]
+		extenderTransportMode := extenderTransportModes[mathrand.Intn(len(extenderTransportModes))]
+
+		profile := ExtenderProfile{
+			ExtenderTransportMode: extenderTransportMode,
+			ServerName: host,
+			Port: port,
+		}
+		if _, ok := visited[profile]; !ok {
+			out[profile] = true
+		}
+	}
+
+	return out
 }
 
 
-
-var ServicePorts = []int{
+var ServicePorts = map[int][]ExtenderTransportMode{
 	// https and secure dns
-	443,
+	443: []ExtenderTransportMode{ExtenderTransportModeTcp, ExtenderTransportModeQuic},
 	// dns
-	853,
+	853: []ExtenderTransportMode{ExtenderTransportModeTcp},
 	// ldap
-	636,
+	636: []ExtenderTransportMode{ExtenderTransportModeTcp},
 	// docker
-	2376,
+	2376: []ExtenderTransportMode{ExtenderTransportModeTcp, ExtenderTransportModeQuic},
 	// ldap
-	3269,
+	3269: []ExtenderTransportMode{ExtenderTransportModeTcp},
 	// ntp, nts
-	4460,
+	4460: []ExtenderTransportMode{ExtenderTransportModeTcp},
 }
 
-var MailPorts = []int{
+
+var MailPorts = map[int][]ExtenderTransportMode{
 	// imap
-	993,
+	993: []ExtenderTransportMode{ExtenderTransportModeTcp},
 	// pop
-	995,
+	995: []ExtenderTransportMode{ExtenderTransportModeTcp},
 	// smtp
-	465,
+	465: []ExtenderTransportMode{ExtenderTransportModeTcp},
 }
-
-
 
 
 var serviceHosts = []string{
@@ -664,7 +684,6 @@ var serviceHosts = []string{
 	"cyberark.com",
 	"beyondtrust.com",
 	"centrify.com",
-
 	"a.root-servers.net",
 	"b.root-servers.net",
 	"c.root-servers.net",
@@ -865,7 +884,6 @@ var serviceHosts = []string{
 	"ns1.za-servers.za",
 	"ns2.za-servers.za",
 	"ns3.za-servers.za",
-
 	"windowsupdate.microsoft.com",
 	"update.microsoft.com",
 	"download.windowsupdate.com",
@@ -1066,7 +1084,6 @@ var serviceHosts = []string{
 	"adservice.google.co.uk",
 	"adservice.google.com.au",
 	"adservice.google.co.in",
-
 	"www.uscis.gov",
 	"www.gov.uk",
 	"www.canada.ca",
@@ -1267,7 +1284,6 @@ var serviceHosts = []string{
 	"www.immigration.go.zm",
 	"www.mha.gov.gi",
 	"www.dgie.ci",
-
 	"api.salesforce.com",
 	"graph.microsoft.com",
 	"api.amazonwebservices.com",
@@ -1468,7 +1484,6 @@ var serviceHosts = []string{
 	"api.clockworksms.com",
 	"api.messagenet.com.au",
 	"api.smsdash.com",
-
 	"time.nist.gov",
 	"time.google.com",
 	"ntp.org",
@@ -3873,8 +3888,6 @@ var mailHosts = []string{
 	"planetmail.net",
 	"politician.com",
 	"presidency.com",
-
-
 	"imap.gmail.com",
 	"outlook.office365.com",
 	"imap.mail.yahoo.com",
@@ -4075,7 +4088,6 @@ var mailHosts = []string{
 	"imap.scarletmail.rutgers.edu",
 	"imap.uwaterloo.ca",
 	"imap.buffalo.edu",
-
 	"gmail.com",
 	"outlook.com",
 	"yahoo.com",
@@ -4276,7 +4288,6 @@ var mailHosts = []string{
 	"pochta.ru",
 	"land.ru",
 	"newmail.ru",
-
 	"smtp.gmail.com",
 	"smtp.mail.yahoo.com",
 	"smtp.live.com",
@@ -4477,6 +4488,5 @@ var mailHosts = []string{
 	"smtp.bluehost.com",
 	"smtp.site5.com",
 	"smtp.inmotionhosting.com",
-
 }
 

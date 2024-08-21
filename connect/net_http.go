@@ -89,8 +89,12 @@ type ClientStrategySettings struct {
 	// EnableUdp bool
 
 
+	LockInMinimumWeight float
+
+
 	// non-extender minimum weight
 	// all dialers are weighted 0 to 1
+	// success / (success + error)
 	MinimumWeight float
 
 
@@ -107,11 +111,19 @@ type ClientStrategySettings struct {
 
 	ExpandExtenderCount int
 	
-	ParallelEvaluations int
+	ParallelBlockSize int
 
+	// success / (success + error)
+	MinimumExtenderWeight float
+	MinimumExtenderWeightCount int
 
 	// drop dialers that have not had a successful connect in this timeout
 	ExtenderDropTimeout time.Duration
+
+
+	DefaultHttpTimeout time.Duration
+	DefaultHttpConnectTimeout time.Duration
+	DefaultHttpTlsTimeout time.Duration
 	
 	
 }
@@ -121,6 +133,14 @@ type ClientStrategySettings struct {
 type clientDialer struct {
 	Dialer
 	ExtenderProfile
+
+	dialer DialContextFunc
+	extenderProfile ExtenderProfile
+
+	successCount int
+	errorCount int
+	lastSuccessTime time.Time
+	lastErrorTime time.Time
 }
 
 
@@ -131,10 +151,20 @@ type ClientStrategy struct {
 	// handhake timeout
 	// connect timeout
 
+
+	settings *ClientStrategySettings
+
+
+	mutex sync.Mutex
+	// dialers are only updated inside the mutex
+	dialers []*clientDialer
+
+
 	// FIXME dialers
-	TlsDialContexts []DialContextFunc
+	// TlsDialContexts []DialContextFunc
 	// FIXME statistics
 	// FIXME stats mutex
+
 }
 
 // typical context list will be:
@@ -165,7 +195,7 @@ func NewClientStrategy() *ClientStrategy {
 // the normal strategy is not mixed with extenders
 
 // look up dns to find new extender ips
-func (self *ClientStrategy) expand() {
+func (self *ClientStrategy) expand() []*clientDialer {
 
 
 	// expand ips
@@ -176,24 +206,54 @@ func (self *ClientStrategy) expand() {
 	// drop strategies that have not had a successful connect in DropTimeout
 }
 
+// FIXME rankDialers
+
+func (self *ClientStrategy) rankedDialers() map[*clientDialer]float32 {
+
+}
 
 
-func (self *ClientStrategy) Get() {
+func (self *ClientStrategy) Get(ctx context.Context, request *net.Request) (*net.Response, error) {
 	// if first strategy has a net score below threshold, run all in parallel in blocks of N
 	// else sequentially try strategy while above threshold, then the remaining in parallel in blocks of N
 
 	// if run out, call expand(), try again
+
+
+	// find all dialers with weight >= LockInMinimumWeight
+	// weighted sort lock in and try those in order
+	// then, weighted sort the rest
+	// in blocks of ParallelBlockSize, run dialers in parallel
+	// when one finishes with success or error, try the next, until one succeeds
+	// if no more to try, call expand() and keep going with the parallel evaluation
+
+
+
 }
 
 
-func (self *ClientStrategy) Post() {
+func (self *ClientStrategy) Post(ctx context.Context, request *net.Request) (*net.Response, error) {
 	// try ordered strategies sequentially
 
 	// if run out, call expand(), try again
+
+
+	// weighted sort all dialers
+	// sequentially try one at a time with success or error, try the next until one succeeds
+	// if no more to try, call expand() and keep going
 }
 
 
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string) (*Websocket, error) {
+
+	// find all dialers with weight >= LockInMinimumWeight
+	// weighted sort lock in and try those in order
+	// then, weighted sort the rest
+	// in blocks of ParallelBlockSize, run dialers in parallel
+	// when one finishes with success or error, try the next, until one succeeds
+	// if no more to try, call expand() and keep going with the parallel evaluation
+
+	// success is websocket connects
 
 }
 
