@@ -62,6 +62,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
         // reconnects per source
         WindowSizeReconnectScale: 1.0,
         WriteRetryTimeout: 200 * time.Millisecond,
+        // FIXME increase for p2p only
         PingWriteTimeout: 1 * time.Second,
         PingTimeout: 5 * time.Second,
         // a lower ack timeout helps cycle through bad providers faster
