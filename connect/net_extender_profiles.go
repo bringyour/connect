@@ -1,4 +1,4 @@
-
+package connect
 
 
 type ExtenderTransportMode = string
@@ -23,6 +23,8 @@ type ExtenderProfile struct {
 // randomly enumerate n extender profiles
 func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) map[ExtenderProfile]bool {
 	
+	// FIXME
+		
 	// weighted choose service or mail
 	// choose random host
 	// choose random port
@@ -32,7 +34,7 @@ func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) map[Exte
 
 
 
-ServicePorts := []int{
+var ServicePorts = []int{
 	// https and secure dns
 	443,
 	// dns
@@ -47,7 +49,7 @@ ServicePorts := []int{
 	4460,
 }
 
-MailPorts := []int{
+var MailPorts = []int{
 	// imap
 	993,
 	// pop

@@ -5,7 +5,6 @@ package connect
 
 
 // censorship-resistant strategies for making https connections
-// there are a bunch of ways normal https connections are blocked around the world
 // this uses a random walk of best practices to obfuscate and double-encrypt https connections
 
 
