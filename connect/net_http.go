@@ -175,6 +175,10 @@ type ClientStrategy struct {
 // TODO udp port 53 as a default strategy
 
 
+func DefaultClientStrategy() *ClientStrategy {
+	
+}
+
 
 // extender udp 53 to platform extender
 func NewClientStrategy() *ClientStrategy {
@@ -244,7 +248,7 @@ func (self *ClientStrategy) Post(ctx context.Context, request *net.Request) (*ne
 }
 
 
-func (self *ClientStrategy) WsDialContext(ctx context.Context, url string) (*Websocket, error) {
+func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, error) {
 
 	// find all dialers with weight >= LockInMinimumWeight
 	// weighted sort lock in and try those in order

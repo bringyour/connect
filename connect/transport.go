@@ -33,7 +33,7 @@ const TransportBufferSize = 1
 
 type PlatformTransportSettings struct {
     HttpConnectTimeout time.Duration
-    WsHandshakeTimeout time.Duration
+    // WsHandshakeTimeout time.Duration
     AuthTimeout time.Duration
     ReconnectTimeout time.Duration
     PingTimeout time.Duration
@@ -46,7 +46,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
     pingTimeout := 5 * time.Second
     return &PlatformTransportSettings{
         HttpConnectTimeout: 2 * time.Second,
-        WsHandshakeTimeout: 2 * time.Second,
+        // WsHandshakeTimeout: 2 * time.Second,
         AuthTimeout: 2 * time.Second,
         ReconnectTimeout: 5 * time.Second,
         PingTimeout: pingTimeout,
@@ -72,59 +72,36 @@ func (self *ClientAuth) ClientId() (Id, error) {
 }
 
 
-
 type PlatformTransport struct {
     ctx context.Context
     cancel context.CancelFunc
 
     platformUrl string
     auth *ClientAuth
-    dialer *net.Dialer
-    settings *PlatformTransportSettings
-
+    clientStrategy *ClientStrategy
     routeManager *RouteManager
+
+    settings *PlatformTransportSettings
 }
 
 func NewPlatformTransportWithDefaults(
     ctx context.Context,
     platformUrl string,
     auth *ClientAuth,
+    clientStrategy *ClientStrategy,
     routeManager *RouteManager,
 ) *PlatformTransport {
     settings := DefaultPlatformTransportSettings()
-    return NewPlatformTransportWithDefaultDialer(ctx, platformUrl, auth, routeManager, settings)
-}
-
-// FIXME replace this with ClientStrategy
-func NewPlatformTransportWithDefaultDialer(
-    ctx context.Context,
-    platformUrl string,
-    auth *ClientAuth,
-    routeManager *RouteManager,
-    settings *PlatformTransportSettings,
-) *PlatformTransport {
-    dialer := &net.Dialer{
-        Timeout: settings.HttpConnectTimeout,
-    }
-
-    return NewPlatformTransport(
-        ctx,
-        platformUrl,
-        auth,
-        dialer,
-        settings,
-        routeManager,
-    )
+    return NewPlatformTransport(ctx, platformUrl, auth, clientStrategy, routeManager, settings)
 }
 
 func NewPlatformTransport(
     ctx context.Context,
     platformUrl string,
     auth *ClientAuth,
-    // FIXME replace this with ClientStrrategy
-    dialer *net.Dialer,
-    settings *PlatformTransportSettings,
+    clientStrategy *ClientStrategy,
     routeManager *RouteManager,
+    settings *PlatformTransportSettings,
 ) *PlatformTransport {
     cancelCtx, cancel := context.WithCancel(ctx)
     transport := &PlatformTransport{
@@ -132,9 +109,9 @@ func NewPlatformTransport(
         cancel: cancel,
         platformUrl: platformUrl,
         auth: auth,
-        dialer: dialer,
-        settings: settings,
+        clientStrategy: clientStrategy,
         routeManager: routeManager,
+        settings: settings,
     }
     go transport.run()
     return transport
@@ -156,14 +133,8 @@ func (self *PlatformTransport) run() {
     }
 
     for {
-        wsDialer := &websocket.Dialer{
-            // NetDialTLSContext: NewResilientTlsDialContext(self.dialer),
-            NetDialContext: NewExtenderDialContext(ExtenderConnectModeQuic, self.dialer, TestExtenderConfig()),
-            HandshakeTimeout: self.settings.WsHandshakeTimeout,
-        }
-
         ws, err := func()(*websocket.Conn, error) {
-            ws, _, err := wsDialer.DialContext(self.ctx, self.platformUrl, nil)
+            ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, nil)
             if err != nil {
                 return nil, err
             }

@@ -512,13 +512,14 @@ func NewApiMultiClientGenerator(
     apiUrl string,
     byJwt string,
     platformUrl string,
+    clientStrategy *ClientStrategy,
     deviceDescription string,
     deviceSpec string,
     appVersion string,
     clientSettingsGenerator func()(*ClientSettings),
     settings *ApiMultiClientGeneratorSettings,
 ) *ApiMultiClientGenerator {
-    api := NewBringYourApi(apiUrl)
+    api := NewBringYourApi(clientStrategy, apiUrl)
     api.SetByJwt(byJwt)
 
     return &ApiMultiClientGenerator{
@@ -526,6 +527,7 @@ func NewApiMultiClientGenerator(
         apiUrl: apiUrl,
         byJwt: byJwt,
         platformUrl: platformUrl,
+        clientStrategy: clientStrategy,
         deviceDescription: deviceDescription,
         deviceSpec: deviceSpec,
         appVersion: appVersion,
@@ -648,10 +650,11 @@ func (self *ApiMultiClientGenerator) NewClient(
             return
         }
     }
-    NewPlatformTransportWithDefaultDialer(
+    NewPlatformTransport(
         client.Ctx(),
         self.platformUrl,
         args.ClientAuth,
+        self.clientStrategy,
         client.RouteManager(),
         settings,
     )
