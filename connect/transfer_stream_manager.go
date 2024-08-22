@@ -2,56 +2,44 @@ package connect
 
 import (
 	"context"
-	"sync"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/golang/glog"
 
-	"bringyour.com/protocol"
+	"github.com/bringyour/connect/protocol"
 )
-
-
-
 
 func DefaultStreamManagerSettings() *StreamManagerSettings {
 	return &StreamManagerSettings{
 		StreamBufferSettings: DefaultStreamBufferSettings(),
-		WebRtcSettings: DefaultWebRtcSettings(),
+		WebRtcSettings:       DefaultWebRtcSettings(),
 	}
 }
 
-
 func DefaultStreamBufferSettings() *StreamBufferSettings {
 	return &StreamBufferSettings{
-		ReadTimeout: time.Duration(-1),
-		WriteTimeout: time.Duration(-1),
+		ReadTimeout:          time.Duration(-1),
+		WriteTimeout:         time.Duration(-1),
 		P2pTransportSettings: DefaultP2pTransportSettings(),
 	}
 }
 
-
-
-
 type StreamManagerSettings struct {
-
 	StreamBufferSettings *StreamBufferSettings
 
 	WebRtcSettings *WebRtcSettings
-
 }
-
-
-
 
 type StreamManager struct {
 	ctx context.Context
-	
+
 	client *Client
 
 	webRtcManager *WebRtcManager
-	
+
 	streamBuffer *StreamBuffer
 
 	streamManagerSettings *StreamManagerSettings
@@ -59,8 +47,8 @@ type StreamManager struct {
 
 func NewStreamManager(ctx context.Context, client *Client, streamManagerSettings *StreamManagerSettings) *StreamManager {
 	streamManager := &StreamManager{
-		ctx: ctx,
-		client: client,
+		ctx:                   ctx,
+		client:                client,
 		streamManagerSettings: streamManagerSettings,
 	}
 
@@ -115,7 +103,7 @@ func (self *StreamManager) handleControlFrame(frame *protocol.Frame) error {
 				}
 				destinationId = &destinationId_
 			}
-			
+
 			streamId, err := IdFromBytes(v.StreamId)
 			if err != nil {
 				return err
@@ -139,22 +127,19 @@ func (self *StreamManager) IsStreamOpen(streamId Id) bool {
 	return self.streamBuffer.IsStreamOpen(streamId)
 }
 
-
-
 type StreamBufferSettings struct {
-	ReadTimeout time.Duration
+	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
 	P2pTransportSettings *P2pTransportSettings
 }
 
-
 type streamSequenceId struct {
-	SourceId Id
-	HasSource bool
-	DestinationId Id
+	SourceId       Id
+	HasSource      bool
+	DestinationId  Id
 	HasDestination bool
-	StreamId Id
+	StreamId       Id
 }
 
 func newStreamSequenceId(sourceId *Id, destinationId *Id, streamId Id) streamSequenceId {
@@ -172,7 +157,6 @@ func newStreamSequenceId(sourceId *Id, destinationId *Id, streamId Id) streamSeq
 	return streamSequenceId
 }
 
-
 type StreamBuffer struct {
 	ctx context.Context
 
@@ -180,17 +164,17 @@ type StreamBuffer struct {
 
 	streamBufferSettings *StreamBufferSettings
 
-	mutex sync.Mutex
-	streamSequences map[streamSequenceId]*StreamSequence
+	mutex                     sync.Mutex
+	streamSequences           map[streamSequenceId]*StreamSequence
 	streamSequencesByStreamId map[Id]*StreamSequence
 }
 
 func NewStreamBuffer(ctx context.Context, streamManager *StreamManager, streamBufferSettings *StreamBufferSettings) *StreamBuffer {
 	return &StreamBuffer{
-		ctx: ctx,
-		streamManager: streamManager,
-		streamBufferSettings: streamBufferSettings,
-		streamSequences: map[streamSequenceId]*StreamSequence{},
+		ctx:                       ctx,
+		streamManager:             streamManager,
+		streamBufferSettings:      streamBufferSettings,
+		streamSequences:           map[streamSequenceId]*StreamSequence{},
 		streamSequencesByStreamId: map[Id]*StreamSequence{},
 	}
 }
@@ -243,7 +227,7 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 	var err error
 	for i := 0; i < 2; i += 1 {
 		select {
-		case <- self.ctx.Done():
+		case <-self.ctx.Done():
 			return false, errors.New("Done.")
 		default:
 		}
@@ -253,7 +237,7 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 		}
 		// sequence closed
 	}
-	return success, err	
+	return success, err
 }
 
 func (self *StreamBuffer) CloseStream(streamId Id) {
@@ -273,47 +257,45 @@ func (self *StreamBuffer) IsStreamOpen(streamId Id) bool {
 	return ok
 }
 
-
 type StreamSequence struct {
-	ctx context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	streamManager *StreamManager
 
 	streamBufferSettings *StreamBufferSettings
 
-	sourceId *Id
+	sourceId      *Id
 	destinationId *Id
-	streamId Id
+	streamId      Id
 
 	idleCondition *IdleCondition
 }
 
 func NewStreamSequence(
-		ctx context.Context,
-		streamManager *StreamManager,
-		sourceId *Id,
-		destinationId *Id,
-		streamId Id,
-		streamBufferSettings *StreamBufferSettings) *StreamSequence {
+	ctx context.Context,
+	streamManager *StreamManager,
+	sourceId *Id,
+	destinationId *Id,
+	streamId Id,
+	streamBufferSettings *StreamBufferSettings) *StreamSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	return &StreamSequence{
-		ctx: cancelCtx,
-		cancel: cancel,
-		streamManager: streamManager,
+		ctx:                  cancelCtx,
+		cancel:               cancel,
+		streamManager:        streamManager,
 		streamBufferSettings: streamBufferSettings,
-		sourceId: sourceId,
-		destinationId: destinationId,
-		streamId: streamId,
-		idleCondition: NewIdleCondition(),
+		sourceId:             sourceId,
+		destinationId:        destinationId,
+		streamId:             streamId,
+		idleCondition:        NewIdleCondition(),
 	}
 }
 
-
 func (self *StreamSequence) Open() (bool, error) {
 	select {
-	case <- self.ctx.Done():
+	case <-self.ctx.Done():
 		return false, errors.New("Done.")
 	default:
 	}
@@ -326,7 +308,7 @@ func (self *StreamSequence) Open() (bool, error) {
 	return true, nil
 }
 
-func (self *StreamSequence) Run() {	
+func (self *StreamSequence) Run() {
 	defer self.cancel()
 
 	if self.sourceId == nil || self.destinationId == nil {
@@ -420,7 +402,7 @@ func (self *StreamSequence) Run() {
 
 			for {
 				select {
-				case <- self.ctx.Done():
+				case <-self.ctx.Done():
 					return
 				}
 
@@ -430,7 +412,7 @@ func (self *StreamSequence) Run() {
 					// idle timeout
 					if self.idleCondition.Close(checkpointId) {
 						// close the sequence
-					    return
+						return
 					}
 					// else the sequence was opened again
 					continue
@@ -450,7 +432,7 @@ func (self *StreamSequence) Run() {
 	}
 
 	select {
-	case <- self.ctx.Done():
+	case <-self.ctx.Done():
 		return
 	}
 }
@@ -462,4 +444,3 @@ func (self *StreamSequence) Cancel() {
 func (self *StreamSequence) Close() {
 	self.cancel()
 }
-

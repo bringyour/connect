@@ -1,7 +1,7 @@
 syntax = "proto3";
 package bringyour;
 
-option go_package = "bringyour.com/protocol";
+option go_package = "github.com/bringyour/connect/protocol";
 
 
 message SimpleMessage {
