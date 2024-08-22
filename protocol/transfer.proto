@@ -3,7 +3,7 @@ package bringyour;
 
 import "frame.proto";
 
-option go_package = "bringyour.com/protocol";
+option go_package = "github.com/bringyour/connect/protocol";
 
 
 // changes 2024-08: 

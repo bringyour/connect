@@ -2,21 +2,20 @@ package connect
 
 import (
 	"context"
-    "testing"
-    "time"
-    mathrand "math/rand"
-    "fmt"
-    "crypto/hmac"
+	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
+	mathrand "math/rand"
 	"sync"
+	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
-    "github.com/go-playground/assert/v2"
+	"github.com/go-playground/assert/v2"
 
-    "bringyour.com/protocol"
+	"github.com/bringyour/connect/protocol"
 )
-
 
 func TestSendReceiveSenderReset(t *testing.T) {
 	// in this case two senders with the same client_id send after each other
@@ -26,7 +25,6 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	timeout := 30 * time.Second
 	// number of messages
 	n := 16 * 1024
-
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -57,11 +55,10 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	bReceiveTransport := NewReceiveGatewayTransport()
 
 	provideModes := map[protocol.ProvideMode]bool{
-        protocol.ProvideMode_Network: true,
-    }
+		protocol.ProvideMode_Network: true,
+	}
 
-
-    clientSettingsA := DefaultClientSettings()
+	clientSettingsA := DefaultClientSettings()
 	clientSettingsA.SendBufferSettings.SequenceBufferSize = 0
 	clientSettingsA.SendBufferSettings.AckBufferSize = 0
 	clientSettingsA.ReceiveBufferSettings.SequenceBufferSize = 0
@@ -79,10 +76,9 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	aRouteManager.UpdateTransport(aSendTransport, []Route{aSend})
 	aRouteManager.UpdateTransport(aReceiveTransport, []Route{aReceive})
 
-    aContractManager.SetProvideModes(provideModes)
+	aContractManager.SetProvideModes(provideModes)
 
-
-    clientSettingsB := DefaultClientSettings()
+	clientSettingsB := DefaultClientSettings()
 	clientSettingsB.SendBufferSettings.SequenceBufferSize = 0
 	clientSettingsB.SendBufferSettings.AckBufferSize = 0
 	clientSettingsB.ReceiveBufferSettings.SequenceBufferSize = 0
@@ -102,7 +98,6 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	bContractManager.SetProvideModes(provideModes)
 
-
 	acks := make(chan error)
 	receives := make(chan *protocol.SimpleMessage)
 
@@ -120,8 +115,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	var receiveCount int
 	var waitingReceiveCount int
 	var receiveMessages map[string]bool
-	
-	
+
 	aReceive <- requireTransferFrameBytes(
 		requireContractResultInitialPack(
 			protocol.ProvideMode_Network,
@@ -132,7 +126,6 @@ func TestSendReceiveSenderReset(t *testing.T) {
 		ControlId,
 		aClientId,
 	)
-	
 
 	go func() {
 		for i := 0; i < n; i += 1 {
@@ -153,23 +146,23 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	receiveMessages = map[string]bool{}
 	for receiveCount < n || ackCount < n {
 		if receiveCount < n && waitingReceiveCount < receiveCount {
-			fmt.Printf("[0] waiting for %d/%d\n", receiveCount + 1, n)
+			fmt.Printf("[0] waiting for %d/%d\n", receiveCount+1, n)
 			waitingReceiveCount = receiveCount
 		} else if ackCount < n && waitingAckCount < ackCount {
-			fmt.Printf("[0] waiting for ack %d/%d\n", ackCount + 1, n)
+			fmt.Printf("[0] waiting for ack %d/%d\n", ackCount+1, n)
 		}
 
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return
-		case message := <- receives:
+		case message := <-receives:
 			receiveMessages[message.Content] = true
 			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
 			receiveCount += 1
-		case err := <- acks:
+		case err := <-acks:
 			assert.Equal(t, err, nil)
 			ackCount += 1
-		case <- time.After(timeout):
+		case <-time.After(timeout):
 			t.Fatal("Timeout.")
 		}
 	}
@@ -182,11 +175,9 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	assert.Equal(t, n, len(receiveMessages))
 	assert.Equal(t, n, ackCount)
 
-
 	a.Cancel()
 	aRouteManager.RemoveTransport(aSendTransport)
 	aRouteManager.RemoveTransport(aReceiveTransport)
-
 
 	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
 	a2RouteManager := a2.RouteManager()
@@ -202,7 +193,6 @@ func TestSendReceiveSenderReset(t *testing.T) {
 
 	a2ContractManager.SetProvideModes(provideModes)
 
-
 	aReceive <- requireTransferFrameBytes(
 		requireContractResultInitialPack(
 			protocol.ProvideMode_Network,
@@ -213,7 +203,6 @@ func TestSendReceiveSenderReset(t *testing.T) {
 		ControlId,
 		aClientId,
 	)
-
 
 	go func() {
 		for i := 0; i < n; i += 1 {
@@ -234,23 +223,23 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	receiveMessages = map[string]bool{}
 	for receiveCount < n || ackCount < n {
 		if receiveCount < n && waitingReceiveCount < receiveCount {
-			fmt.Printf("[1] waiting for %d/%d\n", receiveCount + 1, n)
+			fmt.Printf("[1] waiting for %d/%d\n", receiveCount+1, n)
 			waitingReceiveCount = receiveCount
 		} else if ackCount < n && waitingAckCount < ackCount {
-			fmt.Printf("[1] waiting for ack %d/%d\n", ackCount + 1, n)
+			fmt.Printf("[1] waiting for ack %d/%d\n", ackCount+1, n)
 		}
 
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return
-		case message := <- receives:
+		case message := <-receives:
 			receiveMessages[message.Content] = true
 			assert.Equal(t, fmt.Sprintf("hi %d", receiveCount), message.Content)
 			receiveCount += 1
-		case err := <- acks:
+		case err := <-acks:
 			assert.Equal(t, err, nil)
 			ackCount += 1
-		case <- time.After(timeout):
+		case <-time.After(timeout):
 			t.Fatal("Timeout.")
 		}
 	}
@@ -270,7 +259,6 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	cancel()
 }
 
-
 func createContractResultInitialPack(
 	provideMode protocol.ProvideMode,
 	provideSecretKey []byte,
@@ -281,10 +269,10 @@ func createContractResultInitialPack(
 	contractByteCount := 8 * 1024 * 1024 * 1024
 
 	storedContract := &protocol.StoredContract{
-		ContractId: contractId.Bytes(),
+		ContractId:        contractId.Bytes(),
 		TransferByteCount: uint64(contractByteCount),
-		SourceId: sourceId.Bytes(),
-		DestinationId: destinationId.Bytes(),
+		SourceId:          sourceId.Bytes(),
+		DestinationId:     destinationId.Bytes(),
 	}
 	storedContractBytes, err := proto.Marshal(storedContract)
 	if err != nil {
@@ -296,8 +284,8 @@ func createContractResultInitialPack(
 	message := &protocol.CreateContractResult{
 		Contract: &protocol.Contract{
 			StoredContractBytes: storedContractBytes,
-			StoredContractHmac: storedContractHmac,
-			ProvideMode: provideMode,
+			StoredContractHmac:  storedContractHmac,
+			ProvideMode:         provideMode,
 		},
 	}
 
@@ -309,16 +297,15 @@ func createContractResultInitialPack(
 	messageId := NewId()
 	sequenceId := NewId()
 	pack := &protocol.Pack{
-		MessageId: messageId.Bytes(),
-		SequenceId: sequenceId.Bytes(),
+		MessageId:      messageId.Bytes(),
+		SequenceId:     sequenceId.Bytes(),
 		SequenceNumber: 0,
-		Head: true,
-		Frames: []*protocol.Frame{frame},
+		Head:           true,
+		Frames:         []*protocol.Frame{frame},
 	}
 
 	return ToFrame(pack)
 }
-
 
 func requireContractResultInitialPack(
 	provideMode protocol.ProvideMode,
@@ -333,11 +320,10 @@ func requireContractResultInitialPack(
 	return frame
 }
 
-
 func createTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId Id) ([]byte, error) {
 	transferFrame := &protocol.TransferFrame{
 		TransferPath: &protocol.TransferPath{
-			SourceId: sourceId.Bytes(),
+			SourceId:      sourceId.Bytes(),
 			DestinationId: destinationId.Bytes(),
 			// StreamId: DirectStreamId.Bytes(),
 		},
@@ -346,7 +332,6 @@ func createTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId 
 
 	return proto.Marshal(transferFrame)
 }
-
 
 func requireTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId Id) []byte {
 	b, err := createTransferFrameBytes(frame, sourceId, destinationId)
@@ -378,27 +363,25 @@ func requireTransferFrameBytes(frame *protocol.Frame, sourceId Id, destinationId
 	return b
 }
 
-
-
 type conditioner struct {
-	ctx context.Context
-	fixedDelay time.Duration
-	randomDelay time.Duration
-	hold bool
+	ctx             context.Context
+	fixedDelay      time.Duration
+	randomDelay     time.Duration
+	hold            bool
 	inversionWindow time.Duration
-	invertFraction float32
+	invertFraction  float32
 	lossProbability float32
-	monitor *Monitor
-	mutex sync.Mutex
+	monitor         *Monitor
+	mutex           sync.Mutex
 }
 
 func newConditioner(ctx context.Context, in chan []byte) (*conditioner, chan []byte) {
 	c := &conditioner{
-		ctx: ctx,
-		fixedDelay: 0,
-		randomDelay: 0,
+		ctx:             ctx,
+		fixedDelay:      0,
+		randomDelay:     0,
 		lossProbability: 0,
-		monitor: NewMonitor(),
+		monitor:         NewMonitor(),
 	}
 	out := make(chan []byte)
 	go c.run(in, out)
@@ -436,11 +419,11 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 
 	for {
 		select {
-		case <- self.ctx.Done():
+		case <-self.ctx.Done():
 			return
-		case <- self.monitor.NotifyChannel():
+		case <-self.monitor.NotifyChannel():
 			continue
-		case b, ok := <- in:
+		case b, ok := <-in:
 			if !ok {
 				return
 			}
@@ -453,33 +436,27 @@ func (self *conditioner) run(in chan []byte, out chan []byte) {
 
 			if delay <= 0 {
 				select {
-				case <- self.ctx.Done():
+				case <-self.ctx.Done():
 					return
 				case out <- b:
 				}
 			} else {
 				go func() {
 					select {
-					case <- self.ctx.Done():
+					case <-self.ctx.Done():
 						return
-					case <- time.After(delay):
+					case <-time.After(delay):
 					}
 
 					select {
-					case <- self.ctx.Done():
+					case <-self.ctx.Done():
 						return
 					case out <- b:
 					}
 				}()
-			}				
+			}
 		}
 	}
 }
 
-
-
 // FIXME TestAckTimeout
-
-
-
-

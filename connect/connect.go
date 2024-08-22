@@ -3,39 +3,37 @@ package connect
 import (
 	"errors"
 	// "log"
-	"fmt"
-	"encoding/hex"
 	"bytes"
+	"encoding/hex"
+	"fmt"
 	"strings"
 
 	"github.com/oklog/ulid/v2"
 
-	"bringyour.com/protocol"
+	"github.com/bringyour/connect/protocol"
 )
-
 
 const MaxMultihopLength = 8
 
-
 // id for message to/from the platform
 var ControlId = Id{}
-
 
 // TODO consider having directed transfer paths
 // TODO SourceTransferPath, DestinationTransferPath
 // TODO this would avoid the need to check the "masks"
 
 // there are three types of transfer paths:
-// 1. a full path, which can have either source id and destination id, or stream id
-// 2. a source, which can have either source id or stream id.
-//    This is called the "source mask".
-// 3. a destination, which can have either destination id or stream id.
-//    This is called the "destination mask".
+//  1. a full path, which can have either source id and destination id, or stream id
+//  2. a source, which can have either source id or stream id.
+//     This is called the "source mask".
+//  3. a destination, which can have either destination id or stream id.
+//     This is called the "destination mask".
+//
 // comparable
 type TransferPath struct {
-	SourceId Id
+	SourceId      Id
 	DestinationId Id
-	StreamId Id
+	StreamId      Id
 }
 
 func DestinationId(destinationId Id) TransferPath {
@@ -141,15 +139,15 @@ func (self TransferPath) SourceMask() TransferPath {
 func (self TransferPath) DestinationMask() TransferPath {
 	return TransferPath{
 		DestinationId: self.DestinationId,
-		StreamId: self.StreamId,
+		StreamId:      self.StreamId,
 	}
 }
 
 func (self TransferPath) Reverse() TransferPath {
 	return TransferPath{
-		SourceId: self.DestinationId,
+		SourceId:      self.DestinationId,
 		DestinationId: self.SourceId,
-		StreamId: self.StreamId,
+		StreamId:      self.StreamId,
 	}
 }
 
@@ -158,7 +156,7 @@ func (self TransferPath) AddSource(sourceId Id) TransferPath {
 		return self
 	}
 	return TransferPath{
-		SourceId: sourceId,
+		SourceId:      sourceId,
 		DestinationId: self.DestinationId,
 	}
 }
@@ -168,7 +166,7 @@ func (self TransferPath) AddDestination(destinationId Id) TransferPath {
 		return self
 	}
 	return TransferPath{
-		SourceId: self.SourceId,
+		SourceId:      self.SourceId,
 		DestinationId: destinationId,
 	}
 }
@@ -191,7 +189,6 @@ func (self TransferPath) ToProtobuf() *protocol.TransferPath {
 	}
 	return protoTransferPath
 }
-
 
 // comparable
 type Id [16]byte
@@ -216,7 +213,7 @@ func RequireIdFromBytes(idBytes []byte) Id {
 }
 
 func ParseId(idStr string) (Id, error) {
-	return parseUuid(idStr) 
+	return parseUuid(idStr)
 }
 
 func (self Id) Bytes() []byte {
@@ -226,7 +223,6 @@ func (self Id) Bytes() []byte {
 func (self Id) String() string {
 	return encodeUuid(self)
 }
-
 
 func (self *Id) MarshalJSON() ([]byte, error) {
 	var buf [16]byte
@@ -251,7 +247,6 @@ func (self *Id) UnmarshalJSON(src []byte) error {
 	return nil
 }
 
-
 func parseUuid(src string) (dst [16]byte, err error) {
 	switch len(src) {
 	case 36:
@@ -272,11 +267,9 @@ func parseUuid(src string) (dst [16]byte, err error) {
 	return dst, err
 }
 
-
 func encodeUuid(src [16]byte) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", src[0:4], src[4:6], src[6:8], src[8:10], src[10:16])
 }
-
 
 // comparable
 type MultiHopId struct {
@@ -284,7 +277,7 @@ type MultiHopId struct {
 	len int
 }
 
-func NewMultiHopId(ids ... Id) (MultiHopId, error) {
+func NewMultiHopId(ids ...Id) (MultiHopId, error) {
 	if MaxMultihopLength < len(ids) {
 		return MultiHopId{}, fmt.Errorf("Multihop length exceeds maximum: %d < %d", MaxMultihopLength, len(ids))
 	}
@@ -297,7 +290,7 @@ func NewMultiHopId(ids ... Id) (MultiHopId, error) {
 	return multiHopId, nil
 }
 
-func RequireMultiHopId(ids ... Id) MultiHopId {
+func RequireMultiHopId(ids ...Id) MultiHopId {
 	multiHopId, err := NewMultiHopId(ids...)
 	if err != nil {
 		panic(err)
@@ -344,7 +337,7 @@ func (self MultiHopId) Tail() Id {
 	if self.len == 0 {
 		panic(errors.New("Cannot call tail on empty multi hop id."))
 	}
-	return self.ids[self.len - 1]
+	return self.ids[self.len-1]
 }
 
 func (self MultiHopId) SplitTail() (MultiHopId, Id) {
@@ -357,10 +350,10 @@ func (self MultiHopId) SplitTail() (MultiHopId, Id) {
 	intermediaryIds := MultiHopId{
 		len: self.len - 1,
 	}
-	if 0 < self.len - 1 {
-		copy(intermediaryIds.ids[0:self.len - 1], self.ids[0:self.len - 1])
+	if 0 < self.len-1 {
+		copy(intermediaryIds.ids[0:self.len-1], self.ids[0:self.len-1])
 	}
-	return intermediaryIds, self.ids[self.len - 1]
+	return intermediaryIds, self.ids[self.len-1]
 }
 
 func (self MultiHopId) String() string {
@@ -371,8 +364,6 @@ func (self MultiHopId) String() string {
 	return fmt.Sprintf("[%s]", strings.Join(parts, ","))
 }
 
-
-
 // use this type when counting bytes
 type ByteCount = int64
 
@@ -381,9 +372,9 @@ func kib(c ByteCount) ByteCount {
 }
 
 func mib(c ByteCount) ByteCount {
-	return c * ByteCount(1024 * 1024)
+	return c * ByteCount(1024*1024)
 }
 
 func gib(c ByteCount) ByteCount {
-	return c * ByteCount(1024 * 1024 * 1024)
+	return c * ByteCount(1024*1024*1024)
 }
