@@ -7,5 +7,4 @@ option go_package = "bringyour.com/protocol";
 message ExtenderHeader {
     string DestinationHost = 1;
     uint32 DestinationPort = 2;
-    // FIXME add an authentication id, timestamp, and signature
 }

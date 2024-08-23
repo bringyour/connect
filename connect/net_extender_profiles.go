@@ -1,20 +1,8 @@
 package connect
 
 
-type ExtenderTransportMode = string
-const (
-	ExtenderTransportModeTcp ExtenderTransportMode = "tcp"
-	ExtenderTransportModeQuic ExtenderTransportMode = "quic"
-)
 
 
-// extenders will do a TLS connection using the given server name to the given port
-// comparable
-type ExtenderProfile struct {
-	ExtenderTransportMode ExtenderTransportMode
-	ServerName string
-	Port int
-}
 
 
 // randomly enumerate up to n extender profiles
@@ -24,30 +12,39 @@ func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) map[Exte
 	maxIterations := 32 * n
 	for i := 0; len(out) < n && i < maxIterations; i += 1 {
 		var hosts []string
-		var portExtenderTransportModes map[int][]ExtenderTransportMode
+		var portExtenderConnectModes map[int][]ExtenderConnectMode
 
-		c := float32(len(ServicePorts)) / float32(len(ServicePorts) + len(MailPorts))
-		if mathrand.Float32() < c {
-			hosts = serviceHosts
-			portExtenderTransportModes = ServicePorts
-		} else {
+		// each persona is equally weighted
+		// TODO UDP
+		switch mathrand.Intn(2) {
+		case 0:
 			hosts = mailHosts
-			portExtenderTransportModes = MailPorts
+			portExtenderConnectModes = MailPorts
+		default:
+			hosts = serviceHosts
+			portExtenderConnectModes = ServicePorts
 		}
 
-		host := hosts[mathrand.Intn(len(hosts))]
-		ports := maps.Keys(portExtenderTransportModes)
+		ports := maps.Keys(portExtenderConnectModes)
 		port := ports[mathrand.Intn(len(ports))]
-		extenderTransportModes := portExtenderTransportModes[port]
-		extenderTransportMode := extenderTransportModes[mathrand.Intn(len(extenderTransportModes))]
+		extenderConnectModes := portExtenderConnectModes[port]
+		extenderConnectMode := extenderConnectModes[mathrand.Intn(len(extenderConnectModes))]
 
-		profile := ExtenderProfile{
-			ExtenderTransportMode: extenderTransportMode,
-			ServerName: host,
-			Port: port,
+		var profile ExtenderProfile
+		switch ExtenderConnectMode {
+			// TODO Udp does not use a host
+			default:
+				host := hosts[mathrand.Intn(len(hosts))]
+				profile := ExtenderProfile{
+					ExtenderConnectMode: ExtenderConnectMode,
+					ServerName: host,
+					Port: port,
+				}
 		}
 		if _, ok := visited[profile]; !ok {
-			out[profile] = true
+			if _, ok := out[profile]; !ok {
+				out[profile] = true
+			}
 		}
 	}
 
@@ -55,29 +52,29 @@ func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) map[Exte
 }
 
 
-var ServicePorts = map[int][]ExtenderTransportMode{
+var ServicePorts = map[int][]ExtenderConnectMode{
 	// https and secure dns
-	443: []ExtenderTransportMode{ExtenderTransportModeTcp, ExtenderTransportModeQuic},
+	443: []ExtenderConnectMode{ExtenderConnectModeTcpTls, ExtenderConnectModeQuic},
 	// dns
-	853: []ExtenderTransportMode{ExtenderTransportModeTcp},
+	853: []ExtenderConnectMode{ExtenderConnectModeTcpTls},
 	// ldap
-	636: []ExtenderTransportMode{ExtenderTransportModeTcp},
+	636: []ExtenderConnectMode{ExtenderConnectModeTcpTls},
 	// docker
-	2376: []ExtenderTransportMode{ExtenderTransportModeTcp, ExtenderTransportModeQuic},
+	2376: []ExtenderConnectMode{ExtenderConnectModeTcpTls, ExtenderConnectModeQuic},
 	// ldap
-	3269: []ExtenderTransportMode{ExtenderTransportModeTcp},
+	3269: []ExtenderConnectMode{ExtenderConnectModeTcpTls},
 	// ntp, nts
-	4460: []ExtenderTransportMode{ExtenderTransportModeTcp},
+	4460: []ExtenderConnectMode{ExtenderConnectModeTcpTls},
 }
 
 
-var MailPorts = map[int][]ExtenderTransportMode{
+var MailPorts = map[int][]ExtenderConnectMode{
 	// imap
-	993: []ExtenderTransportMode{ExtenderTransportModeTcp},
+	993: []ExtenderConnectMode{ExtenderConnectModeTcpTls},
 	// pop
-	995: []ExtenderTransportMode{ExtenderTransportModeTcp},
+	995: []ExtenderConnectMode{ExtenderConnectModeTcpTls},
 	// smtp
-	465: []ExtenderTransportMode{ExtenderTransportModeTcp},
+	465: []ExtenderConnectMode{ExtenderConnectModeTcpTls},
 }
 
 
