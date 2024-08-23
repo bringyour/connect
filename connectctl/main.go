@@ -76,12 +76,12 @@ Usage:
         --user_auth=<user_auth>
         --code=<code>
     connectctl client-id [--api_url=<api_url>] --jwt=<jwt> 
-    connectctl send [--connect_url=<connect_url>] --jwt=<jwt>
+    connectctl send [--connect_url=<connect_url>] [--api_url=<api_url>] --jwt=<jwt>
         --destination_id=<destination_id>
         <message>
         [--message_count=<message_count>]
         [--instance_id=<instance_id>]
-    connectctl sink [--connect_url=<connect_url>] --jwt=<jwt>
+    connectctl sink [--connect_url=<connect_url>] [--api_url=<api_url>] --jwt=<jwt>
         [--message_count=<message_count>]
         [--instance_id=<instance_id>]
     
@@ -485,6 +485,10 @@ func send(opts docopt.Opts) {
     if err != nil {
         connectUrl = DefaultConnectUrl
     }
+    apiUrl, err := opts.String("--api_url")
+    if err != nil {
+        apiUrl = DefaultApiUrl
+    }
 
     destinationIdStr, _ := opts.String("--destination_id")
     destinationId, err := connect.ParseId(destinationIdStr)
@@ -524,9 +528,14 @@ func send(opts docopt.Opts) {
     cancelCtx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
+    api := connect.NewBringYourApi(apiUrl)
+    api.SetByJwt(jwt)
+    oobControl := connect.NewApiOutOfBandControlWithApi(api)
+
     client := connect.NewClientWithDefaults(
         cancelCtx,
         clientId,
+        oobControl,
     )
     defer client.Close()
 
@@ -578,7 +587,7 @@ func send(opts docopt.Opts) {
 
             client.Send(
                 connect.RequireToFrame(message),
-                destinationId,
+                connect.DestinationId(destinationId),
                 func(err error) {
                     acks <- err
                 },
@@ -633,6 +642,10 @@ func sink(opts docopt.Opts) {
     if err != nil {
         connectUrl = DefaultConnectUrl
     }
+    apiUrl, err := opts.String("--api_url")
+    if err != nil {
+        apiUrl = DefaultApiUrl
+    }
 
     messageCount, err := opts.Int("--message_count")
     if err != nil {
@@ -659,9 +672,14 @@ func sink(opts docopt.Opts) {
     cancelCtx, cancel := context.WithCancel(context.Background())
     defer cancel()
 
+    api := connect.NewBringYourApi(apiUrl)
+    api.SetByJwt(jwt)
+    oobControl := connect.NewApiOutOfBandControlWithApi(api)
+
     client := connect.NewClientWithDefaults(
         cancelCtx,
         clientId,
+        oobControl,
     )
     defer client.Close()
 
@@ -697,16 +715,16 @@ func sink(opts docopt.Opts) {
     }
 
     type Receive struct {
-        sourceId connect.Id
+        source connect.TransferPath
         frames []*protocol.Frame
         provideMode protocol.ProvideMode
     }
 
     receives := make(chan *Receive)
     
-    client.AddReceiveCallback(func(sourceId connect.Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+    client.AddReceiveCallback(func(source connect.TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
         receives <- &Receive{
-            sourceId: sourceId,
+            source: source,
             frames: frames,
             provideMode: provideMode,
         }
@@ -717,7 +735,7 @@ func sink(opts docopt.Opts) {
     for i := 0; messageCount < 0 || i < messageCount; i += 1 {
         select {
         case receive := <- receives:
-            fmt.Printf("[%s %s] %s\n", receive.sourceId, receive.provideMode, receive.frames)
+            fmt.Printf("[%s %s] %s\n", receive.source, receive.provideMode, receive.frames)
         }
     }
 }
