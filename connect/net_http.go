@@ -73,12 +73,14 @@ type ClientStrategySettings struct {
 
 
 
-	TlsConfig *tls.Config
+	
 
 	RequestTimeout time.Duration
 	ConnectTimeout time.Duration
 	TlsTimeout time.Duration
 	HandshakeTimeout time.Duration
+
+	TlsConfig *tls.Config
 	
 
 	DohSettings *DohSettings
@@ -116,10 +118,9 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 	resolvedExtenderIps := []netip.Addr{}
 
 	if settings.EnableNormal {
-		// FIXME normal dial context
 		tlsDialer := &tls.Dialer{
 			NetDialer: &net.Dialer{
-				// FIXME
+				Timeout: self.settings.ConnectTimeout,
 			},
 			Config: settings.tlsConfig,
 		}
@@ -131,7 +132,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 	}
 	if settings.EnableResilient {
 		netDialer := &net.Dialer{
-			// FIXME
+			Timeout: self.settings.ConnectTimeout,
 		}
 
 		// fragment+reorder
@@ -726,9 +727,7 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 
 	for _, extenderConfig := range extenderConfigs {
 		dialer := &net.Dialer{
-			// FIXME
-	        Timeout:   30 * time.Second,
-	        KeepAlive: 30 * time.Second,
+	        Timeout: self.settings.ConnectTimeout,
 	    }
 	    dialTlsContext: NewExtenderDialTlsContext(
 		    dialer,
@@ -760,7 +759,6 @@ type clientDialer struct {
 	extenderIp netip.Addr
 	extenderSecret string
 
-
 	// these are locked under the client stategy mutex
 	successCount int
 	errorCount int
@@ -768,11 +766,13 @@ type clientDialer struct {
 	lastErrorTime time.Time
 }
 
-func (self *clientDialer) IsLastSuccess() bool {
-	dialer.lastSuccessTime < dialer.lastErrorTime
+func (self *clientDialer) IsExtender() bool {
+	return self.extenderProfile() != ExtenderProfile{}
 }
 
-
+func (self *clientDialer) IsLastSuccess() bool {
+	return dialer.lastSuccessTime < dialer.lastErrorTime
+}
 
 
 

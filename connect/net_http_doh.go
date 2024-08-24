@@ -75,11 +75,13 @@ dohUrlsIpv6 := []string{
 
 
 type DohSettings {
-	TlsConfig *tls.Config
+	
 
-	HttpTimeout time.Duration
-	HttpConnectTimeout time.Duration
-	HttpTlsTimeout time.Duration
+	RequestTimeout time.Duration
+	ConnectTimeout time.Duration
+	TlsTimeout time.Duration
+
+	TlsConfig *tls.Config
 	
 }
 
@@ -95,13 +97,13 @@ func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType s
 	
 	
 	httpClient = &http.Client{
-		Timeout: settings.HttpTimeout,
+		Timeout: settings.RequestTimeout,
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{
-				Timeout:  settings.HttpConnectTimeout,
+				Timeout:  settings.ConnectTimeout,
 			}).DialContext,
-			TLSHandshakeTimeout: settings.HttpTlsTimeout,
-			TLSClientConfig: tlsConfig,
+			TLSHandshakeTimeout: settings.TlsTimeout,
+			TLSClientConfig: settings.TlsConfig,
 		},
 	}
 
