@@ -11,10 +11,6 @@ import (
 )
 
 
-// based on https://github.com/likexian/doh
-
-
-
 type DohQuestion struct {
 	Name string `json:"name"`
 	Type int    `json:"type"`
@@ -36,7 +32,6 @@ type DohResponse struct {
 	CD       bool       `json:"CD"`
 	Question []DohQuestion `json:"Question"`
 	Answer   []DohAnswer   `json:"Answer"`
-	Provider string     `json:"provider"`
 }
 
 
@@ -89,9 +84,8 @@ type DohSettings {
 }
 
 
-// runs all queries in parallel
-// domain -> doh -> ips
-func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType string, settings *DohSettings) (map[string]map[string][]net.IP, error) {
+func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType string, settings *DohSettings) []netip.Addr {
+	// run all the queries in parallel to all servers
 
 	switch recordType {
 	case "A", "AAAA":
@@ -99,10 +93,7 @@ func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType s
 		return nil, fmt.Errorf("Unsupported record type: %s", recordType)
 	}
 	
-
-	// FIXME
-	// run all the queries in parallel to all servers
-
+	
 	httpClient = &http.Client{
 		Timeout: settings.HttpTimeout,
 		Transport: &http.Transport{
@@ -115,57 +106,62 @@ func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType s
 	}
 
 
-	query := func(dohUrl string, domain string) {
+	query := func(dohUrl string, domain string)([]netip.Addr) {
 
 		name, err := Punycode(domain)
 		if err != nil {
 			return nil, err
 		}
 
-		param := url.Values{}
-		param.Add("name", name)
-		param.Add("type", strings.TrimSpace(string(t)))
+		params := url.Values{}
+		params.Add("name", name)
+		params.Add("type", recordType)
 
-		dnsURL := fmt.Sprintf("%s?%s", dohUrl, param.Encode())
+		url := fmt.Sprintf("%s?%s", dohUrl, params.Encode())
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, dnsURL, nil)
+		request, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("Accept", "application/dns-json")
+		request.Header.Set("Accept", "application/dns-json")
 		// note, we do not set the User-Agent for DoH requests
 		// see https://bugzilla.mozilla.org/show_bug.cgi?id=1543201#c4
 
-		rsp, err := httpClient.Do(req)
+		response, err := httpClient.Do(request)
 		if err != nil {
-			return nil, err
+			return nil
 		}
-
-		defer rsp.Body.Close()
-		if rsp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("bad status code: %d", rsp.StatusCode)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return nil
 		}
 
 		data, err := io.ReadAll(rsp.Body)
 		if err != nil {
-			return nil, err
+			return nil
 		}
 
-		rr := &dns.Response{
-			Provider: c.String(),
-		}
-
-		err = json.Unmarshal(data, rr)
+		dohResponse := &DohResponse{}
+		err = json.Unmarshal(data, dohResponse)
 		if err != nil {
-			return nil, err
+			return nil
 		}
 
-		if rr.Status != 0 {
-			return rr, fmt.Errorf("bad response code: %d", rr.Status)
+
+
+		if dohResponse.Status != 0 {
+			return nil
 		}
 
-		return rr, nil
+		ips := []netip.Addr{}
+		for _, answer := range dohResponse.Answer {
+			if ip, err := netip.ParseAddr(answer.Data); err == nil {
+				ips = append(ips, ip)
+			}
+		}
+
+		return ips
 	}
 
 
@@ -180,15 +176,34 @@ func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType s
 	}
 
 
+	out := make(chan []netip.Addr)
+
 	for _, dohUrl := range dohUrls {
 		for _, domain := range domains {
-			// FIXME collecting results
-			go query(dohUrl, domain)		
+			go func() {
+				ips := query(dohUrl, domain)
+				select {
+				case out <- ips:
+				case <- ctx.Done():
+				}
+			}()
 		}
 	}
 
+	allIps := map[netip.Addr]bool{}
+	for _, dohUrl := range dohUrls {
+		for _, domain := range domains {
+			select {
+			case ips := <- out:
+				for _, ip := range ips {
+					allIps[ip] = true
+				}
+			case <- ctx.Done():
+			}
+		}
+	}
 
-
+	return maps.Keys(allIps)
 }
 
 

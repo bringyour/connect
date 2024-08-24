@@ -48,15 +48,17 @@ import (
 
 
 // (ctx, network, address)
-type DialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
+// type DialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
 
 
 
 // // set this as the `DialTLSContext` or equivalent
 // returns a tls connection
-func NewResilientTlsDialContext(
+func NewResilientDialTlsContext(
     dialer *net.Dialer,
-) DialContextFunc {
+    fragment bool,
+    reorder bool,
+) DialTlsContextFunction {
     return func(
         ctx context.Context,
         network string,
@@ -78,13 +80,13 @@ func NewResilientTlsDialContext(
             return nil, err
         }
 
-        rconn := NewResilientTlsConn(conn)
+        rconn := NewResilientTlsConn(conn, fragment, reorder)
         serverConn := tls.Client(rconn, &tls.Config{
             ServerName: host,
             MinVersion: tls.VersionTLS12,
         })
 
-        err = serverConn.HandshakeContext(ctx)
+        err = serverConn.HandshakeContext(ctx, fragment, reorder)
         if err != nil {
             return nil, err
         }
@@ -105,15 +107,19 @@ func NewResilientTlsDialContext(
 
 type ResilientTlsConn struct {
     conn net.Conn
+    fragment bool
+    reorder bool
     buffer []byte
     enabled bool
 }
 
 // must be created before the tls connection starts
-func NewResilientTlsConn(conn net.Conn) *ResilientTlsConn {
+func NewResilientTlsConn(conn net.Conn, fragment bool, reorder bool) *ResilientTlsConn {
     return &ResilientTlsConn{
         conn: conn,
-        buffer: nil,
+        fragment: fragment,
+        reorder: reorder,
+        buffer: []byte{},
         enabled: true,
     }
 }
@@ -138,39 +144,95 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
                         // for each fragment, alternate the ttl of the connection to force retransmits and out-of-order arrival
 
                         if tcpConn, ok := self.conn.(*net.TCPConn); ok {
-                            f, _ := tcpConn.File()
-                            fd := int(f.Fd())
 
-                            nativeTtl, _ := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL)
+                            if self.fragment && self.reorder {
+                                tcpConn.SetNoDelay(true)
 
-                            fmt.Printf("native ttl=%d, server name start=%d, end=%d\n", nativeTtl, meta.ServerNameValueStart, meta.ServerNameValueEnd)
+                                f, _ := tcpConn.File()
+                                fd := int(f.Fd())
 
-                            syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, 0)
-                            if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:meta.ServerNameValueStart])); err != nil {
-                                return 0, err
-                            }
-                            fmt.Printf("frag ttl=0\n")
+                                nativeTtl, _ := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL)
 
-                            for i := meta.ServerNameValueStart; i < meta.ServerNameValueEnd; i += 1 {
-                                var ttl int
-                                if 0 == mathrand.Intn(2) {
-                                    ttl = 0
-                                } else {
-                                    ttl =  nativeTtl
-                                }
-                                syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, ttl)
-                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:i+1])); err != nil {
+                                fmt.Printf("native ttl=%d, server name start=%d, end=%d\n", nativeTtl, meta.ServerNameValueStart, meta.ServerNameValueEnd)
+
+                                syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, 0)
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:meta.ServerNameValueStart])); err != nil {
                                     return 0, err
                                 }
-                                fmt.Printf("frag ttl=%d\n", ttl)
-                            }
+                                fmt.Printf("frag ttl=0\n")
 
-                            syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, nativeTtl)
-                            
-                            if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
-                                return 0, err
+                                for i := meta.ServerNameValueStart; i < meta.ServerNameValueEnd; i += 1 {
+                                    var ttl int
+                                    if 0 == mathrand.Intn(2) {
+                                        ttl = 0
+                                    } else {
+                                        ttl =  nativeTtl
+                                    }
+                                    syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, ttl)
+                                    if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:i+1])); err != nil {
+                                        return 0, err
+                                    }
+                                    fmt.Printf("frag ttl=%d\n", ttl)
+                                }
+
+                                syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, nativeTtl)
+                                
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
+                                    return 0, err
+                                }
+                                fmt.Printf("frag ttl=%d\n", nativeTtl)
+                            } else if self.fragment {
+
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:meta.ServerNameValueStart])); err != nil {
+                                    return 0, err
+                                }
+
+                                for i := meta.ServerNameValueStart; i < meta.ServerNameValueEnd; i += 1 {
+                                    if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:i+1])); err != nil {
+                                        return 0, err
+                                    }
+                                }
+                                
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
+                                    return 0, err
+                                }
+
+                            } else if self.reorder {
+
+                                tlsBytes := tlsHeader.reconstruct(handshakeBytes)
+
+                                tcpConn.SetNoDelay(true)
+
+                                f, _ := tcpConn.File()
+                                fd := int(f.Fd())
+
+                                nativeTtl, _ := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL)
+
+                                blockSize := 256
+                                for i := 0; i * blockSize < len(tlsBytes); i += 1 {
+                                    var ttl int
+                                    if 0 == i % 2 {
+                                        ttl = 0
+                                    } else {
+                                        ttl =  nativeTtl
+                                    }
+                                    syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, ttl)
+                                    b := tlsBytes[i * blockSize:min((i + 1) * blockSize, len(tlsBytes))]
+                                    if _, err := tcpConn.Write(b); err != nil {
+                                        return 0, err
+                                    }
+                                }
+
+                                syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, nativeTtl)
+
+
+
+
+                            } else {
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes)); err != nil {
+                                    return 0, err
+                                }
                             }
-                            fmt.Printf("frag ttl=%d\n", nativeTtl)
 
 
 
@@ -179,19 +241,24 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
                         } else {
 
-                            
-                            if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:meta.ServerNameValueStart])); err != nil {
-                                return 0, err
-                            }
-
-                            for i := meta.ServerNameValueStart; i < meta.ServerNameValueEnd; i += 1 {
-                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:i+1])); err != nil {
+                            if self.fragment {
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:meta.ServerNameValueStart])); err != nil {
                                     return 0, err
                                 }
-                            }
-                            
-                            if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
-                                return 0, err
+
+                                for i := meta.ServerNameValueStart; i < meta.ServerNameValueEnd; i += 1 {
+                                    if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:i+1])); err != nil {
+                                        return 0, err
+                                    }
+                                }
+                                
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
+                                    return 0, err
+                                }
+                            } else {
+                                if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes)); err != nil {
+                                    return 0, err
+                                }
                             }
 
                         }
