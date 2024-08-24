@@ -552,6 +552,7 @@ func (self *ClientStrategy) collapseExtenderDialers() {
 func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDialer, expandedExtenderIps []netip.Addr) {
 
 	// - distribute new ips evenly over new profiles
+	// - distribute existing ids as weighted where needed
 	// - `extenderIpSecrets` overrides new ips
 
 	mutex.Lock()
@@ -660,56 +661,56 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 			}
 			extenderConfigs = append(extenderConfigs, extenderConfig)
 		}
-		// drop the remaining profiles
 
-		// if n < len(extenderProfiles) {
-		// 	weights := map[netip.Addr]float32{}
+		// existing ips distributed as weighted
+		if n < len(extenderProfiles) {
+			weights := map[netip.Addr]float32{}
 
-		// 	netWeight := float32(0)
-		// 	for dialer, _ := range self.dialers {
-		// 		if dialer.IsExtender() {
-		// 			c := dialer.successCount + dialer.errorCount
-		// 			w := float32(0)
-		// 			if 0 < c {
-		// 				 w = float32(dialer.successCount) / float32(c)
-		// 			}
-		// 			w = max(w, self.settings.ExtenderMinimumWeight)
-		// 			weights[dialer.extenderIp] = w
-		// 			netWeight += w
-		// 		}
-		// 	}
-		// 	for _, ip := range unusedExtenderIps {
-		// 		w := self.settings.ExtenderMinimumWeight
-		// 		weights[ip] = w
-		// 		netWeight += w
-		// 	}
+			netWeight := float32(0)
+			for dialer, _ := range self.dialers {
+				if dialer.IsExtender() {
+					c := dialer.successCount + dialer.errorCount
+					w := float32(0)
+					if 0 < c {
+						 w = float32(dialer.successCount) / float32(c)
+					}
+					w = max(w, self.settings.ExtenderMinimumWeight)
+					weights[dialer.extenderIp] = w
+					netWeight += w
+				}
+			}
+			for _, ip := range unusedExtenderIps {
+				w := self.settings.ExtenderMinimumWeight
+				weights[ip] = w
+				netWeight += w
+			}
 
-		// 	if 0 < len(weights) {
-		// 		ips := maps.Keys(weights)
-		// 		mathrand.Shuffle(len(ips), func(i int, j int) {
-		// 			ips[i], ips[j] = ips[j], ips[i]
-		// 		})
+			if 0 < len(weights) {
+				ips := maps.Keys(weights)
+				mathrand.Shuffle(len(ips), func(i int, j int) {
+					ips[i], ips[j] = ips[j], ips[i]
+				})
 
-		// 		for _, extenderProfile := range extenderProfiles[n:len(extenderProfiles)] {
-		// 			v := mathrand.Float32(netWeight)
-		// 			i := 0
-		// 			for i < len(ips); i += 1 {
-		// 				v -= weights[ips[i]]
-		// 				if v <= 0 {
-		// 					break
-		// 				}
-		// 			}
-		// 			if i == len(ips) {
-		// 				i = len(ips) - 1
-		// 			}
-		// 			extenderConfig := &ExtenderConfig{
-		// 				ExtenderProfile: extenderProfile,
-		// 				Ip: ips[i],
-		// 			}
-		// 			extenderConfigs = append(extenderConfigs, extenderConfig)
-		// 		}	
-		// 	}
-		// }
+				for _, extenderProfile := range extenderProfiles[n:len(extenderProfiles)] {
+					v := mathrand.Float32(netWeight)
+					i := 0
+					for i < len(ips); i += 1 {
+						v -= weights[ips[i]]
+						if v <= 0 {
+							break
+						}
+					}
+					if i == len(ips) {
+						i = len(ips) - 1
+					}
+					extenderConfig := &ExtenderConfig{
+						ExtenderProfile: extenderProfile,
+						Ip: ips[i],
+					}
+					extenderConfigs = append(extenderConfigs, extenderConfig)
+				}	
+			}
+		}
 	} else {
 		ips := maps.Keys(self.extenderIpSecrets)
 		for _, extenderProfile := range extenderProfiles {
