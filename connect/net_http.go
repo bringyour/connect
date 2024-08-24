@@ -132,9 +132,10 @@ type ClientStrategySettings struct {
 
 	TlsConfig *tls.Config
 
-	HttpTimeout time.Duration
-	HttpConnectTimeout time.Duration
-	HttpTlsTimeout time.Duration
+	RequestTimeout time.Duration
+	ConnectTimeout time.Duration
+	TlsTimeout time.Duration
+	HandshakeTimeout time.Duration
 	
 
 	DohSettings *DohSettings
@@ -254,129 +255,231 @@ func (self *ClientStrategy) CustomExtenders() map[net.IP]string {
 
 // FIXME rankDialers
 
-func (self *ClientStrategy) getDialerWeights() map[*clientDialer]float32 {
+func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
+	// FIXME
+}
 
+func (self *ClientStrategy) httpClient(dialerTlsContext DialTlsContextFunction) *http.Client {
+	// see https://medium.com/@nate510/don-t-use-go-s-default-http-client-4804cb19f779
+	dialer := &net.Dialer{
+    	Timeout: defaultHttpConnectTimeout,
+  	}
+	transport := &http.Transport{
+	  	// DialTLSContext: NewResilientTlsDialContext(dialer),
+	  	// DialContext: NewExtenderDialContext(ExtenderConnectModeQuic, dialer, TestExtenderConfig()),
+	  	DialTLSContext: dialerTlsContext,
+	  	TLSHandshakeTimeout: defaultHttpTlsTimeout,
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout: defaultHttpTimeout,
+	}
+}
+
+func (self *ClientStrategy) wsDialer(dialerTlsContext DialTlsContextFunction) *websocket.Dialer {
+	return &websocket.Dialer{
+		NetDialTLSContext: dialerTlsContext,
+		HandshakeTimeout: self.settings.WsHandshakeTimeout,
+	}
+}
+
+// FIXME verify error for connect timeout versus context close
+func (self *ClientStrategy) updateDialerHttp(dialer *clientDialer, response *net.Response, err error) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	
+	if err == nil {
+		dialer.successCount += 1
+		dialer.lastSuccessTime = time.Now()
+	} else if urlErr, ok := err.(*url.Error); ok {
+		// timeouts (FIXME meaning context close) are neither failure or success
+		if !urlErr.Err.Timeout() {
+			dialer.errorCount += 1
+			dialer.lastErrorTime = time.Now()
+		}
+	} else {
+		dialer.errorCount += 1
+		dialer.lastErrorTime = time.Now()
+	}
+}
+
+// FIXME verify error for connect timeout versus context close
+func (self *ClientStrategy) updateDialerWs(dialer *clientDialer, wsConn *websocket.Conn, response *net.Response, err error) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	
+	if err == nil {
+		dialer.successCount += 1
+		dialer.lastSuccessTime = time.Now()
+	} else if urlErr, ok := err.(*url.Error); ok {
+		// timeouts (FIXME meaning context close) are neither failure or success
+		if !urlErr.Err.Timeout() {
+			dialer.errorCount += 1
+			dialer.lastErrorTime = time.Now()
+		}
+	} else {
+		dialer.errorCount += 1
+		dialer.lastErrorTime = time.Now()
+	}
 }
 
 
-func (self *ClientStrategy) Get(ctx context.Context, request *net.Request) (*net.Response, error) {
-	// if first strategy has a net score below threshold, run all in parallel in blocks of N
-	// else sequentially try strategy while above threshold, then the remaining in parallel in blocks of N
+type parallelResult struct {
+	response *net.Response
+	wsConn *websocket.Conn
+	err error
+}
 
-	// if run out, call expand(), try again
-
-
-	// find all dialers with weight >= LockInMinimumWeight
-	// weighted sort lock in and try those in order
-	// then, weighted sort the rest
-	// in blocks of ParallelBlockSize, run dialers in parallel
-	// when one finishes with success or error, try the next, until one succeeds
-	// if no more to try, call expand() and keep going with the parallel evaluation
-	// drop strategies that have not had a successful connect in DropTimeout
-
-
-
-	handleCtx, cancel := context.WithTimeout(ctx, self.settings.DefaultHttpTimeout)
-	defer cancel()
-
-
-
-
-	self.collapseExtenderDialers()
-
-
-	dialerWeights := self.getDialerWeights()
-	// descending
-	orderedDialers := Sort(maps.Keys(dialerWeights))
-
-
-	parallelDialers := []*clientDialer{}
-
-	for i := 0; i < len(orderedDialers) && orderedDialers[i].IsLastSuccess(); i += 1 {
-		RUN(handleCtx, orderedDialers[i])
-		if err == nil {
-			// FIXME return
-		} else {
-			parallelDialers = append(parallelDialers, orderedDialers[i])
-		}
+func (self *parallelResult) Close() {
+	if self.wsConn != nil {
+		self.wsConn.Close()
+		// if wsConn is set, the response does not need to be closed
+		// https://pkg.go.dev/github.com/gorilla/websocket#Dialer.DialContext
+	} else if self.response != nil {
+		self.response.Body.Close()
 	}
+}
 
-	WeightedShuffle(parallelDialers, dialerWeights)
 
-	j := 0
-	for j < len(parallelDialers) && j < ParallelBlockSize; j += 1 {
-		go RUN(handleCtx, paralleDialers[j])
-	}
+func (self *ClientStrategy) parallel(ctx context.Context, get func(ctx context.Context, dialer *clientDialer)(*parallelResult)) *parallelResult {
+	
+	// in this order:
+	// 1. try all dialers that previously worked sequentially
+	// 2. try dialers that previously failed in parallel blocks
+	// 3. expand the extenders and try new extenders in parallel blocks
 
-	for j < len(parallelDialers) {
+
+
+
+	handleCtx, handleCancel := context.WithTimeout(ctx, self.settings.RequestTimeout)
+	defer handleCancel()
+	// merge handleCtx with self.ctx
+	go func() {
+		defer handleCancel()
 		select {
+		case <- handleCtx.Done():
+			return
 		case <- self.ctx.Done():
-			// FIXME return
-		case <- ctx.Done():
-			// FIXME return
-		case err := <- result:
-			if err == nil {
-				// FIXME return
-			} else {
-				go RUN(handleCtx, paralleDialers[j])
+			return
+		}
+	}()
+
+
+	out := make(chan *parallelResult)
+
+	run := func(dialer *clientDialer) {
+		result := get(ctx, dialer)
+
+		select {
+		case out <- result:
+		case <- handleCtx.Done():
+			if result != nil {
+				result.Close()
 			}
 		}
 	}
 
 
-	// FIXME keep trying as long as there is time left
+	self.collapseExtenderDialers()
 
+	dialerWeights := self.dialerWeights()
+	// descending
+	orderedDialers := WeightedShuffle(maps.Keys(dialerWeights), dialerWeights)
+
+	parallelDialers := []*clientDialer{}
+
+	for _, dialer := range orderedDialers {
+		if dialer.IsLastSuccess() {
+			run(dialer)
+			select {
+			case <- handleCtx.Done():
+				return nil
+			case result := <- out:
+				if result.err == nil {
+					return result
+				}
+			}
+		} else {
+			parallelDialers = append(parallelDialers, dialer)
+		}
+	}
+
+	// note parallel dialers is in the original weighted order
+	i := 0
+	for i < len(parallelDialers) && i < settings.ParallelBlockSize; i += 1 {
+		go run(paralleDialers[i])
+	}
+	for i < len(parallelDialers); i += 1 {
+		select {
+		case <- handleCtx.Done():
+			return nil
+		case result := <- out:
+			if result.err == nil {
+				return result, nil
+			} else {
+				go run(paralleDialers[i])
+			}
+		}
+	}
+
+	// keep trying as long as there is time left
 	for {
 		select {
-		case <- self.ctx.Done():
-			// FIXME return
 		case <- handleCtx.Done():
-			// FIXME return
+			return nil
 		default:
 		}
 
 		self.collapseExtenderDialers()
 		expandedDialers, _ := self.expandExtenderDialers()
-		if 0 < len(expandedDialers) {
-			j = 0
-			for j < len(expandedDialers) && j < ParallelBlockSize; j += 1 {
-				go RUN(handleCtx, expandedDialers[j])
-			}
-			for j < len(expandedDialers) {
-				select {
-				case <- self.ctx.Done():
-					// FIXME return
-				case <- handleCtx.Done():
-					// FIXME return
-				case err := <- result:
-					if err == nil {
-						// FIXME return
-					} else {
-						go RUN(handleCtx, expandedDialers[j])
-					}
+		if len(expandedDialers) == 0 {
+			break
+		}
+		i := 0
+		for i < len(expandedDialers) && i < settings.ParallelBlockSize; i += 1 {
+			go run(expandedDialers[i])
+		}
+		for i < len(expandedDialers); i += 1 {
+			select {
+			case <- handleCtx.Done():
+				return nil
+			case result := <- out:
+				if result.err == nil {
+					return result
+				} else {
+					go run(expandedDialers[i])
 				}
 			}
-
 		}
 	}
 
-
-
-
-
-
-
-
-
-
-
-
-	
-
+	return nil
 }
 
 
-func (self *ClientStrategy) Post(ctx context.Context, request *net.Request) (*net.Response, error) {
+
+func (self *ClientStrategy) Get(request *net.Request) (*net.Response, error) {
+	get := func(ctx context.Context, dialer *clientDialer)(*parallelResult) {		
+		httpClient := self.httpClient(dialer.dialTlsContext)
+		response, err := httpClient.Do(request.WithContext(ctx))
+
+		self.updateDialerHttp(dialer, response, err)
+
+		return &parallelResult{
+			response: response,
+			err: err,
+		}
+	}
+
+	result := self.parallel(request.Context, get)
+	if result == nil {
+		return nil, nil
+	}
+	return result.response, result.err
+}
+
+
+func (self *ClientStrategy) Post(request *net.Request, helloRequest *net.Request) (*net.Response, error) {
 	// try ordered strategies sequentially
 
 	// if run out, call expand(), try again
@@ -387,181 +490,111 @@ func (self *ClientStrategy) Post(ctx context.Context, request *net.Request) (*ne
 	// if no more to try, call expand() and keep going
 	// drop strategies that have not had a successful connect in DropTimeout
 
-	handleCtx, cancel := context.WithTimeout(ctx, self.settings.DefaultHttpTimeout)
-	defer cancel()
-
-
-	self.collapseExtenderDialers()
-
-
-
-	dialerWeights := self.getDialerWeights()
-	// descending
-	orderedDialers := Sort(maps.Keys(dialerWeights))
-
-	for i := 0; i < len(orderedDialers) && orderedDialers[i].IsLastSuccess(); i += 1 {
-		RUN(handleCtx, paralleDialers[j])
-		if err == nil {
-			// FIXME return
-		}
-	}
-	for i := 0; i < len(orderedDialers) && !orderedDialers[i].IsLastSuccess(); i += 1 {
-		RUN(handleCtx, paralleDialers[j])
-		if err == nil {
-			// FIXME return
-		}
-	}
-
-	for {
+	handleCtx, handleCancel := context.WithTimeout(request.Context, self.settings.DefaultHttpTimeout)
+	defer handleCancel()
+	// merge handleCtx with self.ctx
+	go func() {
+		defer handleCancel()
 		select {
-		case <- self.ctx.Done():
-			// FIXME return
 		case <- handleCtx.Done():
-			// FIXME return
-		default:
-		}
-		
-		self.collapseExtenderDialers()
-		expandedDialers, _ := self.expandExtenderDialers()
-		if 0 < len(expandedDialers) {
-			for i := 0; i < len(expandedDialers); i += 1 {
-				select {
-				case <- self.ctx.Done():
-					// FIXME return
-				case <- handleCtx.Done():
-					// FIXME return
-				default:
-				}
-
-				RUN(handleCtx, expandedDialers[j])
-				if err == nil {
-					// FIXME return
-				}
-
-					
-			}
-		}
-	}
-
-}
-
-
-func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, error) {
-
-	// find all dialers with weight >= LockInMinimumWeight
-	// weighted sort lock in and try those in order
-	// then, weighted sort the rest
-	// in blocks of ParallelBlockSize, run dialers in parallel
-	// when one finishes with success or error, try the next, until one succeeds
-	// if no more to try, call expand() and keep going with the parallel evaluation
-	// drop strategies that have not had a successful connect in DropTimeout
-
-	// success is websocket connects
-
-	/*
-	     for {
--        wsDialer := &websocket.Dialer{
--            // NetDialTLSContext: NewResilientTlsDialContext(self.dialer),
--            NetDialContext: NewExtenderDialContext(ExtenderConnectModeQuic, self.dialer, TestExtenderConfig()),
--            HandshakeTimeout: self.settings.WsHandshakeTimeout,
--        }
--
-         ws, err := func()(*websocket.Conn, error) {
--            ws, _, err := wsDialer.DialContext(self.ctx, self.platformUrl, nil)
-+            ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, nil)
-             if err != nil {
-                 return nil, err
-             }
-             */
-
-
-    // FIXME close all connections that were created except the first successful one
-
-
-	handleCtx, cancel := context.WithTimeout(ctx, self.settings.DefaultHttpTimeout)
-	defer cancel()
-
-
-
-
-	self.collapseExtenderDialers()
-
-
-	dialerWeights := self.getDialerWeights()
-	// descending
-	orderedDialers := Sort(maps.Keys(dialerWeights))
-
-	parallelDialers := []*clientDialer{}
-
-	for i := 0; i < len(orderedDialers) && orderedDialers[i].IsLastSuccess(); i += 1 {
-		RUN(handleCtx, orderedDialers[i])
-		if err == nil {
-			// FIXME return
-		} else {
-			parallelDialers = append(parallelDialers, orderedDialers[i])
-		}
-	}
-	WeightedShuffle(parallelDialers, dialerWeights)
-
-	j := 0
-	for j < len(parallelDialers) && j < ParallelBlockSize; j += 1 {
-		go RUN(handleCtx, paralleDialers[j])
-	}
-
-	for j < len(parallelDialers) {
-		select {
+			return
 		case <- self.ctx.Done():
-			// FIXME return
-		case <- ctx.Done():
-			// FIXME return
-		case err := <- result:
-			if err == nil {
-				// FIXME return
-			} else {
-				go RUN(handleCtx, paralleDialers[j])
+			return
+		case <- request.Context.Done():
+			return
+		}
+	}()
+
+	type httpResult struct {
+		response *net.Response
+		err error
+	}
+
+	out := make(chan *httpResult)
+
+	run := func(dialer *clientDialer) {		
+		httpClient := self.httpClient(dialer.dialTlsContext)
+		response, err := httpClient.Do(request.WithContext(handleCtx))
+
+		self.updateDialerHttp(dialer, response, err)
+
+		result := &httpResult{
+			response: response,
+			err: err,
+		}
+
+		select {
+		case out <- result:
+		case <- handleCtx.Done():
+			if result != nil {
+				result.Body.Close()
 			}
 		}
 	}
 
 
-	// FIXME keep trying as long as there is time left
 
+	// keep trying as long as there is time left
 	for {
 		select {
-		case <- self.ctx.Done():
-			// FIXME return
 		case <- handleCtx.Done():
-			// FIXME return
+			return nil, nil
 		default:
 		}
 
+
 		self.collapseExtenderDialers()
-		expandedDialers, _ := self.expandExtenderDialers()
-		if 0 < len(expandedDialers) {
-			j = 0
-			for j < len(expandedDialers) && j < ParallelBlockSize; j += 1 {
-				go RUN(handleCtx, expandedDialers[j])
-			}
-			for j < len(expandedDialers) {
+
+		dialerWeights := self.getDialerWeights()
+		// descending
+		orderedDialers := WeightedShuffle(maps.Keys(dialerWeights))
+
+		for _, dialer := range orderedDialers {
+			if dialer.IsLastSuccess() {
+				run(dialer)
 				select {
-				case <- self.ctx.Done():
-					// FIXME return
 				case <- handleCtx.Done():
-					// FIXME return
-				case err := <- result:
-					if err == nil {
-						// FIXME return
-					} else {
-						go RUN(handleCtx, expandedDialers[j])
+					return nil, nil
+				case result := <- out:
+					if result.err == nil {
+						return result.result, nil
 					}
 				}
 			}
+		}
 
+		// it's more efficient to iterate with a hello get
+		result, err := self.Get(handleCtx, helloRequest)
+		if result == nil {
+			return nil, err
+		}
+		result.Close()
+	}
+
+	return nil, nil
+}
+
+
+func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
+    get := func(ctx context.Context, dialer *clientDialer)(*parallelResult) {
+    	wsDialer := self.wsDialer(dialer.dialTlsContext)
+    	wsConn, response, err := wsDialer.DialContext(ctx, url, requestHeader)
+
+		self.updateDialerWs(dialer, wsConn, response, err)
+
+		return &parallelResult{
+			wsConn: wsConn,
+			response: response,
+			err: err,
 		}
 	}
 
+	result := self.parallel(ctx, get)
+	if result == nil {
+		return nil, nil
+	}
+	return result.wsConn, result.response, result.err
 }
-
 
 func (self *ClientStrategy) collapseExtenderDialers() {
 	mutex.Lock()
@@ -575,7 +608,6 @@ func (self *ClientStrategy) collapseExtenderDialers() {
 		}
 	}
 }
-
 
 // look up dns to find new extender ips
 func (self *ClientStrategy) expandExtenderDialers() ([]*clientDialer, []net.IP) {
@@ -661,9 +693,7 @@ func (self *ClientStrategy) expandExtenderDialers() ([]*clientDialer, []net.IP) 
 
 			// iterate these for ips not used
 			for _, network := range settings.ExtenderNetworks {
-				if settings.ExpandExtenderIpCount <= len(expandedExtenderIps) {
-					break
-				}
+				
 
 				if network.IP.IsIp4() && IsIpv4() {
 					_, bits := network.Mask.Bits()
@@ -692,6 +722,14 @@ func (self *ClientStrategy) expandExtenderDialers() ([]*clientDialer, []net.IP) 
 				
 
 			}
+
+			Shuffle(expandedExtenderIps)
+
+			if settings.ExpandExtenderIpCount <= len(expandedExtenderIps) {
+				expandedExtenderIps = expandedExtenderIps[0:settings.ExpandExtenderIpCount]
+			}
+
+
 
 			// if not enough ips, use DoH to load ips for the extender hostnames
 			if len(expandedExtenderIps) < settings.ExpandExtenderIpCount && 0 < len(settings.ExtenderHostnames) {
