@@ -33,12 +33,13 @@ const TransportBufferSize = 1
 
 type PlatformTransportSettings struct {
     HttpConnectTimeout time.Duration
-    // WsHandshakeTimeout time.Duration
+    WsHandshakeTimeout time.Duration
     AuthTimeout time.Duration
     ReconnectTimeout time.Duration
     PingTimeout time.Duration
     WriteTimeout time.Duration
     ReadTimeout time.Duration
+    TransportGenerator func()(sendTransport Transport, receiveTransport Transport)
 }
 
 
@@ -46,7 +47,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
     pingTimeout := 5 * time.Second
     return &PlatformTransportSettings{
         HttpConnectTimeout: 2 * time.Second,
-        // WsHandshakeTimeout: 2 * time.Second,
+        WsHandshakeTimeout: 2 * time.Second,
         AuthTimeout: 2 * time.Second,
         ReconnectTimeout: 5 * time.Second,
         PingTimeout: pingTimeout,
@@ -72,45 +73,56 @@ func (self *ClientAuth) ClientId() (Id, error) {
 }
 
 
+// (ctx, network, address)
+type DialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
+
+
 type PlatformTransport struct {
     ctx context.Context
     cancel context.CancelFunc
 
-    platformUrl string
-    auth *ClientAuth
     clientStrategy *ClientStrategy
     routeManager *RouteManager
-
+    
+    platformUrl string
+    auth *ClientAuth
+    
     settings *PlatformTransportSettings
 }
 
 func NewPlatformTransportWithDefaults(
     ctx context.Context,
-    platformUrl string,
-    auth *ClientAuth,
     clientStrategy *ClientStrategy,
     routeManager *RouteManager,
+    platformUrl string,
+    auth *ClientAuth,
 ) *PlatformTransport {
-    settings := DefaultPlatformTransportSettings()
-    return NewPlatformTransport(ctx, platformUrl, auth, clientStrategy, routeManager, settings)
+    return NewPlatformTransport(
+        ctx,
+        clientStrategy,
+        routeManager,
+        platformUrl,
+        auth,
+        DefaultPlatformTransportSettings(),
+    )
 }
 
 func NewPlatformTransport(
     ctx context.Context,
-    platformUrl string,
-    auth *ClientAuth,
     clientStrategy *ClientStrategy,
     routeManager *RouteManager,
+    platformUrl string,
+    auth *ClientAuth,
     settings *PlatformTransportSettings,
 ) *PlatformTransport {
     cancelCtx, cancel := context.WithCancel(ctx)
     transport := &PlatformTransport{
         ctx: cancelCtx,
         cancel: cancel,
-        platformUrl: platformUrl,
-        auth: auth,
         clientStrategy: clientStrategy,
         routeManager: routeManager,
+        platformUrl: platformUrl,
+        auth: auth,
         settings: settings,
     }
     go transport.run()
@@ -133,6 +145,7 @@ func (self *PlatformTransport) run() {
     }
 
     for {
+
         ws, err := func()(*websocket.Conn, error) {
             ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, nil)
             if err != nil {
@@ -189,8 +202,14 @@ func (self *PlatformTransport) run() {
 
             // the platform can route any destination,
             // since every client has a platform transport
-            sendTransport := NewSendGatewayTransport()
-            receiveTransport := NewReceiveGatewayTransport()
+            var sendTransport Transport
+            var receiveTransport Transport
+            if self.settings.TransportGenerator != nil {
+                sendTransport, receiveTransport = self.settings.TransportGenerator()
+            } else {
+                 sendTransport = NewSendGatewayTransport()
+                 receiveTransport = NewReceiveGatewayTransport()
+            }
 
             self.routeManager.UpdateTransport(sendTransport, []Route{send})
             self.routeManager.UpdateTransport(receiveTransport, []Route{receive})

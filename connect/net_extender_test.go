@@ -6,6 +6,7 @@ import (
     "io"
     "path/filepath"
     "net"
+    "net/netip"
     "net/http"
     "crypto/tls"
     "fmt"
@@ -63,7 +64,9 @@ func TestExtender(t *testing.T) {
 		ctx,
 		[]string{"montrose"},
 		[]string{"localhost"},
-		[]int{442},
+		map[int][]ExtenderConnectMode{
+			442: []ExtenderConnectMode{ExtenderConnectModeTcpTls, ExtenderConnectModeQuic},
+		},
 		&net.Dialer{},
 	)
 	defer extenderServer.Close()
@@ -74,19 +77,26 @@ func TestExtender(t *testing.T) {
 	case <- time.After(1 * time.Second):
 	}
 
+
+	localIp, err := netip.ParseAddr("127.0.0.1")
+	assert.Equal(t, err, nil)
+
+	connectSettings := DefaultConnectSettings()
+	connectSettings.TlsConfig = &tls.Config{
+        InsecureSkipVerify: true,
+    }
+
 	client := NewExtenderHttpClient(
-		ExtenderConnectModeQuic,
+		connectSettings,
 		&ExtenderConfig{
-			ExtenderSecrets: []string{"montrose"},
-			SpoofHosts: []string{"bringyour.com"},
-		    ExtenderIps: []net.IP{net.ParseIP("127.0.0.1")},
-		    ExtenderPorts: []int{442},
-		    // DestinationHost: "localhost",
-		    // DestinationPort: 443,
+			Profile: ExtenderProfile{
+				ConnectMode: ExtenderConnectModeQuic,
+				ServerName: "bringyour.com",
+				Port: 442,
+			},
+		    Ip: localIp,
+		    Secret: "montrose",
 		},
-		&tls.Config{
-            InsecureSkipVerify: true,
-        },
 	)
 
 	r, err := client.Get("https://localhost/hello")

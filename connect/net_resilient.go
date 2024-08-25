@@ -55,7 +55,7 @@ import (
 // // set this as the `DialTLSContext` or equivalent
 // returns a tls connection
 func NewResilientDialTlsContext(
-    dialer *net.Dialer,
+    connectSettings *ConnectSettings,
     fragment bool,
     reorder bool,
 ) DialTlsContextFunction {
@@ -75,25 +75,32 @@ func NewResilientDialTlsContext(
 
         // fmt.Printf("Extender client 1\n")
 
-        conn, err := dialer.Dial("tcp", address)
+        netDialer := &net.Dialer{
+            Timeout: connectSettings.ConnectTimeout,
+        }
+        conn, err := netDialer.Dial("tcp", address)
         if err != nil {
             return nil, err
         }
 
         rconn := NewResilientTlsConn(conn, fragment, reorder)
-        serverConn := tls.Client(rconn, &tls.Config{
+        tlsServerConn := tls.Client(rconn, &tls.Config{
             ServerName: host,
             MinVersion: tls.VersionTLS12,
         })
 
-        err = serverConn.HandshakeContext(ctx, fragment, reorder)
+        func() {
+            tlsCtx, tlsCancel := context.WithTimeout(ctx, connectSettings.TlsTimeout)
+            defer tlsCancel()
+            err = tlsServerConn.HandshakeContext(tlsCtx)
+        }()
         if err != nil {
             return nil, err
         }
         // once the stream is established, no longer need the resilient features
         rconn.Off()
 
-        return serverConn, nil
+        return tlsServerConn, nil
     }
 }
 

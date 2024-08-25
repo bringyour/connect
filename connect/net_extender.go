@@ -1,17 +1,14 @@
 package connect
 
 
-// FIXME switch to big endian order
-// FIXME the extender context should be a tls context. do the tls handshake at the end. 
-// this is easier to understand and matches the resilient context
-
 import (
     "context"
     "net"
+    "net/netip"
     "net/http"
 
     // "os"
-    "strings"
+    // "strings"
     "time"
     "fmt"
     "strconv"
@@ -19,18 +16,20 @@ import (
 
 
     "crypto/tls"
-    "crypto/ecdsa"
-    "crypto/ed25519"
+    // "crypto/ecdsa"
+    // "crypto/ed25519"
     // "crypto/elliptic"
-    "crypto/rand"
-    "crypto/rsa"
-    "crypto/x509"
-    "crypto/x509/pkix"
-    "encoding/pem"
+    // "crypto/rand"
+    // "crypto/rsa"
+    // "crypto/x509"
+    // "crypto/x509/pkix"
+    "crypto/hmac"
+    "crypto/sha256"
+    // "encoding/pem"
     // "encoding/json"
     // "flag"
-    "log"
-    "math/big"
+    // "log"
+    // "math/big"
 
 
     // "crypto/md5"
@@ -38,12 +37,12 @@ import (
     // "encoding/hex"
     // "syscall"
 
-    mathrand "math/rand"
+    // mathrand "math/rand"
 
     
 
     // "golang.org/x/crypto/cryptobyte"
-    "golang.org/x/net/idna"
+    // "golang.org/x/net/idna"
 
     "google.golang.org/protobuf/proto"
     quic "github.com/quic-go/quic-go"
@@ -85,15 +84,33 @@ const (
 // extenders will do a TLS connection using the given server name to the given port
 // comparable
 type ExtenderProfile struct {
-    ExtenderConnectMode ExtenderConnectMode
+    ConnectMode ExtenderConnectMode
     ServerName string
     Port int
+    Fragment bool
+    Reorder bool
 }
 
 type ExtenderConfig struct {
-    ExtenderProfile ExtenderProfile
-    Ip net.IP
+    Profile ExtenderProfile
+    Ip netip.Addr
     Secret string
+}
+
+
+
+
+func NewExtenderHttpClient(
+    connectSettings *ConnectSettings,
+    extenderConfig *ExtenderConfig,
+) *http.Client {
+    transport := &http.Transport{
+        DialTLSContext: NewExtenderDialTlsContext(connectSettings, extenderConfig),
+    }
+    return &http.Client{
+        Transport: transport,
+        Timeout: connectSettings.RequestTimeout,
+    }
 }
 
 
@@ -107,10 +124,9 @@ type ExtenderConfig struct {
 // returned by this
 // the returned connection is not a tls connection
 func NewExtenderDialTlsContext(
-    dialer *net.Dialer,
+    connectSettings *ConnectSettings,
     extenderConfig *ExtenderConfig,
-    tlsConfig *tls.Config,
-) DialContextFunc {
+) DialTlsContextFunction {
     return func(
         ctx context.Context,
         network string,
@@ -130,9 +146,12 @@ func NewExtenderDialTlsContext(
         }
         // fmt.Printf("EXTEND TO %s:%d\n", host, port)
 
+
+
+
         authority := net.JoinHostPort(
-            ip.String(),
-            fmt.Sprintf("%d", profile.Port),
+            extenderConfig.Ip.String(),
+            fmt.Sprintf("%d", extenderConfig.Profile.Port),
         )
 
 
@@ -148,87 +167,120 @@ func NewExtenderDialTlsContext(
         var serverConn net.Conn
 
         extenderTlsConfig := &tls.Config{
-            ServerName: profile.ServerName,
+            ServerName: extenderConfig.Profile.ServerName,
             InsecureSkipVerify: true,
             // require 1.3 to mask self-signed certs
             MinVersion: tls.VersionTLS13,
         }
 
-        if connectMode == ExtenderConnectModeTcpTls {
+        switch extenderConfig.Profile.ConnectMode {
+            case ExtenderConnectModeTcpTls:
+                netDialer := &net.Dialer{
+                    Timeout: connectSettings.ConnectTimeout,
+                }
 
-            conn, err := dialer.Dial("tcp", authority)
-            if err != nil {
-                return nil, err
-            }
+                conn, err := netDialer.Dial("tcp", authority)
+                if err != nil {
+                    return nil, err
+                }
 
-            rconn := NewResilientTlsConn(conn)
-            tlsServerConn := tls.Client(
-                rconn,
-                // conn,
-                extenderTlsConfig,
-            )
+                if extenderConfig.Profile.Fragment || extenderConfig.Profile.Reorder {
+                    rconn := NewResilientTlsConn(conn, extenderConfig.Profile.Fragment, extenderConfig.Profile.Reorder)
+                    tlsServerConn := tls.Client(
+                        rconn,
+                        // conn,
+                        extenderTlsConfig,
+                    )
 
-            err = tlsServerConn.HandshakeContext(ctx)
-            if err != nil {
-                return nil, err
-            }
-            // once the stream is established, no longer need the resilient features
-            rconn.Off()
+                    func() {
+                        tlsCtx, tlsCancel := context.WithTimeout(ctx, connectSettings.TlsTimeout)
+                        defer tlsCancel()
+                        err = tlsServerConn.HandshakeContext(tlsCtx)
+                    }()
 
-            serverConn = tlsServerConn
+                    if err != nil {
+                        return nil, err
+                    }
+                    // once the stream is established, no longer need the resilient features
+                    rconn.Off()
 
-            // fragmentConn.Off()
+                    serverConn = tlsServerConn
+                } else {
+                    tlsServerConn := tls.Client(
+                        conn,
+                        // conn,
+                        extenderTlsConfig,
+                    )
 
-            // fmt.Printf("Extender client 3\n")
+                    func() {
+                        tlsCtx, tlsCancel := context.WithTimeout(ctx, connectSettings.TlsTimeout)
+                        defer tlsCancel()
+                        err = tlsServerConn.HandshakeContext(tlsCtx)
+                    }()
+                    if err != nil {
+                        return nil, err
+                    }
 
-        } else if connectMode == ExtenderConnectModeQuic {
-            // quic
+                    serverConn = tlsServerConn
+                }
 
-            quicConfig := &quic.Config{}
-            conn, err := quic.DialAddr(ctx, authority, extenderTlsConfig, quicConfig)
-            if err != nil {
-                return nil, err
-            }
+                // fragmentConn.Off()
 
-            fmt.Printf("quic conn\n")
+                // fmt.Printf("Extender client 3\n")
+            case ExtenderConnectModeQuic:
+                // quic
 
-            stream, err := conn.OpenStream()
-            if err != nil {
-                return nil, err
-            }
+                // the quic connect combines connect, tls, and handshake
+                quicConfig := &quic.Config{
+                    HandshakeIdleTimeout: connectSettings.ConnectTimeout + connectSettings.TlsTimeout + connectSettings.HandshakeTimeout,
+                }
+                conn, err := quic.DialAddr(ctx, authority, extenderTlsConfig, quicConfig)
+                if err != nil {
+                    return nil, err
+                }
 
-            fmt.Printf("quic stream\n")
+                fmt.Printf("quic conn\n")
 
-            serverConn = newStreamConn(stream)
+                stream, err := conn.OpenStream()
+                if err != nil {
+                    return nil, err
+                }
+
+                fmt.Printf("quic stream\n")
+
+                serverConn = newStreamConn(stream)
 
             // TODO
-        // } else if connectMode == ExtenderConnectModeUdp {
+            // case ExtenderConnectModeUdp:
 
-        //     conn, err := dialer.Dial("udp", authority)
-        //     if err != nil {
-        //         return nil, err
-        //     }
+            //     conn, err := dialer.Dial("udp", authority)
+            //     if err != nil {
+            //         return nil, err
+            //     }
 
-        //     serverConn = newClientPacketStream(conn, UdpMtu)
-
-
-
-        } else {
-            panic(fmt.Errorf("bad connect mode %s", connectMode))
+            //     serverConn = newClientPacketStream(conn, UdpMtu)
+            default:
+                panic(fmt.Errorf("bad connect mode %s", extenderConfig.Profile.ConnectMode))
         }
 
         header := &protocol.ExtenderHeader{
             DestinationHost: host,
             DestinationPort: uint32(port),
-            Timestamp: time.Now().UnixMilli(),
+            Timestamp: uint64(time.Now().UnixMilli()),
         }
-        if secret != "" {
+        if extenderConfig.Secret != "" {
             nonce := NewId()
-            header.Nonce = nonce
-            header.Signature = PASSWORDHASH(header.Timestamp, nonce, secret)
+            header.Nonce = nonce.Bytes()
+
+            mac := hmac.New(sha256.New, []byte(extenderConfig.Secret))
+            timestampBytes := make([]byte, 8)
+            binary.BigEndian.PutUint64(timestampBytes[0:8], header.Timestamp)
+            mac.Write(timestampBytes)
+            mac.Write(header.Nonce)
+            header.Signature = mac.Sum(nil)
         }
 
-        headerMessageBytes, err := proto.Marshal()
+        headerMessageBytes, err := proto.Marshal(header)
         if err != nil {
             return nil, err
         }
@@ -236,7 +288,7 @@ func NewExtenderDialTlsContext(
         // fmt.Printf("Extender client 4\n")
 
         headerBytes := make([]byte, 4 + len(headerMessageBytes))
-        binary.LittleEndian.PutUint32(headerBytes[0:4], uint32(len(headerMessageBytes)))
+        binary.BigEndian.PutUint32(headerBytes[0:4], uint32(len(headerMessageBytes)))
         copy(headerBytes[4:4+len(headerMessageBytes)], headerMessageBytes)
         _, err = serverConn.Write(headerBytes)
         if err != nil {
@@ -249,7 +301,7 @@ func NewExtenderDialTlsContext(
 
         tlsServerConn := tls.Client(
             serverConn,
-            tlsConfig,
+            connectSettings.TlsConfig,
         )
 
         err = tlsServerConn.HandshakeContext(ctx)

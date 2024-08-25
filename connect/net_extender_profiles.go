@@ -1,44 +1,52 @@
 package connect
 
 
+import (
 
+	mathrand "math/rand"
 
+	"golang.org/x/exp/maps"
+)
 
 
 // randomly enumerate up to n extender profiles
-func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) map[ExtenderProfile]bool {
+func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) []ExtenderProfile {
 	out := map[ExtenderProfile]bool{}
 
 	maxIterations := 32 * n
 	for i := 0; len(out) < n && i < maxIterations; i += 1 {
 		var hosts []string
-		var portExtenderConnectModes map[int][]ExtenderConnectMode
+		var portConnectModes map[int][]ExtenderConnectMode
 
 		// each persona is equally weighted
 		// TODO UDP
 		switch mathrand.Intn(2) {
 		case 0:
 			hosts = mailHosts
-			portExtenderConnectModes = MailPorts
+			portConnectModes = MailPorts
 		default:
 			hosts = serviceHosts
-			portExtenderConnectModes = ServicePorts
+			portConnectModes = ServicePorts
 		}
 
-		ports := maps.Keys(portExtenderConnectModes)
+		ports := maps.Keys(portConnectModes)
 		port := ports[mathrand.Intn(len(ports))]
-		extenderConnectModes := portExtenderConnectModes[port]
-		extenderConnectMode := extenderConnectModes[mathrand.Intn(len(extenderConnectModes))]
+		connectModes := portConnectModes[port]
+		connectMode := connectModes[mathrand.Intn(len(connectModes))]
 
 		var profile ExtenderProfile
-		switch ExtenderConnectMode {
+		switch connectMode {
 			// TODO Udp does not use a host
 			default:
 				host := hosts[mathrand.Intn(len(hosts))]
-				profile := ExtenderProfile{
-					ExtenderConnectMode: ExtenderConnectMode,
+				fragment := mathrand.Intn(2) != 0
+				reorder := mathrand.Intn(2) != 0
+				profile = ExtenderProfile{
+					ConnectMode: connectMode,
 					ServerName: host,
 					Port: port,
+					Fragment: fragment,
+					Reorder: reorder,
 				}
 		}
 		if _, ok := visited[profile]; !ok {
@@ -48,7 +56,7 @@ func EnumerateExtenderProfiles(n int, visited map[ExtenderProfile]bool) map[Exte
 		}
 	}
 
-	return out
+	return maps.Keys(out)
 }
 
 

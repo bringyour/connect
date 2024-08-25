@@ -473,9 +473,12 @@ type ApiMultiClientGeneratorSettings struct {
 
 type ApiMultiClientGenerator struct {
     specs []*ProviderSpec
+    clientStrategy *ClientStrategy
+
     apiUrl string
     byJwt string
     platformUrl string
+    
     deviceDescription string
     deviceSpec string
     appVersion string
@@ -487,6 +490,7 @@ type ApiMultiClientGenerator struct {
 
 func NewApiMultiClientGeneratorWithDefaults(
     specs []*ProviderSpec,
+    clientStrategy *ClientStrategy,
     apiUrl string,
     byJwt string,
     platformUrl string,
@@ -496,6 +500,7 @@ func NewApiMultiClientGeneratorWithDefaults(
 ) *ApiMultiClientGenerator {
     return NewApiMultiClientGenerator(
         specs,
+        clientStrategy,
         apiUrl,
         byJwt,
         platformUrl,
@@ -509,10 +514,10 @@ func NewApiMultiClientGeneratorWithDefaults(
 
 func NewApiMultiClientGenerator(
     specs []*ProviderSpec,
+    clientStrategy *ClientStrategy,
     apiUrl string,
     byJwt string,
     platformUrl string,
-    clientStrategy *ClientStrategy,
     deviceDescription string,
     deviceSpec string,
     appVersion string,
@@ -524,10 +529,10 @@ func NewApiMultiClientGenerator(
 
     return &ApiMultiClientGenerator{
         specs: specs,
+        clientStrategy: clientStrategy,
         apiUrl: apiUrl,
         byJwt: byJwt,
         platformUrl: platformUrl,
-        clientStrategy: clientStrategy,
         deviceDescription: deviceDescription,
         deviceSpec: deviceSpec,
         appVersion: appVersion,
@@ -562,7 +567,7 @@ func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinat
         ids = append(ids, provider.ClientId)
         // use the tail if the length exceeds the allowed maximum
         if MaxMultihopLength < len(ids) {
-            ids = ids[len(ids)-MaxMultihopLength:len(ids)]
+            ids = ids[len(ids)-MaxMultihopLength:]
         }
         if destination, err := NewMultiHopId(ids...); err == nil {
             clientIdEstimatedBytesPerSecond[destination] = provider.EstimatedBytesPerSecond
@@ -639,7 +644,7 @@ func (self *ApiMultiClientGenerator) NewClient(
     if err != nil {
         return nil, err
     }
-    clientOob := NewApiOutOfBandControl(ctx, args.ClientAuth.ByJwt, self.apiUrl)
+    clientOob := NewApiOutOfBandControl(ctx, self.clientStrategy, args.ClientAuth.ByJwt, self.apiUrl)
     client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings)
     settings := DefaultPlatformTransportSettings()
     if args.P2pOnly {
@@ -652,10 +657,10 @@ func (self *ApiMultiClientGenerator) NewClient(
     }
     NewPlatformTransport(
         client.Ctx(),
-        self.platformUrl,
-        args.ClientAuth,
         self.clientStrategy,
         client.RouteManager(),
+        self.platformUrl,
+        args.ClientAuth,
         settings,
     )
     // enable return traffic for this client

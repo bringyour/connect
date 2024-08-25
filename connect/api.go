@@ -2,16 +2,16 @@ package connect
 
 import (
 	"context"
-	"encoding/json"
+	// "encoding/json"
 	// "encoding/base64"
-	"bytes"
+	// "bytes"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"time"
-	"errors"
-	"strings"
+	// "io"
+	// "net"
+	// "net/http"
+	// "time"
+	// "errors"
+	// "strings"
 
 	// "github.com/golang/glog"
 )
@@ -51,7 +51,7 @@ func (self *BringYourApi) SetByJwt(byJwt string) {
 }
 
 
-type AuthLoginCallback apiCallback[*AuthLoginResult]
+type AuthLoginCallback ApiCallback[*AuthLoginResult]
 
 // `model.AuthLoginArgs`
 type AuthLoginArgs struct {
@@ -93,7 +93,7 @@ func (self *BringYourApi) AuthLogin(authLogin *AuthLoginArgs, callback AuthLogin
 }
 
 
-type AuthLoginWithPasswordCallback apiCallback[*AuthLoginWithPasswordResult]
+type AuthLoginWithPasswordCallback ApiCallback[*AuthLoginWithPasswordResult]
 
 type AuthLoginWithPasswordArgs struct {
 	UserAuth string `json:"user_auth"`
@@ -132,7 +132,7 @@ func (self *BringYourApi) AuthLoginWithPassword(authLoginWithPassword *AuthLogin
 }
 
 
-type AuthVerifyCallback apiCallback[*AuthVerifyResult]
+type AuthVerifyCallback ApiCallback[*AuthVerifyResult]
 
 type AuthVerifyArgs struct {
 	UserAuth string `json:"user_auth"`
@@ -165,7 +165,7 @@ func (self *BringYourApi) AuthVerify(authVerify *AuthVerifyArgs, callback AuthVe
 }
 
 
-type AuthPasswordResetCallback apiCallback[*AuthPasswordResetResult]
+type AuthPasswordResetCallback ApiCallback[*AuthPasswordResetResult]
 
 type AuthPasswordResetArgs struct {
     UserAuth string `json:"user_auth"`
@@ -188,7 +188,7 @@ func (self *BringYourApi) AuthPasswordReset(authPasswordReset *AuthPasswordReset
 }
 
 
-type AuthVerifySendCallback apiCallback[*AuthVerifySendResult]
+type AuthVerifySendCallback ApiCallback[*AuthVerifySendResult]
 
 type AuthVerifySendArgs struct {
     UserAuth string `json:"user_auth"`
@@ -212,7 +212,7 @@ func (self *BringYourApi) AuthVerifySend(authVerifySend *AuthVerifySendArgs, cal
 
 
 
-type AuthNetworkClientCallback apiCallback[*AuthNetworkClientResult]
+type AuthNetworkClientCallback ApiCallback[*AuthNetworkClientResult]
 
 type AuthNetworkClientArgs struct {
 	// FIXME how to bring this back as optional with gomobile. Use a new type *OptionalId?
@@ -258,7 +258,7 @@ func (self *BringYourApi) AuthNetworkClientSync(authNetworkClient *AuthNetworkCl
 }
 
 
-type RemoveNetworkClientCallback apiCallback[*RemoveNetworkClientResult]
+type RemoveNetworkClientCallback ApiCallback[*RemoveNetworkClientResult]
 
 type RemoveNetworkClientArgs struct {
 	ClientId Id `json:"client_id"`
@@ -303,7 +303,7 @@ type ProviderSpec struct {
     ClientId *Id `json:"client_id,omitempty"`
 }
 
-type FindProviders2Callback apiCallback[*FindProviders2Result]
+type FindProviders2Callback ApiCallback[*FindProviders2Result]
 
 type FindProviders2Args struct {
 	Specs []*ProviderSpec `json:"specs"`
@@ -348,7 +348,7 @@ func (self *BringYourApi) FindProviders2Sync(findProviders2 *FindProviders2Args)
 
 
 
-type ConnectControlCallback apiCallback[*ConnectControlResult]
+type ConnectControlCallback ApiCallback[*ConnectControlResult]
 
 type ConnectControlArgs struct {
 	Pack string `json:"pack"`

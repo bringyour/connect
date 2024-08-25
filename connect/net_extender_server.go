@@ -3,6 +3,56 @@ package connect
 
 
 
+import (
+    "context"
+    "net"
+    // "net/http"
+
+    // "os"
+    "strings"
+    "time"
+    "fmt"
+    // "strconv"
+    "slices"
+
+
+    "crypto/tls"
+    "crypto/ecdsa"
+    "crypto/ed25519"
+    // "crypto/elliptic"
+    "crypto/rand"
+    "crypto/rsa"
+    "crypto/x509"
+    "crypto/x509/pkix"
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/pem"
+    // "encoding/json"
+    // "flag"
+    "log"
+    "math/big"
+
+
+    // "crypto/md5"
+    "encoding/binary"
+    // "encoding/hex"
+    // "syscall"
+
+    // mathrand "math/rand"
+
+    
+
+    // "golang.org/x/crypto/cryptobyte"
+    "golang.org/x/net/idna"
+
+    "google.golang.org/protobuf/proto"
+    quic "github.com/quic-go/quic-go"
+
+    // "src.agwa.name/tlshacks"
+
+    "bringyour.com/protocol"
+)
+
 
 
 // server listens for a tls connect and replies with a self-signed cert
@@ -39,7 +89,7 @@ type ExtenderServer struct {
     forwardDialer *net.Dialer
 }
 
-func NewExtenderServer(ctx context.Context, allowedSecrets []string, allowedHosts []string, ports []int, forwardDialer *net.Dialer) *ExtenderServer {
+func NewExtenderServer(ctx context.Context, allowedSecrets []string, allowedHosts []string, ports map[int][]ExtenderConnectMode, forwardDialer *net.Dialer) *ExtenderServer {
 
 
     cancelCtx, cancel := context.WithCancel(ctx)
@@ -61,7 +111,11 @@ func (self *ExtenderServer) ListenAndServe() error {
     listeners := map[int]net.Listener{}
     quicListeners := map[int]*quic.Listener{}
 
-    for _, port := range self.ports {
+    for port, connectModes := range self.ports {
+        if !slices.Contains(connectModes, ExtenderConnectModeTcpTls) {
+            continue
+        }
+
         fmt.Printf("listen tcp %d\n", port)
         listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
         if err != nil {
@@ -91,7 +145,11 @@ func (self *ExtenderServer) ListenAndServe() error {
         }()
     }
     
-    for _, port := range self.ports {
+    for port, connectModes := range self.ports {
+        if !slices.Contains(connectModes, ExtenderConnectModeQuic) {
+            continue
+        }
+
         fmt.Printf("listen quic %d\n", port)
         // certPemBytes, keyPemBytes, err := selfSign(
         //     []string{"example.org"},
@@ -151,6 +209,8 @@ func (self *ExtenderServer) ListenAndServe() error {
         }()
     }
 
+    // TODO
+    /*
     for _, port := range self.ports {
         fmt.Printf("listen udp %d\n", port)
         packetConn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
@@ -196,6 +256,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 
         }()
     }
+    */
 
 
     select {
@@ -215,9 +276,15 @@ func (self *ExtenderServer) Close() {
     self.cancel()
 }
 
-func (self *ExtenderServer) IsAllowedSecret(secret string) bool {
-    for _, allowedSecret := range self.allowedSecrets {
-        if allowedSecret == secret {
+func (self *ExtenderServer) IsAllowedSecret(header *protocol.ExtenderHeader) bool {
+    for _, secret := range self.allowedSecrets {
+        mac := hmac.New(sha256.New, []byte(secret))
+        timestampBytes := make([]byte, 8)
+        binary.BigEndian.PutUint64(timestampBytes[0:8], header.Timestamp)
+        mac.Write(timestampBytes)
+        mac.Write(header.Nonce)
+        signature := mac.Sum(nil)
+        if slices.Equal(signature, header.Signature) {
             return true
         }
     }
@@ -387,7 +454,7 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
         }
         i += n
     }
-    headerByteCount := int(binary.LittleEndian.Uint32(headerBytes[0:4]))
+    headerByteCount := int(binary.BigEndian.Uint32(headerBytes[0:4]))
     if 1024 < headerByteCount {
         // bad data
         return
@@ -409,7 +476,7 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
         return
     }
 
-    if !self.IsAllowedSecret(header.Secret) {
+    if !self.IsAllowedSecret(header) {
         // fmt.Printf("Extender secret failed: %s\n", header.Secret)
         return
     }
@@ -520,7 +587,7 @@ func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, co
         i += n
     }
     fmt.Printf("q 2\n")
-    headerByteCount := int(binary.LittleEndian.Uint32(headerBytes[0:4]))
+    headerByteCount := int(binary.BigEndian.Uint32(headerBytes[0:4]))
     if 1024 < headerByteCount {
         // bad data
         return
@@ -546,7 +613,7 @@ func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, co
 
     fmt.Printf("q 5\n")
 
-    if !self.IsAllowedSecret(header.Secret) {
+    if !self.IsAllowedSecret(header) {
         // fmt.Printf("Extender secret failed: %s\n", header.Secret)
         return
     }
