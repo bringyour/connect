@@ -50,6 +50,13 @@ Each transport should apply the forwarding ACL:
 // can be active in parallel, each limited by their slowest destination.
 
 
+
+// FIXME MinContractCloseCount
+// FIXME minimum byte count when closing a contract
+// FIXME set this to 1MiB or something large to prevent users from dusting the network
+
+
+
 // use 0 for deadlock testing
 const DefaultTransferBufferSize = 32
 

@@ -69,6 +69,55 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/GptPrivacyPolicyResult"
 
+    /gpt/cookiedisclosure:
+        post:
+            description: |
+                Returns a listing of actual cookies in the rendered page.
+                It's in the site's interest to to support accurate cookie disclosure
+                since this is used to generate a privacy.txt file as described at 
+                https://privacytxt.dev . This disclosure may be used to enforce runtime behavior.
+                This attempts to tap the "accept cookies" banner for a full cookie payload.
+                Based on [privacy-txt-tools](https://github.com/privacy-txt/privacy-txt-tools)
+            operationId: GPT Cookie Disclosure
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/GptCookieDisclosureArgs"
+            responses:
+                "200":
+                    description: |
+                        A listing of actual cookies in the rendered page.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/GptCookieDisclosureResult"
+    /gpt/auditprivacytxt:
+        post:
+            description: |
+                Audits the privacy.txt file for the given URL.
+                The result includes the parsed format and errors.
+                For suggestions, typically a UI will diff a generated format
+                with the parsed format and suggest additions/changes.
+            operationId: GPT Audit Privacy Txt
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/GptAuditPrivacyTxtArgs"
+            responses:
+                "200":
+                    description: |
+                        The parsed format and errors.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/GptAuditPrivacyTxtResult"
+
     /gpt/bemyprivacyagent:
         post:
             description: |
@@ -106,8 +155,58 @@ components:
             description: BringYour JWT
 
     schemas:
+        PrivacyTxtCookie:
+            type: object
+            description: |
+                These fields follow the Cookie: formatted line from https://privacytxt.dev . 
+            properties:
+                name:
+                    type: string
+                domain_name:
+                    type: string
+                duration:
+                    type: integer
+                first_party:
+                    type: boolean
+                optional:
+                    type: boolean
+                http_only:
+                    type: boolean
+                secure_status:
+                    type: boolean
+
+        PrivacyTxtBanner:
+            type: object
+            description: |
+                These fields follow the Banner: formatted line from https://privacytxt.dev . 
+            properties:
+                consent_present:
+                    type: string
+                consent_platform:
+                    type: string
+
+        PrivacyTxtAction:
+            type: object
+            description: |
+                These fields follow the Action-*: formatted line from https://privacytxt.dev . 
+            properties:
+                name:
+                    description: The action name as defined in the Action-* spec at https://privacytxt.dev 
+                    type: string
+                friendly_name:
+                    description: |
+                        The human friendly action name.
+                        Dashes "-" are replaced with spaces " ".
+                        The first word is capitalized.
+                        e.g. "delete-personal-data" becomes "Delete personal data"
+                    type: string
+                value:
+                    type: string
+
         GptPrivacyPolicyArgs:
             type: object
+            required:
+                - service_urls
             properties:
                 service_name:
                     description: The name of the service
@@ -126,9 +225,113 @@ components:
                     description: |
                         Whether a complete privacy policy text was found for the URLs given
                     type: boolean
+                privacy_policy_url:
+                    description: the top level privacy policy URL as it exists in the URLs given
+                    type: string
                 privacy_policy:
                     description: a complete privacy policy text
                     type: string
+
+        GptCookieDisclosureArgs:
+            type: object
+            required:
+                - service_urls
+            properties:
+                service_name:
+                    description: The name of the service
+                    type: string
+                service_urls:
+                    description: |
+                        Official URLs of the service to render.
+                    type: array
+                    items:
+                        type: string
+
+        GptCookieDisclosureResult:
+            type: object
+            properties:
+                found:
+                    description: |
+                        Whether a complete cookie listing was found for the URLs given
+                    type: boolean
+                privacy_banner_accepted:
+                    description: |
+                        Whether a privacy banner was accepted on any of URLs given
+                    type: boolean
+                cookies:
+                    description: a complete cookie listing
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/PrivacyTxtCookie"
+
+        GptAuditPrivacyTxtArgs:
+            type: object
+            required:
+                - service_url
+            properties:
+                service_name:
+                    description: The name of the service
+                    type: string
+                service_url:
+                    description: |
+                        An official URL of the service.
+                    type: string
+
+        GptAuditPrivacyTxtResult:
+            type: object
+            properties:
+                found:
+                    description: |
+                        Whether a privacy.txt was found for the URL given
+                    type: boolean
+                canonical_url:
+                    description: |
+                        The canonical url of the parsed privacy.txt file
+                    type: string
+                privacy_txt:
+                    type: object
+                    properties:
+                        entity:
+                            type: string
+                        entity_country:
+                            type: string
+                        privacy_policy_text:
+                            type: string
+                        privacy_policy:
+                            type: string
+                        contact:
+                            type: string
+                        actions:
+                            type: array
+                            items:
+                                $ref: "#/components/schemas/PrivacyTxtAction"
+                        implied_actions:
+                            description: |
+                                The spec implies actions that are not explicitly stated.
+                                This field enumerates the implied actions.
+                            type: array
+                            items:
+                                $ref: "#/components/schemas/PrivacyTxtAction"
+                        banner:
+                            $ref: "#/components/schemas/PrivacyTxtBanner"
+                        cookies:
+                            type: array
+                            items:
+                                $ref: "#/components/schemas/PrivacyTxtCookie"
+                errors:
+                    description: |
+                        Any error means the file failed audit.
+                        The error message will explain the reason.
+                    type: array
+                    items:
+                        type: string
+                comments:
+                    description: |
+                        Suggestions and feedback on the audited file.
+                        This is a grab bag of feedback items in no particular order.
+                    type: array
+                    items:
+                        type: string
 
         GptBeMyPrivacyAgentArgs:
             type: object

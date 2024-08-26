@@ -30,10 +30,11 @@ type ApiOutOfBandControl struct {
 
 func NewApiOutOfBandControl(
 	ctx context.Context,
+	clientStrategy *ClientStrategy,
 	byJwt string,
 	apiUrl string,
 ) *ApiOutOfBandControl {
-	api := NewBringYourApiWithContext(ctx, apiUrl)
+	api := NewBringYourApiWithContext(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 	return &ApiOutOfBandControl{
 		api: api,

@@ -1,0 +1,13 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+
+message ExtenderHeader {
+    string DestinationHost = 1;
+    uint32 DestinationPort = 2;
+    uint64 Timestamp = 3;
+    bytes Nonce = 4;
+    bytes Signature = 5;
+}

@@ -81,88 +81,49 @@ type PlatformTransport struct {
     ctx context.Context
     cancel context.CancelFunc
 
+    clientStrategy *ClientStrategy
+    routeManager *RouteManager
+    
     platformUrl string
     auth *ClientAuth
-    dialContextGen func()(DialContextFunc)
+    
     settings *PlatformTransportSettings
-
-    routeManager *RouteManager
 }
 
 func NewPlatformTransportWithDefaults(
     ctx context.Context,
+    clientStrategy *ClientStrategy,
+    routeManager *RouteManager,
     platformUrl string,
     auth *ClientAuth,
-    routeManager *RouteManager,
 ) *PlatformTransport {
-    return NewPlatformTransportWithDefaultDialer(
+    return NewPlatformTransport(
         ctx,
+        clientStrategy,
+        routeManager,
         platformUrl,
         auth,
-        routeManager,
         DefaultPlatformTransportSettings(),
-    )
-}
-
-func NewPlatformTransportWithDefaultDialer(
-    ctx context.Context,
-    platformUrl string,
-    auth *ClientAuth,
-    routeManager *RouteManager,
-    settings *PlatformTransportSettings,
-) *PlatformTransport {
-    dialContextGen := func()(DialContextFunc) {
-        dialer := &net.Dialer{
-            Timeout: settings.HttpConnectTimeout,
-        }
-        return dialer.DialContext
-    }
-
-    return NewPlatformTransport(
-        ctx,
-        platformUrl,
-        auth,
-        dialContextGen,
-        settings,
-        routeManager,
-    )
-}
-
-func NewPlatformTransportWithExtender(
-    ctx context.Context,
-    extenderUrl string,
-    platformUrl string,
-    auth *ClientAuth,
-    settings *PlatformTransportSettings,
-    routeManager *RouteManager,
-) *PlatformTransport {
-    return NewPlatformTransport(
-        ctx,
-        platformUrl,
-        auth,
-        NewExtenderDialContextGenerator(extenderUrl, settings),
-        settings,
-        routeManager,
     )
 }
 
 func NewPlatformTransport(
     ctx context.Context,
+    clientStrategy *ClientStrategy,
+    routeManager *RouteManager,
     platformUrl string,
     auth *ClientAuth,
-    dialContextGen func()(DialContextFunc),
     settings *PlatformTransportSettings,
-    routeManager *RouteManager,
 ) *PlatformTransport {
     cancelCtx, cancel := context.WithCancel(ctx)
     transport := &PlatformTransport{
         ctx: cancelCtx,
         cancel: cancel,
+        clientStrategy: clientStrategy,
+        routeManager: routeManager,
         platformUrl: platformUrl,
         auth: auth,
-        dialContextGen: dialContextGen,
         settings: settings,
-        routeManager: routeManager,
     }
     go transport.run()
     return transport
@@ -184,13 +145,9 @@ func (self *PlatformTransport) run() {
     }
 
     for {
-        wsDialer := &websocket.Dialer{
-            NetDialContext: self.dialContextGen(),
-            HandshakeTimeout: self.settings.WsHandshakeTimeout,
-        }
 
         ws, err := func()(*websocket.Conn, error) {
-            ws, _, err := wsDialer.DialContext(self.ctx, self.platformUrl, nil)
+            ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, nil)
             if err != nil {
                 return nil, err
             }
@@ -354,128 +311,5 @@ func (self *PlatformTransport) run() {
 
 func (self *PlatformTransport) Close() {
     self.cancel()
-}
-
-
-// an extender uses an independent url that is hard-coded to forward to the platform
-// the `platformUrl` here must match the hard coded url in the extender, which is
-// done by using a prior vetted extender
-// The connection to the platform is end-to-end encrypted with TLS,
-// using the hostname from `platformUrl`
-
-
-func NewExtenderDialContextGenerator(
-    extenderUrl string,
-    settings *PlatformTransportSettings,
-) func()(DialContextFunc) {
-    return func()(DialContextFunc) {
-        return func(
-            ctx context.Context,
-            network string,
-            address string,
-        ) (net.Conn, error) {
-            dialer := &net.Dialer{
-                Timeout: settings.HttpConnectTimeout,
-            }
-
-            wsDialer := &websocket.Dialer{
-                NetDialContext: dialer.DialContext,
-                HandshakeTimeout: settings.WsHandshakeTimeout,
-            }
-
-            ws, _, err := wsDialer.DialContext(ctx, extenderUrl, nil)
-            if err != nil {
-                return nil, err
-            }
-
-            return newWsForwardingConn(ws, settings), nil
-        }
-    }
-}
-
-
-// conforms to `net.Conn`
-type wsForwardingConn struct {
-    ws *websocket.Conn
-    readBuffer []byte
-    settings *PlatformTransportSettings
-}
-
-func newWsForwardingConn(ws *websocket.Conn, settings *PlatformTransportSettings) *wsForwardingConn {
-    return &wsForwardingConn{
-        ws: ws,
-        readBuffer: make([]byte, 0),
-        settings: settings,
-    }
-}
-
-func (self *wsForwardingConn) Read(b []byte) (int, error) {
-    i := min(len(b), len(self.readBuffer))
-    if 0 < i {
-        copy(b, self.readBuffer[:i])
-        self.readBuffer = self.readBuffer[i:]
-    }
-    for i < len(b) {
-        self.ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
-        messageType, message, err := self.ws.ReadMessage()
-        if err != nil {
-            return i, err
-        }
-        switch messageType {
-        case websocket.BinaryMessage:
-            if 0 == len(message) {
-                // ping
-                continue
-            }
-
-            j := min(len(b) - i, len(message))
-            copy(b[i:], message[:j])
-            i += j
-            if j < len(message) {
-                self.readBuffer = append(self.readBuffer, message[j:]...)
-            }
-        }
-    }
-    return i, nil
-}
-
-func (self *wsForwardingConn) Write(b []byte) (int, error) {
-    self.ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
-    err := self.ws.WriteMessage(websocket.BinaryMessage, b)
-    if err != nil {
-        // note that for websocket a dealine timeout cannot be recovered
-        return 0, err
-    }
-    return len(b), nil
-}
-
-func (self *wsForwardingConn) Close() error {
-    return self.ws.Close()
-}
-
-func (self *wsForwardingConn) LocalAddr() net.Addr {
-    return self.ws.LocalAddr()
-}
-
-func (self *wsForwardingConn) RemoteAddr() net.Addr {
-    return self.ws.RemoteAddr()
-}
-
-func (self *wsForwardingConn) SetDeadline(t time.Time) error {
-    if err := self.ws.SetReadDeadline(t); err != nil {
-        return err
-    }
-    if err := self.ws.SetWriteDeadline(t); err != nil {
-        return err
-    }
-    return nil
-}
-
-func (self *wsForwardingConn) SetReadDeadline(t time.Time) error {
-    return self.ws.SetReadDeadline(t)
-}
-
-func (self *wsForwardingConn) SetWriteDeadline(t time.Time) error {
-    return self.ws.SetWriteDeadline(t)
 }
 

@@ -2,108 +2,45 @@ package connect
 
 import (
 	"context"
-	"encoding/json"
+	// "encoding/json"
 	// "encoding/base64"
-	"bytes"
+	// "bytes"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"time"
-	"errors"
-	"strings"
+	// "io"
+	// "net"
+	// "net/http"
+	// "time"
+	// "errors"
+	// "strings"
 
 	// "github.com/golang/glog"
 )
 
-
-const defaultHttpTimeout = 60 * time.Second
-const defaultHttpConnectTimeout = 5 * time.Second
-const defaultHttpTlsTimeout = 5 * time.Second
-
-
-func defaultClient() *http.Client {
-	// see https://medium.com/@nate510/don-t-use-go-s-default-http-client-4804cb19f779
-	dialer := &net.Dialer{
-    	Timeout: defaultHttpConnectTimeout,
-  	}
-	transport := &http.Transport{
-	  	DialContext: dialer.DialContext,
-	  	TLSHandshakeTimeout: defaultHttpTlsTimeout,
-	}
-	return &http.Client{
-		Transport: transport,
-		Timeout: defaultHttpTimeout,
-	}
-}
-
-
-type apiCallback[R any] interface {
-	Result(result R, err error)
-}
-
-
-// for internal use
-type simpleApiCallback[R any] struct {
-	callback func(result R, err error)
-}
-
-func NewApiCallback[R any](callback func(result R, err error)) apiCallback[R] {
-	return &simpleApiCallback[R]{
-		callback: callback,
-	}
-}
-
-func NewNoopApiCallback[R any]() apiCallback[R] {
-	return &simpleApiCallback[R]{
-		callback: func(result R, err error){},
-	}
-}
-
-func (self *simpleApiCallback[R]) Result(result R, err error) {
-	self.callback(result, err)
-}
-
-
-type ApiCallbackResult[R any] struct {
-	Result R
-	Error error
-}
-
-
-func NewBlockingApiCallback[R any]() (apiCallback[R], chan ApiCallbackResult[R]) {
-	c := make(chan ApiCallbackResult[R])
-	apiCallback := NewApiCallback[R](func(result R, err error) {
-		c <- ApiCallbackResult[R]{
-			Result: result,
-			Error: err,
-		}
-	})
-	return apiCallback, c
-}
 
 
 type BringYourApi struct {
 	ctx context.Context
 	cancel context.CancelFunc
 
+	clientStrategy *ClientStrategy
+
 	apiUrl string
 
 	byJwt string
 }
 
-// TODO manage extenders
 
-func NewBringYourApi(apiUrl string) *BringYourApi {
-	return NewBringYourApiWithContext(context.Background(), apiUrl)
+func NewBringYourApi(clientStrategy *ClientStrategy, apiUrl string) *BringYourApi {
+	return NewBringYourApiWithContext(context.Background(), clientStrategy, apiUrl)
 }
 
-func NewBringYourApiWithContext(ctx context.Context, apiUrl string) *BringYourApi {
+func NewBringYourApiWithContext(ctx context.Context, clientStrategy *ClientStrategy, apiUrl string) *BringYourApi {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	return &BringYourApi{
 		ctx: cancelCtx,
 		cancel: cancel,
+		clientStrategy: clientStrategy,
 		apiUrl: apiUrl,
 	}
 }
@@ -114,7 +51,7 @@ func (self *BringYourApi) SetByJwt(byJwt string) {
 }
 
 
-type AuthLoginCallback apiCallback[*AuthLoginResult]
+type AuthLoginCallback ApiCallback[*AuthLoginResult]
 
 // `model.AuthLoginArgs`
 type AuthLoginArgs struct {
@@ -144,8 +81,9 @@ type AuthLoginResultNetwork struct {
 }
 
 func (self *BringYourApi) AuthLogin(authLogin *AuthLoginArgs, callback AuthLoginCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/auth/login", self.apiUrl),
 		authLogin,
 		self.byJwt,
@@ -155,7 +93,7 @@ func (self *BringYourApi) AuthLogin(authLogin *AuthLoginArgs, callback AuthLogin
 }
 
 
-type AuthLoginWithPasswordCallback apiCallback[*AuthLoginWithPasswordResult]
+type AuthLoginWithPasswordCallback ApiCallback[*AuthLoginWithPasswordResult]
 
 type AuthLoginWithPasswordArgs struct {
 	UserAuth string `json:"user_auth"`
@@ -182,8 +120,9 @@ type AuthLoginWithPasswordResultError struct {
 }
 
 func (self *BringYourApi) AuthLoginWithPassword(authLoginWithPassword *AuthLoginWithPasswordArgs, callback AuthLoginWithPasswordCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/auth/login-with-password", self.apiUrl),
 		authLoginWithPassword,
 		self.byJwt,
@@ -193,7 +132,7 @@ func (self *BringYourApi) AuthLoginWithPassword(authLoginWithPassword *AuthLogin
 }
 
 
-type AuthVerifyCallback apiCallback[*AuthVerifyResult]
+type AuthVerifyCallback ApiCallback[*AuthVerifyResult]
 
 type AuthVerifyArgs struct {
 	UserAuth string `json:"user_auth"`
@@ -214,8 +153,9 @@ type AuthVerifyResultError struct {
 }
 
 func (self *BringYourApi) AuthVerify(authVerify *AuthVerifyArgs, callback AuthVerifyCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/auth/verify", self.apiUrl),
 		authVerify,
 		self.byJwt,
@@ -225,7 +165,7 @@ func (self *BringYourApi) AuthVerify(authVerify *AuthVerifyArgs, callback AuthVe
 }
 
 
-type AuthPasswordResetCallback apiCallback[*AuthPasswordResetResult]
+type AuthPasswordResetCallback ApiCallback[*AuthPasswordResetResult]
 
 type AuthPasswordResetArgs struct {
     UserAuth string `json:"user_auth"`
@@ -236,8 +176,9 @@ type AuthPasswordResetResult struct {
 }
 
 func (self *BringYourApi) AuthPasswordReset(authPasswordReset *AuthPasswordResetArgs, callback AuthPasswordResetCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/auth/password-reset", self.apiUrl),
 		authPasswordReset,
 		self.byJwt,
@@ -247,7 +188,7 @@ func (self *BringYourApi) AuthPasswordReset(authPasswordReset *AuthPasswordReset
 }
 
 
-type AuthVerifySendCallback apiCallback[*AuthVerifySendResult]
+type AuthVerifySendCallback ApiCallback[*AuthVerifySendResult]
 
 type AuthVerifySendArgs struct {
     UserAuth string `json:"user_auth"`
@@ -258,8 +199,9 @@ type AuthVerifySendResult struct {
 }
 
 func (self *BringYourApi) AuthVerifySend(authVerifySend *AuthVerifySendArgs, callback AuthVerifySendCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/auth/verify-send", self.apiUrl),
 		authVerifySend,
 		self.byJwt,
@@ -270,7 +212,7 @@ func (self *BringYourApi) AuthVerifySend(authVerifySend *AuthVerifySendArgs, cal
 
 
 
-type AuthNetworkClientCallback apiCallback[*AuthNetworkClientResult]
+type AuthNetworkClientCallback ApiCallback[*AuthNetworkClientResult]
 
 type AuthNetworkClientArgs struct {
 	// FIXME how to bring this back as optional with gomobile. Use a new type *OptionalId?
@@ -292,8 +234,9 @@ type AuthNetworkClientError struct {
 }
 
 func (self *BringYourApi) AuthNetworkClient(authNetworkClient *AuthNetworkClientArgs, callback AuthNetworkClientCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/network/auth-client", self.apiUrl),
 		authNetworkClient,
 		self.byJwt,
@@ -303,8 +246,9 @@ func (self *BringYourApi) AuthNetworkClient(authNetworkClient *AuthNetworkClient
 }
 
 func (self *BringYourApi) AuthNetworkClientSync(authNetworkClient *AuthNetworkClientArgs) (*AuthNetworkClientResult, error) {
-	return post(
+	return HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/network/auth-client", self.apiUrl),
 		authNetworkClient,
 		self.byJwt,
@@ -314,7 +258,7 @@ func (self *BringYourApi) AuthNetworkClientSync(authNetworkClient *AuthNetworkCl
 }
 
 
-type RemoveNetworkClientCallback apiCallback[*RemoveNetworkClientResult]
+type RemoveNetworkClientCallback ApiCallback[*RemoveNetworkClientResult]
 
 type RemoveNetworkClientArgs struct {
 	ClientId Id `json:"client_id"`
@@ -329,8 +273,9 @@ type RemoveNetworkClientError struct {
 }
 
 func (self *BringYourApi) RemoveNetworkClient(removeNetworkClient *RemoveNetworkClientArgs, callback RemoveNetworkClientCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/network/remove-client", self.apiUrl),
 		removeNetworkClient,
 		self.byJwt,
@@ -340,8 +285,9 @@ func (self *BringYourApi) RemoveNetworkClient(removeNetworkClient *RemoveNetwork
 }
 
 func (self *BringYourApi) RemoveNetworkClientSync(removeNetworkClient *RemoveNetworkClientArgs) (*RemoveNetworkClientResult, error) {
-	return post(
+	return HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/network/remove-client", self.apiUrl),
 		removeNetworkClient,
 		self.byJwt,
@@ -357,7 +303,7 @@ type ProviderSpec struct {
     ClientId *Id `json:"client_id,omitempty"`
 }
 
-type FindProviders2Callback apiCallback[*FindProviders2Result]
+type FindProviders2Callback ApiCallback[*FindProviders2Result]
 
 type FindProviders2Args struct {
 	Specs []*ProviderSpec `json:"specs"`
@@ -377,8 +323,9 @@ type FindProvidersProvider struct {
 }
 
 func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, callback FindProviders2Callback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/network/find-providers2", self.apiUrl),
 		findProviders2,
 		self.byJwt,
@@ -388,8 +335,9 @@ func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, cal
 }
 
 func (self *BringYourApi) FindProviders2Sync(findProviders2 *FindProviders2Args) (*FindProviders2Result, error) {
-	return post(
+	return HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/network/find-providers2", self.apiUrl),
 		findProviders2,
 		self.byJwt,
@@ -400,7 +348,7 @@ func (self *BringYourApi) FindProviders2Sync(findProviders2 *FindProviders2Args)
 
 
 
-type ConnectControlCallback apiCallback[*ConnectControlResult]
+type ConnectControlCallback ApiCallback[*ConnectControlResult]
 
 type ConnectControlArgs struct {
 	Pack string `json:"pack"`
@@ -415,8 +363,9 @@ type ConnectControlError struct {
 }
 
 func (self *BringYourApi) ConnectControl(connectControl *ConnectControlArgs, callback ConnectControlCallback) {
-	go post(
+	go HttpPostWithStrategy(
 		self.ctx,
+		self.clientStrategy,
 		fmt.Sprintf("%s/connect/control", self.apiUrl),
 		connectControl,
 		self.byJwt,
@@ -425,108 +374,4 @@ func (self *BringYourApi) ConnectControl(connectControl *ConnectControlArgs, cal
 	)
 }
 
-
-func post[R any](ctx context.Context, url string, args any, byJwt string, result R, callback apiCallback[R]) (R, error) {
-	var requestBodyBytes []byte
-	if args == nil {
-		requestBodyBytes = make([]byte, 0)
-	} else {
-		var err error
-		requestBodyBytes, err = json.Marshal(args)
-		if err != nil {
-			var empty R
-			callback.Result(empty, err)
-			return empty, err
-		}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(requestBodyBytes))
-	if err != nil {
-		var empty R
-		callback.Result(empty, err)
-		return empty, err
-	}
-
-	req.Header.Add("Content-Type", "text/json")
-
-	if byJwt != "" {
-		auth := fmt.Sprintf("Bearer %s", byJwt)
-		req.Header.Add("Authorization", auth)
-	}
-
-	client := defaultClient()
-	r, err := client.Do(req)
-	if err != nil {
-		var empty R
-		callback.Result(empty, err)
-		return empty, err
-	}
-	defer r.Body.Close()
-
-	responseBodyBytes, err := io.ReadAll(r.Body)
-
-	if http.StatusOK != r.StatusCode {
-		// the response body is the error message
-		errorMessage := strings.TrimSpace(string(responseBodyBytes))
-		err = errors.New(errorMessage)
-		callback.Result(result, err)
-		return result, err
-	}
-
-	if err != nil {
-		callback.Result(result, err)
-		return result, err
-	}
-
-	err = json.Unmarshal(responseBodyBytes, &result)
-	if err != nil {
-		var empty R
-		callback.Result(empty, err)
-		return empty, err
-	}
-
-	callback.Result(result, nil)
-	return result, nil
-}
-
-
-func get[R any](ctx context.Context, url string, byJwt string, result R, callback apiCallback[R]) (R, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		var empty R
-		callback.Result(empty, err)
-		return empty, err
-	}
-
-	req.Header.Add("Content-Type", "text/json")
-
-	if byJwt != "" {
-		auth := fmt.Sprintf("Bearer %s", byJwt)
-		req.Header.Add("Authorization", auth)
-	}
-
-	client := defaultClient()
-	r, err := client.Do(req)
-	if err != nil {
-		var empty R
-		callback.Result(empty, err)
-		return empty, err
-	}
-
-	responseBodyBytes, err := io.ReadAll(r.Body)
-	r.Body.Close()
-
-	err = json.Unmarshal(responseBodyBytes, &result)
-	if err != nil {
-		var empty R
-		callback.Result(empty, err)
-		return empty, err
-	}
-
-	callback.Result(result, nil)
-	return result, nil
-}
-
-
-// TODO post with extender
 
