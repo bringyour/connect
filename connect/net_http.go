@@ -24,7 +24,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	// "github.com/golang/glog"
+	"github.com/golang/glog"
 )
 
 
@@ -157,6 +157,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		}
 		
 		dialer := &clientDialer{
+			description: "normal",
 			dialTlsContext: tlsDialer.DialContext,
 		}
 		dialers[dialer] = true
@@ -164,14 +165,17 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 	if settings.EnableResilient {
 		// fragment+reorder
 		dialer1 := &clientDialer{
+			description: "fragment+reorder",
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
 		}
 		// fragment
 		dialer2 := &clientDialer{
+			description: "fragment",
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
 		}
 		// reorder
 		dialer3 := &clientDialer{
+			description: "reorder",
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
 		}
 
@@ -259,6 +263,7 @@ func (self *ClientStrategy) wsDialer(dialTlsContext DialTlsContextFunction) *web
 }
 
 type evalResult struct {
+	dialer *clientDialer
 	response *http.Response
 	wsConn *websocket.Conn
 	err error
@@ -298,6 +303,9 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 
 	run := func(dialer *clientDialer) {
 		result := eval(handleCtx, dialer)
+		if result != nil {
+			result.dialer = dialer
+		}
 		
 		select {
 		case out <- result:
@@ -330,6 +338,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 				return nil
 			}
 			if result.err == nil {
+				glog.Infof("[net][p]select: %s\n", dialer.String())
 				return result
 			}
 		} else {
@@ -348,6 +357,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			return nil
 		case result := <- out:
 			if result.err == nil {
+				glog.Infof("[net][p]select: %s\n", result.dialer.String())
 				return result
 			} else {
 				go run(dialer)
@@ -382,6 +392,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 				return nil
 			case result := <- out:
 				if result.err == nil {
+					glog.Infof("[net][p]select: %s\n", result.dialer.String())
 					return result
 				} else {
 					go run(dialer)
@@ -461,6 +472,7 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 					return nil
 				}
 				if result.err == nil {
+					glog.Infof("[net][s]select: %s\n", dialer.String())
 					return result
 				}
 			}
@@ -771,6 +783,7 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 
 // non-extender dialers are never dropped
 type clientDialer struct {
+	description string
 	dialTlsContext DialTlsContextFunction
 	extenderConfig *ExtenderConfig
 
@@ -823,6 +836,17 @@ func (self *clientDialer) IsLastSuccess() bool {
 	defer self.mutex.Unlock()
 
 	return self.lastSuccessTime.After(self.lastErrorTime)
+}
+
+func (self *clientDialer) String() string {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if self.extenderConfig != nil {
+		return fmt.Sprintf("extender (%v) success=%d error=%d", self.extenderConfig, self.successCount, self.errorCount)
+	} else {
+		return fmt.Sprintf("%s success=%d error=%d", self.description, self.successCount, self.errorCount)
+	}
 }
 
 
