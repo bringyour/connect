@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/net/idna"
 
-	"golang.org/x/exp/maps"
+	// "golang.org/x/exp/maps"
 )
 
 
@@ -54,13 +54,13 @@ type DohSettings struct {
 }
 
 
-func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType string, settings *DohSettings) []netip.Addr {
+func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *DohSettings, domains ...string) map[netip.Addr]bool {
 	// run all the queries in parallel to all servers
 
 	switch recordType {
 	case "A", "AAAA":
 	default:
-		return []netip.Addr{}
+		return map[netip.Addr]bool{}
 	}
 	
 	
@@ -174,7 +174,7 @@ func DohQuery(ctx context.Context, ipVersion int, domains []string, recordType s
 		}
 	}
 
-	return maps.Keys(mergedIps)
+	return mergedIps
 }
 
 
