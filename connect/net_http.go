@@ -244,23 +244,6 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 	return weights
 }
 
-func (self *ClientStrategy) httpClient(dialTlsContext DialTlsContextFunction) *http.Client {
-	transport := &http.Transport{
-	  	DialTLSContext: dialTlsContext,
-	}
-	return &http.Client{
-		Transport: transport,
-		Timeout: self.settings.RequestTimeout,
-	}
-}
-
-func (self *ClientStrategy) wsDialer(dialTlsContext DialTlsContextFunction) *websocket.Dialer {
-	return &websocket.Dialer{
-		NetDialTLSContext: dialTlsContext,
-		HandshakeTimeout: self.settings.HandshakeTimeout,
-	}
-}
-
 type evalResult struct {
 	dialer *clientDialer
 	response *http.Response
@@ -511,7 +494,7 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 
 func (self *ClientStrategy) HttpParallel(request *http.Request) (*http.Response, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {		
-		httpClient := self.httpClient(dialer.dialTlsContext)
+		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
 
 		dialer.Update(handleCtx, err)
@@ -538,7 +521,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	// 3. continue from 1 until timeout
 
 	eval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {		
-		httpClient := self.httpClient(dialer.dialTlsContext)
+		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
 
 		dialer.Update(handleCtx, err)
@@ -549,7 +532,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		}
 	}
 	helloEval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {		
-		httpClient := self.httpClient(dialer.dialTlsContext)
+		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(helloRequest.WithContext(handleCtx))
 
 		dialer.Update(handleCtx, err)
@@ -570,7 +553,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
     eval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {
-    	wsDialer := self.wsDialer(dialer.dialTlsContext)
+    	wsDialer := dialer.WsDialer(self.settings)
     	wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)
 
 		dialer.Update(handleCtx, err)
@@ -805,10 +788,42 @@ type clientDialer struct {
 	extenderConfig *ExtenderConfig
 
 	mutex sync.Mutex
-	successCount int
-	errorCount int
+	successCount uint64
+	errorCount uint64
 	lastSuccessTime time.Time
 	lastErrorTime time.Time
+
+	httpClient *http.Client
+	websocketDialer *websocket.Dialer
+}
+
+func (self *clientDialer) HttpClient(settings *ClientStrategySettings) *http.Client {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if self.httpClient == nil {
+		transport := &http.Transport{
+		  	DialTLSContext: self.dialTlsContext,
+		}
+		self.httpClient = &http.Client{
+			Transport: transport,
+			Timeout: settings.RequestTimeout,
+		}
+	}
+	return self.httpClient
+}
+
+func (self *clientDialer) WsDialer(settings *ClientStrategySettings) *websocket.Dialer {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if self.websocketDialer == nil {
+		self.websocketDialer = &websocket.Dialer{
+			NetDialTLSContext: self.dialTlsContext,
+			HandshakeTimeout: settings.HandshakeTimeout,
+		}
+	}
+	return self.websocketDialer
 }
 
 func (self *clientDialer) Weight() float32 {
@@ -817,7 +832,7 @@ func (self *clientDialer) Weight() float32 {
 
 	c := self.successCount + self.errorCount
 	if 0 < c {
-		 return max(float32(self.successCount) / float32(c), self.minimumWeight)
+		 return max(float32(float64(self.successCount) / float64(c)), self.minimumWeight)
 	} else {
 		return self.minimumWeight
 	}
