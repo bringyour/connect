@@ -160,13 +160,13 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
                                 nativeTtl, _ := syscall.GetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL)
 
-                                fmt.Printf("native ttl=%d, server name start=%d, end=%d\n", nativeTtl, meta.ServerNameValueStart, meta.ServerNameValueEnd)
+                                // fmt.Printf("native ttl=%d, server name start=%d, end=%d\n", nativeTtl, meta.ServerNameValueStart, meta.ServerNameValueEnd)
 
                                 syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, 0)
                                 if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:meta.ServerNameValueStart])); err != nil {
                                     return 0, err
                                 }
-                                fmt.Printf("frag ttl=0\n")
+                                // fmt.Printf("frag ttl=0\n")
 
                                 for i := meta.ServerNameValueStart; i < meta.ServerNameValueEnd; i += 1 {
                                     var ttl int
@@ -179,7 +179,7 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
                                     if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[i:i+1])); err != nil {
                                         return 0, err
                                     }
-                                    fmt.Printf("frag ttl=%d\n", ttl)
+                                    // fmt.Printf("frag ttl=%d\n", ttl)
                                 }
 
                                 syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TTL, nativeTtl)
@@ -187,7 +187,7 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
                                 if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])); err != nil {
                                     return 0, err
                                 }
-                                fmt.Printf("frag ttl=%d\n", nativeTtl)
+                                // fmt.Printf("frag ttl=%d\n", nativeTtl)
                             } else if self.fragment {
 
                                 if _, err := tcpConn.Write(tlsHeader.reconstruct(handshakeBytes[0:meta.ServerNameValueStart])); err != nil {
@@ -373,7 +373,7 @@ func UnmarshalClientHello(handshakeBytes []byte) (*tlshacks.ClientHelloInfo, *cl
 
     var messageType uint8
     if !handshakeMessage.ReadUint8(&messageType) || messageType != 1 {
-        fmt.Printf("hello 1\n")
+        // fmt.Printf("hello 1\n")
         return nil, nil
     }
 
@@ -381,37 +381,37 @@ func UnmarshalClientHello(handshakeBytes []byte) (*tlshacks.ClientHelloInfo, *cl
 
     var clientHello cryptobyte.String
     if !handshakeMessage.ReadUint24LengthPrefixed(&clientHello) || !handshakeMessage.Empty() {
-        fmt.Printf("hello 2\n")
+        // fmt.Printf("hello 2\n")
         return nil, nil
     }
 
     clientHelloLength := len(clientHello)
 
     if !clientHello.ReadUint16((*uint16)(&info.Version)) {
-        fmt.Printf("hello 3\n")
+        // fmt.Printf("hello 3\n")
         return nil, nil
     }
 
     if !clientHello.ReadBytes(&info.Random, 32) {
-        fmt.Printf("hello 4\n")
+        // fmt.Printf("hello 4\n")
         return nil, nil
     }
 
     if !clientHello.ReadUint8LengthPrefixed((*cryptobyte.String)(&info.SessionID)) {
-        fmt.Printf("hello 5\n")
+        // fmt.Printf("hello 5\n")
         return nil, nil
     }
 
     var cipherSuites cryptobyte.String
     if !clientHello.ReadUint16LengthPrefixed(&cipherSuites) {
-        fmt.Printf("hello 6\n")
+        // fmt.Printf("hello 6\n")
         return nil, nil
     }
     info.CipherSuites = []tlshacks.CipherSuite{}
     for !cipherSuites.Empty() {
         var suite uint16
         if !cipherSuites.ReadUint16(&suite) {
-            fmt.Printf("hello 7\n")
+            // fmt.Printf("hello 7\n")
             return nil, nil
         }
         info.CipherSuites = append(info.CipherSuites, tlshacks.MakeCipherSuite(suite))
@@ -419,14 +419,14 @@ func UnmarshalClientHello(handshakeBytes []byte) (*tlshacks.ClientHelloInfo, *cl
 
     var compressionMethods cryptobyte.String
     if !clientHello.ReadUint8LengthPrefixed(&compressionMethods) {
-        fmt.Printf("hello 8\n")
+        // fmt.Printf("hello 8\n")
         return nil, nil
     }
     info.CompressionMethods = []tlshacks.CompressionMethod{}
     for !compressionMethods.Empty() {
         var method uint8
         if !compressionMethods.ReadUint8(&method) {
-            fmt.Printf("hello 9\n")
+            // fmt.Printf("hello 9\n")
             return nil, nil
         }
         info.CompressionMethods = append(info.CompressionMethods, tlshacks.CompressionMethod(method))
@@ -435,7 +435,7 @@ func UnmarshalClientHello(handshakeBytes []byte) (*tlshacks.ClientHelloInfo, *cl
     info.Extensions = []tlshacks.Extension{}
 
     if clientHello.Empty() {
-        fmt.Printf("hello 10\n")
+        // fmt.Printf("hello 10\n")
         return info, meta
     }
 
@@ -443,7 +443,7 @@ func UnmarshalClientHello(handshakeBytes []byte) (*tlshacks.ClientHelloInfo, *cl
 
     var extensions cryptobyte.String
     if !clientHello.ReadUint16LengthPrefixed(&extensions) {
-        fmt.Printf("hello 11\n")
+        // fmt.Printf("hello 11\n")
         return nil, nil
     }
     extensionsLength := len(extensions)
@@ -467,7 +467,7 @@ func UnmarshalClientHello(handshakeBytes []byte) (*tlshacks.ClientHelloInfo, *cl
         
         start := extensionsLength - len(extensions)
         if !extensions.ReadUint16(&extType) || !extensions.ReadUint16LengthPrefixed(&extData) {
-            fmt.Printf("hello 12\n")
+            // fmt.Printf("hello 12\n")
             return nil, nil
         }
         end := extensionsLength - len(extensions)
@@ -500,14 +500,14 @@ func UnmarshalClientHello(handshakeBytes []byte) (*tlshacks.ClientHelloInfo, *cl
     }
 
     if !clientHello.Empty() {
-        fmt.Printf("hello 13\n")
+        // fmt.Printf("hello 13\n")
         return nil, nil
     }
 
     info.Info.JA3String = tlshacks.JA3String(info)
     info.Info.JA3Fingerprint = tlshacks.JA3Fingerprint(info.Info.JA3String)
 
-    fmt.Printf("hello 14\n")
+    // fmt.Printf("hello 14\n")
     return info, meta
 }
 
