@@ -1,23 +1,22 @@
 package connect
 
-
 import (
-	"time"
+	"bytes"
 	"context"
-	"sync"
-	"net"
-	"net/netip"
-	"net/http"
-	"net/url"
 	"crypto/tls"
 	"encoding/json"
-	"bytes"
+	"errors"
 	"fmt"
 	"io"
-	"strings"
-	"errors"
-	"slices"
 	mathrand "math/rand"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"slices"
+	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/net/nettest"
 
@@ -28,65 +27,52 @@ import (
 	"github.com/golang/glog"
 )
 
-
 // censorship-resistant strategies for making https connections
 // this uses a random walk of best practices to obfuscate and double-encrypt https connections
 
 // note the net_* files are migrated from net.IP/IPNet to netip.Addr/Prefix
 // TODO generally the entire package should migrate over to these newer structs
 
-
-
 type DialTlsContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
-
-
-
 
 func DefaultClientStrategySettings() *ClientStrategySettings {
 	return &ClientStrategySettings{
-		EnableNormal: true,
+		EnableNormal:    true,
 		EnableResilient: true,
 
 		ParallelBlockSize: 4,
 
 		ExpandExtenderProfileCount: 8,
-		ExtenderNetworks: []netip.Prefix{},
-		ExtenderHostnames: []string{},
-		ExpandExtenderRateLimit: 1 * time.Second,
-		MaxExtenderCount: 128,
-		ExtenderMinimumWeight: 0.1,
-		ExtenderDropTimeout: 5 * time.Minute,
+		ExtenderNetworks:           []netip.Prefix{},
+		ExtenderHostnames:          []string{},
+		ExpandExtenderRateLimit:    1 * time.Second,
+		MaxExtenderCount:           128,
+		ExtenderMinimumWeight:      0.1,
+		ExtenderDropTimeout:        5 * time.Minute,
 
-		
-		DohSettings: DefaultDohSettings(),
+		DohSettings:     DefaultDohSettings(),
 		ConnectSettings: *DefaultConnectSettings(),
 	}
 }
 
 func DefaultConnectSettings() *ConnectSettings {
 	return &ConnectSettings{
-		RequestTimeout: 60 * time.Second,
-		ConnectTimeout: 2 * time.Second,
-		TlsTimeout: 4 * time.Second,
+		RequestTimeout:   60 * time.Second,
+		ConnectTimeout:   2 * time.Second,
+		TlsTimeout:       4 * time.Second,
 		HandshakeTimeout: 4 * time.Second,
-		TlsConfig: nil,
+		TlsConfig:        nil,
 	}
 }
 
-
-
-
-
 type ConnectSettings struct {
-	RequestTimeout time.Duration
-	ConnectTimeout time.Duration
-	TlsTimeout time.Duration
+	RequestTimeout   time.Duration
+	ConnectTimeout   time.Duration
+	TlsTimeout       time.Duration
 	HandshakeTimeout time.Duration
 
 	TlsConfig *tls.Config
 }
-
-
 
 type ClientStrategySettings struct {
 	EnableNormal bool
@@ -98,23 +84,20 @@ type ClientStrategySettings struct {
 
 	// the number of new profiles to add per expand
 	ExpandExtenderProfileCount int
-	ExtenderNetworks []netip.Prefix
+	ExtenderNetworks           []netip.Prefix
 	// these are evaluated with DoH to grow the extender ips
-	ExtenderHostnames []string
+	ExtenderHostnames       []string
 	ExpandExtenderRateLimit time.Duration
-	MaxExtenderCount int
+	MaxExtenderCount        int
 	// extender minimum weight
 	ExtenderMinimumWeight float32
 	// drop dialers that have not had a successful connect in this timeout
 	ExtenderDropTimeout time.Duration
-	
+
 	DohSettings *DohSettings
 
 	ConnectSettings
 }
-
-
-
 
 // stores statistics on client strategies
 type ClientStrategy struct {
@@ -124,7 +107,7 @@ type ClientStrategy struct {
 
 	mutex sync.Mutex
 	// dialers are only updated inside the mutex
-	dialers map[*clientDialer]bool
+	dialers             map[*clientDialer]bool
 	resolvedExtenderIps []netip.Addr
 
 	// custom extenders
@@ -132,11 +115,9 @@ type ClientStrategy struct {
 	extenderIpSecrets map[netip.Addr]string
 }
 
-
 func DefaultClientStrategy(ctx context.Context) *ClientStrategy {
 	return NewClientStrategy(ctx, DefaultClientStrategySettings())
 }
-
 
 // extender udp 53 to platform extender
 func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *ClientStrategy {
@@ -151,11 +132,11 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			},
 			Config: settings.TlsConfig,
 		}
-		
+
 		dialer := &clientDialer{
-			description: "normal",
-			minimumWeight: 0.5,
-			priority: 0,
+			description:    "normal",
+			minimumWeight:  0.5,
+			priority:       0,
 			dialTlsContext: tlsDialer.DialContext,
 		}
 		dialers[dialer] = true
@@ -163,23 +144,23 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 	if settings.EnableResilient {
 		// fragment+reorder
 		dialer1 := &clientDialer{
-			description: "fragment+reorder",
-			minimumWeight: 0.25,
-			priority: 50,
+			description:    "fragment+reorder",
+			minimumWeight:  0.25,
+			priority:       50,
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
 		}
 		// fragment
 		dialer2 := &clientDialer{
-			description: "fragment",
-			minimumWeight: 0.25,
-			priority: 50,
+			description:    "fragment",
+			minimumWeight:  0.25,
+			priority:       50,
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
 		}
 		// reorder
 		dialer3 := &clientDialer{
-			description: "reorder",
-			minimumWeight: 0.25,
-			priority: 50,
+			description:    "reorder",
+			minimumWeight:  0.25,
+			priority:       50,
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
 		}
 
@@ -188,19 +169,15 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		dialers[dialer3] = true
 	}
 
-
-
 	return &ClientStrategy{
-		ctx: ctx, 
-		settings: settings,
-		dialers: dialers,
+		ctx:                 ctx,
+		settings:            settings,
+		dialers:             dialers,
 		resolvedExtenderIps: resolvedExtenderIps,
-		extenderIpSecrets: map[netip.Addr]string{},
+		extenderIpSecrets:   map[netip.Addr]string{},
 	}
 
-
 }
-
 
 func (self *ClientStrategy) SetCustomExtenders(extenderIpSecrets map[netip.Addr]string) {
 	self.mutex.Lock()
@@ -220,7 +197,6 @@ func (self *ClientStrategy) CustomExtenders() map[netip.Addr]string {
 
 	return maps.Clone(self.extenderIpSecrets)
 }
-
 
 func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 	self.mutex.Lock()
@@ -245,10 +221,10 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 }
 
 type evalResult struct {
-	dialer *clientDialer
+	dialer   *clientDialer
 	response *http.Response
-	wsConn *websocket.Conn
-	err error
+	wsConn   *websocket.Conn
+	err      error
 }
 
 func (self *evalResult) Close() {
@@ -261,22 +237,21 @@ func (self *evalResult) Close() {
 	}
 }
 
-
-func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer)(*evalResult)) *evalResult {	
+func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer) *evalResult) *evalResult {
 	// in this order:
 	// 1. try all dialers that previously worked sequentially
 	// 2. try dialers that previously failed in parallel blocks
 	// 3. expand the extenders and try new extenders in parallel blocks
-	
+
 	handleCtx, handleCancel := context.WithTimeout(ctx, self.settings.RequestTimeout)
 	defer handleCancel()
 	// merge handleCtx with self.ctx
 	go func() {
 		defer handleCancel()
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			return
-		case <- self.ctx.Done():
+		case <-self.ctx.Done():
 			return
 		}
 	}()
@@ -288,10 +263,10 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		if result != nil {
 			result.dialer = dialer
 		}
-		
+
 		select {
 		case out <- result:
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			if result != nil {
 				result.Close()
 			}
@@ -301,7 +276,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 	self.collapseExtenderDialers()
 
 	dialerWeights := self.dialerWeights()
-	
+
 	serialDialers := []*clientDialer{}
 	parallelDialers := []*clientDialer{}
 
@@ -313,12 +288,12 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		}
 	}
 
-	slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer)(int) {
+	slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer) int {
 		return a.priority - b.priority
 	})
 	for _, dialer := range serialDialers {
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			return nil
 		default:
 		}
@@ -341,9 +316,9 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 	}
 	for _, dialer := range parallelDialers[n:] {
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			return nil
-		case result := <- out:
+		case result := <-out:
 			if result.err == nil {
 				glog.Infof("[net][p]select: %s\n", result.dialer.String())
 				return result
@@ -356,7 +331,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 	// keep trying as long as there is time left
 	for {
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			return nil
 		default:
 		}
@@ -369,16 +344,16 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			break
 		}
 
-		m := min(len(expandedDialers), self.settings.ParallelBlockSize - n)
+		m := min(len(expandedDialers), self.settings.ParallelBlockSize-n)
 		n += m
 		for _, dialer := range expandedDialers[0:m] {
 			go run(dialer)
 		}
 		for _, dialer := range expandedDialers[m:] {
 			select {
-			case <- handleCtx.Done():
+			case <-handleCtx.Done():
 				return nil
-			case result := <- out:
+			case result := <-out:
 				if result.err == nil {
 					glog.Infof("[net][p]select: %s\n", result.dialer.String())
 					return result
@@ -394,18 +369,18 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		expandDuration := expandEndTime.Sub(expandStartTime)
 		if timeout := self.settings.ExpandExtenderRateLimit - expandDuration; 0 < timeout {
 			select {
-			case <- handleCtx.Done():
+			case <-handleCtx.Done():
 				return nil
-			case <- time.After(timeout):
+			case <-time.After(timeout):
 			}
 		}
 	}
 
 	for range n {
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			return nil
-		case result := <- out:
+		case result := <-out:
 			if result.err == nil {
 				return result
 			}
@@ -417,25 +392,24 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 	}
 }
 
-func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer)(*evalResult), helloEval func(ctx context.Context, dialer *clientDialer)(*evalResult)) *evalResult {
+func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer) *evalResult, helloEval func(ctx context.Context, dialer *clientDialer) *evalResult) *evalResult {
 	handleCtx, handleCancel := context.WithTimeout(ctx, self.settings.RequestTimeout)
 	defer handleCancel()
 	// merge handleCtx with self.ctx
 	go func() {
 		defer handleCancel()
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			return
-		case <- self.ctx.Done():
+		case <-self.ctx.Done():
 			return
 		}
 	}()
 
-
 	// keep trying as long as there is time left
 	for {
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			return nil
 		default:
 		}
@@ -452,16 +426,16 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 			}
 		}
 
-		slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer)(int) {
+		slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer) int {
 			return a.priority - b.priority
 		})
 		for _, dialer := range serialDialers {
 			select {
-			case <- handleCtx.Done():
+			case <-handleCtx.Done():
 				return nil
 			default:
 			}
-			
+
 			result := eval(handleCtx, dialer)
 			if result == nil {
 				return nil
@@ -490,10 +464,8 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 	}
 }
 
-
-
 func (self *ClientStrategy) HttpParallel(request *http.Request) (*http.Response, error) {
-	eval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {		
+	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
 
@@ -501,7 +473,7 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*http.Response,
 
 		return &evalResult{
 			response: response,
-			err: err,
+			err:      err,
 		}
 	}
 
@@ -512,7 +484,6 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*http.Response,
 	return result.response, result.err
 }
 
-
 func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http.Request) (*http.Response, error) {
 	// in this order:
 	// 1. try all dialers that previously worked sequentially
@@ -520,7 +491,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	//    This is a basic ping to the server, which is run in parallel.
 	// 3. continue from 1 until timeout
 
-	eval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {		
+	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
 
@@ -528,10 +499,10 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 		return &evalResult{
 			response: response,
-			err: err,
+			err:      err,
 		}
 	}
-	helloEval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {		
+	helloEval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(helloRequest.WithContext(handleCtx))
 
@@ -539,7 +510,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 		return &evalResult{
 			response: response,
-			err: err,
+			err:      err,
 		}
 	}
 
@@ -550,18 +521,17 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	return result.response, result.err
 }
 
-
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
-    eval := func(handleCtx context.Context, dialer *clientDialer)(*evalResult) {
-    	wsDialer := dialer.WsDialer(self.settings)
-    	wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)
+	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
+		wsDialer := dialer.WsDialer(self.settings)
+		wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)
 
 		dialer.Update(handleCtx, err)
 
 		return &evalResult{
-			wsConn: wsConn,
+			wsConn:   wsConn,
 			response: response,
-			err: err,
+			err:      err,
 		}
 	}
 
@@ -614,10 +584,9 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 	}
 
 	extenderProfiles := EnumerateExtenderProfiles(
-		min(self.settings.ExpandExtenderProfileCount, self.settings.MaxExtenderCount - len(visitedExtenderProfiles)),
+		min(self.settings.ExpandExtenderProfileCount, self.settings.MaxExtenderCount-len(visitedExtenderProfiles)),
 		visitedExtenderProfiles,
 	)
-
 
 	extenderConfigs := []*ExtenderConfig{}
 	if len(self.extenderIpSecrets) == 0 {
@@ -655,7 +624,6 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 				expandedExtenderIps = expandedExtenderIps[0:len(extenderProfiles)]
 			}
 
-
 			// if not enough ips, use DoH to load ips for the extender hostnames
 			if len(expandedExtenderIps) < len(extenderProfiles) && 0 < len(self.settings.ExtenderHostnames) {
 
@@ -677,13 +645,12 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 							expandedExtenderIps = append(expandedExtenderIps, ip)
 						}
 					}
-				}				
+				}
 			}
 
 			unusedExtenderIps = append(unusedExtenderIps, expandedExtenderIps...)
 		}
 
-		
 		// unused ips first
 		mathrand.Shuffle(len(unusedExtenderIps), func(i int, j int) {
 			unusedExtenderIps[i], unusedExtenderIps[j] = unusedExtenderIps[j], unusedExtenderIps[i]
@@ -692,7 +659,7 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 		for i := range n {
 			extenderConfig := &ExtenderConfig{
 				Profile: extenderProfiles[i],
-				Ip: unusedExtenderIps[i],
+				Ip:      unusedExtenderIps[i],
 			}
 			extenderConfigs = append(extenderConfigs, extenderConfig)
 		}
@@ -724,7 +691,7 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 				for _, extenderProfile := range extenderProfiles[n:] {
 					v := mathrand.Float32() * netWeight
 					i := 0
-					for i < len(ips) - 1 {
+					for i < len(ips)-1 {
 						v -= weights[ips[i]]
 						if v <= 0 {
 							break
@@ -733,10 +700,10 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 					}
 					extenderConfig := &ExtenderConfig{
 						Profile: extenderProfile,
-						Ip: ips[i],
+						Ip:      ips[i],
 					}
 					extenderConfigs = append(extenderConfigs, extenderConfig)
-				}	
+				}
 			}
 		}
 	} else {
@@ -745,22 +712,22 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 			ip := ips[mathrand.Intn(len(ips))]
 			extenderConfig := &ExtenderConfig{
 				Profile: extenderProfile,
-				Ip: ip,
-				Secret: self.extenderIpSecrets[ip],
+				Ip:      ip,
+				Secret:  self.extenderIpSecrets[ip],
 			}
 			extenderConfigs = append(extenderConfigs, extenderConfig)
 		}
 	}
 
 	for _, extenderConfig := range extenderConfigs {
-	    dialTlsContext := NewExtenderDialTlsContext(
-	    	&self.settings.ConnectSettings,
-		    extenderConfig,
+		dialTlsContext := NewExtenderDialTlsContext(
+			&self.settings.ConnectSettings,
+			extenderConfig,
 		)
 
 		dialer := &clientDialer{
-			minimumWeight: self.settings.ExtenderMinimumWeight,
-			priority: 100,
+			minimumWeight:  self.settings.ExtenderMinimumWeight,
+			priority:       100,
 			dialTlsContext: dialTlsContext,
 			extenderConfig: extenderConfig,
 		}
@@ -775,25 +742,24 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 	return
 }
 
-
 // non-extender dialers are never dropped
 type clientDialer struct {
-	description string
+	description   string
 	minimumWeight float32
 	// 0 is max
 	priority int
-	
+
 	dialTlsContext DialTlsContextFunction
-	
+
 	extenderConfig *ExtenderConfig
 
-	mutex sync.Mutex
-	successCount uint64
-	errorCount uint64
+	mutex           sync.Mutex
+	successCount    uint64
+	errorCount      uint64
 	lastSuccessTime time.Time
-	lastErrorTime time.Time
+	lastErrorTime   time.Time
 
-	httpClient *http.Client
+	httpClient      *http.Client
 	websocketDialer *websocket.Dialer
 }
 
@@ -803,11 +769,11 @@ func (self *clientDialer) HttpClient(settings *ClientStrategySettings) *http.Cli
 
 	if self.httpClient == nil {
 		transport := &http.Transport{
-		  	DialTLSContext: self.dialTlsContext,
+			DialTLSContext: self.dialTlsContext,
 		}
 		self.httpClient = &http.Client{
 			Transport: transport,
-			Timeout: settings.RequestTimeout,
+			Timeout:   settings.RequestTimeout,
 		}
 	}
 	return self.httpClient
@@ -820,7 +786,7 @@ func (self *clientDialer) WsDialer(settings *ClientStrategySettings) *websocket.
 	if self.websocketDialer == nil {
 		self.websocketDialer = &websocket.Dialer{
 			NetDialTLSContext: self.dialTlsContext,
-			HandshakeTimeout: settings.HandshakeTimeout,
+			HandshakeTimeout:  settings.HandshakeTimeout,
 		}
 	}
 	return self.websocketDialer
@@ -832,7 +798,7 @@ func (self *clientDialer) Weight() float32 {
 
 	c := self.successCount + self.errorCount
 	if 0 < c {
-		 return max(float32(float64(self.successCount) / float64(c)), self.minimumWeight)
+		return max(float32(float64(self.successCount)/float64(c)), self.minimumWeight)
 	} else {
 		return self.minimumWeight
 	}
@@ -841,13 +807,13 @@ func (self *clientDialer) Weight() float32 {
 func (self *clientDialer) Update(handleCtx context.Context, err error) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
-	
+
 	if err == nil {
 		self.successCount += 1
 		self.lastSuccessTime = time.Now()
 	} else {
 		select {
-		case <- handleCtx.Done():
+		case <-handleCtx.Done():
 			// ignore any error is the context is canceled
 		default:
 			self.errorCount += 1
@@ -881,12 +847,9 @@ func (self *clientDialer) String() string {
 	}
 }
 
-
-
 type ApiCallback[R any] interface {
 	Result(result R, err error)
 }
-
 
 // for internal use
 type simpleApiCallback[R any] struct {
@@ -901,7 +864,7 @@ func NewApiCallback[R any](callback func(result R, err error)) ApiCallback[R] {
 
 func NewNoopApiCallback[R any]() ApiCallback[R] {
 	return &simpleApiCallback[R]{
-		callback: func(result R, err error){},
+		callback: func(result R, err error) {},
 	}
 }
 
@@ -909,31 +872,25 @@ func (self *simpleApiCallback[R]) Result(result R, err error) {
 	self.callback(result, err)
 }
 
-
 type ApiCallbackResult[R any] struct {
 	Result R
-	Error error
+	Error  error
 }
-
 
 func NewBlockingApiCallback[R any](ctx context.Context) (ApiCallback[R], chan ApiCallbackResult[R]) {
 	c := make(chan ApiCallbackResult[R])
 	apiCallback := NewApiCallback[R](func(result R, err error) {
 		r := ApiCallbackResult[R]{
 			Result: result,
-			Error: err,
+			Error:  err,
 		}
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 		case c <- r:
 		}
 	})
 	return apiCallback, c
 }
-
-
-
-
 
 func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrategy, requestUrl string, args any, byJwt string, result R, callback ApiCallback[R]) (R, error) {
 	var requestBodyBytes []byte
@@ -1027,7 +984,6 @@ func HelloRequestFromUrl(ctx context.Context, requestUrl string, byJwt string) (
 	return req, nil
 }
 
-
 func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrategy, requestUrl string, byJwt string, result R, callback ApiCallback[R]) (R, error) {
 	request, err := http.NewRequestWithContext(ctx, "GET", requestUrl, nil)
 	if err != nil {
@@ -1052,7 +1008,6 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 	defer r.Body.Close()
 
 	responseBodyBytes, err := io.ReadAll(r.Body)
-	
 
 	err = json.Unmarshal(responseBodyBytes, &result)
 	if err != nil {
@@ -1064,4 +1019,3 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 	callback.Result(result, nil)
 	return result, nil
 }
-

@@ -12,14 +12,11 @@ import (
 	// "time"
 	// "errors"
 	// "strings"
-
 	// "github.com/golang/glog"
 )
 
-
-
 type BringYourApi struct {
-	ctx context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	clientStrategy *ClientStrategy
@@ -29,7 +26,6 @@ type BringYourApi struct {
 	byJwt string
 }
 
-
 func NewBringYourApi(clientStrategy *ClientStrategy, apiUrl string) *BringYourApi {
 	return NewBringYourApiWithContext(context.Background(), clientStrategy, apiUrl)
 }
@@ -38,10 +34,10 @@ func NewBringYourApiWithContext(ctx context.Context, clientStrategy *ClientStrat
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	return &BringYourApi{
-		ctx: cancelCtx,
-		cancel: cancel,
+		ctx:            cancelCtx,
+		cancel:         cancel,
 		clientStrategy: clientStrategy,
-		apiUrl: apiUrl,
+		apiUrl:         apiUrl,
 	}
 }
 
@@ -50,29 +46,28 @@ func (self *BringYourApi) SetByJwt(byJwt string) {
 	self.byJwt = byJwt
 }
 
-
 type AuthLoginCallback ApiCallback[*AuthLoginResult]
 
 // `model.AuthLoginArgs`
 type AuthLoginArgs struct {
-	UserAuth string `json:"user_auth,omitempty"`
+	UserAuth    string `json:"user_auth,omitempty"`
 	AuthJwtType string `json:"auth_jwt_type,omitempty"`
-	AuthJwt string `json:"auth_jwt,omitempty"`
+	AuthJwt     string `json:"auth_jwt,omitempty"`
 }
 
 // `model.AuthLoginResult`
 type AuthLoginResult struct {
-	UserName string `json:"user_name,omitempty"`
-	UserAuth string `json:"user_auth,omitempty"`
-	AuthAllowed []string `json:"auth_allowed,omitempty"`
-	Error *AuthLoginResultError `json:"error,omitempty"`
-	Network *AuthLoginResultNetwork `json:"network,omitempty"`
+	UserName    string                  `json:"user_name,omitempty"`
+	UserAuth    string                  `json:"user_auth,omitempty"`
+	AuthAllowed []string                `json:"auth_allowed,omitempty"`
+	Error       *AuthLoginResultError   `json:"error,omitempty"`
+	Network     *AuthLoginResultNetwork `json:"network,omitempty"`
 }
 
 // `model.AuthLoginResultError`
 type AuthLoginResultError struct {
 	SuggestedUserAuth string `json:"suggested_user_auth,omitempty"`
-	Message string `json:"message"`
+	Message           string `json:"message"`
 }
 
 // `model.AuthLoginResultNetwork`
@@ -92,7 +87,6 @@ func (self *BringYourApi) AuthLogin(authLogin *AuthLoginArgs, callback AuthLogin
 	)
 }
 
-
 type AuthLoginWithPasswordCallback ApiCallback[*AuthLoginWithPasswordResult]
 
 type AuthLoginWithPasswordArgs struct {
@@ -102,8 +96,8 @@ type AuthLoginWithPasswordArgs struct {
 
 type AuthLoginWithPasswordResult struct {
 	VerificationRequired *AuthLoginWithPasswordResultVerification `json:"verification_required,omitempty"`
-	Network *AuthLoginWithPasswordResultNetwork `json:"network,omitempty"`
-	Error *AuthLoginWithPasswordResultError `json:"error,omitempty"`
+	Network              *AuthLoginWithPasswordResultNetwork      `json:"network,omitempty"`
+	Error                *AuthLoginWithPasswordResultError        `json:"error,omitempty"`
 }
 
 type AuthLoginWithPasswordResultVerification struct {
@@ -111,7 +105,7 @@ type AuthLoginWithPasswordResultVerification struct {
 }
 
 type AuthLoginWithPasswordResultNetwork struct {
-	ByJwt string `json:"by_jwt,omitempty"`
+	ByJwt       string `json:"by_jwt,omitempty"`
 	NetworkName string `json:"name,omitempty"`
 }
 
@@ -131,17 +125,16 @@ func (self *BringYourApi) AuthLoginWithPassword(authLoginWithPassword *AuthLogin
 	)
 }
 
-
 type AuthVerifyCallback ApiCallback[*AuthVerifyResult]
 
 type AuthVerifyArgs struct {
-	UserAuth string `json:"user_auth"`
+	UserAuth   string `json:"user_auth"`
 	VerifyCode string `json:"verify_code"`
 }
 
 type AuthVerifyResult struct {
 	Network *AuthVerifyResultNetwork `json:"network,omitempty"`
-	Error *AuthVerifyResultError `json:"error,omitempty"`
+	Error   *AuthVerifyResultError   `json:"error,omitempty"`
 }
 
 type AuthVerifyResultNetwork struct {
@@ -164,15 +157,14 @@ func (self *BringYourApi) AuthVerify(authVerify *AuthVerifyArgs, callback AuthVe
 	)
 }
 
-
 type AuthPasswordResetCallback ApiCallback[*AuthPasswordResetResult]
 
 type AuthPasswordResetArgs struct {
-    UserAuth string `json:"user_auth"`
+	UserAuth string `json:"user_auth"`
 }
 
 type AuthPasswordResetResult struct {
-    UserAuth string `json:"user_auth"`
+	UserAuth string `json:"user_auth"`
 }
 
 func (self *BringYourApi) AuthPasswordReset(authPasswordReset *AuthPasswordResetArgs, callback AuthPasswordResetCallback) {
@@ -187,15 +179,14 @@ func (self *BringYourApi) AuthPasswordReset(authPasswordReset *AuthPasswordReset
 	)
 }
 
-
 type AuthVerifySendCallback ApiCallback[*AuthVerifySendResult]
 
 type AuthVerifySendArgs struct {
-    UserAuth string `json:"user_auth"`
+	UserAuth string `json:"user_auth"`
 }
 
 type AuthVerifySendResult struct {
-    UserAuth string `json:"user_auth"`
+	UserAuth string `json:"user_auth"`
 }
 
 func (self *BringYourApi) AuthVerifySend(authVerifySend *AuthVerifySendArgs, callback AuthVerifySendCallback) {
@@ -210,8 +201,6 @@ func (self *BringYourApi) AuthVerifySend(authVerifySend *AuthVerifySendArgs, cal
 	)
 }
 
-
-
 type AuthNetworkClientCallback ApiCallback[*AuthNetworkClientResult]
 
 type AuthNetworkClientArgs struct {
@@ -219,18 +208,18 @@ type AuthNetworkClientArgs struct {
 	// if omitted, a new client_id is created
 	// ClientId string `json:"client_id",omitempty`
 	Description string `json:"description"`
-	DeviceSpec string `json:"device_spec"`
+	DeviceSpec  string `json:"device_spec"`
 }
 
 type AuthNetworkClientResult struct {
-	ByClientJwt string `json:"by_client_jwt,omitempty"`
-	Error *AuthNetworkClientError `json:"error,omitempty"`
+	ByClientJwt string                  `json:"by_client_jwt,omitempty"`
+	Error       *AuthNetworkClientError `json:"error,omitempty"`
 }
 
 type AuthNetworkClientError struct {
 	// can be a hard limit or a rate limit
-	ClientLimitExceeded bool `json:"client_limit_exceeded"` 
-	Message string `json:"message"`
+	ClientLimitExceeded bool   `json:"client_limit_exceeded"`
+	Message             string `json:"message"`
 }
 
 func (self *BringYourApi) AuthNetworkClient(authNetworkClient *AuthNetworkClientArgs, callback AuthNetworkClientCallback) {
@@ -256,7 +245,6 @@ func (self *BringYourApi) AuthNetworkClientSync(authNetworkClient *AuthNetworkCl
 		NewNoopApiCallback[*AuthNetworkClientResult](),
 	)
 }
-
 
 type RemoveNetworkClientCallback ApiCallback[*RemoveNetworkClientResult]
 
@@ -296,20 +284,19 @@ func (self *BringYourApi) RemoveNetworkClientSync(removeNetworkClient *RemoveNet
 	)
 }
 
-
 type ProviderSpec struct {
-    LocationId *Id `json:"location_id,omitempty"`
-    LocationGroupId *Id `json:"location_group_id,omitempty"`
-    ClientId *Id `json:"client_id,omitempty"`
+	LocationId      *Id `json:"location_id,omitempty"`
+	LocationGroupId *Id `json:"location_group_id,omitempty"`
+	ClientId        *Id `json:"client_id,omitempty"`
 }
 
 type FindProviders2Callback ApiCallback[*FindProviders2Result]
 
 type FindProviders2Args struct {
-	Specs []*ProviderSpec `json:"specs"`
-	Count int `json:"count"`
-	ExcludeClientIds []Id `json:"exclude_client_ids"`
-	ExcludeDestinations [][]Id `json:"exclude_destinations,omitempty"`
+	Specs               []*ProviderSpec `json:"specs"`
+	Count               int             `json:"count"`
+	ExcludeClientIds    []Id            `json:"exclude_client_ids"`
+	ExcludeDestinations [][]Id          `json:"exclude_destinations,omitempty"`
 }
 
 type FindProviders2Result struct {
@@ -317,9 +304,9 @@ type FindProviders2Result struct {
 }
 
 type FindProvidersProvider struct {
-	ClientId Id `json:"client_id"`
+	ClientId                Id        `json:"client_id"`
 	EstimatedBytesPerSecond ByteCount `json:"estimated_bytes_per_second"`
-	IntermediaryIds []Id `json:"intermediary_ids,omitempty"`
+	IntermediaryIds         []Id      `json:"intermediary_ids,omitempty"`
 }
 
 func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, callback FindProviders2Callback) {
@@ -346,8 +333,6 @@ func (self *BringYourApi) FindProviders2Sync(findProviders2 *FindProviders2Args)
 	)
 }
 
-
-
 type ConnectControlCallback ApiCallback[*ConnectControlResult]
 
 type ConnectControlArgs struct {
@@ -373,5 +358,3 @@ func (self *BringYourApi) ConnectControl(connectControl *ConnectControlArgs, cal
 		callback,
 	)
 }
-
-

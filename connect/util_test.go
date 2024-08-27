@@ -1,17 +1,16 @@
 package connect
 
 import (
-    "testing"
-    "slices"
-    "time"
-    "sync"
-    "fmt"
-    // "math"
-    mathrand "math/rand"
+	"fmt"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+	// "math"
+	mathrand "math/rand"
 
-    "github.com/go-playground/assert/v2"
+	"github.com/go-playground/assert/v2"
 )
-
 
 func TestMonitor(t *testing.T) {
 	timeout := 1 * time.Second
@@ -22,14 +21,13 @@ func TestMonitor(t *testing.T) {
 		update := monitor.NotifyChannel()
 		go monitor.NotifyAll()
 		select {
-		case <- update:
-		case <- time.After(timeout):
+		case <-update:
+		case <-time.After(timeout):
 			t.Fail()
 		}
 	}
 
 }
-
 
 func TestCallbackList(t *testing.T) {
 	callbacks := NewCallbackList[func(int)]()
@@ -48,7 +46,7 @@ func TestCallbackList(t *testing.T) {
 	for i := 0; i < n; i += 1 {
 		callbackId := callbacks.Add(testingCallbacks[i].Callback)
 		testingCallbackIds = append(testingCallbackIds, callbackId)
-		assert.Equal(t, i + 1, len(callbacks.Get()))
+		assert.Equal(t, i+1, len(callbacks.Get()))
 	}
 	assert.Equal(t, n, len(callbacks.Get()))
 	// note callbacks can be added multiple times
@@ -59,13 +57,13 @@ func TestCallbackList(t *testing.T) {
 
 	for i := 0; i < n; i += 1 {
 		callbacks.Remove(testingCallbackIds[i])
-		assert.Equal(t, n - 1 - i, len(callbacks.Get()))
+		assert.Equal(t, n-1-i, len(callbacks.Get()))
 	}
 	assert.Equal(t, 0, len(callbacks.Get()))
 
 	for i := 0; i < n; i += 1 {
 		callbacks.Add(testingCallbacks[i].Callback)
-		assert.Equal(t, i + 1, len(callbacks.Get()))
+		assert.Equal(t, i+1, len(callbacks.Get()))
 	}
 
 	for i := 0; i < m; i += 1 {
@@ -85,7 +83,7 @@ func TestCallbackList(t *testing.T) {
 
 type testingCallback struct {
 	stateLock sync.Mutex
-	values []int
+	values    []int
 }
 
 func (self *testingCallback) Callback(value int) {
@@ -100,7 +98,6 @@ func (self *testingCallback) Values() []int {
 	valuesCopy := slices.Clone(self.values)
 	return valuesCopy
 }
-
 
 func TestIdleCondition(t *testing.T) {
 	idleCondition := NewIdleCondition()
@@ -126,7 +123,6 @@ func TestIdleCondition(t *testing.T) {
 
 }
 
-
 func TestEvent(t *testing.T) {
 	event := NewEvent()
 	go func() {
@@ -136,14 +132,13 @@ func TestEvent(t *testing.T) {
 	assert.Equal(t, true, success)
 }
 
-
 func TestMinTime(t *testing.T) {
 	a := time.Now()
 	n := 10
 	bs := make([]time.Time, n)
 	bs[0] = a
 	for i := 1; i < n; i += 1 {
-		bs[i] = bs[i - 1].Add(time.Second)
+		bs[i] = bs[i-1].Add(time.Second)
 	}
 	mathrand.Shuffle(len(bs), func(i int, j int) {
 		bs[i], bs[j] = bs[j], bs[i]
@@ -153,17 +148,16 @@ func TestMinTime(t *testing.T) {
 	assert.Equal(t, a, foundA)
 }
 
-
 func TestWeightedShuffle(t *testing.T) {
 	// weighted shuffle many times and look at the average position
 	// the average position order should trend with the weight order
-	
+
 	k := 64
 	n := 512
 
 	netIndexes := map[int]int64{}
 
-	for i := 0; i < n * k; i += 1 {
+	for i := 0; i < n*k; i += 1 {
 		values := []int{}
 		weights := map[int]float32{}
 		for j := 0; j < n; j += 1 {
@@ -181,7 +175,7 @@ func TestWeightedShuffle(t *testing.T) {
 	for i := 0; i < n; i += 1 {
 		orderedValues = append(orderedValues, i)
 	}
-	slices.SortFunc(orderedValues, func(a int, b int)(int) {
+	slices.SortFunc(orderedValues, func(a int, b int) int {
 		if netIndexes[a] < netIndexes[b] {
 			return -1
 		} else if netIndexes[b] < netIndexes[a] {
@@ -201,10 +195,9 @@ func TestWeightedShuffle(t *testing.T) {
 	}
 }
 
-
 func TestWeightedShuffleWithEntropy(t *testing.T) {
 	// as entropy approaches 1, the weighted shuffle should become uniform
-	
+
 	k := 64
 	n := 256
 
@@ -217,7 +210,7 @@ func TestWeightedShuffleWithEntropy(t *testing.T) {
 	for entropyIndex, entropy := range orderedEntropies {
 		netIndexes := map[int]int64{}
 
-		for i := 0; i < n * k; i += 1 {
+		for i := 0; i < n*k; i += 1 {
 			values := []int{}
 			weights := map[int]float32{}
 			for j := 0; j < n; j += 1 {
@@ -234,11 +227,11 @@ func TestWeightedShuffleWithEntropy(t *testing.T) {
 		testError := func(testEntropy float32, expected bool) {
 			// n * k * ((1-e)*n + e*n/k)
 			// == n^2 * ((1-e)*k+e)
-			errorThreshold := int64(float32(n) * float32(n) * ((1 - testEntropy) * float32(k) + testEntropy))
+			errorThreshold := int64(float32(n) * float32(n) * ((1-testEntropy)*float32(k) + testEntropy))
 			failed := false
 			for i := 1; i < n; i += 1 {
 				a := i / 2
-				b := n - (i + 1) / 2
+				b := n - (i+1)/2
 				e := netIndexes[a] - netIndexes[b]
 				if -errorThreshold <= e && e <= errorThreshold {
 					e = 0
@@ -260,9 +253,8 @@ func TestWeightedShuffleWithEntropy(t *testing.T) {
 		fmt.Printf("[entropy]%d\n", entropyIndex)
 		testError(entropy, true)
 		// the test should fail at the next entropy index (tigher error bound)
-		if entropyIndex + 1 < len(orderedEntropies) {
-			testError(orderedEntropies[entropyIndex + 1], false)
+		if entropyIndex+1 < len(orderedEntropies) {
+			testError(orderedEntropies[entropyIndex+1], false)
 		}
 	}
 }
-

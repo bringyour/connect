@@ -2,27 +2,22 @@ package connect
 
 import (
 	"context"
-    "os"
-    "io"
-    "path/filepath"
-    "net"
-    "net/netip"
-    "net/http"
-    "crypto/tls"
-    "fmt"
-    "time"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"time"
 
-    "testing"
+	"testing"
 
-
-    "github.com/go-playground/assert/v2"
-
+	"github.com/go-playground/assert/v2"
 )
 
-
-
 func TestExtender(t *testing.T) {
-
 
 	// actual content server, port 443 (127.0.0.1)
 	// https, self signed
@@ -36,8 +31,6 @@ func TestExtender(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
-
 
 	certPemBytes, keyPemBytes, err := selfSign([]string{"localhost"}, "Connect Test")
 	assert.Equal(t, err, nil)
@@ -51,14 +44,11 @@ func TestExtender(t *testing.T) {
 	os.WriteFile(keyFile, keyPemBytes, 0x777)
 
 	server := &http.Server{
-		Addr: fmt.Sprintf(":%d", 443),
+		Addr:    fmt.Sprintf(":%d", 443),
 		Handler: &testExtenderServer{},
 	}
 	defer server.Close()
 	go server.ListenAndServeTLS(certFile, keyFile)
-	
-
-
 
 	extenderServer := NewExtenderServer(
 		ctx,
@@ -71,31 +61,29 @@ func TestExtender(t *testing.T) {
 	)
 	defer extenderServer.Close()
 	go extenderServer.ListenAndServe()
-	
 
 	select {
-	case <- time.After(1 * time.Second):
+	case <-time.After(1 * time.Second):
 	}
-
 
 	localIp, err := netip.ParseAddr("127.0.0.1")
 	assert.Equal(t, err, nil)
 
 	connectSettings := DefaultConnectSettings()
 	connectSettings.TlsConfig = &tls.Config{
-        InsecureSkipVerify: true,
-    }
+		InsecureSkipVerify: true,
+	}
 
 	client := NewExtenderHttpClient(
 		connectSettings,
 		&ExtenderConfig{
 			Profile: ExtenderProfile{
 				ConnectMode: ExtenderConnectModeQuic,
-				ServerName: "bringyour.com",
-				Port: 442,
+				ServerName:  "bringyour.com",
+				Port:        442,
 			},
-		    Ip: localIp,
-		    Secret: "montrose",
+			Ip:     localIp,
+			Secret: "montrose",
 		},
 	)
 
@@ -108,12 +96,7 @@ func TestExtender(t *testing.T) {
 	assert.Equal(t, err, nil)
 	assert.Equal(t, string(body), "{}")
 
-
-	
-
-
 }
-
 
 type testExtenderServer struct {
 }
@@ -123,4 +106,3 @@ func (self *testExtenderServer) ServeHTTP(w http.ResponseWriter, req *http.Reque
 	w.Header().Add("Content-Type", "application/json")
 	w.Write([]byte("{}"))
 }
-

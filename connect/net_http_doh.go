@@ -5,26 +5,23 @@ import (
 	"strings"
 	// "time"
 	// "crypto/tls"
-	"net"
-	"net/netip"
-	"net/http"
-	"net/url"
+	"encoding/json"
 	"fmt"
 	"io"
-	"encoding/json"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
 
 	"golang.org/x/net/idna"
-
 	// "golang.org/x/exp/maps"
 )
-
 
 func DefaultDohSettings() *DohSettings {
 	return &DohSettings{
 		ConnectSettings: *DefaultConnectSettings(),
 	}
 }
-
 
 // see:
 // https://developers.cloudflare.com/1.1.1.1/ip-addresses/
@@ -48,11 +45,9 @@ func dohUrlsIpv6() []string {
 	}
 }
 
-
 type DohSettings struct {
 	ConnectSettings
 }
-
 
 func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *DohSettings, domains ...string) map[netip.Addr]bool {
 	// run all the queries in parallel to all servers
@@ -62,22 +57,20 @@ func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *D
 	default:
 		return map[netip.Addr]bool{}
 	}
-	
-	
+
 	netDialer := &net.Dialer{
-		Timeout:  settings.ConnectTimeout,
+		Timeout: settings.ConnectTimeout,
 	}
 	httpClient := &http.Client{
 		Timeout: settings.RequestTimeout,
 		Transport: &http.Transport{
-			DialContext: netDialer.DialContext,
+			DialContext:         netDialer.DialContext,
 			TLSHandshakeTimeout: settings.TlsTimeout,
-			TLSClientConfig: settings.TlsConfig,
+			TLSClientConfig:     settings.TlsConfig,
 		},
 	}
 
-
-	query := func(dohUrl string, domain string)([]netip.Addr) {
+	query := func(dohUrl string, domain string) []netip.Addr {
 
 		name, err := Punycode(domain)
 		if err != nil {
@@ -119,8 +112,6 @@ func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *D
 			return nil
 		}
 
-
-
 		if dohResponse.Status != 0 {
 			return nil
 		}
@@ -135,7 +126,6 @@ func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *D
 		return ips
 	}
 
-
 	var dohUrls []string
 	switch ipVersion {
 	case 4:
@@ -146,7 +136,6 @@ func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *D
 		dohUrls = []string{}
 	}
 
-
 	out := make(chan []netip.Addr)
 
 	for _, dohUrl := range dohUrls {
@@ -155,7 +144,7 @@ func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *D
 				ips := query(dohUrl, domain)
 				select {
 				case out <- ips:
-				case <- ctx.Done():
+				case <-ctx.Done():
 				}
 			}()
 		}
@@ -165,18 +154,17 @@ func DohQuery(ctx context.Context, ipVersion int, recordType string, settings *D
 	for range dohUrls {
 		for range domains {
 			select {
-			case ips := <- out:
+			case ips := <-out:
 				for _, ip := range ips {
 					mergedIps[ip] = true
 				}
-			case <- ctx.Done():
+			case <-ctx.Done():
 			}
 		}
 	}
 
 	return mergedIps
 }
-
 
 type DohQuestion struct {
 	Name string `json:"name"`
@@ -191,16 +179,15 @@ type DohAnswer struct {
 }
 
 type DohResponse struct {
-	Status   int        `json:"Status"`
-	TC       bool       `json:"TC"`
-	RD       bool       `json:"RD"`
-	RA       bool       `json:"RA"`
-	AD       bool       `json:"AD"`
-	CD       bool       `json:"CD"`
+	Status   int           `json:"Status"`
+	TC       bool          `json:"TC"`
+	RD       bool          `json:"RD"`
+	RA       bool          `json:"RA"`
+	AD       bool          `json:"AD"`
+	CD       bool          `json:"CD"`
 	Question []DohQuestion `json:"Question"`
 	Answer   []DohAnswer   `json:"Answer"`
 }
-
 
 func Punycode(domain string) (string, error) {
 	name := strings.TrimSpace(domain)
@@ -211,6 +198,3 @@ func Punycode(domain string) (string, error) {
 		idna.StrictDomainName(false),
 	).ToASCII(name)
 }
-
-
-
