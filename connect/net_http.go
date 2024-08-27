@@ -16,6 +16,7 @@ import (
 	"io"
 	"strings"
 	"errors"
+	"slices"
 	mathrand "math/rand"
 
 	"golang.org/x/net/nettest"
@@ -47,8 +48,6 @@ func DefaultClientStrategySettings() *ClientStrategySettings {
 		EnableResilient: true,
 
 		ParallelBlockSize: 4,
-
-		MinimumWeight: 0.25,
 
 		ExpandExtenderProfileCount: 8,
 		ExtenderNetworks: []netip.Prefix{},
@@ -96,9 +95,6 @@ type ClientStrategySettings struct {
 
 	// for gets and ws connects
 	ParallelBlockSize int
-
-	// non-extender minimum weight
-	MinimumWeight float32
 
 	// the number of new profiles to add per expand
 	ExpandExtenderProfileCount int
@@ -158,6 +154,8 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		
 		dialer := &clientDialer{
 			description: "normal",
+			minimumWeight: 0.5,
+			priority: 0,
 			dialTlsContext: tlsDialer.DialContext,
 		}
 		dialers[dialer] = true
@@ -166,16 +164,22 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		// fragment+reorder
 		dialer1 := &clientDialer{
 			description: "fragment+reorder",
+			minimumWeight: 0.25,
+			priority: 50,
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
 		}
 		// fragment
 		dialer2 := &clientDialer{
 			description: "fragment",
+			minimumWeight: 0.25,
+			priority: 50,
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
 		}
 		// reorder
 		dialer3 := &clientDialer{
 			description: "reorder",
+			minimumWeight: 0.25,
+			priority: 50,
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
 		}
 
@@ -227,11 +231,6 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 	if len(self.extenderIpSecrets) == 0 {
 		for dialer, _ := range self.dialers {
 			w := dialer.Weight()
-			if dialer.IsExtender() {
-				w = max(w, self.settings.ExtenderMinimumWeight)
-			} else {
-				w = max(w, self.settings.MinimumWeight)
-			}
 			weights[dialer] = w
 		}
 	} else {
@@ -319,34 +318,40 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 	self.collapseExtenderDialers()
 
 	dialerWeights := self.dialerWeights()
-	// descending
-	orderedDialers := maps.Keys(dialerWeights)
-	WeightedShuffle(orderedDialers, dialerWeights)
-
+	
+	serialDialers := []*clientDialer{}
 	parallelDialers := []*clientDialer{}
 
-	for _, dialer := range orderedDialers {
+	for dialer, _ := range dialerWeights {
 		if dialer.IsLastSuccess() {
-			select {
-			case <- handleCtx.Done():
-				return nil
-			default:
-			}
-
-			result := eval(handleCtx, dialer)
-			if result == nil {
-				return nil
-			}
-			if result.err == nil {
-				glog.Infof("[net][p]select: %s\n", dialer.String())
-				return result
-			}
+			serialDialers = append(serialDialers, dialer)
 		} else {
 			parallelDialers = append(parallelDialers, dialer)
 		}
 	}
 
+	slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer)(int) {
+		return a.priority - b.priority
+	})
+	for _, dialer := range serialDialers {
+		select {
+		case <- handleCtx.Done():
+			return nil
+		default:
+		}
+
+		result := eval(handleCtx, dialer)
+		if result == nil {
+			return nil
+		}
+		if result.err == nil {
+			glog.Infof("[net][p]select: %s\n", dialer.String())
+			return result
+		}
+	}
+
 	// note parallel dialers is in the original weighted order
+	WeightedShuffle(parallelDialers, dialerWeights)
 	n := min(len(parallelDialers), self.settings.ParallelBlockSize)
 	for _, dialer := range parallelDialers[0:n] {
 		go run(dialer)
@@ -455,26 +460,32 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 		self.collapseExtenderDialers()
 
 		dialerWeights := self.dialerWeights()
-		// descending
-		orderedDialers := maps.Keys(dialerWeights)
-		WeightedShuffle(orderedDialers, dialerWeights)
 
-		for _, dialer := range orderedDialers {
+		serialDialers := []*clientDialer{}
+
+		for dialer, _ := range dialerWeights {
 			if dialer.IsLastSuccess() {
-				select {
-				case <- handleCtx.Done():
-					return nil
-				default:
-				}
-				
-				result := eval(handleCtx, dialer)
-				if result == nil {
-					return nil
-				}
-				if result.err == nil {
-					glog.Infof("[net][s]select: %s\n", dialer.String())
-					return result
-				}
+				serialDialers = append(serialDialers, dialer)
+			}
+		}
+
+		slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer)(int) {
+			return a.priority - b.priority
+		})
+		for _, dialer := range serialDialers {
+			select {
+			case <- handleCtx.Done():
+				return nil
+			default:
+			}
+			
+			result := eval(handleCtx, dialer)
+			if result == nil {
+				return nil
+			}
+			if result.err == nil {
+				glog.Infof("[net][s]select: %s\n", dialer.String())
+				return result
 			}
 		}
 
@@ -711,7 +722,6 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 			for dialer, _ := range self.dialers {
 				if dialer.IsExtender() {
 					w := dialer.Weight()
-					w = max(w, self.settings.ExtenderMinimumWeight)
 					weights[dialer.extenderConfig.Ip] = w
 					netWeight += w
 				}
@@ -766,6 +776,8 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 		)
 
 		dialer := &clientDialer{
+			minimumWeight: self.settings.ExtenderMinimumWeight,
+			priority: 100,
 			dialTlsContext: dialTlsContext,
 			extenderConfig: extenderConfig,
 		}
@@ -784,7 +796,12 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 // non-extender dialers are never dropped
 type clientDialer struct {
 	description string
+	minimumWeight float32
+	// 0 is max
+	priority int
+	
 	dialTlsContext DialTlsContextFunction
+	
 	extenderConfig *ExtenderConfig
 
 	mutex sync.Mutex
@@ -800,9 +817,9 @@ func (self *clientDialer) Weight() float32 {
 
 	c := self.successCount + self.errorCount
 	if 0 < c {
-		 return float32(self.successCount) / float32(c)
+		 return max(float32(self.successCount) / float32(c), self.minimumWeight)
 	} else {
-		return 0
+		return self.minimumWeight
 	}
 }
 
@@ -835,7 +852,7 @@ func (self *clientDialer) IsLastSuccess() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	return self.lastSuccessTime.After(self.lastErrorTime)
+	return !self.lastSuccessTime.Before(self.lastErrorTime)
 }
 
 func (self *clientDialer) String() string {
@@ -1032,7 +1049,4 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 	callback.Result(result, nil)
 	return result, nil
 }
-
-
-
 
