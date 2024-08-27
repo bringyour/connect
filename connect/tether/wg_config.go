@@ -32,14 +32,14 @@ type ByWgConfig struct {
 // config is the base ByWgConfig configuration of the device.
 //
 // The function returns an error if the device cannot be retrieved or the config name doesn't match device name.
-func (server *TetherClient) GetUpdatedConfig(config ByWgConfig) (string, error) {
-	if server.DeviceName != config.Name {
+func (c *Client) GetUpdatedConfig(config ByWgConfig) (string, error) {
+	if c.DeviceName != config.Name {
 		return "", fmt.Errorf("name in config does not match the device name")
 	}
 
-	device, err := server.Device(server.DeviceName)
+	device, err := c.Device(c.DeviceName)
 	if err != nil {
-		return "", fmt.Errorf("device %q does not exist", server.DeviceName)
+		return "", fmt.Errorf("device %q does not exist", c.DeviceName)
 	}
 
 	newConfig := updateConfigFromDevice(config, device)
@@ -53,8 +53,8 @@ func (server *TetherClient) GetUpdatedConfig(config ByWgConfig) (string, error) 
 // filePath is the place where config is saved.
 //
 // The function returns an error if the updated config could not be retrieved or the file was not saved properly.
-func (server *TetherClient) SaveConfigToFile(config ByWgConfig, filePath string) error {
-	content, err := server.GetUpdatedConfig(config)
+func (c *Client) SaveConfigToFile(config ByWgConfig, filePath string) error {
+	content, err := c.GetUpdatedConfig(config)
 	if err != nil {
 		return fmt.Errorf("updated config file: %w", err)
 	}

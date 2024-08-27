@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/docopt/docopt-go"
 	"github.com/gin-gonic/gin"
-	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"bringyour.com/connect/tether"
@@ -27,7 +25,7 @@ const DefaultDeviceName = "bywg0"
 const DefaultConfigFile = "/etc/tetherctl/"
 const DefaultApiUrl = "localhost:9090"
 
-var tc tether.TetherClient
+var tc tether.Client
 
 func main() {
 	usage := fmt.Sprintf(
@@ -57,6 +55,7 @@ Usage:
 		--pub_key=<pub_key>
     tetherctl start-api [--device_name=<device_name>] [--endpoint=<endpoint>]
 		[--api_url=<api_url>]
+	tetherctl test
     
 Options:
     -h --help                       Show this screen.
@@ -86,22 +85,11 @@ Options:
 		deviceName = DefaultDeviceName
 	}
 
-	wgEndpoint, err := opts.String("--endpoint")
-	if err != nil {
-		wgEndpoint = getPublicIP()
-	}
-
-	c, err := wgctrl.New()
-	if err != nil {
-		log.Fatalf("Error creating wgctrl client: %v", err)
-	}
-	defer c.Close()
-
-	tc = tether.TetherClient{
-		Client:     c,
-		ClientIP:   net.ParseIP(wgEndpoint),
+	tc = tether.Client{
 		DeviceName: deviceName,
 	}
+	// TODO: add device
+	defer tc.Close()
 	// fmt.Printf("\033[34mTether client created for IP %q and device %q\033[0m\n\n", wgEndpoint, deviceName)
 
 	if up_, _ := opts.Bool("up"); up_ {
@@ -128,7 +116,15 @@ Options:
 		getPeerConfigCli(opts)
 	} else if startAPI_, _ := opts.Bool("start-api"); startAPI_ {
 		startApiCli(opts)
+	} else if test_, _ := opts.Bool("test"); test_ {
+		Test()
 	}
+}
+
+func Test() {
+	fmt.Println("test")
+	testDev := wgtypes.Device{Name: "idk", Type: wgtypes.DeviceType(1)}
+	fmt.Printf("%+v\n", testDev)
 }
 
 // get the public ip of this machine as default endpoint
@@ -275,11 +271,7 @@ func genPubKeyCli(opts docopt.Opts) {
 }
 
 func getDeviceNamesCli() {
-	devices, err := tc.GetAvailableDevices()
-	if err != nil {
-		log.Fatalf("Error: could not get available devices: %v", err)
-	}
-
+	devices := tc.GetAvailableDevices()
 	if len(devices) == 0 {
 		fmt.Println("No devices found.")
 		return
@@ -339,12 +331,12 @@ func addPeerCli(opts docopt.Opts) {
 		log.Fatalf("Error parsing public key: %v", err)
 	}
 
-	config, err := tc.AddPeerToDevice(_pk)
+	err = tc.AddPeerToDevice(_pk)
 	if err != nil {
 		log.Fatalf("Error adding peer to device: %v", err)
 	}
 
-	fmt.Println(config)
+	getPeerConfigCli(opts)
 }
 
 func getPeerConfigCli(opts docopt.Opts) {
@@ -353,7 +345,12 @@ func getPeerConfigCli(opts docopt.Opts) {
 		log.Fatalf("Error: no --pub_key provided: %v", err)
 	}
 
-	config, err := tc.GetPeerConfig(publicKey)
+	wgEndpoint, err := opts.String("--endpoint")
+	if err != nil {
+		wgEndpoint = getPublicIP()
+	}
+
+	config, err := tc.GetPeerConfig(publicKey, wgEndpoint)
 	if err != nil {
 		log.Fatalf("Error getting peer config: %v", err)
 	}
@@ -367,12 +364,16 @@ func startApiCli(opts docopt.Opts) {
 		apiUrl = DefaultApiUrl
 	}
 
+	wgEndpoint, err := opts.String("--endpoint")
+	if err != nil {
+		wgEndpoint = getPublicIP()
+	}
+
 	router := gin.Default()
 	// endpoint for adding peer and returning config
-	router.POST("/peer/add/*pubkey", apiAddPeer)
+	router.POST("/peer/add/*pubkey", func(c *gin.Context) { apiAddPeer(c, wgEndpoint) })
 	// endpoint for getting existing peer config
-	router.GET("/peer/config/*pubkey", apiGetPeerConfig)
-	// router.Run(apiUrl)
+	router.GET("/peer/config/*pubkey", func(c *gin.Context) { apiGetPeerConfig(c, wgEndpoint) })
 
 	// wrap Gin router in an HTTP server
 	srv := &http.Server{
@@ -402,10 +403,10 @@ func startApiCli(opts docopt.Opts) {
 	fmt.Println("Server exiting")
 }
 
-func apiGetPeerConfig(context *gin.Context) {
+func apiGetPeerConfig(context *gin.Context, wgEndpoint string) {
 	publicKey := parsePublicKey(context)
 
-	config, err := tc.GetPeerConfig(publicKey)
+	config, err := tc.GetPeerConfig(publicKey, wgEndpoint)
 	if err != nil {
 		context.String(http.StatusNotFound, fmt.Sprintf("%d Not Found - %v", http.StatusNotFound, err))
 		return
@@ -415,7 +416,7 @@ func apiGetPeerConfig(context *gin.Context) {
 	context.String(http.StatusOK, config)
 }
 
-func apiAddPeer(context *gin.Context) {
+func apiAddPeer(context *gin.Context, wgEndpoint string) {
 	publicKey := parsePublicKey(context)
 
 	_pk, err := wgtypes.ParseKey(publicKey)
@@ -424,9 +425,15 @@ func apiAddPeer(context *gin.Context) {
 		return
 	}
 
-	config, err := tc.AddPeerToDevice(_pk)
+	err = tc.AddPeerToDevice(_pk)
 	if err != nil {
 		context.String(http.StatusInternalServerError, fmt.Sprintf("%d Internal Server Error - %v", http.StatusInternalServerError, err))
+		return
+	}
+
+	config, err := tc.GetPeerConfig(publicKey, wgEndpoint)
+	if err != nil {
+		context.String(http.StatusNotFound, fmt.Sprintf("%d Not Found - %v", http.StatusNotFound, err))
 		return
 	}
 

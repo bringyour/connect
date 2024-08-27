@@ -15,35 +15,34 @@ const TETHER_CMD string = "[sh]"
 // bywgConf is the configuration file.
 //
 // The function returns an error if the interface could not be brought up.
-// Additionally, an error will be returned if the ByWgConfig.Name does not match the TetherClient.DeviceName.
-func (server *TetherClient) BringUpInterface(bywgConf ByWgConfig) error {
+// Additionally, an error will be returned if the ByWgConfig.Name does not match the Client.DeviceName.
+func (c *Client) BringUpInterface(bywgConf ByWgConfig) error {
 	// TODO: need user to be superuser (either throw error or prompt user to give privilages)
 
-	if server.DeviceName != bywgConf.Name {
+	if c.DeviceName != bywgConf.Name {
 		return fmt.Errorf("name in config does not match the device name")
 	}
 
 	errorOccurred := true
 	defer func() {
 		if errorOccurred {
-			server.revertUpChanges()
+			c.revertUpChanges()
 		}
 	}()
 
-	if err := server.createWgInterface(); err != nil {
+	if err := c.createWgInterface(); err != nil {
 		return fmt.Errorf("could not create WireGuard interface: %w", err)
 	}
-	// TODO: add option to config for chosing wireguard implementation
 
-	runCommands(bywgConf.PreUp, server.DeviceName)
-	if err := server.setupDevice(bywgConf.PrivateKey, bywgConf.ListenPort, bywgConf.Peers); err != nil {
+	runCommands(bywgConf.PreUp, c.DeviceName)
+	if err := c.setupDevice(bywgConf.PrivateKey, bywgConf.ListenPort, bywgConf.Peers); err != nil {
 		return fmt.Errorf("device setup failed: %w", err)
 	}
-	server.addAddresses(bywgConf.Address)
-	if err := server.runUpCommand(); err != nil {
+	c.addAddresses(bywgConf.Address)
+	if err := c.runUpCommand(); err != nil {
 		return fmt.Errorf("error running up command: %w", err)
 	}
-	runCommands(bywgConf.PostUp, server.DeviceName)
+	runCommands(bywgConf.PostUp, c.DeviceName)
 
 	errorOccurred = false // do not execute defer statement
 	return nil
@@ -55,54 +54,54 @@ func (server *TetherClient) BringUpInterface(bywgConf ByWgConfig) error {
 // configSavePath is the location where the updated configuration file will be stored.
 //
 // The function returns an error if the interface could not be brought down.
-// Additionally, an error will be returned if the Config.Name does not match the TetherClient.DeviceName.
-func (server *TetherClient) BringDownInterface(bywgConf ByWgConfig, configSavePath string) error {
+// Additionally, an error will be returned if the Config.Name does not match the Client.DeviceName.
+func (c *Client) BringDownInterface(bywgConf ByWgConfig, configSavePath string) error {
 	// TODO: need user to be superuser (either throw error or prompt user to give privilages)
 
-	if server.DeviceName != bywgConf.Name {
+	if c.DeviceName != bywgConf.Name {
 		return fmt.Errorf("name in config does not match the device name")
 	}
 
 	// throw error if device does not exist or is not a WireGuard device
-	if _, err := server.Device(server.DeviceName); err != nil {
+	if _, err := c.Device(c.DeviceName); err != nil {
 		return fmt.Errorf("could not get device: %w", err)
 	}
 
-	runCommands(bywgConf.PreDown, server.DeviceName)
+	runCommands(bywgConf.PreDown, c.DeviceName)
 	if bywgConf.SaveConfig {
-		server.SaveConfigToFile(bywgConf, configSavePath)
+		c.SaveConfigToFile(bywgConf, configSavePath)
 	}
-	if err := server.runDownCommand(); err != nil {
+	if err := c.runDownCommand(); err != nil {
 		return fmt.Errorf("error running down command: %w", err)
 	}
-	runCommands(bywgConf.PostDown, server.DeviceName)
+	runCommands(bywgConf.PostDown, c.DeviceName)
 
 	return nil
 }
 
-func (server *TetherClient) revertUpChanges() {
+func (c *Client) revertUpChanges() {
 	fmt.Println("Error bringing up the interface. Reverting changes by deleting the interface...")
-	if err := server.runDownCommand(); err != nil {
+	if err := c.runDownCommand(); err != nil {
 		fmt.Println(err)
 	}
 }
 
-func (server *TetherClient) createWgInterface() error {
-	_, err := server.Device(server.DeviceName)
-	if err == nil {
-		return fmt.Errorf("device %q already exists", server.DeviceName)
-	}
+func (c *Client) createWgInterface() error {
+	// _, err := c.Device(c.DeviceName)
+	// if err == nil {
+	// 	return fmt.Errorf("device %q already exists", c.DeviceName)
+	// }
 
-	_, err = exec.LookPath("wireguard-go")
-	if err != nil {
-		return fmt.Errorf("failed to find wireguard-go: %w", err)
-	}
+	// _, err = exec.LookPath("wireguard-go")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to find wireguard-go: %w", err)
+	// }
 
-	fmt.Printf("%s wireguard-go %s\n", TETHER_CMD, server.DeviceName)
-	cmd := exec.Command("wireguard-go", server.DeviceName)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create WireGuard interface: %w", err)
-	}
+	// fmt.Printf("%s wireguard-go %s\n", TETHER_CMD, c.DeviceName)
+	// cmd := exec.Command("wireguard-go", c.DeviceName)
+	// if err := cmd.Run(); err != nil {
+	// 	return fmt.Errorf("failed to create WireGuard interface: %w", err)
+	// }
 
 	return nil
 }
@@ -115,7 +114,7 @@ func (server *TetherClient) createWgInterface() error {
 // listenPort can be nil, indicating that a random one should be used.
 //
 // The function returns an error if the private key is invalid or the configuration cannot be applied
-func (server *TetherClient) setupDevice(privKey string, listenPort *int, peers []wgtypes.PeerConfig) error {
+func (c *Client) setupDevice(privKey string, listenPort *int, peers []wgtypes.PeerConfig) error {
 	privateKey, err := wgtypes.ParseKey(privKey)
 	if err != nil {
 		return fmt.Errorf("failed to parse private key: %w", err)
@@ -124,7 +123,7 @@ func (server *TetherClient) setupDevice(privKey string, listenPort *int, peers [
 	// If ListenPort is nil then random one should be chosen, however,
 	// ListenPort is initially chosen at random when creating interface so no need to override here
 
-	err = server.ConfigureDevice(server.DeviceName, wgtypes.Config{
+	err = c.ConfigureDevice(c.DeviceName, wgtypes.Config{
 		PrivateKey:   &privateKey,
 		ListenPort:   listenPort, // if nil it is not applied
 		ReplacePeers: true,
@@ -137,18 +136,18 @@ func (server *TetherClient) setupDevice(privKey string, listenPort *int, peers [
 	return nil
 }
 
-func (server *TetherClient) addAddresses(addresses []string) {
+func (c *Client) addAddresses(addresses []string) {
 	commands := []string{}
 	for _, address := range addresses {
 		protoVersion := map[bool]string{true: "6", false: "4"}[strings.Contains(address, ":")]
-		cmd := fmt.Sprintf("ip -%s address add %s dev %s", protoVersion, address, server.DeviceName)
+		cmd := fmt.Sprintf("ip -%s address add %s dev %s", protoVersion, address, c.DeviceName)
 		commands = append(commands, cmd)
 	}
-	runCommands(commands, server.DeviceName)
+	runCommands(commands, c.DeviceName)
 }
 
-func (server *TetherClient) runUpCommand() error {
-	cmd := fmt.Sprintf("ip link set %s up", server.DeviceName)
+func (c *Client) runUpCommand() error {
+	cmd := fmt.Sprintf("ip link set %s up", c.DeviceName)
 	fmt.Printf("%s %s\n", TETHER_CMD, cmd)
 	output, err := exec.Command("sh", "-c", cmd).CombinedOutput()
 	if err != nil {
@@ -157,8 +156,8 @@ func (server *TetherClient) runUpCommand() error {
 	return nil
 }
 
-func (server *TetherClient) runDownCommand() error {
-	cmd := fmt.Sprintf("ip link delete dev %s", server.DeviceName)
+func (c *Client) runDownCommand() error {
+	cmd := fmt.Sprintf("ip link delete dev %s", c.DeviceName)
 	fmt.Printf("%s %s\n", TETHER_CMD, cmd)
 	output, err := exec.Command("sh", "-c", cmd).CombinedOutput()
 	if err != nil {

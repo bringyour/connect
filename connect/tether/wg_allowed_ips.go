@@ -15,22 +15,22 @@ const (
 	AllIPs IPVersion = 0 // represents both IPv4 and IPv6
 )
 
-// getNextAllowedIP finds the next available IP in any of the addresses of the server's interface.
+// getNextAllowedIP finds the next available IP in any of the addresses of the client's interface.
 //
 // Note: if concurrency is introduced at some point this might have conflicts
-func (server *TetherClient) getNextAllowedIP(ipVersion IPVersion) (string, error) {
-	ipv4s, err := getInterfaceAddresses(server.DeviceName, ipVersion)
+func (c *Client) getNextAllowedIP(ipVersion IPVersion) (string, error) {
+	ipv4s, err := getInterfaceAddresses(c.DeviceName, ipVersion)
 	if err != nil {
 		return "", err
 	}
 
 	if len(ipv4s) == 0 {
-		return "", fmt.Errorf("no IPv4 addresses found for interface %s", server.DeviceName)
+		return "", fmt.Errorf("no IPv4 addresses found for interface %s", c.DeviceName)
 	}
 
-	device, err := server.Device(server.DeviceName)
+	device, err := c.Device(c.DeviceName)
 	if err != nil {
-		return "", fmt.Errorf("device %q: %w", server.DeviceName, err)
+		return "", fmt.Errorf("device %q: %w", c.DeviceName, err)
 	}
 
 	for _, subnet := range ipv4s {
