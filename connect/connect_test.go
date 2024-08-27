@@ -2,13 +2,12 @@ package connect
 
 import (
 	// "os"
+	"encoding/json"
 	"flag"
-    "testing"
-    "encoding/json"
+	"testing"
 
-    "github.com/go-playground/assert/v2"
+	"github.com/go-playground/assert/v2"
 )
-
 
 func init() {
 	initGlog()
@@ -19,7 +18,6 @@ func initGlog() {
 	flag.Set("stderrthreshold", "INFO")
 	flag.Set("v", "0")
 }
-
 
 func TestIdJsonCodec(t *testing.T) {
 	type Test struct {
@@ -56,7 +54,6 @@ func TestIdJsonCodec(t *testing.T) {
 	assert.Equal(t, test3.B, nil)
 	assert.Equal(t, test3.B, test4.B)
 }
-
 
 func TestTransferPath(t *testing.T) {
 	a := NewId()
@@ -159,7 +156,6 @@ func TestTransferPath(t *testing.T) {
 	assert.Equal(t, path.Reverse(), TransferPath{SourceId: b, DestinationId: a})
 }
 
-
 func TestMultiHopId(t *testing.T) {
 	ids := []Id{
 		NewId(),
@@ -188,6 +184,3 @@ func TestMultiHopId(t *testing.T) {
 	assert.Equal(t, tail, ids[2])
 	assert.Equal(t, m3, m4)
 }
-
-
-

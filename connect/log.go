@@ -2,9 +2,8 @@ package connect
 
 import (
 
-    // "github.com/golang/glog"
+// "github.com/golang/glog"
 )
-
 
 // Logging level convention in the `connect` package and generally for BringYour network components:
 // Info:
@@ -25,5 +24,4 @@ import (
 //     unexpected crash details
 
 // Log messages should be concise and start with a unique [component] tag
-// where component is the relevant part of the system. 
-
+// where component is the relevant part of the system.

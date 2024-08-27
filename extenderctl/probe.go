@@ -4,14 +4,13 @@ import (
 	"net"
 	"net/http"
 	// "net/url"
-	"time"
-	mathrand "math/rand"
 	"crypto/tls"
 	"fmt"
+	mathrand "math/rand"
+	"time"
 
 	"bringyour.com/connect"
 )
-
 
 func SearchMailExtenders(
 	connectMode connect.ExtenderConnectMode,
@@ -44,7 +43,6 @@ func SearchMailExtenders(
 		callback,
 	)
 }
-
 
 func SearchWebExtenders(
 	connectMode connect.ExtenderConnectMode,
@@ -94,9 +92,6 @@ func SearchWebExtenders(
 	)
 }
 
-
-
-
 // extenders must allow apiHost, which would typically be api.bringyour.com
 // uses the hello api to search
 func SearchExtenders(
@@ -115,7 +110,6 @@ func SearchExtenders(
 	// 	return nil, err
 	// }
 
-
 	type Spoof struct {
 		host string
 		port int
@@ -123,14 +117,13 @@ func SearchExtenders(
 
 	spoofs := []*Spoof{}
 
-
 	for _, host := range spoofHosts {
 		for _, port := range extenderPorts {
 			spoofs = append(spoofs, &Spoof{
 				host: host,
 				port: port,
 			})
-		} 
+		}
 	}
 
 	// shuffle the spoofs
@@ -138,9 +131,7 @@ func SearchExtenders(
 		spoofs[i], spoofs[j] = spoofs[j], spoofs[i]
 	})
 
-
 	helloConfigs := []*connect.ExtenderConfig{}
-
 
 	for _, spoof := range spoofs {
 		// randomly choose extender IP
@@ -149,9 +140,9 @@ func SearchExtenders(
 
 		helloConfig := &connect.ExtenderConfig{
 			ExtenderSecrets: []string{extenderSecret},
-			SpoofHosts: []string{spoof.host},
-		    ExtenderIps: []net.IP{extenderIp},
-		    ExtenderPorts: []int{spoof.port},
+			SpoofHosts:      []string{spoof.host},
+			ExtenderIps:     []net.IP{extenderIp},
+			ExtenderPorts:   []int{spoof.port},
 		}
 		client := connect.NewExtenderHttpClient(
 			connectMode,
@@ -174,8 +165,6 @@ func SearchExtenders(
 
 	return helloConfigs, nil
 }
-
-
 
 var mailHosts = []string{
 	"gmail.com",
@@ -378,7 +367,6 @@ var mailHosts = []string{
 	"planetmail.net",
 	"politician.com",
 	"presidency.com",
-
 
 	"imap.gmail.com",
 	"outlook.office365.com",
@@ -982,9 +970,7 @@ var mailHosts = []string{
 	"smtp.bluehost.com",
 	"smtp.site5.com",
 	"smtp.inmotionhosting.com",
-
 }
-
 
 var webHosts = []string{
 	"github.com",

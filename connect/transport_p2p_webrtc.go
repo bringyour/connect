@@ -2,10 +2,9 @@ package connect
 
 import (
 	"context"
-	"net"
 	"fmt"
+	"net"
 )
-
 
 type WebRtcSettings struct {
 	SendBufferSize ByteCount
@@ -18,7 +17,6 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 	}
 }
 
-
 type WebRtcManager struct {
 	ctx context.Context
 
@@ -29,7 +27,7 @@ type WebRtcManager struct {
 
 func NewWebRtcManager(ctx context.Context, webRtcSettings *WebRtcSettings) *WebRtcManager {
 	return &WebRtcManager{
-		ctx: ctx,
+		ctx:            ctx,
 		webRtcSettings: webRtcSettings,
 	}
 }
@@ -45,4 +43,3 @@ func (self *WebRtcManager) NewP2pConnPassive(ctx context.Context, peerId Id, str
 	// FIXME
 	return nil, fmt.Errorf("Not implemented.")
 }
-

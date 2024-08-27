@@ -1,24 +1,23 @@
 package connect
 
 import (
-    "context"
-	"sync"
-	"time"
+	"context"
+	"os"
+	"os/signal"
 	"slices"
-    "os"
-    "os/signal"
-    "syscall"
-    // "fmt"
-    // "runtime/debug"
-    // "strings"
-    // "encoding/json"
-    // "reflect"
-    mathrand "math/rand"
+	"sync"
+	"syscall"
+	"time"
+	// "fmt"
+	// "runtime/debug"
+	// "strings"
+	// "encoding/json"
+	// "reflect"
+	mathrand "math/rand"
 )
 
-
 type Monitor struct {
-	mutex sync.Mutex
+	mutex  sync.Mutex
 	notify chan struct{}
 }
 
@@ -41,20 +40,19 @@ func (self *Monitor) NotifyAll() {
 	self.notify = make(chan struct{})
 }
 
-
 // makes a copy of the list on update
 type CallbackList[T any] struct {
 	mutex sync.Mutex
 	// `callbacks` and `callbackIds` are parallel arrays
-	callbacks []T
-	callbackIds []int
+	callbacks      []T
+	callbackIds    []int
 	nextCallbackId int
 }
 
 func NewCallbackList[T any]() *CallbackList[T] {
 	return &CallbackList[T]{
-		callbacks: []T{},
-		callbackIds: []int{},
+		callbacks:      []T{},
+		callbackIds:    []int{},
 		nextCallbackId: 0,
 	}
 }
@@ -75,7 +73,7 @@ func (self *CallbackList[T]) Add(callback T) int {
 	nextCallbacks := slices.Clone(self.callbacks)
 	nextCallbacks = append(nextCallbacks, callback)
 	self.callbacks = nextCallbacks
-	
+
 	nextCallbackIds := slices.Clone(self.callbackIds)
 	nextCallbackIds = append(nextCallbackIds, callbackId)
 	self.callbackIds = nextCallbackIds
@@ -83,7 +81,7 @@ func (self *CallbackList[T]) Add(callback T) int {
 	return callbackId
 }
 
-func  (self *CallbackList[T]) Remove(callbackId int) {
+func (self *CallbackList[T]) Remove(callbackId int) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -94,33 +92,32 @@ func  (self *CallbackList[T]) Remove(callbackId int) {
 	}
 
 	nextCallbacks := slices.Clone(self.callbacks)
-	nextCallbacks = slices.Delete(nextCallbacks, i, i + 1)
+	nextCallbacks = slices.Delete(nextCallbacks, i, i+1)
 	self.callbacks = nextCallbacks
 
 	nextCallbackIds := slices.Clone(self.callbackIds)
-	nextCallbackIds = slices.Delete(nextCallbackIds, i, i + 1)
+	nextCallbackIds = slices.Delete(nextCallbackIds, i, i+1)
 	self.callbackIds = nextCallbackIds
 }
 
-
 // this coordinates and idle shutdown when the shutdown and adding to the work channel are on separate goroutines
 type IdleCondition struct {
-	mutex *sync.Mutex
-	condition *sync.Cond
-	modId uint64
+	mutex           *sync.Mutex
+	condition       *sync.Cond
+	modId           uint64
 	updateOpenCount int
-	closed bool
+	closed          bool
 }
 
 func NewIdleCondition() *IdleCondition {
 	mutex := &sync.Mutex{}
 	condition := sync.NewCond(mutex)
 	return &IdleCondition{
-		mutex: mutex,
-		condition: condition,
-		modId: 0,
+		mutex:           mutex,
+		condition:       condition,
+		modId:           0,
 		updateOpenCount: 0,
-		closed: false,
+		closed:          false,
 	}
 }
 
@@ -171,7 +168,6 @@ func (self *IdleCondition) UpdateClose() {
 	self.condition.Signal()
 }
 
-
 func MinTime(a time.Time, bs ...time.Time) time.Time {
 	min := a
 	for _, b := range bs {
@@ -182,24 +178,21 @@ func MinTime(a time.Time, bs ...time.Time) time.Time {
 	return min
 }
 
-
-
-
 type Event struct {
-    ctx context.Context
-    cancel context.CancelFunc
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewEvent() *Event {
-    return NewEventWithContext(context.Background())
+	return NewEventWithContext(context.Background())
 }
 
 func NewEventWithContext(ctx context.Context) *Event {
-    cancelCtx, cancel := context.WithCancel(ctx)
-    return &Event{
-        ctx: cancelCtx,
-        cancel: cancel,
-    }
+	cancelCtx, cancel := context.WithCancel(ctx)
+	return &Event{
+		ctx:    cancelCtx,
+		cancel: cancel,
+	}
 }
 
 func (self *Event) Ctx() context.Context {
@@ -207,49 +200,48 @@ func (self *Event) Ctx() context.Context {
 }
 
 func (self *Event) Set() {
-    self.cancel()
+	self.cancel()
 }
 
 func (self *Event) IsSet() bool {
-    select {
-    case <- self.ctx.Done():
-        return true
-    default:
-        return false
-    }
+	select {
+	case <-self.ctx.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 func (self *Event) WaitForSet(timeout time.Duration) bool {
-    select {
-    case <- self.ctx.Done():
-        return true
-    case <- time.After(timeout):
-        return false
-    }
+	select {
+	case <-self.ctx.Done():
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func (self *Event) SetOnSignals(signalValues ...syscall.Signal) func() {
-    stopSignal := make(chan os.Signal, len(signalValues))
-    for _, signalValue := range signalValues {
-        signal.Notify(stopSignal, signalValue)
-    }
-    go func() {
-        for {
-            select {
-            case _, ok := <- stopSignal:
-                if !ok {
-                    return
-                }
-                self.Set()
-            }
-        }
-    }()
-    return func(){
-        signal.Stop(stopSignal)
-        close(stopSignal)
-    }
+	stopSignal := make(chan os.Signal, len(signalValues))
+	for _, signalValue := range signalValues {
+		signal.Notify(stopSignal, signalValue)
+	}
+	go func() {
+		for {
+			select {
+			case _, ok := <-stopSignal:
+				if !ok {
+					return
+				}
+				self.Set()
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(stopSignal)
+		close(stopSignal)
+	}
 }
-
 
 func WeightedShuffle[T comparable](values []T, weights map[T]float32) {
 	WeightedShuffleWithEntropy[T](values, weights, 0)
@@ -257,33 +249,29 @@ func WeightedShuffle[T comparable](values []T, weights map[T]float32) {
 
 func WeightedShuffleWithEntropy[T comparable](values []T, weights map[T]float32, entropy float32) {
 	mathrand.Shuffle(len(values), func(i int, j int) {
-        values[i], values[j] = values[j], values[i]
-    })
+		values[i], values[j] = values[j], values[i]
+	})
 
-    n := len(values)
-    for i := 0; i < n - 1; i += 1 {
-        j := func ()(int) {
-            var net float32
-            net = 0
-            for j := i; j < n; j += 1 {
-                net += weights[values[j]]
-            }
-            r := mathrand.Float32()
-            rnet := r * net
-            net = entropy * net
-            for j := i; j < n; j += 1 {
-                net += weights[values[j]]
-                if rnet < net {
-                    return j
-                }
-            }
-            // zero weights, use the last value
-            return n - 1
-        }()
-        values[i], values[j] = values[j], values[i]
-    }
+	n := len(values)
+	for i := 0; i < n-1; i += 1 {
+		j := func() int {
+			var net float32
+			net = 0
+			for j := i; j < n; j += 1 {
+				net += weights[values[j]]
+			}
+			r := mathrand.Float32()
+			rnet := r * net
+			net = entropy * net
+			for j := i; j < n; j += 1 {
+				net += weights[values[j]]
+				if rnet < net {
+					return j
+				}
+			}
+			// zero weights, use the last value
+			return n - 1
+		}()
+		values[i], values[j] = values[j], values[i]
+	}
 }
-
-
-
-

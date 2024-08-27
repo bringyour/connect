@@ -11,18 +11,16 @@ import (
 	"bringyour.com/protocol"
 )
 
-
 // control messages for a client out of band with the client sequence
 // some control messages require blocking response, but there is a potential deadlock
 // when a send blocks to wait for a control receive, or vice versa, since
 // all clients messages are multiplexed in the same client sequence
 // and the receive/send may be blocked on the send/receive
-// for example think of a remote provider setup forwarding traffic as fast as possible 
+// for example think of a remote provider setup forwarding traffic as fast as possible
 // to an "echo" server with a finite buffer
 type OutOfBandControl interface {
-    SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error))
+	SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error))
 }
-
 
 type ApiOutOfBandControl struct {
 	api *BringYourApi
@@ -89,7 +87,6 @@ func (self *ApiOutOfBandControl) SendControl(
 		}),
 	)
 }
-
 
 type noContractClientOob struct {
 }
