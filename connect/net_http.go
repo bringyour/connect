@@ -946,7 +946,6 @@ func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStra
 
 	helloRequest, err := HelloRequestFromUrl(ctx, requestUrl, byJwt)
 	if err != nil {
-		// fmt.Printf("HTTP GET E 1 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
@@ -954,48 +953,26 @@ func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStra
 
 	r, err := clientStrategy.HttpSerial(request, helloRequest)
 	if err != nil {
-		// fmt.Printf("HTTP GET E 2 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 	if r.responseErr != nil {
-		// fmt.Printf("HTTP GET E 3 = %s\n", r.responseErr)
 		var empty R
 		callback.Result(empty, r.responseErr)
 		return empty, r.responseErr
 	}
-	// defer r.Body.Close()
-
-	// responseBodyBytes, err := io.ReadAll(r.Body)
-
-	// if http.StatusOK != r.StatusCode {
-	// 	// the response body is the error message
-	// 	errorMessage := strings.TrimSpace(string(responseBodyBytes))
-	// 	err = errors.New(errorMessage)
-	// 	callback.Result(result, err)
-	// 	return result, err
-	// }
-
-	// if err != nil {
-	// 	callback.Result(result, err)
-	// 	return result, err
-	// }
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
 		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
-		// fmt.Printf("HTTP GET E 4 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 
-	// fmt.Printf("GOT POST RESULT = %s\n", string(r.responseBodyBytes))
-
 	err = json.Unmarshal(r.responseBodyBytes, &result)
 	if err != nil {
-		// fmt.Printf("HTTP GET E 5 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
@@ -1045,35 +1022,26 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 
 	r, err := clientStrategy.HttpParallel(request)
 	if err != nil {
-		// fmt.Printf("HTTP GET E 1 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 	if r.responseErr != nil {
-		// fmt.Printf("HTTP GET E 2 = %s\n", r.responseErr)
 		var empty R
 		callback.Result(empty, r.responseErr)
 		return empty, r.responseErr
 	}
-	// defer r.Body.Close()
-
-	// responseBodyBytes, err := io.ReadAll(r.Body)
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
 		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
-		// fmt.Printf("HTTP GET E 3 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 
-	// fmt.Printf("GOT GET RESULT = %s\n", string(r.responseBodyBytes))
-
 	err = json.Unmarshal(r.responseBodyBytes, &result)
 	if err != nil {
-		// fmt.Printf("HTTP GET E 4 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
