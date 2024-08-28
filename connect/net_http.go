@@ -5,7 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
+	// "errors"
 	"fmt"
 	"io"
 	mathrand "math/rand"
@@ -220,11 +220,36 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 	return weights
 }
 
+type httpResult struct {
+	response          *http.Response
+	responseBodyBytes []byte
+	responseErr       error
+}
+
 type evalResult struct {
-	dialer   *clientDialer
-	response *http.Response
-	wsConn   *websocket.Conn
-	err      error
+	dialer *clientDialer
+	wsConn *websocket.Conn
+	err    error
+
+	httpResult
+}
+
+func newEvalResultFromHttpResponse(response *http.Response, err error) *evalResult {
+	if err == nil {
+		defer response.Body.Close()
+		responseBodyBytes, responseErr := io.ReadAll(response.Body)
+		return &evalResult{
+			httpResult: httpResult{
+				response:          response,
+				responseBodyBytes: responseBodyBytes,
+				responseErr:       responseErr,
+			},
+		}
+	} else {
+		return &evalResult{
+			err: err,
+		}
+	}
 }
 
 func (self *evalResult) Close() {
@@ -232,9 +257,10 @@ func (self *evalResult) Close() {
 		self.wsConn.Close()
 		// if wsConn is set, the response does not need to be closed
 		// https://pkg.go.dev/github.com/gorilla/websocket#Dialer.DialContext
-	} else if self.response != nil {
-		self.response.Body.Close()
 	}
+	// else if self.response != nil {
+	// 	self.response.Body.Close()
+	// }
 }
 
 func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer) *evalResult) *evalResult {
@@ -306,6 +332,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			glog.Infof("[net][p]select: %s\n", dialer.String())
 			return result
 		}
+		result.Close()
 	}
 
 	// note parallel dialers is in the original weighted order
@@ -323,6 +350,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 				glog.Infof("[net][p]select: %s\n", result.dialer.String())
 				return result
 			} else {
+				result.Close()
 				go run(dialer)
 			}
 		}
@@ -358,6 +386,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 					glog.Infof("[net][p]select: %s\n", result.dialer.String())
 					return result
 				} else {
+					result.Close()
 					go run(dialer)
 				}
 			}
@@ -384,6 +413,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			if result.err == nil {
 				return result
 			}
+			result.Close()
 		}
 	}
 
@@ -444,6 +474,7 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 				glog.Infof("[net][s]select: %s\n", dialer.String())
 				return result
 			}
+			result.Close()
 		}
 
 		// it's more efficient to iterate with a parallel hello
@@ -464,27 +495,24 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 	}
 }
 
-func (self *ClientStrategy) HttpParallel(request *http.Request) (*http.Response, error) {
+func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
 
 		dialer.Update(handleCtx, err)
 
-		return &evalResult{
-			response: response,
-			err:      err,
-		}
+		return newEvalResultFromHttpResponse(response, err)
 	}
 
 	result := self.parallelEval(request.Context(), eval)
 	if result == nil {
 		return nil, fmt.Errorf("Timeout.")
 	}
-	return result.response, result.err
+	return &result.httpResult, result.err
 }
 
-func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http.Request) (*http.Response, error) {
+func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http.Request) (*httpResult, error) {
 	// in this order:
 	// 1. try all dialers that previously worked sequentially
 	// 2. retest and expand dialers using get of the hello request.
@@ -497,10 +525,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 		dialer.Update(handleCtx, err)
 
-		return &evalResult{
-			response: response,
-			err:      err,
-		}
+		return newEvalResultFromHttpResponse(response, err)
 	}
 	helloEval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient(self.settings)
@@ -508,17 +533,14 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 		dialer.Update(handleCtx, err)
 
-		return &evalResult{
-			response: response,
-			err:      err,
-		}
+		return newEvalResultFromHttpResponse(response, err)
 	}
 
 	result := self.serialEval(request.Context(), eval, helloEval)
 	if result == nil {
 		return nil, fmt.Errorf("Timeout.")
 	}
-	return result.response, result.err
+	return &result.httpResult, result.err
 }
 
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
@@ -529,9 +551,11 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 		dialer.Update(handleCtx, err)
 
 		return &evalResult{
-			wsConn:   wsConn,
-			response: response,
-			err:      err,
+			wsConn: wsConn,
+			err:    err,
+			httpResult: httpResult{
+				response: response,
+			},
 		}
 	}
 
@@ -922,6 +946,7 @@ func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStra
 
 	helloRequest, err := HelloRequestFromUrl(ctx, requestUrl, byJwt)
 	if err != nil {
+		// fmt.Printf("HTTP GET E 1 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
@@ -929,29 +954,48 @@ func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStra
 
 	r, err := clientStrategy.HttpSerial(request, helloRequest)
 	if err != nil {
+		// fmt.Printf("HTTP GET E 2 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
-	defer r.Body.Close()
+	if r.responseErr != nil {
+		// fmt.Printf("HTTP GET E 3 = %s\n", r.responseErr)
+		var empty R
+		callback.Result(empty, r.responseErr)
+		return empty, r.responseErr
+	}
+	// defer r.Body.Close()
 
-	responseBodyBytes, err := io.ReadAll(r.Body)
+	// responseBodyBytes, err := io.ReadAll(r.Body)
 
-	if http.StatusOK != r.StatusCode {
+	// if http.StatusOK != r.StatusCode {
+	// 	// the response body is the error message
+	// 	errorMessage := strings.TrimSpace(string(responseBodyBytes))
+	// 	err = errors.New(errorMessage)
+	// 	callback.Result(result, err)
+	// 	return result, err
+	// }
+
+	// if err != nil {
+	// 	callback.Result(result, err)
+	// 	return result, err
+	// }
+
+	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
-		errorMessage := strings.TrimSpace(string(responseBodyBytes))
-		err = errors.New(errorMessage)
-		callback.Result(result, err)
-		return result, err
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		// fmt.Printf("HTTP GET E 4 = %s\n", err)
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
 	}
 
-	if err != nil {
-		callback.Result(result, err)
-		return result, err
-	}
+	// fmt.Printf("GOT POST RESULT = %s\n", string(r.responseBodyBytes))
 
-	err = json.Unmarshal(responseBodyBytes, &result)
+	err = json.Unmarshal(r.responseBodyBytes, &result)
 	if err != nil {
+		// fmt.Printf("HTTP GET E 5 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
@@ -1001,16 +1045,35 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 
 	r, err := clientStrategy.HttpParallel(request)
 	if err != nil {
+		// fmt.Printf("HTTP GET E 1 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
-	defer r.Body.Close()
+	if r.responseErr != nil {
+		// fmt.Printf("HTTP GET E 2 = %s\n", r.responseErr)
+		var empty R
+		callback.Result(empty, r.responseErr)
+		return empty, r.responseErr
+	}
+	// defer r.Body.Close()
 
-	responseBodyBytes, err := io.ReadAll(r.Body)
+	// responseBodyBytes, err := io.ReadAll(r.Body)
 
-	err = json.Unmarshal(responseBodyBytes, &result)
+	if http.StatusOK != r.response.StatusCode {
+		// the response body is the error message
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		// fmt.Printf("HTTP GET E 3 = %s\n", err)
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	// fmt.Printf("GOT GET RESULT = %s\n", string(r.responseBodyBytes))
+
+	err = json.Unmarshal(r.responseBodyBytes, &result)
 	if err != nil {
+		// fmt.Printf("HTTP GET E 4 = %s\n", err)
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
