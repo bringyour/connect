@@ -3,7 +3,6 @@ package tether
 import (
 	"fmt"
 	"net"
-	"os/exec"
 	"testing"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -144,7 +143,7 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 			name:     "No peers in subnet",
 			subnet:   "192.168.1.0/24",
 			peers:    []wgtypes.Peer{},
-			expected: "192.168.1.1",
+			expected: "192.168.1.1/32",
 			err:      nil,
 		},
 		{
@@ -165,7 +164,7 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 					},
 				},
 			},
-			expected: "192.168.1.3",
+			expected: "192.168.1.3/32",
 			err:      nil,
 		},
 		{
@@ -186,14 +185,14 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 			name:     "Edge case with network and broadcast addresses",
 			subnet:   "192.168.1.0/30",
 			peers:    []wgtypes.Peer{},
-			expected: "192.168.1.1",
+			expected: "192.168.1.1/32",
 			err:      nil,
 		},
 		{
 			name:     "IPv6 subnet with no peers",
 			subnet:   "2001:db8::/64",
 			peers:    []wgtypes.Peer{},
-			expected: "2001:db8::1",
+			expected: "2001:db8::1/128",
 			err:      nil,
 		},
 		{
@@ -236,120 +235,91 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 
 func TestGetInterfaceAddresses(t *testing.T) {
 	tests := []struct {
-		name          string
-		interfaceName string
-		ipVersion     IPVersion
-		ipsToAdd      []string
-		expected      []string
-		expectErr     bool
+		name      string
+		ipVersion IPVersion
+		ipsToAdd  []string
+		expected  []string
 	}{
 		{
-			name:          "No IPs assigned to interface",
-			interfaceName: "bywg0testif",
-			ipVersion:     AllIPs,
-			ipsToAdd:      []string{},
-			expected:      []string{},
-			expectErr:     false,
-		},
-		{
-			name:          "Only IPv4 addresses test",
-			interfaceName: "bywg1testif",
-			ipVersion:     IPv4,
-			ipsToAdd: []string{
-				"192.168.1.1/24",
-				"192.168.1.2/24",
-			},
-			expected: []string{
-				"192.168.1.1/24",
-				"192.168.1.2/24",
-			},
-			expectErr: false,
-		},
-		{
-			name:          "Only IPv6 addresses test",
-			interfaceName: "bywg2testif",
-			ipVersion:     IPv6,
-			ipsToAdd: []string{
-				"2001:db8::1/64",
-				"2001:db8::2/64",
-			},
-			expected: []string{
-				"2001:db8::1/64",
-				"2001:db8::2/64",
-			},
-			expectErr: false,
-		},
-		{
-			name:          "Add IPv4 addresses check for IPv6",
-			interfaceName: "bywg3testif",
-			ipVersion:     IPv6,
-			ipsToAdd: []string{
-				"192.168.3.1/24",
-				"192.168.3.2/24",
-			},
+			name:      "No IPs assigned to interface",
+			ipVersion: AllIPs,
+			ipsToAdd:  []string{},
 			expected:  []string{},
-			expectErr: false,
 		},
 		{
-			name:          "Add IPv6 addresses check for IPv4",
-			interfaceName: "bywg4testif",
-			ipVersion:     IPv4,
+			name:      "Only IPv4 addresses",
+			ipVersion: IPv4,
+			ipsToAdd: []string{
+				"192.168.1.1/24",
+				"192.168.2.1/24",
+			},
+			expected: []string{
+				"192.168.1.0/24",
+				"192.168.2.0/24",
+			},
+		},
+		{
+			name:      "Only IPv6 addresses",
+			ipVersion: IPv6,
+			ipsToAdd: []string{
+				"2001:db8::1/64",
+				"2001:db9::2/64",
+			},
+			expected: []string{
+				"2001:db8::/64",
+				"2001:db9::/64",
+			},
+		},
+		{
+			name:      "Add IPv4 addresses check for IPv6",
+			ipVersion: IPv6,
+			ipsToAdd: []string{
+				"192.168.3.0/24",
+				"192.168.4.0/24",
+			},
+			expected: []string{},
+		},
+		{
+			name:      "Add IPv6 addresses check for IPv4",
+			ipVersion: IPv4,
 			ipsToAdd: []string{
 				"2001:db8::40/64",
 			},
-			expected:  []string{},
-			expectErr: false,
+			expected: []string{},
 		},
 		{
-			name:          "Mixed IPv4 and IPv6 addresses",
-			interfaceName: "bywg5testif",
-			ipVersion:     AllIPs,
+			name:      "Mixed IPv4 and IPv6 addresses",
+			ipVersion: AllIPs,
 			ipsToAdd: []string{
-				"192.168.5.1/24",
-				"2001:db8::50/64",
+				"192.168.5.0/24",
+				"2001:db8::0/64",
 			},
 			expected: []string{
-				"192.168.5.1/24",
-				"2001:db8::50/64",
+				"192.168.5.0/24",
+				"2001:db8::/64",
 			},
-			expectErr: false,
 		},
 		{
-			name:          "Interface with both IPv4 and IPv6 but filter only IPv6",
-			interfaceName: "bywg6testif",
-			ipVersion:     IPv6,
+			name:      "Interface with both IPv4 and IPv6 but filter only IPv6",
+			ipVersion: IPv6,
 			ipsToAdd: []string{
-				"192.168.6.1/24",
-				"2001:db8::60/64",
+				"192.168.6.0/24",
+				"2001:db8::0/64",
 			},
 			expected: []string{
-				"2001:db8::60/64",
+				"2001:db8::/64",
 			},
-			expectErr: false,
 		},
 		{
-			name:          "Interface with both IPv4 and IPv6 but filter only IPv4",
-			interfaceName: "bywg7testif",
-			ipVersion:     IPv6,
+			name:      "Interface with both IPv4 and IPv6 but filter only IPv4",
+			ipVersion: IPv4,
 			ipsToAdd: []string{
-				"192.168.7.1/24",
-				"2001:db8::70/64",
+				"192.168.7.0/24",
+				"2001:db8::0/64",
 			},
 			expected: []string{
-				"2001:db8::70/64",
+				"192.168.7.0/24",
 			},
-			expectErr: false,
-		},
-		{
-			name:          "Check for missing interface error",
-			interfaceName: "bywg8testif",
-			ipVersion:     AllIPs,
-			ipsToAdd: []string{
-				"192.168.8.1/24",
-				"2001:db8::80/64",
-			},
-			expected:  []string{},
-			expectErr: true,
 		},
 	}
 
@@ -357,38 +327,8 @@ func TestGetInterfaceAddresses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			// create dummy interface
-			if !test.expectErr {
-				cmd := fmt.Sprintf("ip link add dev %s type dummy", test.interfaceName)
-				output, err := exec.Command("sh", "-c", cmd).CombinedOutput()
-				if err != nil {
-					t.Fatalf("Failed to create dummy interface: %v: %s", err, output)
-				}
-
-				// delete dummy interface on exit
-				defer func() {
-					cmd := fmt.Sprintf("ip link delete dev %s", test.interfaceName)
-					output, err := exec.Command("sh", "-c", cmd).CombinedOutput()
-					if err != nil {
-						t.Fatalf("Failed to delete dummy interface: %v: %s", err, output)
-					}
-				}()
-
-				// add IP addresses to dummy interface
-				for _, ip := range test.ipsToAdd {
-					cmd := fmt.Sprintf("ip addr add %s dev %s", ip, test.interfaceName)
-					output, err := exec.Command("sh", "-c", cmd).CombinedOutput()
-					if err != nil {
-						t.Fatalf("Failed to add IP address to dummy interface: %v, output: %s", err, output)
-					}
-				}
-			}
-
 			// get interface addresses
-			result, err := getInterfaceAddresses(test.interfaceName, test.ipVersion)
-			if (err != nil) != test.expectErr {
-				t.Fatalf("Expected error=%v, but got error=%v", test.expectErr, err)
-			}
+			result := filterAddresses(test.ipsToAdd, test.ipVersion)
 
 			if len(result) != len(test.expected) {
 				t.Fatalf("Expected %d addresses, but got %d", len(test.expected), len(result))
@@ -400,10 +340,10 @@ func TestGetInterfaceAddresses(t *testing.T) {
 				expectedSet[exp] = true
 			}
 
-			// comapred result with expected addresses
+			// compare result with expected addresses
 			for _, res := range result {
 				if !expectedSet[res.String()] {
-					t.Fatalf("Unexpected IP address %v", res)
+					t.Fatalf("Unexpected IP address %v", res.String())
 				}
 			}
 		})

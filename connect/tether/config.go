@@ -26,35 +26,38 @@ type ByWgConfig struct {
 	Peers      []wgtypes.PeerConfig
 }
 
-// GetUpdatedConfig returns the updated config file as a string based on the provided config and the device,
-// i.e., ListenPort, PrivateKey and Peers are updated from the device.
-//
-// config is the base ByWgConfig configuration of the device.
+// GetUpdatedConfig returns the updated config file as a string based on the provided config and device name,
+// i.e., Address, ListenPort, PrivateKey and Peers are updated from the device.
 //
 // The function returns an error if the device cannot be retrieved or the config name doesn't match device name.
-func (c *Client) GetUpdatedConfig(config ByWgConfig) (string, error) {
-	if c.DeviceName != config.Name {
+func (c *Client) GetUpdatedConfig(deviceName string, config ByWgConfig) (string, error) {
+	if deviceName != config.Name {
 		return "", fmt.Errorf("name in config does not match the device name")
 	}
 
-	device, err := c.Device(c.DeviceName)
+	device, err := c.Device(deviceName)
 	if err != nil {
-		return "", fmt.Errorf("device %q does not exist", c.DeviceName)
+		return "", err
 	}
+	config.PrivateKey = device.PrivateKey.String()
+	config.ListenPort = &device.ListenPort
+	config.Peers = getPeerConfigs(device.Peers)
 
-	newConfig := updateConfigFromDevice(config, device)
-	return configToString(newConfig), nil
+	addresses, err := c.GetAddressesFromDevice(deviceName)
+	if err != nil {
+		return "", err
+	}
+	config.Address = addresses
+
+	return configToString(config), nil
 }
 
-// SaveConfigToFile updates the config using GetUpdatedConfig() and saves it in the specified filePath.
+// SaveConfigToFile updates a device's config using GetUpdatedConfig() and saves it in the specified filePath.
 // The file is saved with -rw-r--r-- (0644) permissions.
 //
-// config is the ByWgConfig of the device.
-// filePath is the place where config is saved.
-//
 // The function returns an error if the updated config could not be retrieved or the file was not saved properly.
-func (c *Client) SaveConfigToFile(config ByWgConfig, filePath string) error {
-	content, err := c.GetUpdatedConfig(config)
+func (c *Client) SaveConfigToFile(deviceName string, config ByWgConfig, filePath string) error {
+	content, err := c.GetUpdatedConfig(deviceName, config)
 	if err != nil {
 		return fmt.Errorf("updated config file: %w", err)
 	}
@@ -62,9 +65,8 @@ func (c *Client) SaveConfigToFile(config ByWgConfig, filePath string) error {
 	return os.WriteFile(filePath, []byte(content), 0644)
 }
 
-// PerseConfig transforms a textual representation of a ByWireGuard configuration into a ByWgConfig struct.
-//
-// filePath is the location of the textual representatin of the config.
+// PerseConfig transforms a textual representation of a configuration into a ByWgConfig struct.
+// filePath is the location of the textual representatin of the configuration.
 //
 // The function returns an error if the file could not be retrieved or the configuration is not a valid configuration.
 func ParseConfig(filePath string) (ByWgConfig, error) {
@@ -271,13 +273,6 @@ func configToString(config ByWgConfig) string {
 	return sb.String()
 }
 
-func updateConfigFromDevice(config ByWgConfig, device *wgtypes.Device) ByWgConfig {
-	config.PrivateKey = device.PrivateKey.String()
-	config.ListenPort = &device.ListenPort
-	config.Peers = getPeerConfigs(device.Peers)
-	return config
-}
-
 // wgtypes.PeerConfig with several fields that should be set by default
 func getEmptyPeer() wgtypes.PeerConfig {
 	return wgtypes.PeerConfig{Remove: false, UpdateOnly: false, ReplaceAllowedIPs: true}
@@ -298,7 +293,7 @@ func getPeerConfigs(peers []wgtypes.Peer) []wgtypes.PeerConfig {
 	return peerConfigs
 }
 
-// stringToBool returns true if the string is "true", "t", "yes", "y" or "1" (case insensitive), false otherwise.
+// stringToBool returns true if the string is "true", "t", "yes", "y" or "1" (NOT case sensitive), false otherwise.
 func stringToBool(s string) bool {
 	s = strings.TrimSpace(strings.ToLower(s))
 	switch s {

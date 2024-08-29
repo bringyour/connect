@@ -15,25 +15,40 @@ const (
 	AllIPs IPVersion = 0 // represents both IPv4 and IPv6
 )
 
+func (ipv IPVersion) String() string {
+	switch ipv {
+	case IPv4:
+		return "IPv4"
+	case IPv6:
+		return "IPv6"
+	case AllIPs:
+		return "IPv4 and IPv6"
+	default:
+		return "Unknown"
+	}
+}
+
 // getNextAllowedIP finds the next available IP in any of the addresses of the client's interface.
 //
 // Note: if concurrency is introduced at some point this might have conflicts
-func (c *Client) getNextAllowedIP(ipVersion IPVersion) (string, error) {
-	ipv4s, err := getInterfaceAddresses(c.DeviceName, ipVersion)
+func (c *Client) getNextAllowedIP(deviceName string, ipVersion IPVersion) (string, error) {
+	addrs, err := c.GetAddressesFromDevice(deviceName)
 	if err != nil {
 		return "", err
 	}
 
-	if len(ipv4s) == 0 {
-		return "", fmt.Errorf("no IPv4 addresses found for interface %s", c.DeviceName)
+	subnets := filterAddresses(addrs, ipVersion)
+
+	if len(subnets) == 0 {
+		return "", fmt.Errorf("no addresses found for device %s of type %s", deviceName, ipVersion.String())
 	}
 
-	device, err := c.Device(c.DeviceName)
+	device, err := c.Device(deviceName)
 	if err != nil {
-		return "", fmt.Errorf("device %q: %w", c.DeviceName, err)
+		return "", err
 	}
 
-	for _, subnet := range ipv4s {
+	for _, subnet := range subnets {
 		availableIP, err := getSubnetAvailableIP(subnet, device.Peers)
 		if err == nil {
 			return availableIP.String(), nil
@@ -43,27 +58,16 @@ func (c *Client) getNextAllowedIP(ipVersion IPVersion) (string, error) {
 	return "", fmt.Errorf("no available IPs in any of the addresses of the device")
 }
 
-// function getInterfaceAddresses returns the IP addresses of the given interface on the host machine.
+// filterAddresses filters the addresses based on the IP version.
+// If ipVersion is AllIPs all addresses are returned.
 //
-// interfaceName is the name of the interface for which to get the IP addresses.
-// ipVersion specifies which subset of addresses to return (IPv4, IPv6 or AllIPs).
-//
-// Returns an error if the interface does not exist or if there is an error getting the addresses.
-func getInterfaceAddresses(interfaceName string, ipVersion IPVersion) ([]net.IPNet, error) {
-	intf, err := net.InterfaceByName(interfaceName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get interface %s: %v", interfaceName, err)
-	}
-
-	addrs, err := intf.Addrs()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get addresses for interface %s: %v", interfaceName, err)
-	}
-
+// Non-IPNet addresses are skipped.
+// Addresses are returned as the network addresses of the network, i.e., 1.2.3.4/24 will become 1.2.3.0/24.
+func filterAddresses(addrs []string, ipVersion IPVersion) []net.IPNet {
 	var ipnets []net.IPNet
 	for _, addr := range addrs {
-		ipnet, ok := addr.(*net.IPNet)
-		if !ok {
+		_, ipnet, err := net.ParseCIDR(addr)
+		if err != nil {
 			continue // skip non-IPNet addresses
 		}
 
@@ -73,14 +77,14 @@ func getInterfaceAddresses(interfaceName string, ipVersion IPVersion) ([]net.IPN
 		}
 	}
 
-	return ipnets, nil
+	return ipnets
 }
 
 // getSubnetAvailableIP finds the next available IP in the given subnet that is not already used by any of the peers and is not the network or broadcast address.
 //
 // subnet is the subnet for which to find the available IP.
 // peers is the list of peers that are already connected to the device.
-func getSubnetAvailableIP(subnet net.IPNet, peers []wgtypes.Peer) (net.IP, error) {
+func getSubnetAvailableIP(subnet net.IPNet, peers []wgtypes.Peer) (net.IPNet, error) {
 	// mark IPs that are already used
 	usedIPs := make(map[string]bool)
 	for _, peer := range peers {
@@ -98,11 +102,12 @@ func getSubnetAvailableIP(subnet net.IPNet, peers []wgtypes.Peer) (net.IP, error
 	// find availabe IP (that is not the network or broadcast IP)
 	for ip := networkIP.Mask(subnet.Mask); subnet.Contains(ip); incrementIP(ip) {
 		if !ip.Equal(networkIP) && !ip.Equal(broadcastIP) && !usedIPs[ip.String()] {
-			return ip, nil
+			// make mask full so that the ipnet is just one ip
+			return net.IPNet{IP: ip, Mask: net.CIDRMask(8*len(ip), 8*len(ip))}, nil
 		}
 	}
 
-	return nil, fmt.Errorf("no available IPs in the subnet")
+	return net.IPNet{}, fmt.Errorf("no available IPs in the subnet")
 }
 
 // calculateBroadcastAddr calculates the broadcast address for a given subnet.
