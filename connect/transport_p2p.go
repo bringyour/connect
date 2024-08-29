@@ -104,6 +104,8 @@ func (self *P2pTransport) run() {
 
 	for {
 		// TODO using net.Conn as a stand in for the actual interface
+
+		reconnect := NewReconnect(self.p2pTransportSettings.ReconnectTimeout)
 		var conn net.Conn
 		var err error
 		// note, one side of the P2P connection will be driving the setup process (active).
@@ -117,12 +119,11 @@ func (self *P2pTransport) run() {
 			// unknown peer type
 			return
 		}
-
 		if err != nil {
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-time.After(self.p2pTransportSettings.ReconnectTimeout):
+			case <-reconnect.After():
 			}
 			continue
 		}
@@ -197,12 +198,12 @@ func (self *P2pTransport) run() {
 			}
 		}
 
+		reconnect = NewReconnect(self.p2pTransportSettings.ReconnectTimeout)
 		c()
-
 		select {
 		case <-self.ctx.Done():
 			return
-		case <-time.After(self.p2pTransportSettings.ReconnectTimeout):
+		case <-reconnect.After():
 		}
 	}
 }

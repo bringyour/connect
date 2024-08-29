@@ -137,7 +137,7 @@ func (self *PlatformTransport) run() {
 	}
 
 	for {
-
+		reconnect := NewReconnect(self.settings.ReconnectTimeout)
 		ws, err := func() (*websocket.Conn, error) {
 			ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, nil)
 			if err != nil {
@@ -178,7 +178,7 @@ func (self *PlatformTransport) run() {
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-time.After(self.settings.ReconnectTimeout):
+			case <-reconnect.After():
 				continue
 			}
 		}
@@ -287,16 +287,16 @@ func (self *PlatformTransport) run() {
 			case <-handleCtx.Done():
 			}
 		}
+		reconnect = NewReconnect(self.settings.ReconnectTimeout)
 		if glog.V(2) {
 			Trace(fmt.Sprintf("[t]connect %s", clientId), c)
 		} else {
 			c()
 		}
-
 		select {
 		case <-self.ctx.Done():
 			return
-		case <-time.After(self.settings.ReconnectTimeout):
+		case <-reconnect.After():
 		}
 	}
 }
