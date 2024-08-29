@@ -1,0 +1,103 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+
+// data format for traffic inspection export
+// this is a developer feature used to collect data for development of the inspect features:
+// - contextual split routing (e.g. ai assistant egresses local)
+// - third party blocking
+// - app blocking
+// - app tracking and backdoor alerts
+// - data auditing and security management
+// generally inspect features give people a better internet experience by turning off
+// unwanted aspects that slow it down, make it worse, and make it more sketchy
+
+
+message EgressContext {
+	// ulid
+	bytes EgressId = 1;
+	string LocationName = 2;
+}
+
+
+enum IpProtocol {
+    Tcp = 0;
+    Udp = 1;
+}
+
+message TransportKey {
+	// 4 or 6
+	uint32 IpVersion = 1;
+	IpProtocol TransportProtocol = 2;
+	bytes SourceIp = 3;
+	uint32 SourcePort = 4;
+	bytes DestinationIp = 5;
+	uint32 DestinationPort = 6;
+}
+
+message TransportOpen {
+	TransportKey Key = 1;
+	// ulid
+	bytes EgressId = 2;
+	// ulid
+	bytes TransportId = 3;
+	uint64 OpenTime = 4;
+	// currently this is pulled from tcp+tls transports only
+	// TODO pull from udp+dtls transports also
+	optional string TlsServerName = 5;
+}
+
+
+enum CloseError {
+	CloseErrorNone = 0;
+    CloseErrorTimeout = 1;
+    CloseErrorDisconnect = 2;
+}
+
+message TransportClose {
+	// ulid
+	bytes TransportId = 1;
+	uint64 CloseTime = 2;
+	optional CloseError Error = 3; 
+}
+
+
+enum WriteError {
+	WriteErrorNone = 0;
+    WriteErrorTimeout = 1;
+    WriteErrorDisconnect = 2;
+}
+
+// with a blocking write, the write start time will be the start of the blocking write
+// the write end time will be when the data was written to the buffer, but may not have been sent on the transport
+// as a single instant, the end time is more accurate to the wire activity than the start time
+message WriteDataChunk {
+	// ulid
+	bytes TransportId = 1;
+	uint64 WriteToBufferStartTime = 2;
+	uint64 WriteToBufferEndTime = 3;
+	uint64 ByteCount = 4;
+	optional WriteError Error = 5;
+}
+
+
+enum ReadError {
+	ReadErrorNone = 0;
+    ReadErrorTimeout = 1;
+    ReadErrorDisconnect = 2;
+}
+
+// with a blocking read, the read start time will be the start of the blocking read
+// the read end time will be when the data is read from the buffer
+// as a single instant, the end time is more accurate to the wire activity than the start time
+message ReadDataChunk {
+	// ulid
+	bytes TransportId = 1;
+	uint64 ReadFromBufferStartTime = 2;
+	uint64 ReadFromBufferEndTime = 3;
+	uint64 ByteCount = 4;
+	optional ReadError Error = 5;
+}
+
