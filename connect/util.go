@@ -275,3 +275,26 @@ func WeightedShuffleWithEntropy[T comparable](values []T, weights map[T]float32,
 		values[i], values[j] = values[j], values[i]
 	}
 }
+
+type Reconnect struct {
+	startTime  time.Time
+	minTimeout time.Duration
+}
+
+func NewReconnect(minTimeout time.Duration) *Reconnect {
+	return &Reconnect{
+		startTime:  time.Now(),
+		minTimeout: minTimeout,
+	}
+}
+
+func (self *Reconnect) After() <-chan time.Time {
+	timeout := self.minTimeout - time.Now().Sub(self.startTime)
+	if timeout <= 0 {
+		c := make(chan time.Time)
+		close(c)
+		return c
+	} else {
+		return time.After(timeout)
+	}
+}
