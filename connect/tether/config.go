@@ -29,7 +29,7 @@ type ByWgConfig struct {
 // GetUpdatedConfig returns the updated config file as a string based on the provided config and device name,
 // i.e., Address, ListenPort, PrivateKey and Peers are updated from the device.
 //
-// The function returns an error if the device cannot be retrieved or the config name doesn't match device name.
+// The function returns an error if the device could not be retrieved or the config name doesn't match the device name.
 func (c *Client) GetUpdatedConfig(deviceName string, config ByWgConfig) (string, error) {
 	if deviceName != config.Name {
 		return "", fmt.Errorf("name in config does not match the device name")
@@ -68,7 +68,7 @@ func (c *Client) SaveConfigToFile(deviceName string, config ByWgConfig, filePath
 // PerseConfig transforms a textual representation of a configuration into a ByWgConfig struct.
 // filePath is the location of the textual representatin of the configuration.
 //
-// The function returns an error if the file could not be retrieved or the configuration is not a valid configuration.
+// The function returns an error if the file could not be retrieved or the configuration file is not a valid configuration.
 func ParseConfig(filePath string) (ByWgConfig, error) {
 	configName := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
 
@@ -78,7 +78,6 @@ func ParseConfig(filePath string) (ByWgConfig, error) {
 	}
 	defer file.Close()
 
-	// TODO make sure this is a proper name?
 	config := ByWgConfig{Name: configName}
 	scanner := bufio.NewScanner(file)
 
@@ -134,6 +133,9 @@ func ParseConfig(filePath string) (ByWgConfig, error) {
 				for _, addr := range addresses {
 					addr = strings.TrimSpace(addr)
 					if addr != "" {
+						if err2 := isNetworkAddress(addr); err2 != nil {
+							return ByWgConfig{}, err
+						}
 						config.Address = append(config.Address, addr)
 					}
 				}
@@ -249,11 +251,10 @@ func configToString(config ByWgConfig) string {
 	for _, cmd := range config.PostDown {
 		sb.WriteString(fmt.Sprintf("PostDown = %s\n", cmd))
 	}
-	sb.WriteString("\n")
 
 	// write [Peer] sections
 	for _, peer := range config.Peers {
-		sb.WriteString("[Peer]\n")
+		sb.WriteString("\n[Peer]\n")
 		sb.WriteString(fmt.Sprintf("PublicKey = %s\n", peer.PublicKey.String()))
 		if peer.PresharedKey != nil && *peer.PresharedKey != (wgtypes.Key{}) {
 			sb.WriteString(fmt.Sprintf("PresharedKey = %s\n", peer.PresharedKey.String()))
@@ -267,7 +268,6 @@ func configToString(config ByWgConfig) string {
 		if peer.PersistentKeepaliveInterval != nil && *peer.PersistentKeepaliveInterval != 0 {
 			sb.WriteString(fmt.Sprintf("PersistentKeepaliveInterval = %s\n", peer.PersistentKeepaliveInterval.String()))
 		}
-		sb.WriteString("\n")
 	}
 
 	return sb.String()
@@ -301,4 +301,22 @@ func stringToBool(s string) bool {
 		return true
 	}
 	return false
+}
+
+// isNetworkAddress checks if the given CIDR string is the network address of the corresponding subnet.
+//
+// Returns an error if the CIDR is invalid which can be checked using errors.Is(err, ErrInvalidAddress) or
+// if the CIDR is not a network address which can be checked using errors.Is(err, ErrNotNetworkAddress).
+func isNetworkAddress(cidr string) error {
+	ip, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return ErrInvalidAddress
+	}
+
+	networkAddress := ip.Mask(ipNet.Mask)
+	if !ip.Equal(networkAddress) {
+		return ErrNotNetworkAddress
+	}
+
+	return nil
 }

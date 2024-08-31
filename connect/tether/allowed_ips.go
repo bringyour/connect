@@ -28,9 +28,12 @@ func (ipv IPVersion) String() string {
 	}
 }
 
-// getNextAllowedIP finds the next available IP in any of the addresses of the client's interface.
+// getNextAllowedIP finds the next available IP in any of the addresses of a device on the Client.
 //
-// Note: if concurrency is introduced at some point this might have conflicts
+// Returns an error if the device has no addresses of the specified ipVersion which can be checked using errors.Is(err, ErrorAIPsNoAddressesFound).
+// Returns an error if no available IPs are found which can be checked using errors.Is(err, ErrorAIPsNoAvailableIPs).
+//
+// Note: if concurrency is introduced at some point this function will have conflicts
 func (c *Client) getNextAllowedIP(deviceName string, ipVersion IPVersion) (string, error) {
 	addrs, err := c.GetAddressesFromDevice(deviceName)
 	if err != nil {
@@ -38,9 +41,8 @@ func (c *Client) getNextAllowedIP(deviceName string, ipVersion IPVersion) (strin
 	}
 
 	subnets := filterAddresses(addrs, ipVersion)
-
 	if len(subnets) == 0 {
-		return "", fmt.Errorf("no addresses found for device %s of type %s", deviceName, ipVersion.String())
+		return "", fmt.Errorf("%w for device %s of type %s", ErrorAIPsNoAddressesFound, deviceName, ipVersion.String())
 	}
 
 	device, err := c.Device(deviceName)
@@ -55,7 +57,7 @@ func (c *Client) getNextAllowedIP(deviceName string, ipVersion IPVersion) (strin
 		}
 	}
 
-	return "", fmt.Errorf("no available IPs in any of the addresses of the device")
+	return "", ErrorAIPsNoAvailableIP
 }
 
 // filterAddresses filters the addresses based on the IP version.
@@ -84,6 +86,8 @@ func filterAddresses(addrs []string, ipVersion IPVersion) []net.IPNet {
 //
 // subnet is the subnet for which to find the available IP.
 // peers is the list of peers that are already connected to the device.
+//
+// If no available IP is found, an error is returned which can be checked using errors.Is(err, ErrorAIPsNoAvailableIP).
 func getSubnetAvailableIP(subnet net.IPNet, peers []wgtypes.Peer) (net.IPNet, error) {
 	// mark IPs that are already used
 	usedIPs := make(map[string]bool)
@@ -107,7 +111,7 @@ func getSubnetAvailableIP(subnet net.IPNet, peers []wgtypes.Peer) (net.IPNet, er
 		}
 	}
 
-	return net.IPNet{}, fmt.Errorf("no available IPs in the subnet")
+	return net.IPNet{}, ErrorAIPsNoAvailableIP
 }
 
 // calculateBroadcastAddr calculates the broadcast address for a given subnet.

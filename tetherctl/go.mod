@@ -10,6 +10,7 @@ replace bringyour.com/wireguard v0.0.0 => ../../userspace-wireguard
 
 require (
 	bringyour.com/connect v0.0.0
+	bringyour.com/wireguard v0.0.0
 	github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815
 	github.com/gin-gonic/gin v1.10.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20230429144221-925a1e7659e6
@@ -17,7 +18,6 @@ require (
 
 require (
 	bringyour.com/protocol v0.0.0 // indirect
-	bringyour.com/wireguard v0.0.0 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect

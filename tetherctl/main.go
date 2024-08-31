@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,13 +13,13 @@ import (
 	"syscall"
 	"time"
 
+	"bringyour.com/wireguard/conn"
+	"bringyour.com/wireguard/device"
 	"github.com/docopt/docopt-go"
 	"github.com/gin-gonic/gin"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"bringyour.com/connect/tether"
-	"bringyour.com/wireguard/conn"
-	"bringyour.com/wireguard/device"
 	"bringyour.com/wireguard/logger"
 	"bringyour.com/wireguard/tun"
 )
@@ -32,48 +32,47 @@ const DefaultApiUrl = "localhost:9090"
 
 var tc tether.Client
 var dName string = DefaultDeviceName
+var apiServer *http.Server
+
+var l = logger.NewLogger(logger.LogLevelVerbose, "(tetherctl) ") // global logger
 
 func main() {
 	usage := fmt.Sprintf(
 		`Tether control.
 
 Usage:
-	tetherctl up [--device_name=<device_name>]
-		[--config_file=<config_file>]
-	tetherctl down [--device_name=<device_name>]
-		[--config_file=<config_file>]
-		[--new_file=<new_file>]
-	tetherctl get-config [--device_name=<device_name>]
-		[--config_file=<config_file>]
-	tetherctl save-config [--device_name=<device_name>]
-		[--config_file=<config_file>]
-		[--new_file=<new_file>]
-	tetherctl gen-priv-key
-	tetherctl gen-pub-key --priv_key=<priv_key>
-	tetherctl get-device-names
-	tetherctl get-device [--device_name=<device_name>]
-	tetherctl change-device [--device_name=<device_name>] 
-		[--listen_port=<listen_port>]
-		[--priv_key=<priv_key>]
-	tetherctl add-peer [--device_name=<device_name>] [--endpoint=<endpoint>]
-		--pub_key=<pub_key> 
-	tetherctl get-peer-config [--device_name=<device_name>] [--endpoint=<endpoint>]
-		--pub_key=<pub_key>
-    tetherctl start-api [--device_name=<device_name>] [--endpoint=<endpoint>]
-		[--api_url=<api_url>]
-	tetherctl test
+    tetherctl add [--dname=<dname>] [--log=<log>] [--ipv4=<ipv4>] [--ipv6=<ipv6>] [--config=<config>]
+    tetherctl remove [--dname=<dname>]
+    tetherctl up [--dname=<dname>] [--config=<config>]
+    tetherctl down [--dname=<dname>] [--config=<config>] [--new_file=<new_file>]
+    tetherctl get-config [--dname=<dname>] [--config=<config>]
+    tetherctl save-config [--dname=<dname>] [--config=<config>] [--new_file=<new_file>]
+    tetherctl gen-priv-key 
+    tetherctl gen-pub-key --priv_key=<priv_key>
+    tetherctl get-device-names
+    tetherctl get-device [--dname=<dname>]
+    tetherctl change-device [--dname=<dname>] [--lport=<lport>]	[--priv_key=<priv_key>]
+    tetherctl add-peer --pub_key=<pub_key> [--dname=<dname>] [--endpoint=<endpoint>]
+    tetherctl remove-peer --pub_key=<pub_key> [--dname=<dname>]
+    tetherctl get-peer-config --pub_key=<pub_key> [--dname=<dname>] [--endpoint=<endpoint>]
+    tetherctl start-api [--dname=<dname>] [--endpoint=<endpoint>] [--api_url=<api_url>]
+    tetherctl stop-api
+    tetherctl test
     
 Options:
-    -h --help                       Show this screen.
-    --version                       Show version.
-    --device_name=<device_name> 	Wireguard device name [default: %q].
-	--endpoint=<endpoint> 			Wireguard url/ip where server can be found [default: this_pc_public_ip].
-	--config_file					Location of the config file in the system [default: %q].
-	--new_file						Location where the updated config should be stored [default: <config_file>].
-	--pub_key=<pub_key> 			Public key of a peer (unique).
-	--listen_port=<listen_port> 	Port to listen on for incoming connections.
-	--priv_key=<priv_key> 			Private key of a device.
-    --api_url=<api_url> 			API url [default: %q].
+    -h --help               Show this screen.
+    --version               Show version.
+    --dname=<dname>         Wireguard device name. Keeps the last set value [initial: %q].
+    --config=<config>       Location of the config file in the system [default: %q].
+    --log=<log>             Log level from verbose, error and silent [default: error].
+    --ipv4=<ipv4>           Public IPv4 address of the device.
+    --ipv6=<ipv6>           Public IPv6 address of the device.
+    --new_file=<new_file>   Location where the updated config should be stored [default: <config>].
+    --endpoint=<endpoint>   Wireguard url/ip where server can be found [default: this_pc_public_ip].
+    --lport=<lport>         Port to listen on for incoming connections.
+    --pub_key=<pub_key>     Public key of a WireGuard peer (unique).
+    --priv_key=<priv_key>   Private key of a WireGuard device.
+    --api_url=<api_url>     API url [default: %q].
 
     `,
 		DefaultDeviceName,
@@ -81,64 +80,53 @@ Options:
 		DefaultApiUrl,
 	)
 
-	opts, err := docopt.ParseArgs(usage, os.Args[1:], TetherCtlVersion)
-	if err != nil {
-		log.Fatalf("Error parsing cli arguments: %v", err)
-	}
+	tc = *tether.New(dName) // create client
 
-	deviceName, err := opts.String("--device_name")
-	if err != nil {
-		deviceName = DefaultDeviceName
-	}
-
-	dName = deviceName
-
-	tc = *tether.New(dName)
-	defer tc.Close()
-
-	logLevel := logger.LogLevelVerbose // verbose/debug logging
-	logger := logger.NewLogger(logLevel, dName)
-
-	// tun device
-	// TODO: add settings for UserLocalNat when creating UserspaceTUN
-	utun, err := tun.CreateUserspaceTUN(logger)
-	if err != nil {
-		logger.Errorf("Failed to create TUN device: %v", err)
-		os.Exit(1)
-	}
-
-	// wireguard device
-	device := device.NewDevice(utun, conn.NewDefaultBind(), logger)
-	logger.Verbosef("Device started")
-
-	tc.AddDevice(deviceName, device, []string{"192.168.90.0/24"})
-
-	// Handle Ctrl+C for graceful shutdown (if needed)
+	// handle Ctrl+C for graceful shutdown
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		fmt.Println("\nReceived interrupt signal. Exiting...")
+		l.Verbosef("Exiting...")
+		tc.Close()
+		stopApiCli()
 		os.Exit(0)
 	}()
 
+	// handle help message
+	docopt.DefaultParser.HelpHandler = func(err error, usage string) {
+		if err == nil {
+			fmt.Println(usage)
+		} else {
+			l.Errorf("Invalid command or arguments. Use 'tetherctl --help' for usage.")
+		}
+	}
+
 	reader := bufio.NewReader(os.Stdin)
-
 	for {
-		fmt.Print("> ") // Add a prompt
+		fmt.Print("> ") // prompt
 
-		// Read a line of input from the user
+		// read a line of input from the user
 		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input) // Remove leading/trailing whitespace
+		input = strings.TrimSpace(input)
 
-		// Parse command-line arguments for each iteration
-		opts, err := docopt.ParseArgs(usage, strings.Fields(input), TetherCtlVersion) // Pass nil for args to read from stdin
+		opts, err := docopt.ParseArgs(usage, strings.Fields(input), TetherCtlVersion)
 		if err != nil {
-			fmt.Println("Invalid command or arguments. Use 'tetherctl --help' for usage.")
-			continue // Continue to the next iteration on error
+			continue // continue to the next iteration on error
 		}
 
-		if up_, _ := opts.Bool("up"); up_ {
+		// only change device name (dname arg) if it was provided
+		// otherwire dname stores oldest value (initially DefaultDeviceName)
+		_deviceName, err := opts.String("--dname")
+		if err == nil {
+			dName = _deviceName
+		}
+
+		if add_, _ := opts.Bool("add"); add_ {
+			addCli(opts)
+		} else if remove_, _ := opts.Bool("remove"); remove_ {
+			removeCli()
+		} else if up_, _ := opts.Bool("up"); up_ {
 			upCli(opts)
 		} else if down_, _ := opts.Bool("down"); down_ {
 			downCli(opts)
@@ -158,10 +146,14 @@ Options:
 			changeDeviceCli(opts)
 		} else if addPeer_, _ := opts.Bool("add-peer"); addPeer_ {
 			addPeerCli(opts)
+		} else if removePeer_, _ := opts.Bool("remove-peer"); removePeer_ {
+			removePeerCli(opts)
 		} else if getPeerConfig_, _ := opts.Bool("get-peer-config"); getPeerConfig_ {
 			getPeerConfigCli(opts)
 		} else if startAPI_, _ := opts.Bool("start-api"); startAPI_ {
 			startApiCli(opts)
+		} else if stopAPI_, _ := opts.Bool("stop-api"); stopAPI_ {
+			stopApiCli()
 		} else if test_, _ := opts.Bool("test"); test_ {
 			Test()
 		}
@@ -169,53 +161,174 @@ Options:
 }
 
 func Test() {
-	fmt.Println("Test")
+	l.Verbosef("Test")
 }
 
-// get the public ip of this machine as default endpoint
-// (if not found then return the string "unknown")
-func getPublicIP() string {
-	const unknownIP = "unknown"
-	resp, err := http.Get("https://api.ipify.org?format=text")
-	if err != nil {
-		fmt.Println("Could not get the IP, consider not using the default option.")
-		return unknownIP
+// get ip{v4,v6} of this machine
+func getPublicIP(isIPv4 bool) (string, error) {
+	request := "https://api.ipify.org?format=text"
+	if !isIPv4 {
+		request = "https://api6.ipify.org?format=text"
 	}
+	resp, err := http.Get(request)
+	if err != nil {
+		return "", err
+	}
+
 	defer resp.Body.Close()
 
 	ip, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Println("Could not get the IP, consider not using the default option.")
-		return unknownIP
+		return "", err
 	}
 
-	return string(ip)
+	return string(ip), nil
 }
 
-func upCli(opts docopt.Opts) {
-	configFile, err := opts.String("--config_file")
+func addCli(opts docopt.Opts) {
+
+	// config
+
+	configFile, err := opts.String("--config")
 	if err != nil {
 		configFile = DefaultConfigFile
 	}
 	finalConfPath := configFile + dName + ".conf"
 
-	fmt.Printf("Bringing up interface %q from config file %q\n", dName, finalConfPath)
+	bywgConf, err := tether.ParseConfig(finalConfPath)
+	if err != nil {
+		l.Errorf("Error parsing config: %v", err)
+		return
+	}
+
+	// logger
+
+	logL, _ := opts.String("--log")
+	logL = strings.ToLower(logL)
+	logLevel := logger.LogLevelError // default to error logging
+	switch logL {
+	case "verbose", "debug", "v", "d":
+		logLevel = logger.LogLevelVerbose
+	case "silent", "s":
+		logLevel = logger.LogLevelSilent
+	}
+	logger := logger.NewLogger(logLevel, fmt.Sprintf("(%s) ", dName))
+
+	// ipv4 and ipv6
+
+	pubIPv4, err1 := opts.String("--ipv4")
+	var pubIPv4P *net.IP // nil if pubIPv4 is not provided and default is not possible
+	if err1 != nil {
+		// no ipv4 provided try default
+		ip, err2 := getPublicIP(true)
+		if err2 != nil {
+			pubIPv4 = ""
+		} else {
+			pubIPv4 = ip
+		}
+	}
+	if pubIPv4 != "" {
+		parsedIP := net.ParseIP(pubIPv4)
+		if parsedIP == nil {
+			l.Errorf("Invalid IPv4 address provided: %v", pubIPv4)
+			return
+		}
+		pubIPv4P = &parsedIP
+	}
+
+	pubIPv6, err1 := opts.String("--ipv6")
+	var pubIPv6P *net.IP // nil if pubIPv6 is not provided and default is not possible
+	if err1 != nil {
+		// no ipv6 provided try default
+		ip, err2 := getPublicIP(false)
+		if err2 != nil {
+			pubIPv6 = ""
+		} else {
+			pubIPv6 = ip
+		}
+	}
+	if pubIPv6 != "" {
+		parsedIP := net.ParseIP(pubIPv6)
+		if parsedIP == nil {
+			l.Errorf("Invalid IPv6 address provided: %v", pubIPv6)
+			return
+		}
+		pubIPv6P = &parsedIP
+	}
+
+	if pubIPv4P == nil && pubIPv6P == nil {
+		l.Errorf("No public IPv4 or IPv6 provided and could not get the public IP of this machine.")
+		return
+	}
+
+	// create tun
+
+	utun, err := tun.CreateUserspaceTUN(logger, pubIPv4P, pubIPv6P)
+	if err != nil {
+		logger.Errorf("Failed to create TUN device: %v", err)
+		os.Exit(1)
+	}
+
+	ipv4Str, ipv6Str := "none", "none"
+	if pubIPv4P != nil {
+		ipv4Str = pubIPv4P.String()
+	}
+	if pubIPv6P != nil {
+		ipv6Str = pubIPv6P.String()
+	}
+	l.Verbosef("TUN device created with ipv4:%s and ipv6:%s.\n", ipv4Str, ipv6Str)
+
+	// create device
+
+	device := device.NewDevice(utun, conn.NewDefaultBind(), logger)
+	logger.Verbosef("Device started")
+
+	// add device
+
+	err = tc.AddDevice(dName, device, bywgConf.Address)
+	if err != nil {
+		l.Errorf("Error adding device: %v", err)
+		return
+	}
+
+	l.Verbosef("Device %q added successfully.\n", dName)
+}
+
+func removeCli() {
+	err := tc.RemoveDevice(dName)
+	if err != nil {
+		l.Errorf("Error removing device: %v", err)
+		return
+	}
+	l.Verbosef("Device %q removed successfully.\n", dName)
+}
+
+func upCli(opts docopt.Opts) {
+	configFile, err := opts.String("--config")
+	if err != nil {
+		configFile = DefaultConfigFile
+	}
+	finalConfPath := configFile + dName + ".conf"
+
+	l.Verbosef("Bringing up interface %q from config file %q\n", dName, finalConfPath)
 
 	bywgConf, err := tether.ParseConfig(finalConfPath)
 	if err != nil {
-		log.Fatalf("Error parsing config: %v", err)
+		l.Errorf("Error parsing config: %v", err)
+		return
 	}
 
 	err = tc.BringUpDevice(dName, bywgConf)
 	if err != nil {
-		log.Fatalf("Error bringing up interface: %v", err)
+		l.Errorf("Error bringing up interface: %v", err)
+		return
 	}
 
-	fmt.Printf("Interface %q brought up successfully.\n", dName)
+	l.Verbosef("Interface %q brought up successfully.\n", dName)
 }
 
 func downCli(opts docopt.Opts) {
-	configFile, err := opts.String("--config_file")
+	configFile, err := opts.String("--config")
 	if err != nil {
 		configFile = DefaultConfigFile
 	}
@@ -227,44 +340,48 @@ func downCli(opts docopt.Opts) {
 	}
 	finalNewPath := newFile + dName + ".conf"
 
-	fmt.Printf("Bringing down interface %q from config file %q\n", dName, finalConfPath)
+	l.Verbosef("Bringing down interface %q from config file %q\n", dName, finalConfPath)
 
 	bywgConf, err := tether.ParseConfig(finalConfPath)
 	if err != nil {
-		log.Fatalf("Error parsing config: %v", err)
+		l.Errorf("Error parsing config: %v", err)
+		return
 	}
 
 	err = tc.BringDownDevice(dName, bywgConf, finalNewPath)
 	if err != nil {
-		log.Fatalf("Error bringing down interface: %v", err)
+		l.Errorf("Error bringing down interface: %v", err)
+		return
 	}
 
-	fmt.Printf("Interface %q brought down successfully.\n", dName)
+	l.Verbosef("Interface %q brought down successfully.\n", dName)
 }
 
 func getConfigCli(opts docopt.Opts) {
-	configFile, err := opts.String("--config_file")
+	configFile, err := opts.String("--config")
 	if err != nil {
 		configFile = DefaultConfigFile
 	}
 	finalConfPath := configFile + dName + ".conf"
 
-	fmt.Printf("Getting updated config for file %q of device %q\n", finalConfPath, dName)
+	l.Verbosef("Getting updated config for file %q of device %q\n", finalConfPath, dName)
 
 	bywgConf, err := tether.ParseConfig(finalConfPath)
 	if err != nil {
-		log.Fatalf("Error parsing config: %v", err)
+		l.Errorf("Error parsing config: %v", err)
+		return
 	}
 
 	config, err := tc.GetUpdatedConfig(dName, bywgConf)
 	if err != nil {
-		log.Fatalf("Error getting updated config: %v", err)
+		l.Errorf("Error getting updated config: %v", err)
+		return
 	}
 	fmt.Println(config)
 }
 
 func saveConfigCli(opts docopt.Opts) {
-	configFile, err := opts.String("--config_file")
+	configFile, err := opts.String("--config")
 	if err != nil {
 		configFile = DefaultConfigFile
 	}
@@ -276,25 +393,27 @@ func saveConfigCli(opts docopt.Opts) {
 	}
 	finalNewPath := newFile + dName + ".conf"
 
-	fmt.Printf("Saving config based on config file %q and device %q to %q\n", finalConfPath, dName, finalNewPath)
+	l.Verbosef("Saving config based on config file %q and device %q to %q\n", finalConfPath, dName, finalNewPath)
 
 	bywgConf, err := tether.ParseConfig(finalConfPath)
 	if err != nil {
-		log.Fatalf("Error parsing config: %v", err)
+		l.Errorf("Error parsing config: %v", err)
+		return
 	}
 
 	err = tc.SaveConfigToFile(dName, bywgConf, finalNewPath)
 	if err != nil {
-		log.Fatalf("Error saving config to file: %v", err)
+		l.Errorf("Error saving config to file: %v", err)
+		return
 	}
 
-	fmt.Printf("Config file %q for device %q saved successfully.\n", finalNewPath, dName)
+	l.Verbosef("Config file %q for device %q saved successfully.\n", finalNewPath, dName)
 }
 
 func genPrivKeyCli() {
 	privateKeyGenerated, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		fmt.Println("failed to generate private key: %w", err)
+		l.Errorf("failed to generate private key: %w", err)
 		return
 	}
 	fmt.Println(privateKeyGenerated.String())
@@ -303,12 +422,13 @@ func genPrivKeyCli() {
 func genPubKeyCli(opts docopt.Opts) {
 	privateKey, err := opts.String("--priv_key")
 	if err != nil {
-		log.Fatalf("Error: no --priv_key provided: %v", err)
+		l.Errorf("Error: no --priv_key provided: %v", err)
+		return
 	}
 
 	_pk, err := wgtypes.ParseKey(privateKey)
 	if err != nil {
-		fmt.Println("Invalid private key provided: %w", err)
+		l.Errorf("Invalid private key provided: %w", err)
 		return
 	}
 
@@ -318,24 +438,23 @@ func genPubKeyCli(opts docopt.Opts) {
 func getDeviceNamesCli() {
 	deviceNames := tc.GetAvailableDevices()
 	if len(deviceNames) == 0 {
-		fmt.Println("No devices found.")
+		l.Verbosef("No devices found.")
 		return
 	}
-
-	fmt.Printf("Found %d device(s) - %s\n", len(deviceNames), strings.Join(deviceNames, ", "))
+	l.Verbosef("Found %d device(s) - %s\n", len(deviceNames), strings.Join(deviceNames, ", "))
 }
 
 func getDeviceCli() {
 	config, err := tc.GetDeviceFormatted(dName)
 	if err != nil {
-		log.Fatalf("Error getting device information: %v", err)
+		l.Errorf("Error getting device information: %v", err)
+		return
 	}
-
 	fmt.Println(config)
 }
 
 func changeDeviceCli(opts docopt.Opts) {
-	listenPort, err := opts.Int("--listen_port")
+	listenPort, err := opts.Int("--lport")
 	var listenPortP *int // if listenPort is not provided then listenPortP is nil
 	if err == nil {
 		listenPortP = &listenPort
@@ -346,80 +465,135 @@ func changeDeviceCli(opts docopt.Opts) {
 	if err == nil {
 		privKey, err := wgtypes.ParseKey(privateKey)
 		if err != nil {
-			fmt.Println("Invalid private key provided. Change not possible.")
+			l.Errorf("Invalid private key provided. Change not possible.")
 			return
 		}
 		privKeyP = &privKey
 	}
 
 	if privKeyP == nil && listenPortP == nil {
-		fmt.Printf("Warning! No changes requested to device %s.\n", dName)
+		l.Verbosef("Warning! No changes requested to device %s.\n", dName)
 	} else {
 		//  at least one of the fields is not nil
 		if err := tc.ConfigureDevice(dName, wgtypes.Config{
 			PrivateKey: privKeyP,
 			ListenPort: listenPortP,
 		}); err != nil {
-			log.Fatalf("Error configuring device: %v", err)
+			l.Errorf("Error configuring device: %v", err)
 			return
 		}
+		l.Verbosef("Device %q changed successfully.\n", dName)
 	}
-
-	fmt.Printf("Device %q changed successfully.\n", dName)
 }
 
 func addPeerCli(opts docopt.Opts) {
 	publicKey, err := opts.String("--pub_key")
 	if err != nil {
-		log.Fatalf("Error: no --pub_key provided: %v", err)
+		l.Errorf("Error: no --pub_key provided: %v", err)
+		return
 	}
 
 	_pk, err := wgtypes.ParseKey(publicKey)
 	if err != nil {
-		log.Fatalf("Error parsing public key: %v", err)
+		l.Errorf("Error parsing public key: %v", err)
+		return
 	}
 
 	err = tc.AddPeerToDevice(dName, _pk)
 	if err != nil {
-		log.Fatalf("Error adding peer to device: %v", err)
+		l.Errorf("Error adding peer to device: %v", err)
+		return
 	}
 
 	getPeerConfigCli(opts)
 }
 
+func removePeerCli(opts docopt.Opts) {
+	publicKey, err := opts.String("--pub_key")
+	if err != nil {
+		l.Errorf("Error: no --pub_key provided: %v", err)
+		return
+	}
+
+	_pk, err := wgtypes.ParseKey(publicKey)
+	if err != nil {
+		l.Errorf("Error parsing public key: %v", err)
+		return
+	}
+
+	err = tc.RemovePeerFromDevice(dName, _pk)
+	if err != nil {
+		l.Errorf("Error removing peer from device: %v", err)
+		return
+	}
+
+	l.Verbosef("Peer %s removed successfully.\n", publicKey)
+}
+
 func getPeerConfigCli(opts docopt.Opts) {
 	publicKey, err := opts.String("--pub_key")
 	if err != nil {
-		log.Fatalf("Error: no --pub_key provided: %v", err)
+		l.Errorf("Error: no --pub_key provided: %v", err)
+		return
 	}
 
-	wgEndpoint, err := opts.String("--endpoint")
-	if err != nil {
-		wgEndpoint = getPublicIP()
+	wgEndpoint, err1 := opts.String("--endpoint")
+	if err1 != nil {
+		ipv4, err2 := getPublicIP(true)
+		if err2 != nil {
+			ipv6, err3 := getPublicIP(false)
+			if err3 != nil {
+				l.Errorf("Could not get the public IP of this machine: %v", err2)
+				return
+			} else {
+				wgEndpoint = ipv6
+			}
+		} else {
+			wgEndpoint = ipv4
+		}
 	}
 
 	config, err := tc.GetPeerConfig(dName, publicKey, wgEndpoint)
 	if err != nil {
-		log.Fatalf("Error getting peer config: %v", err)
+		l.Errorf("Error getting peer config: %v", err)
+		return
 	}
 
 	fmt.Println(config)
 }
 
 func startApiCli(opts docopt.Opts) {
+	if apiServer != nil {
+		l.Errorf("API server already running")
+		return
+	}
+
 	apiUrl, err := opts.String("--api_url")
 	if err != nil {
 		apiUrl = DefaultApiUrl
 	}
 
-	wgEndpoint, err := opts.String("--endpoint")
-	if err != nil {
-		wgEndpoint = getPublicIP()
+	wgEndpoint, err1 := opts.String("--endpoint")
+	if err1 != nil {
+		ipv4, err2 := getPublicIP(true)
+		if err2 != nil {
+			ipv6, err3 := getPublicIP(false)
+			if err3 != nil {
+				l.Errorf("Could not get the public IP of this machine: %v", err2)
+				return
+			} else {
+				wgEndpoint = ipv6
+			}
+		} else {
+			wgEndpoint = ipv4
+		}
 	}
 
 	router := gin.Default()
 	// endpoint for adding peer and returning config
 	router.POST("/peer/add/*pubkey", func(c *gin.Context) { apiAddPeer(c, wgEndpoint) })
+	// endpoint for removing peer
+	router.DELETE("/peer/remove/*pubkey", func(c *gin.Context) { apiRemovePeer(c) })
 	// endpoint for getting existing peer config
 	router.GET("/peer/config/*pubkey", func(c *gin.Context) { apiGetPeerConfig(c, wgEndpoint) })
 
@@ -429,26 +603,32 @@ func startApiCli(opts docopt.Opts) {
 		Handler: router,
 	}
 
-	fmt.Printf("Starting API server at %s\n", apiUrl)
+	l.Verbosef("Starting API server at %s\n", apiUrl)
 
 	// start server in goroutine and wait for interrupt signal
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Error listen: %s\n", err)
+			l.Errorf("Error listen: %s\n", err)
+			return
 		}
 	}()
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit //  wait for a signal to be received
-	fmt.Println(" Shutting down server... ")
 
+	apiServer = srv
+}
+
+func stopApiCli() {
+	if apiServer == nil {
+		return
+	}
 	// try to shutdown the server gracefully (wait max 5 secs to finish pending requests)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("Server forced to shutdown:", err)
+	if err := apiServer.Shutdown(ctx); err != nil {
+		l.Errorf("Server forced to shutdown: %v", err)
+		return
 	}
-	fmt.Println("Server exiting")
+	l.Verbosef("API Server stopped")
+	apiServer = nil
 }
 
 func apiGetPeerConfig(context *gin.Context, wgEndpoint string) {
@@ -469,7 +649,7 @@ func apiAddPeer(context *gin.Context, wgEndpoint string) {
 
 	_pk, err := wgtypes.ParseKey(publicKey)
 	if err != nil {
-		context.String(http.StatusInternalServerError, fmt.Sprintf("%d Internal Server Error - Invalid public key %q!", http.StatusInternalServerError, publicKey))
+		context.String(http.StatusBadRequest, fmt.Sprintf("%d Bad Request - Invalid public key %q", http.StatusBadRequest, publicKey))
 		return
 	}
 
@@ -487,6 +667,24 @@ func apiAddPeer(context *gin.Context, wgEndpoint string) {
 
 	// return the config as plaintext in the response body
 	context.String(http.StatusOK, config)
+}
+
+func apiRemovePeer(context *gin.Context) {
+	publicKey := parsePublicKey(context)
+
+	_pk, err := wgtypes.ParseKey(publicKey)
+	if err != nil {
+		context.String(http.StatusBadRequest, fmt.Sprintf("%d Bad Request - Invalid public key %q", http.StatusBadRequest, publicKey))
+		return
+	}
+
+	err = tc.RemovePeerFromDevice(dName, _pk)
+	if err != nil {
+		context.String(http.StatusInternalServerError, fmt.Sprintf("%d Internal Server Error - %v", http.StatusInternalServerError, err))
+		return
+	}
+
+	context.String(http.StatusOK, fmt.Sprintf("%d OK - Peer %q removed successfully", http.StatusOK, publicKey))
 }
 
 func parsePublicKey(context *gin.Context) string {

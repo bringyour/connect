@@ -8,14 +8,6 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func ErrDeviceExists(deviceName string) error {
-	return fmt.Errorf("wireguard device %q already exists", deviceName)
-}
-
-func ErrDeviceNotFound(deviceName string) error {
-	return fmt.Errorf("wireguard device %q not found", deviceName)
-}
-
 type Device struct {
 	*device.Device
 	Addresses []string // list of addresses peers can have on the device
@@ -61,10 +53,11 @@ func (c *Client) GetAvailableDevices() []string {
 //
 // If the device by the same name does not exist or some information
 // of the device could not be serialized, an error is returned.
+// The first error can be checked using errors.Is(err, ErrDeviceNotFound).
 func (c *Client) Device(name string) (*wgtypes.Device, error) {
 	device, ok := c.devices[name]
 	if !ok {
-		return nil, ErrDeviceNotFound(name)
+		return nil, fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
 	}
 
 	wgDevice, err := device.IpcGet()
@@ -76,12 +69,18 @@ func (c *Client) Device(name string) (*wgtypes.Device, error) {
 }
 
 // AddDevice adds a new userspace-wireguard device to the client with the provided name, device and addresses.
-// The name of the device must be unique.
+// The name of the device must be unique to the other devices on the Client.
 //
-// If the device by the same name already exists, an error is returned.
+// Returns an error if the device by the same name already exists or if any of the addresses are not valid CIDR network addresses.
+// The errors can be checked using errors.Is(err, ErrDeviceExists | ErrInvalidAddress | ErrNotNetworkAddress), respectively.
 func (c *Client) AddDevice(name string, wgDevice *device.Device, addresses []string) error {
 	if _, ok := c.devices[name]; ok {
-		return ErrDeviceExists(name)
+		return fmt.Errorf("device %s: %w", name, ErrDeviceExists)
+	}
+	for _, addr := range addresses {
+		if err := isNetworkAddress(addr); err != nil {
+			return err
+		}
 	}
 	c.devices[name] = &Device{Device: wgDevice, Addresses: addresses}
 	return nil
@@ -89,11 +88,11 @@ func (c *Client) AddDevice(name string, wgDevice *device.Device, addresses []str
 
 // RemoveDevice safely removes a userspace-wireguard device from the client.
 //
-// If the device by the same name does not exist, an error is returned.
+// If the device by the same name does not exist an error is returned which can be checked using errors.Is(err, ErrDeviceNotFound).
 func (c *Client) RemoveDevice(name string) error {
 	device, ok := c.devices[name]
 	if !ok {
-		return ErrDeviceNotFound(name)
+		return fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
 	}
 
 	device.Close()
@@ -109,20 +108,23 @@ func (c *Client) RemoveDevice(name string) error {
 //
 // If the device specified by name does not exist or the configuration
 // could not be applied, an error is returned.
+// The first error can be checked using errors.Is(err, ErrDeviceNotFound).
 func (c *Client) ConfigureDevice(name string, cfg wgtypes.Config) error {
 	device, ok := c.devices[name]
 	if !ok {
-		return ErrDeviceNotFound(name)
+		return fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
 	}
 
 	return device.IpcSet(&cfg)
 }
 
 // AddEventToDevice adds an event to a device by its name.
+//
+// If the device does not exist an error is returned which can be checked using errors.Is(err, ErrDeviceNotFound).
 func (c *Client) AddEventToDevice(name string, event tun.Event) error {
 	device, ok := c.devices[name]
 	if !ok {
-		return ErrDeviceNotFound(name)
+		return fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
 	}
 	device.AddEvent(event)
 	return nil
@@ -132,11 +134,18 @@ func (c *Client) AddEventToDevice(name string, event tun.Event) error {
 //
 // replace specifies if the addresses should replace the existing addresses, instead of appending them to the existing addresses.
 //
-// If the device by the same name does not exist, an error is returned.
+// Returns an error if the device by the same name does not exist or if any of the addresses are not valid CIDR network addresses.
+// The errors can be checked using errors.Is(err, ErrDeviceNotFound | ErrInvalidAddress | ErrNotNetworkAddress), respectively.
 func (c *Client) AddAddressesToDevice(name string, addresses []string, replace bool) error {
 	device, ok := c.devices[name]
 	if !ok {
-		return ErrDeviceNotFound(name)
+		return fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
+	}
+
+	for _, addr := range addresses {
+		if err := isNetworkAddress(addr); err != nil {
+			return err
+		}
 	}
 
 	if replace {
@@ -150,11 +159,11 @@ func (c *Client) AddAddressesToDevice(name string, addresses []string, replace b
 
 // GetAddressesFromDevice returns a list of addresses from a device by its name.
 //
-// If the device by the same name does not exist, an error is returned.
+// If the device by the same name does not exist an error is returned which can be checked using errors.Is(err, ErrDeviceNotFound).
 func (c *Client) GetAddressesFromDevice(name string) ([]string, error) {
 	device, ok := c.devices[name]
 	if !ok {
-		return nil, ErrDeviceNotFound(name)
+		return nil, fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
 	}
 	return device.Addresses, nil
 }

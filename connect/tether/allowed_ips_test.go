@@ -1,7 +1,7 @@
 package tether
 
 import (
-	"fmt"
+	"errors"
 	"net"
 	"testing"
 
@@ -151,7 +151,7 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 			subnet:   "10.10.10.10/32",
 			peers:    []wgtypes.Peer{},
 			expected: "",
-			err:      fmt.Errorf(""),
+			err:      ErrorAIPsNoAvailableIP,
 		},
 		{
 			name:   "Some IPs already used",
@@ -179,7 +179,7 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 				},
 			},
 			expected: "",
-			err:      fmt.Errorf(""),
+			err:      ErrorAIPsNoAvailableIP,
 		},
 		{
 			name:     "Edge case with network and broadcast addresses",
@@ -207,7 +207,7 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 				},
 			},
 			expected: "",
-			err:      fmt.Errorf(""),
+			err:      ErrorAIPsNoAvailableIP,
 		},
 	}
 
@@ -225,6 +225,9 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 			}
 			if err == nil && tt.err != nil {
 				t.Fatalf("Expected error %v, but got none", tt.err)
+			}
+			if err != nil && tt.err != nil && !errors.Is(err, tt.err) {
+				t.Fatalf("Expected error %v, but got %v", tt.err, err)
 			}
 			if err == nil && tt.expected != ip.String() {
 				t.Fatalf("Expected IP %q, but got %q", tt.expected, ip.String())

@@ -14,14 +14,12 @@ const TETHER_CMD string = "[sh]"
 
 // BringUpDevice reads the configuration file and attempts to bring up the WireGuard device from the Client's devices.
 //
-// The function returns an error if the interface could not be brought up.
+// The function returns an error if the device could not be retrieved, the private key could not be parsed or if the configuration could not be applied.
 // Additionally, an error will be returned if the ByWgConfig.Name does not match the deviceName.
 func (c *Client) BringUpDevice(deviceName string, bywgConf ByWgConfig) error {
 	if deviceName != bywgConf.Name {
 		return fmt.Errorf("name in config does not match the device name")
 	}
-
-	// check if device exists
 	if _, err := c.Device(deviceName); err != nil {
 		return err
 	}
@@ -59,13 +57,12 @@ func (c *Client) BringUpDevice(deviceName string, bywgConf ByWgConfig) error {
 // BringDownDevice brings down a WireGuard device based on a configuration file.
 // Additionally, if the SaveConfig option is set in the configuration file, the updated configuration is saved to the specified location.
 //
-// The function returns an error if the interface could not be brought down.
-// Additionally, an error will be returned if the Config.Name does not match the deviceName.
+// The function returns an error if the device could not be retrieved.
+// Additionally, an error will be returned if the ByWgConfig.Name does not match the deviceName.
 func (c *Client) BringDownDevice(deviceName string, bywgConf ByWgConfig, configSavePath string) error {
 	if deviceName != bywgConf.Name {
 		return fmt.Errorf("name in config does not match the device name")
 	}
-
 	if _, err := c.Device(deviceName); err != nil {
 		return err
 	}
@@ -82,11 +79,15 @@ func (c *Client) BringDownDevice(deviceName string, bywgConf ByWgConfig, configS
 	return nil
 }
 
-// GetDeviceInterface returns a string representation of a device.
+// GetDeviceInterface returns a string representation of a device including its addresses.
 //
 // The function returns an error if the device could not be retrieved.
 func (c *Client) GetDeviceFormatted(deviceName string) (string, error) {
 	device, err := c.Device(deviceName)
+	if err != nil {
+		return "", err
+	}
+	addrs, err := c.GetAddressesFromDevice(deviceName)
 	if err != nil {
 		return "", err
 	}
@@ -98,12 +99,13 @@ func (c *Client) GetDeviceFormatted(deviceName string) (string, error) {
   ListenPort = %d
   FirewallMark = %d
   Peers = %+v
-`, device.Name, device.Type, device.PrivateKey, device.PublicKey, device.ListenPort, device.FirewallMark, device.Peers), nil
+  Addresses = %s
+`, device.Name, device.Type, device.PrivateKey, device.PublicKey, device.ListenPort, device.FirewallMark, device.Peers, strings.Join(addrs, ", ")), nil
 }
 
 // AddPeerToDevice adds a new peer to the device based on the public key provided.
 //
-// The function returns an error if a peer with the same public key already exists,
+// The function returns an error if the device could not be retrieved, a peer with the same public key already exists,
 // a next AllowedIP could not be generated or if the peer could not be added.
 func (c *Client) AddPeerToDevice(deviceName string, pubKey wgtypes.Key) error {
 	device, err := c.Device(deviceName)
@@ -138,7 +140,25 @@ func (c *Client) AddPeerToDevice(deviceName string, pubKey wgtypes.Key) error {
 	})
 }
 
+// RemovePeerFromDevice removes a peer from a device based on the public key provided.
+// If the peer is not found, nothing happens.
+//
+// The function returns an error if the peer could not be removed.
+func (c *Client) RemovePeerFromDevice(deviceName string, pubKey wgtypes.Key) error {
+	newPeer := wgtypes.PeerConfig{
+		Remove:     true,
+		UpdateOnly: true,
+		PublicKey:  pubKey,
+	}
+
+	return c.ConfigureDevice(deviceName, wgtypes.Config{
+		Peers: []wgtypes.PeerConfig{newPeer},
+	})
+}
+
 // GetPeerConfig returns the (ini) formatted config for a peer based on the public key provided and the endpoint of the server.
+//
+// An error is returned if the device could not be retrieved, the public key is invalid or the peer is not found.
 func (c *Client) GetPeerConfig(deviceName string, peerPubKey string, endpoint string) (string, error) {
 	device, err := c.Device(deviceName)
 	if err != nil {
@@ -161,7 +181,9 @@ func (c *Client) GetPeerConfig(deviceName string, peerPubKey string, endpoint st
 	return "", fmt.Errorf("peer with public key %q not found", peerPubKey)
 }
 
-// createConfigForPeer creates a new config (ini format) for a peer based on the provided allowed IP and public key.
+// createConfigForPeer creates a new config (ini format) for a peer based on the provided allowed IP, public key and endpoint.
+//
+// An error is returned if the device could not be retrieved.
 //
 // The PrivateKey field is set to a __PLACEHOLDER__ which should be replaced by the peer to make a valid config.
 // No other __PLACEHOLDER__ exists in the config.
@@ -173,9 +195,9 @@ func (c *Client) createConfigForPeer(deviceName, peerAllowedIP string, pubKey st
 
 	newPeer := fmt.Sprintf(`# Config for public key %q
 [Interface]
-PrivateKey = __PLACEHOLDER__ # replace __PLACEHOLDER__ with your private key
+PrivateKey = __PLACEHOLDER__ # replace with your private key
 Address = %s
-DNS = 1.1.1.1
+DNS = 1.1.1.1, 8.8.8.8
 	
 [Peer]
 PublicKey = %s
