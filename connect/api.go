@@ -2,10 +2,14 @@ package connect
 
 import (
 	"context"
+	"net/url"
+
 	// "encoding/json"
 	// "encoding/base64"
 	// "bytes"
 	"fmt"
+
+	"github.com/pion/webrtc/v3"
 	// "io"
 	// "net"
 	// "net/http"
@@ -357,4 +361,174 @@ func (self *BringYourApi) ConnectControl(connectControl *ConnectControlArgs, cal
 		&ConnectControlResult{},
 		callback,
 	)
+}
+
+func (self *BringYourApi) PutPeerToPeerOfferSDPSync(ctx context.Context, handshakeID string, sdp webrtc.SessionDescription) (err error) {
+	var res any
+	_, err = HttpPutWithStrategy(
+		ctx,
+		self.clientStrategy,
+		fmt.Sprintf("%s/peer-to-peer/handshake/%s/offer/sdp", self.apiUrl, handshakeID),
+		sdp,
+		self.byJwt,
+		res,
+		NewNoopApiCallback[any](),
+	)
+	return err
+}
+
+func (self *BringYourApi) PollPeerToPeerOfferSDPSync(ctx context.Context, handshakeID string) (sdp webrtc.SessionDescription, err error) {
+	for {
+		_, err = HttpPollWithStrategy(
+			ctx,
+			self.clientStrategy,
+			fmt.Sprintf("%s/peer-to-peer/handshake/%s/offer/sdp", self.apiUrl, handshakeID),
+			self.byJwt,
+			&sdp,
+			NewNoopApiCallback[*webrtc.SessionDescription](),
+		)
+
+		// 204 signals that the server is still waiting for the state
+		if err == ErrPollTimeout {
+			continue
+		}
+
+		return sdp, err
+
+	}
+
+}
+
+func (self *BringYourApi) PutPeerToPeerAnswerSDPSync(ctx context.Context, handshakeID string, sdp webrtc.SessionDescription) (err error) {
+	var res any
+	_, err = HttpPutWithStrategy(
+		ctx,
+		self.clientStrategy,
+		fmt.Sprintf("%s/peer-to-peer/handshake/%s/answer/sdp", self.apiUrl, handshakeID),
+		sdp,
+		self.byJwt,
+		res,
+		NewNoopApiCallback[any](),
+	)
+	return err
+}
+
+func (self *BringYourApi) PollPeerToPeerAnswerSDPSync(ctx context.Context, handshakeID string) (sdp webrtc.SessionDescription, err error) {
+	for {
+		_, err = HttpPollWithStrategy(
+			ctx,
+			self.clientStrategy,
+			fmt.Sprintf("%s/peer-to-peer/handshake/%s/answer/sdp", self.apiUrl, handshakeID),
+			self.byJwt,
+			&sdp,
+			NewNoopApiCallback[*webrtc.SessionDescription](),
+		)
+
+		// 204 signals that the server is still waiting for the state
+		if err == ErrPollTimeout {
+			continue
+		}
+
+		return sdp, err
+
+	}
+
+}
+
+func (self *BringYourApi) PostPeerToPeerOfferPeerCandidateSync(ctx context.Context, handshakeID string, peerCandidate webrtc.ICECandidate) (err error) {
+	var res any
+	_, err = HttpPostWithStrategy(
+		ctx,
+		self.clientStrategy,
+		fmt.Sprintf("%s/peer-to-peer/handshake/%s/offer/peer_candidates", self.apiUrl, handshakeID),
+		peerCandidate,
+		self.byJwt,
+		res,
+		NewNoopApiCallback[any](),
+	)
+	return err
+
+}
+
+func (self *BringYourApi) PollPeerToPeerOfferCandidatesSync(ctx context.Context, handshakeID string, from int) (candidates []webrtc.ICECandidate, err error) {
+
+	u, err := url.Parse(self.apiUrl)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse url: %w", err)
+	}
+
+	u = u.JoinPath("peer-to-peer", "handshake", handshakeID, "offer", "peer_candidates")
+	q := u.Query()
+	q.Set("from", fmt.Sprintf("%d", from))
+	u.RawQuery = q.Encode()
+
+	for {
+		_, err = HttpPollWithStrategy(
+			ctx,
+			self.clientStrategy,
+			u.String(),
+			self.byJwt,
+			&candidates,
+			NewNoopApiCallback[*[]webrtc.ICECandidate](),
+		)
+
+		if err == ErrPollTimeout {
+			// 204 signals that the server is still waiting for the state
+			continue
+		}
+
+		return candidates, err
+
+	}
+
+}
+
+func (self *BringYourApi) PostPeerToPeerAnswerPeerCandidateSync(ctx context.Context, handshakeID string, peerCandidate webrtc.ICECandidate) (err error) {
+	var res any
+	_, err = HttpPostWithStrategy(
+		ctx,
+		self.clientStrategy,
+		fmt.Sprintf("%s/peer-to-peer/handshake/%s/answer/peer_candidates", self.apiUrl, handshakeID),
+		peerCandidate,
+		self.byJwt,
+		res,
+		NewNoopApiCallback[any](),
+	)
+	return err
+
+}
+
+func (self *BringYourApi) PollPeerToPeerAnswerCandidatesSync(ctx context.Context, handshakeID string, from int) (candidates []webrtc.ICECandidate, err error) {
+
+	u, err := url.Parse(self.apiUrl)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse url: %w", err)
+	}
+
+	u = u.JoinPath("peer-to-peer", "handshake", handshakeID, "answer", "peer_candidates")
+	q := u.Query()
+	q.Set("from", fmt.Sprintf("%d", from))
+	u.RawQuery = q.Encode()
+
+	for {
+		_, err = HttpPollWithStrategy(
+			ctx,
+			self.clientStrategy,
+			u.String(),
+			self.byJwt,
+			&candidates,
+			NewNoopApiCallback[*[]webrtc.ICECandidate](),
+		)
+
+		if err == ErrPollTimeout {
+			// 204 signals that the server is still waiting for the state
+			continue
+		}
+
+		return candidates, err
+
+	}
+
 }

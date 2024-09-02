@@ -2,10 +2,12 @@ package connect
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"sync"
 	"testing"
 	"time"
+
 	// "math"
 	mathrand "math/rand"
 
@@ -149,6 +151,9 @@ func TestMinTime(t *testing.T) {
 }
 
 func TestWeightedShuffle(t *testing.T) {
+	if os.Getenv("SKIP_SLOW_TESTS") == "true" {
+		t.SkipNow()
+	}
 	// weighted shuffle many times and look at the average position
 	// the average position order should trend with the weight order
 
@@ -197,6 +202,9 @@ func TestWeightedShuffle(t *testing.T) {
 
 func TestWeightedShuffleWithEntropy(t *testing.T) {
 	// as entropy approaches 1, the weighted shuffle should become uniform
+	if os.Getenv("SKIP_SLOW_TESTS") == "true" {
+		t.SkipNow()
+	}
 
 	k := 64
 	n := 256

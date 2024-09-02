@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	mathrand "math/rand"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,11 @@ import (
 )
 
 func TestSendReceiveSenderReset(t *testing.T) {
+
+	if os.Getenv("SKIP_SLOW_TESTS") == "true" {
+		t.SkipNow()
+	}
+
 	// in this case two senders with the same client_id send after each other
 	// The receiver should be able to reset using the new sequence_id
 

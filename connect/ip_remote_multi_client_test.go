@@ -3,8 +3,10 @@ package connect
 import (
 	"context"
 	"math"
+	"os"
 	"testing"
 	"time"
+
 	// "slices"
 	"sync"
 
@@ -171,6 +173,10 @@ func (self *TestMultiClientGenerator) NewClient(ctx context.Context, args *Multi
 func TestMultiClientChannelWindowStats(t *testing.T) {
 	// ensure that the bucket counts are bounded
 	// if this is broken, the coalesce logic is broken and there will be a memory issue
+
+	if os.Getenv("SKIP_SLOW_TESTS") == "true" {
+		t.SkipNow()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

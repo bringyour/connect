@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+
 	// "errors"
 	"fmt"
 	"io"
@@ -990,6 +991,72 @@ func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStra
 	return result, nil
 }
 
+func HttpPutWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrategy, requestUrl string, args any, byJwt string, result R, callback ApiCallback[R]) (R, error) {
+	var requestBodyBytes []byte
+	if args == nil {
+		requestBodyBytes = make([]byte, 0)
+	} else {
+		var err error
+		requestBodyBytes, err = json.Marshal(args)
+		if err != nil {
+			var empty R
+			callback.Result(empty, err)
+			return empty, err
+		}
+	}
+
+	request, err := http.NewRequestWithContext(ctx, "PUT", requestUrl, bytes.NewReader(requestBodyBytes))
+	if err != nil {
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	request.Header.Add("Content-Type", "text/json")
+
+	if byJwt != "" {
+		auth := fmt.Sprintf("Bearer %s", byJwt)
+		request.Header.Add("Authorization", auth)
+	}
+
+	helloRequest, err := HelloRequestFromUrl(ctx, requestUrl, byJwt)
+	if err != nil {
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	r, err := clientStrategy.HttpSerial(request, helloRequest)
+	if err != nil {
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+	if r.responseErr != nil {
+		var empty R
+		callback.Result(empty, r.responseErr)
+		return empty, r.responseErr
+	}
+
+	if http.StatusOK != r.response.StatusCode {
+		// the response body is the error message
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	err = json.Unmarshal(r.responseBodyBytes, &result)
+	if err != nil {
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	callback.Result(result, nil)
+	return result, nil
+}
+
 func HelloRequestFromUrl(ctx context.Context, requestUrl string, byJwt string) (*http.Request, error) {
 
 	u, err := url.Parse(requestUrl)
@@ -1038,6 +1105,59 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 		var empty R
 		callback.Result(empty, r.responseErr)
 		return empty, r.responseErr
+	}
+
+	if http.StatusOK != r.response.StatusCode {
+		// the response body is the error message
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	err = json.Unmarshal(r.responseBodyBytes, &result)
+	if err != nil {
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	callback.Result(result, nil)
+	return result, nil
+}
+
+var ErrPollTimeout = fmt.Errorf("Poll timeout.")
+
+func HttpPollWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrategy, requestUrl string, byJwt string, result R, callback ApiCallback[R]) (R, error) {
+	request, err := http.NewRequestWithContext(ctx, "GET", requestUrl, nil)
+	if err != nil {
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+
+	request.Header.Add("Content-Type", "text/json")
+
+	if byJwt != "" {
+		auth := fmt.Sprintf("Bearer %s", byJwt)
+		request.Header.Add("Authorization", auth)
+	}
+
+	r, err := clientStrategy.HttpParallel(request)
+	if err != nil {
+		var empty R
+		callback.Result(empty, err)
+		return empty, err
+	}
+	if r.responseErr != nil {
+		var empty R
+		callback.Result(empty, r.responseErr)
+		return empty, r.responseErr
+	}
+
+	if http.StatusNoContent == r.response.StatusCode {
+		var empty R
+		return empty, ErrPollTimeout
 	}
 
 	if http.StatusOK != r.response.StatusCode {
