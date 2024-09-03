@@ -7,6 +7,8 @@ import (
 
 // events surfaced to the end user
 
+type MonitorEventFunction = func(windowExpandEvent *WindowExpandEvent, providerEvents map[Id]*ProviderEvent)
+
 type WindowExpandEvent struct {
 	EventTime   time.Time
 	CurrentSize int
@@ -46,6 +48,8 @@ type RemoteUserNatMultiClientMonitor struct {
 
 	windowExpandEvent *WindowExpandEvent
 	providerEvents    []*ProviderEvent
+
+	monitorEventCallbacks *CallbackList[MonitorEventFunction]
 }
 
 func NewRemoteUserNatMultiClientMonitorWithDefaults() *RemoteUserNatMultiClientMonitor {
@@ -60,6 +64,40 @@ func NewRemoteUserNatMultiClientMonitor(settings *RemoteUserNatMultiClientMonito
 			CurrentSize: 0,
 			TargetSize:  0,
 		},
+		monitorEventCallbacks: NewCallbackList[MonitorEventFunction](),
+	}
+}
+
+func (self *RemoteUserNatMultiClientMonitor) AddMonitorEventCallback(monitorEventCallback MonitorEventFunction) func() {
+	callbackId := self.monitorEventCallbacks.Add(monitorEventCallback)
+	return func() {
+		self.monitorEventCallbacks.Remove(callbackId)
+	}
+}
+
+func (self *RemoteUserNatMultiClientMonitor) event() {
+	callbacks := self.monitorEventCallbacks.Get()
+	if len(callbacks) == 0 {
+		return
+	}
+
+	var windowExpandEvent *WindowExpandEvent
+	clientIdProviderEvents := map[Id]*ProviderEvent{}
+
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+
+		self.coalesceProviderEvents()
+
+		windowExpandEvent = self.windowExpandEvent
+		for _, providerEvent := range self.providerEvents {
+			clientIdProviderEvents[providerEvent.ClientId] = providerEvent
+		}
+	}()
+
+	for _, callback := range callbacks {
+		callback(windowExpandEvent, clientIdProviderEvents)
 	}
 }
 
@@ -91,28 +129,34 @@ func (self *RemoteUserNatMultiClientMonitor) Events() (*WindowExpandEvent, map[I
 }
 
 func (self *RemoteUserNatMultiClientMonitor) AddWindowExpandEvent(currentSize int, targetSize int) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
 
-	windowExpandEvent := &WindowExpandEvent{
-		EventTime:   time.Now(),
-		CurrentSize: currentSize,
-		TargetSize:  targetSize,
-	}
+		windowExpandEvent := &WindowExpandEvent{
+			EventTime:   time.Now(),
+			CurrentSize: currentSize,
+			TargetSize:  targetSize,
+		}
 
-	self.windowExpandEvent = windowExpandEvent
+		self.windowExpandEvent = windowExpandEvent
+	}()
+	self.event()
 }
 
 func (self *RemoteUserNatMultiClientMonitor) AddProviderEvent(clientId Id, state ProviderState) {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
 
-	providerEvent := &ProviderEvent{
-		EventTime: time.Now(),
-		ClientId:  clientId,
-		State:     state,
-	}
+		providerEvent := &ProviderEvent{
+			EventTime: time.Now(),
+			ClientId:  clientId,
+			State:     state,
+		}
 
-	self.providerEvents = append(self.providerEvents, providerEvent)
-	self.coalesceProviderEvents()
+		self.providerEvents = append(self.providerEvents, providerEvent)
+		self.coalesceProviderEvents()
+	}()
+	self.event()
 }
