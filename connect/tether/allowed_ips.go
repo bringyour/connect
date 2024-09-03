@@ -31,7 +31,7 @@ func (ipv IPVersion) String() string {
 // getNextAllowedIP finds the next available IP in any of the addresses of a device on the Client.
 //
 // Returns an error if the device has no addresses of the specified ipVersion which can be checked using errors.Is(err, ErrorAIPsNoAddressesFound).
-// Returns an error if no available IPs are found which can be checked using errors.Is(err, ErrorAIPsNoAvailableIPs).
+// Returns an error if no available IPs are found which can be checked using errors.Is(err, ErrorAIPsNoAvailableIP).
 //
 // Note: if concurrency is introduced at some point this function will have conflicts
 func (c *Client) getNextAllowedIP(deviceName string, ipVersion IPVersion) (string, error) {

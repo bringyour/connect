@@ -8,22 +8,45 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+// Methods needeed by a WireGuard device
+type IDevice interface {
+	Close()
+	AddEvent(event tun.Event)
+	IpcSet(deviceConfig *wgtypes.Config) error
+	IpcGet() (*wgtypes.Device, error)
+	GetAddresses() []string                        // returns the list of addresses associated with the device.
+	SetAddresses(addresses []string, replace bool) // adds a list of addresses to the device. replace specifies if the addresses should replace the existing addresses, instead of appending them to the existing addresses.
+}
+
+// Implementation of a WireGuard device
 type Device struct {
 	*device.Device
 	Addresses []string // list of addresses peers can have on the device
+}
+
+func (d *Device) GetAddresses() []string {
+	return d.Addresses
+}
+
+func (d *Device) SetAddresses(addresses []string, replace bool) {
+	if replace {
+		d.Addresses = addresses
+		return
+	}
+	d.Addresses = append(d.Addresses, addresses...)
 }
 
 // A Client manages different userspace-wireguard devices.
 //
 // Based on wgctrl.Client
 type Client struct {
-	devices map[string]*Device
+	devices map[string]IDevice
 }
 
 // New creates a new Client.
-func New(deviceName string) *Client {
+func New() *Client {
 	return &Client{
-		devices: make(map[string]*Device),
+		devices: make(map[string]IDevice),
 	}
 }
 
@@ -32,11 +55,11 @@ func (c *Client) Close() {
 	for _, device := range c.devices {
 		device.Close()
 	}
-	c.devices = make(map[string]*Device)
+	c.devices = make(map[string]IDevice)
 }
 
 // Devices return the list of userspace-wireguard devices managed by the client.
-func (c *Client) Devices() map[string]*Device {
+func (c *Client) Devices() map[string]IDevice {
 	return c.devices
 }
 
@@ -68,21 +91,15 @@ func (c *Client) Device(name string) (*wgtypes.Device, error) {
 	return wgDevice, nil
 }
 
-// AddDevice adds a new userspace-wireguard device to the client with the provided name, device and addresses.
+// AddDevice adds a new userspace-wireguard device to the client with the provided name.
 // The name of the device must be unique to the other devices on the Client.
 //
-// Returns an error if the device by the same name already exists or if any of the addresses are not valid CIDR network addresses.
-// The errors can be checked using errors.Is(err, ErrDeviceExists | ErrInvalidAddress | ErrNotNetworkAddress), respectively.
-func (c *Client) AddDevice(name string, wgDevice *device.Device, addresses []string) error {
+// Returns an error if the device by the same name already exists which can be checked using errors.Is(err, ErrDeviceExists).
+func (c *Client) AddDevice(name string, device IDevice) error {
 	if _, ok := c.devices[name]; ok {
 		return fmt.Errorf("device %s: %w", name, ErrDeviceExists)
 	}
-	for _, addr := range addresses {
-		if err := isNetworkAddress(addr); err != nil {
-			return err
-		}
-	}
-	c.devices[name] = &Device{Device: wgDevice, Addresses: addresses}
+	c.devices[name] = device
 	return nil
 }
 
@@ -94,7 +111,6 @@ func (c *Client) RemoveDevice(name string) error {
 	if !ok {
 		return fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
 	}
-
 	device.Close()
 	delete(c.devices, name)
 	return nil
@@ -148,12 +164,7 @@ func (c *Client) AddAddressesToDevice(name string, addresses []string, replace b
 		}
 	}
 
-	if replace {
-		device.Addresses = addresses
-		return nil
-	}
-
-	device.Addresses = append(device.Addresses, addresses...)
+	device.SetAddresses(addresses, replace)
 	return nil
 }
 
@@ -165,5 +176,5 @@ func (c *Client) GetAddressesFromDevice(name string) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("device %s: %w", name, ErrDeviceNotFound)
 	}
-	return device.Addresses, nil
+	return device.GetAddresses(), nil
 }

@@ -27,7 +27,7 @@ func TestIsIPv4andIPv6(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.ipStr, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			ip := net.ParseIP(tt.ipStr)
@@ -247,6 +247,12 @@ func TestGetInterfaceAddresses(t *testing.T) {
 			name:      "No IPs assigned to interface",
 			ipVersion: AllIPs,
 			ipsToAdd:  []string{},
+			expected:  []string{},
+		},
+		{
+			name:      "Filter non IPNet addresses",
+			ipVersion: AllIPs,
+			ipsToAdd:  []string{"not an ip"},
 			expected:  []string{},
 		},
 		{

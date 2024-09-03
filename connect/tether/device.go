@@ -14,11 +14,13 @@ const TETHER_CMD string = "[sh]"
 
 // BringUpDevice reads the configuration file and attempts to bring up the WireGuard device from the Client's devices.
 //
+// The function overrides the peers and addresses of the device with the ones in the provided configuration file.
+//
 // The function returns an error if the device could not be retrieved, the private key could not be parsed or if the configuration could not be applied.
-// Additionally, an error will be returned if the ByWgConfig.Name does not match the deviceName.
+// Additionally, an error will be returned if the ByWgConfig.Name does not match the deviceName which can be checked using errors.Is(err, ErrNameMismatch).
 func (c *Client) BringUpDevice(deviceName string, bywgConf ByWgConfig) error {
 	if deviceName != bywgConf.Name {
-		return fmt.Errorf("name in config does not match the device name")
+		return ErrNameMismatch
 	}
 	if _, err := c.Device(deviceName); err != nil {
 		return err
@@ -43,6 +45,11 @@ func (c *Client) BringUpDevice(deviceName string, bywgConf ByWgConfig) error {
 		return fmt.Errorf("failed to configure device: %w", err)
 	}
 
+	err = c.AddAddressesToDevice(deviceName, bywgConf.Address, true) // add addresses
+	if err != nil {
+		return err
+	}
+
 	// bring up device
 
 	if err := c.AddEventToDevice(deviceName, tun.EventUp); err != nil {
@@ -58,10 +65,10 @@ func (c *Client) BringUpDevice(deviceName string, bywgConf ByWgConfig) error {
 // Additionally, if the SaveConfig option is set in the configuration file, the updated configuration is saved to the specified location.
 //
 // The function returns an error if the device could not be retrieved.
-// Additionally, an error will be returned if the ByWgConfig.Name does not match the deviceName.
+// Additionally, an error will be returned if the ByWgConfig.Name does not match the deviceName which can be checked using errors.Is(err, ErrNameMismatch).
 func (c *Client) BringDownDevice(deviceName string, bywgConf ByWgConfig, configSavePath string) error {
 	if deviceName != bywgConf.Name {
-		return fmt.Errorf("name in config does not match the device name")
+		return ErrNameMismatch
 	}
 	if _, err := c.Device(deviceName); err != nil {
 		return err
@@ -213,6 +220,7 @@ Endpoint = %s:%d
 	return newPeer, nil
 }
 
+// ipsString transforms a list of ips to a string where the ips are separated by a ","
 func ipsString(ipnets []net.IPNet) string {
 	ipNetStrings := make([]string, 0, len(ipnets))
 	for _, ipnet := range ipnets {

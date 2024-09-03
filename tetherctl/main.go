@@ -41,7 +41,7 @@ func main() {
 		`Tether control.
 
 Usage:
-    tetherctl add [--dname=<dname>] [--log=<log>] [--ipv4=<ipv4>] [--ipv6=<ipv6>] [--config=<config>]
+    tetherctl add [--dname=<dname>] [--log=<log>] [--ipv4=<ipv4>] [--ipv6=<ipv6>]
     tetherctl remove [--dname=<dname>]
     tetherctl up [--dname=<dname>] [--config=<config>]
     tetherctl down [--dname=<dname>] [--config=<config>] [--new_file=<new_file>]
@@ -80,7 +80,7 @@ Options:
 		DefaultApiUrl,
 	)
 
-	tc = *tether.New(dName) // create client
+	tc = *tether.New() // create client
 
 	// handle Ctrl+C for graceful shutdown
 	c := make(chan os.Signal, 1)
@@ -187,20 +187,6 @@ func getPublicIP(isIPv4 bool) (string, error) {
 
 func addCli(opts docopt.Opts) {
 
-	// config
-
-	configFile, err := opts.String("--config")
-	if err != nil {
-		configFile = DefaultConfigFile
-	}
-	finalConfPath := configFile + dName + ".conf"
-
-	bywgConf, err := tether.ParseConfig(finalConfPath)
-	if err != nil {
-		l.Errorf("Error parsing config: %v", err)
-		return
-	}
-
 	// logger
 
 	logL, _ := opts.String("--log")
@@ -280,12 +266,13 @@ func addCli(opts docopt.Opts) {
 
 	// create device
 
-	device := device.NewDevice(utun, conn.NewDefaultBind(), logger)
+	wgDevice := device.NewDevice(utun, conn.NewDefaultBind(), logger)
 	logger.Verbosef("Device started")
+	device := &tether.Device{Device: wgDevice, Addresses: []string{}}
 
 	// add device
 
-	err = tc.AddDevice(dName, device, bywgConf.Address)
+	err = tc.AddDevice(dName, device)
 	if err != nil {
 		l.Errorf("Error adding device: %v", err)
 		return

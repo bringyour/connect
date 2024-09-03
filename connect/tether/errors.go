@@ -18,3 +18,6 @@ var ErrDeviceExists = errors.New("wireguard device already exists")
 // used for addresses of a device
 var ErrInvalidAddress = errors.New("invalid address")
 var ErrNotNetworkAddress = errors.New("address must be network address")
+
+// used for config
+var ErrNameMismatch = errors.New("name in config does not match the device name")
