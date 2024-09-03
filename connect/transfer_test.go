@@ -70,7 +70,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsA.ReceiveBufferSettings.SequenceBufferSize = 0
 	// clientSettingsA.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsA.ForwardBufferSettings.SequenceBufferSize = 0
-	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA)
+	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA, NewNoOpWebRTCConnProvider())
 	aRouteManager := a.RouteManager()
 	aContractManager := a.ContractManager()
 	// aRouteManager := NewRouteManager(a)
@@ -90,7 +90,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsB.ReceiveBufferSettings.SequenceBufferSize = 0
 	// clientSettingsB.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsB.ForwardBufferSettings.SequenceBufferSize = 0
-	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB)
+	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB, NewNoOpWebRTCConnProvider())
 	bRouteManager := b.RouteManager()
 	bContractManager := b.ContractManager()
 	// bRouteManager := NewRouteManager(b)
@@ -185,7 +185,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	aRouteManager.RemoveTransport(aSendTransport)
 	aRouteManager.RemoveTransport(aReceiveTransport)
 
-	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
+	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob(), NewNoOpWebRTCConnProvider())
 	a2RouteManager := a2.RouteManager()
 	a2ContractManager := a2.ContractManager()
 	// a2RouteManager := NewRouteManager(a2)

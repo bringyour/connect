@@ -7,6 +7,7 @@ import (
 	"math"
 	"sync"
 	"time"
+
 	// "runtime/debug"
 	// "runtime"
 	// "reflect"
@@ -229,9 +230,10 @@ type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	clientId  Id
-	clientTag string
-	clientOob OutOfBandControl
+	clientId           Id
+	clientTag          string
+	clientOob          OutOfBandControl
+	webrtcConnProvider WebRTCConnProvider
 
 	settings *ClientSettings
 
@@ -255,12 +257,14 @@ func NewClientWithDefaults(
 	ctx context.Context,
 	clientId Id,
 	clientOob OutOfBandControl,
+	webrtcHandshakeProvider WebRTCConnProvider,
 ) *Client {
 	return NewClient(
 		ctx,
 		clientId,
 		clientOob,
 		DefaultClientSettings(),
+		webrtcHandshakeProvider,
 	)
 }
 
@@ -269,9 +273,10 @@ func NewClient(
 	clientId Id,
 	clientOob OutOfBandControl,
 	settings *ClientSettings,
+	webrtcHandshakeProvider WebRTCConnProvider,
 ) *Client {
 	clientTag := clientId.String()
-	return NewClientWithTag(ctx, clientId, clientTag, clientOob, settings)
+	return NewClientWithTag(ctx, clientId, clientTag, clientOob, settings, webrtcHandshakeProvider)
 }
 
 func NewClientWithTag(
@@ -280,18 +285,20 @@ func NewClientWithTag(
 	clientTag string,
 	clientOob OutOfBandControl,
 	settings *ClientSettings,
+	webrtcHandshakeProvider WebRTCConnProvider,
 ) *Client {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	client := &Client{
-		ctx:              cancelCtx,
-		cancel:           cancel,
-		clientId:         clientId,
-		clientTag:        clientTag,
-		clientOob:        clientOob,
-		settings:         settings,
-		receiveCallbacks: NewCallbackList[ReceiveFunction](),
-		forwardCallbacks: NewCallbackList[ForwardFunction](),
-		loopback:         make(chan *SendPack),
+		ctx:                cancelCtx,
+		cancel:             cancel,
+		clientId:           clientId,
+		clientTag:          clientTag,
+		clientOob:          clientOob,
+		settings:           settings,
+		receiveCallbacks:   NewCallbackList[ReceiveFunction](),
+		forwardCallbacks:   NewCallbackList[ForwardFunction](),
+		loopback:           make(chan *SendPack),
+		webrtcConnProvider: webrtcHandshakeProvider,
 	}
 
 	routeManager := NewRouteManager(ctx, clientTag)
