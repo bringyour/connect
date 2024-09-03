@@ -67,7 +67,7 @@ Options:
     --log=<log>             Log level from verbose, error and silent [default: error].
     --ipv4=<ipv4>           Public IPv4 address of the device.
     --ipv6=<ipv6>           Public IPv6 address of the device.
-    --new_file=<new_file>   Location where the updated config should be stored [default: <config>].
+    --new_file=<new_file>   Location where the updated config should be stored. If not specified the original file is updated.
     --endpoint=<endpoint>   Wireguard url/ip where server can be found [default: this_pc_public_ip].
     --lport=<lport>         Port to listen on for incoming connections.
     --pub_key=<pub_key>     Public key of a WireGuard peer (unique).
