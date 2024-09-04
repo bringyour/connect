@@ -17,6 +17,7 @@ import (
 	"bringyour.com/wireguard/device"
 	"github.com/docopt/docopt-go"
 	"github.com/gin-gonic/gin"
+	"github.com/mattn/go-shellwords"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"bringyour.com/connect/tether"
@@ -110,7 +111,14 @@ Options:
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
-		opts, err := docopt.ParseArgs(usage, strings.Fields(input), TetherCtlVersion)
+		// parse the input into arguments (enables qoutation marks)
+		args, err := shellwords.Parse(input)
+		if err != nil {
+			docopt.DefaultParser.HelpHandler(err, usage)
+			continue // continue to the next iteration on error
+		}
+
+		opts, err := docopt.ParseArgs(usage, args, TetherCtlVersion)
 		if err != nil {
 			continue // continue to the next iteration on error
 		}
@@ -299,7 +307,7 @@ func upCli(opts docopt.Opts) {
 
 	l.Verbosef("Bringing up interface %q from config file %q\n", dName, finalConfPath)
 
-	bywgConf, err := tether.ParseConfig(finalConfPath)
+	bywgConf, err := tether.ParseConfigFromFile(finalConfPath)
 	if err != nil {
 		l.Errorf("Error parsing config: %v", err)
 		return
@@ -329,7 +337,7 @@ func downCli(opts docopt.Opts) {
 
 	l.Verbosef("Bringing down interface %q from config file %q\n", dName, finalConfPath)
 
-	bywgConf, err := tether.ParseConfig(finalConfPath)
+	bywgConf, err := tether.ParseConfigFromFile(finalConfPath)
 	if err != nil {
 		l.Errorf("Error parsing config: %v", err)
 		return
@@ -353,7 +361,7 @@ func getConfigCli(opts docopt.Opts) {
 
 	l.Verbosef("Getting updated config for file %q of device %q\n", finalConfPath, dName)
 
-	bywgConf, err := tether.ParseConfig(finalConfPath)
+	bywgConf, err := tether.ParseConfigFromFile(finalConfPath)
 	if err != nil {
 		l.Errorf("Error parsing config: %v", err)
 		return
@@ -382,7 +390,7 @@ func saveConfigCli(opts docopt.Opts) {
 
 	l.Verbosef("Saving config based on config file %q and device %q to %q\n", finalConfPath, dName, finalNewPath)
 
-	bywgConf, err := tether.ParseConfig(finalConfPath)
+	bywgConf, err := tether.ParseConfigFromFile(finalConfPath)
 	if err != nil {
 		l.Errorf("Error parsing config: %v", err)
 		return
@@ -428,7 +436,7 @@ func getDeviceNamesCli() {
 		l.Verbosef("No devices found.")
 		return
 	}
-	l.Verbosef("Found %d device(s) - %s\n", len(deviceNames), strings.Join(deviceNames, ", "))
+	l.Verbosef("Found %d device(s) - '%s'\n", len(deviceNames), strings.Join(deviceNames, "', '"))
 }
 
 func getDeviceCli() {

@@ -65,11 +65,12 @@ func (c *Client) SaveConfigToFile(deviceName string, config ByWgConfig, filePath
 	return os.WriteFile(filePath, []byte(content), 0644)
 }
 
-// PerseConfig transforms a textual representation of a configuration into a ByWgConfig struct.
+// ParseConfigFromFile reads a configuration file and returns its representation as a ByWgConfig struct.
+//
 // filePath is the location of the textual representatin of the configuration.
 //
 // The function returns an error if the file could not be retrieved or the configuration file is not a valid configuration.
-func ParseConfig(filePath string) (ByWgConfig, error) {
+func ParseConfigFromFile(filePath string) (ByWgConfig, error) {
 	configName := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
 
 	file, err := os.Open(filePath)
@@ -78,8 +79,30 @@ func ParseConfig(filePath string) (ByWgConfig, error) {
 	}
 	defer file.Close()
 
-	config := ByWgConfig{Name: configName}
 	scanner := bufio.NewScanner(file)
+
+	return parseConfig(configName, scanner)
+}
+
+// ParseConfigFromString reads a configuration string and returns its representation as a ByWgConfig struct.
+//
+// configName is the name of the device in the configuration.
+// configString is the textual representation of the configuration.
+//
+// The function returns an error if the configuration file is not a valid configuration.
+func ParseConfigFromString(configName, configString string) (ByWgConfig, error) {
+	scanner := bufio.NewScanner(strings.NewReader(configString))
+	return parseConfig(configName, scanner)
+}
+
+// PerseConfig transforms a textual representation of a configuration into a ByWgConfig struct.
+//
+// configName is the name of the device in the configuration.
+// scanner is a bufio.Scanner that reads the configuration line by line.
+//
+// The function returns an error if the file could not be retrieved or the configuration file is not a valid configuration.
+func parseConfig(configName string, scanner *bufio.Scanner) (config ByWgConfig, err error) {
+	config = ByWgConfig{Name: configName}
 
 	var currentSection string
 	var currentPeer wgtypes.PeerConfig = getEmptyPeer()
