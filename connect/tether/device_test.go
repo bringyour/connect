@@ -185,7 +185,7 @@ func TestClientBringUpDevice(t *testing.T) {
 					t.Fatalf("AddEvent call expectation mismatch. Expected: %v, Actual: %v", tc.expectAddEvent, tc.device.eventAdded)
 				}
 				if !reflect.DeepEqual(tc.device.GetAddresses(), tc.wantAddrs) {
-					t.Fatalf("incorrect addresses after BringUpInterface:\nGot: %v\nWant: %v", tc.device.GetAddresses(), tc.wantAddrs)
+					t.Fatalf("incorrect addresses after BringUpDevice:\nGot: %v\nWant: %v", tc.device.GetAddresses(), tc.wantAddrs)
 				}
 			}
 		})
@@ -267,7 +267,7 @@ func TestClientBringDownDevice(t *testing.T) {
 			err := c.BringDownDevice(tc.deviceName, tc.config, "")
 
 			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("BringUpDevice() error = %v, wantErr %v", err, tc.wantErr)
+				t.Fatalf("BringDownDevice() error = %v, wantErr %v", err, tc.wantErr)
 			}
 
 			if tc.device != nil {
@@ -275,7 +275,7 @@ func TestClientBringDownDevice(t *testing.T) {
 					t.Fatalf("AddEvent call expectation mismatch. Expected: %v, Actual: %v", tc.expectAddEvent, tc.device.eventAdded)
 				}
 				if !reflect.DeepEqual(tc.device.GetAddresses(), tc.wantAddrs) {
-					t.Fatalf("incorrect addresses after BringUpInterface:\nGot: %v\nWant: %v", tc.device.GetAddresses(), tc.wantAddrs)
+					t.Fatalf("incorrect addresses after BringDownDevice:\nGot: %v\nWant: %v", tc.device.GetAddresses(), tc.wantAddrs)
 				}
 			}
 		})
@@ -372,7 +372,7 @@ func TestClientAddPeerToDevice(t *testing.T) {
 			err := c.AddPeerToDevice(tc.deviceName, tc.pubKey)
 
 			if (tc.wantErrUnknown != (err != nil)) && tc.wantErr == nil {
-				t.Fatalf("BringUpDevice() hasError = %v, wantErrUnknown %v", (err != nil), tc.wantErrUnknown)
+				t.Fatalf("AddPeerToDevice() hasError = %v, wantErrUnknown %v", (err != nil), tc.wantErrUnknown)
 			}
 
 			if !errors.Is(err, tc.wantErr) && !tc.wantErrUnknown {

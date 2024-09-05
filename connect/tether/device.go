@@ -86,7 +86,7 @@ func (c *Client) BringDownDevice(deviceName string, bywgConf ByWgConfig, configS
 	return nil
 }
 
-// GetDeviceInterface returns a string representation of a device including its addresses.
+// GetDeviceFormatted returns a string representation of a device including its addresses.
 //
 // The function returns an error if the device could not be retrieved.
 func (c *Client) GetDeviceFormatted(deviceName string) (string, error) {

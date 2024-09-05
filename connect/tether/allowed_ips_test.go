@@ -236,7 +236,7 @@ func TestGetSubnetAvailableIP(t *testing.T) {
 	}
 }
 
-func TestGetInterfaceAddresses(t *testing.T) {
+func TestGetDeviceAddresses(t *testing.T) {
 	tests := []struct {
 		name      string
 		ipVersion IPVersion
@@ -244,7 +244,7 @@ func TestGetInterfaceAddresses(t *testing.T) {
 		expected  []string
 	}{
 		{
-			name:      "No IPs assigned to interface",
+			name:      "No IPs assigned to device",
 			ipVersion: AllIPs,
 			ipsToAdd:  []string{},
 			expected:  []string{},
@@ -309,7 +309,7 @@ func TestGetInterfaceAddresses(t *testing.T) {
 			},
 		},
 		{
-			name:      "Interface with both IPv4 and IPv6 but filter only IPv6",
+			name:      "Device with both IPv4 and IPv6 but filter only IPv6",
 			ipVersion: IPv6,
 			ipsToAdd: []string{
 				"192.168.6.0/24",
@@ -320,7 +320,7 @@ func TestGetInterfaceAddresses(t *testing.T) {
 			},
 		},
 		{
-			name:      "Interface with both IPv4 and IPv6 but filter only IPv4",
+			name:      "Device with both IPv4 and IPv6 but filter only IPv4",
 			ipVersion: IPv4,
 			ipsToAdd: []string{
 				"192.168.7.0/24",
@@ -336,7 +336,7 @@ func TestGetInterfaceAddresses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			// get interface addresses
+			// get device addresses
 			result := filterAddresses(test.ipsToAdd, test.ipVersion)
 
 			if len(result) != len(test.expected) {
