@@ -26,13 +26,15 @@ func DefaultDohSettings() *DohSettings {
 // see:
 // https://developers.cloudflare.com/1.1.1.1/ip-addresses/
 // https://www.quad9.net/
-
+// https://support.opendns.com/hc/en-us/articles/360038086532-Using-DNS-over-HTTPS-DoH-with-OpenDNS
 func dohUrlsIpv4() []string {
 	return []string{
 		"https://1.1.1.1/dns-query",
 		"https://1.0.0.1/dns-query",
 		"https://9.9.9.9:5053/dns-query",
 		"https://149.112.112.112:5053/dns-query",
+		"https://208.67.222.222/dns-query",
+		"https://208.67.220.220/dns-query",
 	}
 }
 
@@ -42,6 +44,8 @@ func dohUrlsIpv6() []string {
 		"https://[2606:4700:4700::1001]/dns-query",
 		"https://[2620:fe::fe]:5053/dns-query",
 		"https://[2620:fe::9]:5053/dns-query",
+		"https://[2620:119:35::35]/dns-query",
+		"https://[2620:119:53::53]/dns-query",
 	}
 }
 
