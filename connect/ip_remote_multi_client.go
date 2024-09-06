@@ -348,13 +348,13 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 	switch r {
 	case SecurityPolicyResultAllow:
 		parsedPacket := &parsedPacket{
-			ipPath: ipPath,
 			packet: packet,
+			ipPath: ipPath,
 		}
 		return self.sendPacket(source, provideMode, parsedPacket, timeout)
 	default:
 		// TODO upgrade port 53 and port 80 here with protocol specific conversions
-		glog.Infof("[multi]drop packet -> %d %v %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
+		glog.Infof("[multi]drop packet ipv%d p%v -> %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
 		return false
 	}
 }
@@ -365,14 +365,6 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 	parsedPacket *parsedPacket,
 	timeout time.Duration,
 ) (success bool) {
-	// parsedPacket, err := newParsedPacket(packet)
-	// if err != nil {
-	// 	// bad packet
-	// 	glog.Infof("[multi]send bad packet = %s\n", err)
-	// 	success = false
-	// 	return
-	// }
-
 	self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
 		enterTime := time.Now()
 
@@ -382,11 +374,17 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 			if err == nil {
 				return
 			}
-			update.client.ClearAffinity()
 			glog.Infof("[multi]send error = %s\n", err)
 			// find a new client
+			update.client.ClearAffinity()
 			update.client = nil
 		}
+
+		defer func() {
+			if update.client != nil {
+				update.client.UpdateAffinity()
+			}
+		}()
 
 		for {
 			orderedClients, removedClients := self.window.OrderedClients()
@@ -431,7 +429,6 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 					if mostRecentAffinityClient.Send(parsedPacket, affinityTimeout) {
 						glog.V(2).Infof("[multi]use affinity client ipv%d p%v -> %s:%d\n", parsedPacket.ipPath.Version, parsedPacket.ipPath.Protocol, parsedPacket.ipPath.DestinationIp, parsedPacket.ipPath.DestinationPort)
 						// lock the path to the client
-						mostRecentAffinityClient.UpdateAffinity( /*parsedPacket.ipPath*/ )
 						update.client = mostRecentAffinityClient
 						success = true
 						return
@@ -445,7 +442,6 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 				if client.Send(parsedPacket, 0) {
 					glog.V(2).Infof("[multi]use new client ipv%d p%v -> %s:%d\n", parsedPacket.ipPath.Version, parsedPacket.ipPath.Protocol, parsedPacket.ipPath.DestinationIp, parsedPacket.ipPath.DestinationPort)
 					// lock the path to the client
-					client.UpdateAffinity( /*parsedPacket.ipPath*/ )
 					update.client = client
 					success = true
 					return
@@ -462,18 +458,18 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 					return
 				}
 
-				retryTimeout = min(retryTimeout, remainingTimeout)
+				retryTimeout = min(remainingTimeout, retryTimeout)
 			}
 
 			if 0 < len(orderedClients) {
 				// distribute the timeout evenly via wait
 				retryTimeoutPerClient := retryTimeout / time.Duration(len(orderedClients))
 				for _, client := range orderedClients {
-					success, err := client.SendDetailed(parsedPacket, retryTimeoutPerClient)
+					var err error
+					success, err = client.SendDetailed(parsedPacket, retryTimeoutPerClient)
 					if success && err == nil {
 						// lock the path to the client
 						glog.V(2).Infof("[multi]wait for new client ipv%d p%v -> %s:%d\n", parsedPacket.ipPath.Version, parsedPacket.ipPath.Protocol, parsedPacket.ipPath.DestinationIp, parsedPacket.ipPath.DestinationPort)
-						client.UpdateAffinity( /*parsedPacket.ipPath*/ )
 						update.client = client
 						success = true
 						return
@@ -827,20 +823,17 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 	visitedDestinations := map[MultiHopId]bool{}
 	for {
 		destinationEstimatedBytesPerSecond := map[MultiHopId]ByteCount{}
-		next := func(count int) (map[MultiHopId]ByteCount, error) {
-			return self.generator.NextDestinations(
-				count,
+		for {
+			nextDestinationEstimatedBytesPerSecond, err := self.generator.NextDestinations(
+				1,
 				maps.Keys(visitedDestinations),
 			)
-		}
-		for {
-			nextDestinationEstimatedBytesPerSecond, err := next(1)
 			if err != nil {
+				glog.V(2).Infof("[multi]window enumerate error timeout.\n")
 				select {
 				case <-self.ctx.Done():
 					return
 				case <-time.After(self.settings.WindowEnumerateErrorTimeout):
-					glog.V(2).Infof("[multi]window enumerate error timeout.\n")
 				}
 			} else if 0 < len(nextDestinationEstimatedBytesPerSecond) {
 				for destination, estimatedBytesPerSecond := range nextDestinationEstimatedBytesPerSecond {
@@ -851,11 +844,11 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			} else {
 				// reset
 				visitedDestinations = map[MultiHopId]bool{}
+				glog.V(2).Infof("[multi]window enumerate empty timeout.\n")
 				select {
 				case <-self.ctx.Done():
 					return
 				case <-time.After(self.settings.WindowEnumerateEmptyTimeout):
-					glog.V(2).Infof("[multi]window enumerate empty timeout.\n")
 				}
 			}
 		}
@@ -890,11 +883,11 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			}
 		} else {
 			// this case happens when find providers is not correctly excluding clients
+			glog.V(2).Infof("[multi]window enumerate empty timeout (api mismatch).\n")
 			select {
 			case <-self.ctx.Done():
 				return
 			case <-time.After(self.settings.WindowEnumerateEmptyTimeout):
-				glog.V(2).Infof("[multi]window enumerate empty timeout (api mismatch).\n")
 			}
 		}
 	}
