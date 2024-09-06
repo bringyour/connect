@@ -2054,22 +2054,24 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
 
 			packet := ipPacketToProvider.IpPacket.PacketBytes
-			_, r := self.securityPolicy.Inspect(provideMode, packet)
-			switch r {
-			case SecurityPolicyResultAllow:
-				c := func() bool {
-					return self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, self.settings.WriteTimeout)
+			_, r, err := self.securityPolicy.Inspect(provideMode, packet)
+			if err == nil {
+				switch r {
+				case SecurityPolicyResultAllow:
+					c := func() bool {
+						return self.localUserNat.SendPacketWithTimeout(source, provideMode, packet, self.settings.WriteTimeout)
+					}
+					if glog.V(2) {
+						TraceWithReturn(
+							fmt.Sprintf("[unpr] %s<-%s s(%s)", self.client.ClientTag(), source.SourceId, source.StreamId),
+							c,
+						)
+					} else {
+						c()
+					}
+				case SecurityPolicyResultIncident:
+					self.client.ReportAbuse(source)
 				}
-				if glog.V(2) {
-					TraceWithReturn(
-						fmt.Sprintf("[unpr] %s<-%s s(%s)", self.client.ClientTag(), source.SourceId, source.StreamId),
-						c,
-					)
-				} else {
-					c()
-				}
-			case SecurityPolicyResultIncident:
-				self.client.ReportAbuse(source)
 			}
 		}
 	}
@@ -2123,7 +2125,10 @@ func NewRemoteUserNatClient(
 func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
 	minRelationship := max(provideMode, self.provideMode)
 
-	ipPath, r := self.securityPolicy.Inspect(minRelationship, packet)
+	ipPath, r, err := self.securityPolicy.Inspect(minRelationship, packet)
+	if err != nil {
+		return false
+	}
 	switch r {
 	case SecurityPolicyResultAllow:
 		destination, err := self.pathTable.SelectDestination(packet)
@@ -2456,11 +2461,11 @@ func DefaultSecurityPolicy() *SecurityPolicy {
 	return &SecurityPolicy{}
 }
 
-func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []byte) (*IpPath, SecurityPolicyResult) {
+func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []byte) (*IpPath, SecurityPolicyResult, error) {
 	ipPath, err := ParseIpPath(packet)
 	if err != nil {
-		// back ip packet
-		return ipPath, SecurityPolicyResultDrop
+		// bad ip packet
+		return ipPath, SecurityPolicyResultDrop, err
 	}
 
 	if protocol.ProvideMode_Public <= provideMode {
@@ -2469,7 +2474,7 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
 		// - block insecure or known unencrypted traffic
 
 		if !isPublicUnicast(ipPath.DestinationIp) {
-			return ipPath, SecurityPolicyResultIncident
+			return ipPath, SecurityPolicyResultIncident, nil
 		}
 
 		// block insecure or unencrypted traffic
@@ -2479,9 +2484,18 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
 		// - allow dns over tls (853)
 		// - allow user ports (>=1024)
 		// - block bittorrent (6881-6889)
+		// - FIXME temporarily enabling 53 and 80 until inline protocol translation is implemented
 		// TODO in the future, allow a control message to dynamically adjust the security rules
 		allow := func() bool {
 			switch port := ipPath.DestinationPort; {
+			case port == 53:
+				// dns
+				// FIXME for now we allow plain dns. TODO to upgrade the protocol to doh inline.
+				return true
+			case port == 80:
+				// http
+				// FIXME for now we allow http. It's important for some radio streaming. TODO to upgrade the protcol to https inline.
+				return true
 			case port == 443:
 				// https
 				return true
@@ -2501,11 +2515,11 @@ func (self *SecurityPolicy) Inspect(provideMode protocol.ProvideMode, packet []b
 			}
 		}
 		if !allow() {
-			return ipPath, SecurityPolicyResultDrop
+			return ipPath, SecurityPolicyResultDrop, nil
 		}
 	}
 
-	return ipPath, SecurityPolicyResultAllow
+	return ipPath, SecurityPolicyResultAllow, nil
 }
 
 func isPublicUnicast(ip net.IP) bool {
