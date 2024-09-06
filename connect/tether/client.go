@@ -3,50 +3,23 @@ package tether
 import (
 	"fmt"
 
-	"bringyour.com/wireguard/device"
 	"bringyour.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-// Methods needeed by a WireGuard device
-type IDevice interface {
-	Close()
-	AddEvent(event tun.Event)
-	IpcSet(deviceConfig *wgtypes.Config) error
-	IpcGet() (*wgtypes.Device, error)
-	GetAddresses() []string                        // returns the list of addresses associated with the device.
-	SetAddresses(addresses []string, replace bool) // adds a list of addresses to the device. replace specifies if the addresses should replace the existing addresses, instead of appending them to the existing addresses.
-}
-
-// Implementation of a WireGuard device
-type Device struct {
-	*device.Device
-	Addresses []string // list of addresses peers can have on the device
-}
-
-func (d *Device) GetAddresses() []string {
-	return d.Addresses
-}
-
-func (d *Device) SetAddresses(addresses []string, replace bool) {
-	if replace {
-		d.Addresses = addresses
-		return
-	}
-	d.Addresses = append(d.Addresses, addresses...)
-}
 
 // A Client manages different userspace-wireguard devices.
 //
 // Based on wgctrl.Client
 type Client struct {
-	devices map[string]IDevice
+	devices   map[string]IDevice
+	endpoints map[EndpointType]string
 }
 
-// New creates a new Client.
+// New creates a new Client without any devices or endpoints.
 func New() *Client {
 	return &Client{
-		devices: make(map[string]IDevice),
+		devices:   make(map[string]IDevice),
+		endpoints: make(map[EndpointType]string),
 	}
 }
 

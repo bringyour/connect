@@ -8,27 +8,24 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"bringyour.com/connect/tether"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 type Api struct {
-	server   *http.Server
-	dname    string
-	endpoint string
+	server *http.Server
+	dname  string
 }
 
 type ApiOptions struct {
-	ApiUrl     string
-	WgEndpoint string
-	Dname      string
+	ApiUrl string
+	Dname  string
 }
 
 func (o *ApiOptions) AreValid() error {
 	if o.ApiUrl == "" {
 		return fmt.Errorf("API URL is required")
-	}
-	if o.WgEndpoint == "" {
-		return fmt.Errorf("endpoint is required")
 	}
 	if o.Dname == "" {
 		return fmt.Errorf("device name is required")
@@ -36,23 +33,22 @@ func (o *ApiOptions) AreValid() error {
 	return nil
 }
 
-func startApi(o ApiOptions) (*Api, error) {
+func startApi(o ApiOptions, errorCallback func(err error)) (*Api, error) {
 	if err := o.AreValid(); err != nil {
 		return nil, fmt.Errorf("invalid API options: %w", err)
 	}
 
 	api := Api{
-		dname:    o.Dname,
-		endpoint: o.WgEndpoint,
+		dname: o.Dname,
 	}
 
 	router := gin.Default()
 	// endpoint for adding peer and returning config
-	router.POST("/peer/add/*pubkey", func(c *gin.Context) { api.addPeer(c) })
+	router.POST("/peer/add/:endpoint_type/*pubkey", func(c *gin.Context) { api.addPeer(c) })
 	// endpoint for removing peer
 	router.DELETE("/peer/remove/*pubkey", func(c *gin.Context) { api.removePeer(c) })
 	// endpoint for getting existing peer config
-	router.GET("/peer/config/*pubkey", func(c *gin.Context) { api.getPeerConfig(c) })
+	router.GET("/peer/config/:endpoint_type/*pubkey", func(c *gin.Context) { api.getPeerConfig(c) })
 
 	// wrap Gin router in an HTTP server
 	api.server = &http.Server{
@@ -61,10 +57,11 @@ func startApi(o ApiOptions) (*Api, error) {
 	}
 	l.Verbosef("Started API server at %s for device %q", o.ApiUrl, o.Dname)
 
-	// start server in goroutine and wait for interrupt signal
+	// start server in goroutine
 	go func() {
 		if err := api.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			l.Errorf("Error listen: %s", err)
+			l.Errorf("API error while listening: %s", err)
+			errorCallback(err)
 			return
 		}
 	}()
@@ -88,9 +85,10 @@ func (a *Api) stopApi() {
 }
 
 func (a *Api) getPeerConfig(context *gin.Context) {
+	endpointType := context.Param("endpoint_type")
 	publicKey := parsePublicKey(context)
 
-	config, err := tc.GetPeerConfig(a.dname, publicKey, a.endpoint)
+	config, err := tc.GetPeerConfig(a.dname, publicKey, endpointType)
 	if err != nil {
 		context.String(http.StatusNotFound, fmt.Sprintf("%d Not Found - %v", http.StatusNotFound, err))
 		return
@@ -101,23 +99,22 @@ func (a *Api) getPeerConfig(context *gin.Context) {
 }
 
 func (a *Api) addPeer(context *gin.Context) {
+	endpointType := context.Param("endpoint_type")
 	publicKey := parsePublicKey(context)
 
-	_pk, err := wgtypes.ParseKey(publicKey)
-	if err != nil {
+	if err := tether.EndpointType(endpointType).IsValid(); err != nil {
+		context.String(http.StatusBadRequest, fmt.Sprintf("%d Bad Request - %v", http.StatusBadRequest, err))
+		return
+	}
+
+	if _, err := wgtypes.ParseKey(publicKey); err != nil {
 		context.String(http.StatusBadRequest, fmt.Sprintf("%d Bad Request - Invalid public key %q", http.StatusBadRequest, publicKey))
 		return
 	}
 
-	err = tc.AddPeerToDevice(a.dname, _pk)
+	config, err := tc.AddPeerToDeviceAndGetConfig(a.dname, publicKey, endpointType)
 	if err != nil {
 		context.String(http.StatusInternalServerError, fmt.Sprintf("%d Internal Server Error - %v", http.StatusInternalServerError, err))
-		return
-	}
-
-	config, err := tc.GetPeerConfig(a.dname, publicKey, a.endpoint)
-	if err != nil {
-		context.String(http.StatusNotFound, fmt.Sprintf("%d Not Found - %v", http.StatusNotFound, err))
 		return
 	}
 

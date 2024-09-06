@@ -18,7 +18,7 @@ import (
 type IDeviceBuilder interface {
 	createDevice(c tether.Client, dname string, configPath string, logLevel int) error
 	stopDevice(c tether.Client, configPath string) error
-	startApi() error
+	startApi(apiURL string, errorCallback func(err error)) error
 	stopApi()
 }
 
@@ -68,6 +68,7 @@ func build(opts docopt.Opts) {
 
 	deviceName := "tbywg0"
 	configPath := "/root/connect/tetherctl/"
+	apiURL := "dsfgghfgfhgfgh:9090"
 
 	director := newDeviceDirector(deviceBuilder)
 	if err := director.builder.createDevice(tc, deviceName, configPath, logLevel); err != nil {
@@ -75,14 +76,19 @@ func build(opts docopt.Opts) {
 		return
 	}
 
-	if err := director.builder.startApi(); err != nil {
+	// handle Ctrl+C for graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	errorCallback := func(err error) {
+		c <- syscall.SIGTERM
+	}
+
+	if err := director.builder.startApi(apiURL, errorCallback); err != nil {
 		l.Errorf("Error starting API: %v", err)
 		return
 	}
 
-	// handle Ctrl+C for graceful shutdown
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 	l.Verbosef("Exiting...")
 	director.builder.stopApi()
@@ -159,18 +165,13 @@ func (tdb *TestDBuilder) stopDevice(c tether.Client, configPath string) error {
 	return nil
 }
 
-func (tdb *TestDBuilder) startApi() error {
-	ip, err := getPublicIP(true)
-	if err != nil {
-		return fmt.Errorf("failed to get public IP: %w", err)
-	}
-
+func (tdb *TestDBuilder) startApi(apiURL string, errorCallback func(err error)) error {
 	apiOpts := ApiOptions{
-		ApiUrl:     ":9090",
-		WgEndpoint: ip,
-		Dname:      tdb.dname,
+		ApiUrl: apiURL,
+		Dname:  tdb.dname,
 	}
-	tdb.api, err = startApi(apiOpts)
+	api, err := startApi(apiOpts, errorCallback)
+	tdb.api = api
 	return err
 }
 
@@ -179,4 +180,5 @@ func (tdb *TestDBuilder) stopApi() {
 		return
 	}
 	tdb.api.stopApi()
+	tdb.api = nil
 }

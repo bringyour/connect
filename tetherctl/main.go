@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -32,6 +34,16 @@ Options:
 
 	tc = *tether.New() // create client
 
+	// add ipv4 endpoint for peer
+	ipv4, err := getPublicIP(true)
+	if err != nil {
+		l.Errorf("Failed to get peer endpoint")
+		return
+	}
+	if err := tc.AddEndpoint(tether.EndpointIPv4, ipv4); err != nil {
+		panic(err)
+	}
+
 	opts, err := docopt.ParseArgs(usage, os.Args[1:], TetherCtlVersion)
 	if err != nil {
 		panic(err)
@@ -58,4 +70,25 @@ func getLogLevel(log string) int {
 	default:
 		return logger.LogLevelError
 	}
+}
+
+// get ip{v4,v6} of this machine
+func getPublicIP(isIPv4 bool) (string, error) {
+	request := "https://api.ipify.org?format=text"
+	if !isIPv4 {
+		request = "https://api6.ipify.org?format=text"
+	}
+	resp, err := http.Get(request)
+	if err != nil {
+		return "", err
+	}
+
+	defer resp.Body.Close()
+
+	ip, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(ip), nil
 }

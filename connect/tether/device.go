@@ -6,11 +6,40 @@ import (
 	"os/exec"
 	"strings"
 
+	"bringyour.com/wireguard/device"
 	"bringyour.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const TETHER_CMD string = "[sh]"
+
+// Methods needeed by a WireGuard device
+type IDevice interface {
+	Close()
+	AddEvent(event tun.Event)
+	IpcSet(deviceConfig *wgtypes.Config) error
+	IpcGet() (*wgtypes.Device, error)
+	GetAddresses() []string                        // returns the list of addresses associated with the device.
+	SetAddresses(addresses []string, replace bool) // adds a list of addresses to the device. replace specifies if the addresses should replace the existing addresses, instead of appending them to the existing addresses.
+}
+
+// Implementation of a WireGuard device
+type Device struct {
+	*device.Device
+	Addresses []string // list of addresses peers can have on the device
+}
+
+func (d *Device) GetAddresses() []string {
+	return d.Addresses
+}
+
+func (d *Device) SetAddresses(addresses []string, replace bool) {
+	if replace {
+		d.Addresses = addresses
+		return
+	}
+	d.Addresses = append(d.Addresses, addresses...)
+}
 
 // BringUpDevice reads the configuration file and attempts to bring up the WireGuard device from the Client's devices.
 //
@@ -110,6 +139,40 @@ func (c *Client) GetDeviceFormatted(deviceName string) (string, error) {
 `, device.Name, device.Type, device.PrivateKey, device.PublicKey, device.ListenPort, device.FirewallMark, device.Peers, strings.Join(addrs, ", ")), nil
 }
 
+func (c *Client) AddPeerToDeviceAndGetConfig(deviceName string, peerPubKey string, endpointType string) (string, error) {
+	// check for validity of endpoint type before looking for peer's public key
+	et := EndpointType(endpointType)
+	if err := et.IsValid(); err != nil {
+		return "", err
+	}
+
+	// check if endpoint exists
+	if _, err := c.GetEndpoint(et); err != nil {
+		return "", err
+	}
+
+	// parse key
+	_pk, err := wgtypes.ParseKey(peerPubKey)
+	if err != nil {
+		return "", err
+	}
+
+	// add peer to device
+	err = c.AddPeerToDevice(deviceName, _pk)
+	if err != nil {
+		return "", err
+	}
+
+	// get config
+	config, err := c.GetPeerConfig(deviceName, peerPubKey, endpointType)
+	if err != nil {
+		// remove peer if we couldn't get config
+		c.RemovePeerFromDevice(deviceName, _pk) // ignore errors
+		return "", err
+	}
+	return config, nil
+}
+
 // AddPeerToDevice adds a new peer to the device based on the public key provided.
 //
 // The function returns an error if the device could not be retrieved, a peer with the same public key already exists,
@@ -163,12 +226,19 @@ func (c *Client) RemovePeerFromDevice(deviceName string, pubKey wgtypes.Key) err
 	})
 }
 
-// GetPeerConfig returns the (ini) formatted config for a peer based on the public key provided and the endpoint of the server.
+// GetPeerConfig returns the (ini) formatted config for a peer based on the public key provided and the endpointType of the server.
 //
 // An error is returned if the device could not be retrieved, the public key is invalid or the peer is not found.
-func (c *Client) GetPeerConfig(deviceName string, peerPubKey string, endpoint string) (string, error) {
+// Additionally, if the endpointType is invalid or the client does not have an endpoint of the requested type, an error is returned which can be checked using errors.Is(err, ErrInvalidEndpointType | ErrEndpointNotFound), respectively.
+func (c *Client) GetPeerConfig(deviceName string, peerPubKey string, endpointType string) (string, error) {
 	device, err := c.Device(deviceName)
 	if err != nil {
+		return "", err
+	}
+
+	// check for validity of endpoint type before looking for peer's public key
+	et := EndpointType(endpointType)
+	if err := et.IsValid(); err != nil {
 		return "", err
 	}
 
@@ -180,7 +250,7 @@ func (c *Client) GetPeerConfig(deviceName string, peerPubKey string, endpoint st
 	// get peer with corresponding public key and return config
 	for _, peer := range device.Peers {
 		if peer.PublicKey == _pk {
-			return c.createConfigForPeer(deviceName, ipsString(peer.AllowedIPs), peerPubKey, endpoint)
+			return c.createConfigForPeer(deviceName, ipsString(peer.AllowedIPs), peerPubKey, et)
 		}
 	}
 
@@ -188,14 +258,19 @@ func (c *Client) GetPeerConfig(deviceName string, peerPubKey string, endpoint st
 	return "", fmt.Errorf("peer with public key %q not found", peerPubKey)
 }
 
-// createConfigForPeer creates a new config (ini format) for a peer based on the provided allowed IP, public key and endpoint.
+// createConfigForPeer creates a new config (ini format) for a peer based on the provided allowed IP, public key and endpointType.
 //
-// An error is returned if the device could not be retrieved.
+// An error is returned if the device could not be retrieved or the client does not have an available endpoint of the requested type.
 //
 // The PrivateKey field is set to a __PLACEHOLDER__ which should be replaced by the peer to make a valid config.
 // No other __PLACEHOLDER__ exists in the config.
-func (c *Client) createConfigForPeer(deviceName, peerAllowedIP string, pubKey string, endpoint string) (string, error) {
+func (c *Client) createConfigForPeer(deviceName, peerAllowedIP string, pubKey string, endpointType EndpointType) (string, error) {
 	device, err := c.Device(deviceName)
+	if err != nil {
+		return "", err
+	}
+
+	endpoint, err := c.GetEndpoint(endpointType)
 	if err != nil {
 		return "", err
 	}

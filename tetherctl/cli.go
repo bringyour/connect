@@ -3,9 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,6 +23,7 @@ import (
 const DefaultDeviceName = "bywg0"
 const DefaultConfigFile = "/etc/tethercli/"
 const DefaultApiUrl = "localhost:9090"
+const DefaultEndpointType = string(tether.EndpointIPv4)
 
 var cliDeviceName string = DefaultDeviceName
 var apiServer *Api
@@ -45,31 +44,32 @@ Usage:
     tethercli get-device-names
     tethercli get-device [--dname=<dname>]
     tethercli change-device [--dname=<dname>] [--lport=<lport>]	[--priv_key=<priv_key>]
-    tethercli add-peer --pub_key=<pub_key> [--dname=<dname>] [--endpoint=<endpoint>]
+    tethercli add-peer --pub_key=<pub_key> [--dname=<dname>] [--endpoint_type=<endpoint_type>]
     tethercli remove-peer --pub_key=<pub_key> [--dname=<dname>]
-    tethercli get-peer-config --pub_key=<pub_key> [--dname=<dname>] [--endpoint=<endpoint>]
-    tethercli start-api [--dname=<dname>] [--endpoint=<endpoint>] [--api_url=<api_url>]
+    tethercli get-peer-config --pub_key=<pub_key> [--dname=<dname>] [--endpoint_type=<endpoint_type>]
+    tethercli start-api [--dname=<dname>] [--api_url=<api_url>]
     tethercli stop-api
     tethercli test
     
 Options:
-    -h --help               Show this screen.
-    --version               Show version.
-    --dname=<dname>         Wireguard device name. Keeps the last set value [initial: %q].
-    --config=<config>       Location of the config file in the system [default: %q].
-    --log=<log>             Log level from verbose, error and silent [default: error].
-    --ipv4=<ipv4>           Public IPv4 address of the device.
-    --ipv6=<ipv6>           Public IPv6 address of the device.
-    --new_file=<new_file>   Location where the updated config should be stored. If not specified the original file is updated.
-    --endpoint=<endpoint>   Wireguard url/ip where server can be found [default: this_pc_public_ip].
-    --lport=<lport>         Port to listen on for incoming connections.
-    --pub_key=<pub_key>     Public key of a WireGuard peer (unique).
-    --priv_key=<priv_key>   Private key of a WireGuard device.
-    --api_url=<api_url>     API url [default: %q].
+    -h --help                         Show this screen.
+    --version                         Show version.
+    --dname=<dname>                   Wireguard device name. Keeps the last set value [initial: %s].
+    --config=<config>                 Location of the config file in the system [default: %s].
+    --log=<log>                       Log level from verbose, error and silent [default: error].
+    --ipv4=<ipv4>                     Public IPv4 address of the device.
+    --ipv6=<ipv6>                     Public IPv6 address of the device.
+    --new_file=<new_file>             Location where the updated config should be stored. If not specified the original file is updated.
+    --endpoint_type=<endpoint_type>   Type of endpoint to use for peer config [default: %s].
+    --lport=<lport>                   Port to listen on for incoming connections.
+    --pub_key=<pub_key>               Public key of a WireGuard peer (unique).
+    --priv_key=<priv_key>             Private key of a WireGuard device.
+    --api_url=<api_url>               API url [default: %s].
 
     `,
 		DefaultDeviceName,
 		DefaultConfigFile,
+		DefaultEndpointType,
 		DefaultApiUrl,
 	)
 
@@ -156,27 +156,6 @@ Options:
 			stopApiCli()
 		}
 	}
-}
-
-// get ip{v4,v6} of this machine
-func getPublicIP(isIPv4 bool) (string, error) {
-	request := "https://api.ipify.org?format=text"
-	if !isIPv4 {
-		request = "https://api6.ipify.org?format=text"
-	}
-	resp, err := http.Get(request)
-	if err != nil {
-		return "", err
-	}
-
-	defer resp.Body.Close()
-
-	ip, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(ip), nil
 }
 
 func addCli(opts docopt.Opts) {
@@ -466,19 +445,18 @@ func addPeerCli(opts docopt.Opts) {
 		return
 	}
 
-	_pk, err := wgtypes.ParseKey(publicKey)
-	if err != nil {
-		l.Errorf("Error parsing public key: %v", err)
-		return
+	endpointType, err1 := opts.String("--endpoint_type")
+	if err1 != nil {
+		endpointType = DefaultEndpointType
 	}
 
-	err = tc.AddPeerToDevice(cliDeviceName, _pk)
+	config, err := tc.AddPeerToDeviceAndGetConfig(cliDeviceName, publicKey, endpointType)
 	if err != nil {
 		l.Errorf("Error adding peer to device: %v", err)
 		return
 	}
 
-	getPeerConfigCli(opts)
+	fmt.Println(config)
 }
 
 func removePeerCli(opts docopt.Opts) {
@@ -510,23 +488,12 @@ func getPeerConfigCli(opts docopt.Opts) {
 		return
 	}
 
-	wgEndpoint, err1 := opts.String("--endpoint")
+	endpointType, err1 := opts.String("--endpoint_type")
 	if err1 != nil {
-		ipv4, err2 := getPublicIP(true)
-		if err2 != nil {
-			ipv6, err3 := getPublicIP(false)
-			if err3 != nil {
-				l.Errorf("Could not get the public IP of this machine: %v", err2)
-				return
-			} else {
-				wgEndpoint = ipv6
-			}
-		} else {
-			wgEndpoint = ipv4
-		}
+		endpointType = DefaultEndpointType
 	}
 
-	config, err := tc.GetPeerConfig(cliDeviceName, publicKey, wgEndpoint)
+	config, err := tc.GetPeerConfig(cliDeviceName, publicKey, endpointType)
 	if err != nil {
 		l.Errorf("Error getting peer config: %v", err)
 		return
@@ -546,29 +513,12 @@ func startApiCli(opts docopt.Opts) {
 		apiUrl = DefaultApiUrl
 	}
 
-	wgEndpoint, err1 := opts.String("--endpoint")
-	if err1 != nil {
-		ipv4, err2 := getPublicIP(true)
-		if err2 != nil {
-			ipv6, err3 := getPublicIP(false)
-			if err3 != nil {
-				l.Errorf("Could not get the public IP of this machine: %v", err2)
-				return
-			} else {
-				wgEndpoint = ipv6
-			}
-		} else {
-			wgEndpoint = ipv4
-		}
-	}
-
 	apiOpts := ApiOptions{
-		ApiUrl:     apiUrl,
-		WgEndpoint: wgEndpoint,
-		Dname:      cliDeviceName,
+		ApiUrl: apiUrl,
+		Dname:  cliDeviceName,
 	}
 
-	apiServer, err = startApi(apiOpts)
+	apiServer, err = startApi(apiOpts, func(e error) { stopApiCli() })
 	if err != nil {
 		l.Errorf("Error starting API: %v", err)
 	}
@@ -580,4 +530,5 @@ func stopApiCli() {
 		return
 	}
 	apiServer.stopApi()
+	apiServer = nil
 }
