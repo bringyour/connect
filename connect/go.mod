@@ -1,10 +1,10 @@
 module bringyour.com/connect
 
-go 1.22.5
+go 1.22.0
 
 require (
 	bringyour.com/protocol v0.0.0
-	github.com/bringyour/webrtc-conn v0.0.2
+	github.com/bringyour/webrtc-conn v0.0.3
 	github.com/go-playground/assert/v2 v2.2.0
 	github.com/golang-jwt/jwt/v5 v5.2.0
 	github.com/google/gopacket v1.1.19

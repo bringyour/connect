@@ -1,5 +1,5 @@
-github.com/bringyour/webrtc-conn v0.0.2 h1:19XI923zrRTSeuhP1a5dxVwyGGVT+MuzALKNARQekAM=
-github.com/bringyour/webrtc-conn v0.0.2/go.mod h1:JqQ4Gyj8eseA8D+Qn67j3xB9motWKSerjfz8oWmrc2w=
+github.com/bringyour/webrtc-conn v0.0.3 h1:BSeLu9l31HGWpBvz1NmmuMfRgFiIrCvnopfZEuNoXGg=
+github.com/bringyour/webrtc-conn v0.0.3/go.mod h1:iKpYIadSl8wpVF/Z3dPK7h1eBCcNxwgSxCLXPPYxMGI=
 github.com/chzyer/logex v1.1.10/go.mod h1:+Ywpsq7O8HXn0nuIou7OrIPyXbp3wmkHB+jjWRnGsAI=
 github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e/go.mod h1:nSuG5e5PlCu98SY8svDHJxuZscDgtXS6KTTbou5AhLI=
 github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1/go.mod h1:Q3SI9o4m/ZMnBNeIyt5eFwwo7qiLfzFZmjNmxjkiQlU=
