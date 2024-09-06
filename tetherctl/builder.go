@@ -68,7 +68,7 @@ func build(opts docopt.Opts) {
 
 	deviceName := "tbywg0"
 	configPath := "/root/connect/tetherctl/"
-	apiURL := "dsfgghfgfhgfgh:9090"
+	apiURL := ":9090"
 
 	director := newDeviceDirector(deviceBuilder)
 	if err := director.builder.createDevice(tc, deviceName, configPath, logLevel); err != nil {
