@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"github.com/go-playground/assert/v2"
+
+	"bringyour.com/protocol"
 )
 
 func TestMultiClientUdp4(t *testing.T) {
@@ -127,6 +129,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 		ctx,
 		generator,
 		receivePacketCallback,
+		protocol.ProvideMode_Network,
 	)
 
 	return multiClient, nil

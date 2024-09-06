@@ -78,6 +78,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		StatsWindowBucketDuration:    10 * time.Second,
 		StatsSampleWeightsCount:      8,
 		StatsSourceCountSelection:    0.95,
+		ClientAffinityTimeout:        0 * time.Second,
 
 		RemoteUserNatMultiClientMonitorSettings: *DefaultRemoteUserNatMultiClientMonitorSettings(),
 	}
@@ -114,6 +115,10 @@ type MultiClientSettings struct {
 	StatsWindowBucketDuration    time.Duration
 	StatsSampleWeightsCount      int
 	StatsSourceCountSelection    float64
+	// lower affinity is more private
+	// however, there may be some applications that assume the same ip across multiple connections
+	// in those cases, we would need some small affinity
+	ClientAffinityTimeout time.Duration
 
 	RemoteUserNatMultiClientMonitorSettings
 }
@@ -130,6 +135,11 @@ type RemoteUserNatMultiClient struct {
 
 	window *multiClientWindow
 
+	securityPolicy *SecurityPolicy
+	// the provide mode of the source packets
+	// for locally generated packets this is `ProvideMode_Network`
+	provideMode protocol.ProvideMode
+
 	stateLock      sync.Mutex
 	ip4PathUpdates map[Ip4Path]*multiClientChannelUpdate
 	ip6PathUpdates map[Ip6Path]*multiClientChannelUpdate
@@ -142,11 +152,13 @@ func NewRemoteUserNatMultiClientWithDefaults(
 	ctx context.Context,
 	generator MultiClientGenerator,
 	receivePacketCallback ReceivePacketFunction,
+	provideMode protocol.ProvideMode,
 ) *RemoteUserNatMultiClient {
 	return NewRemoteUserNatMultiClient(
 		ctx,
 		generator,
 		receivePacketCallback,
+		provideMode,
 		DefaultMultiClientSettings(),
 	)
 }
@@ -155,6 +167,7 @@ func NewRemoteUserNatMultiClient(
 	ctx context.Context,
 	generator MultiClientGenerator,
 	receivePacketCallback ReceivePacketFunction,
+	provideMode protocol.ProvideMode,
 	settings *MultiClientSettings,
 ) *RemoteUserNatMultiClient {
 	cancelCtx, cancel := context.WithCancel(ctx)
@@ -174,6 +187,8 @@ func NewRemoteUserNatMultiClient(
 		receivePacketCallback: receivePacketCallback,
 		settings:              settings,
 		window:                window,
+		securityPolicy:        DefaultSecurityPolicy(),
+		provideMode:           provideMode,
 		ip4PathUpdates:        map[Ip4Path]*multiClientChannelUpdate{},
 		ip6PathUpdates:        map[Ip6Path]*multiClientChannelUpdate{},
 		updateIp4Paths:        map[*multiClientChannelUpdate]map[Ip4Path]bool{},
@@ -322,15 +337,34 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 	provideMode protocol.ProvideMode,
 	packet []byte,
 	timeout time.Duration,
-) (success bool) {
-	parsedPacket, err := newParsedPacket(packet)
-	if err != nil {
-		// bad packet
-		glog.Infof("[multi]send bad packet = %s\n", err)
-		success = false
-		return
-	}
+) bool {
+	minRelationship := max(provideMode, self.provideMode)
 
+	ipPath, r, err := self.securityPolicy.Inspect(minRelationship, packet)
+	if err != nil {
+		glog.Infof("[multi]send bad packet = %s\n", err)
+		return false
+	}
+	switch r {
+	case SecurityPolicyResultAllow:
+		parsedPacket := &parsedPacket{
+			packet: packet,
+			ipPath: ipPath,
+		}
+		return self.sendPacket(source, provideMode, parsedPacket, timeout)
+	default:
+		// TODO upgrade port 53 and port 80 here with protocol specific conversions
+		glog.Infof("[multi]drop packet ipv%d p%v -> %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
+		return false
+	}
+}
+
+func (self *RemoteUserNatMultiClient) sendPacket(
+	source TransferPath,
+	provideMode protocol.ProvideMode,
+	parsedPacket *parsedPacket,
+	timeout time.Duration,
+) (success bool) {
 	self.updateClientPath(parsedPacket.ipPath, func(update *multiClientChannelUpdate) {
 		enterTime := time.Now()
 
@@ -342,8 +376,15 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 			}
 			glog.Infof("[multi]send error = %s\n", err)
 			// find a new client
+			update.client.ClearAffinity()
 			update.client = nil
 		}
+
+		defer func() {
+			if update.client != nil {
+				update.client.UpdateAffinity()
+			}
+		}()
 
 		for {
 			orderedClients, removedClients := self.window.OrderedClients()
@@ -353,8 +394,53 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 				self.removeClient(client)
 			}
 
+			// in order, try
+			// - the temporal affinity
+			//   connections initiated near each other in time will use the same client
+			// - clients in order
+
+			if 0 < self.settings.ClientAffinityTimeout {
+				// this implementation is a best-effort at affinity
+				// it will not ensure affinity between parallel sends in all cases
+				var mostRecentAffinityClient *multiClientChannel
+				for _, client := range orderedClients {
+					affinityCount, affinityTime := client.MostRecentAffinity()
+					if 0 < affinityCount && enterTime.Sub(affinityTime) < self.settings.ClientAffinityTimeout {
+						if mostRecentAffinityClient == nil {
+							mostRecentAffinityClient = client
+						} else if _, mostRecentAffinityTime := mostRecentAffinityClient.MostRecentAffinity(); mostRecentAffinityTime.Before(affinityTime) {
+							mostRecentAffinityClient = client
+						}
+					}
+				}
+				if mostRecentAffinityClient != nil {
+					affinityTimeout := min(self.settings.WriteRetryTimeout, self.settings.ClientAffinityTimeout)
+					if 0 <= timeout {
+						remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
+
+						if remainingTimeout <= 0 {
+							// drop
+							success = false
+							return
+						}
+
+						affinityTimeout = min(affinityTimeout, remainingTimeout)
+					}
+					if mostRecentAffinityClient.Send(parsedPacket, affinityTimeout) {
+						glog.V(2).Infof("[multi]use affinity client ipv%d p%v -> %s:%d\n", parsedPacket.ipPath.Version, parsedPacket.ipPath.Protocol, parsedPacket.ipPath.DestinationIp, parsedPacket.ipPath.DestinationPort)
+						// lock the path to the client
+						update.client = mostRecentAffinityClient
+						success = true
+						return
+					}
+					// else choose a new client
+				}
+				// else choose a new client
+			}
+
 			for _, client := range orderedClients {
 				if client.Send(parsedPacket, 0) {
+					glog.V(2).Infof("[multi]use new client ipv%d p%v -> %s:%d\n", parsedPacket.ipPath.Version, parsedPacket.ipPath.Protocol, parsedPacket.ipPath.DestinationIp, parsedPacket.ipPath.DestinationPort)
 					// lock the path to the client
 					update.client = client
 					success = true
@@ -362,7 +448,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 				}
 			}
 
-			var retryTimeout time.Duration
+			retryTimeout := self.settings.WriteRetryTimeout
 			if 0 <= timeout {
 				remainingTimeout := enterTime.Add(timeout).Sub(time.Now())
 
@@ -372,19 +458,18 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 					return
 				}
 
-				retryTimeout = min(remainingTimeout, self.settings.WriteRetryTimeout)
-
-			} else {
-				retryTimeout = self.settings.WriteRetryTimeout
+				retryTimeout = min(remainingTimeout, retryTimeout)
 			}
 
 			if 0 < len(orderedClients) {
 				// distribute the timeout evenly via wait
 				retryTimeoutPerClient := retryTimeout / time.Duration(len(orderedClients))
 				for _, client := range orderedClients {
+					var err error
 					success, err = client.SendDetailed(parsedPacket, retryTimeoutPerClient)
 					if success && err == nil {
 						// lock the path to the client
+						glog.V(2).Infof("[multi]wait for new client ipv%d p%v -> %s:%d\n", parsedPacket.ipPath.Version, parsedPacket.ipPath.Protocol, parsedPacket.ipPath.DestinationIp, parsedPacket.ipPath.DestinationPort)
 						update.client = client
 						success = true
 						return
@@ -739,20 +824,16 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 	for {
 		destinationEstimatedBytesPerSecond := map[MultiHopId]ByteCount{}
 		for {
-			next := func(count int) (map[MultiHopId]ByteCount, error) {
-				return self.generator.NextDestinations(
-					count,
-					maps.Keys(visitedDestinations),
-				)
-			}
-
-			nextDestinationEstimatedBytesPerSecond, err := next(1)
+			nextDestinationEstimatedBytesPerSecond, err := self.generator.NextDestinations(
+				1,
+				maps.Keys(visitedDestinations),
+			)
 			if err != nil {
+				glog.V(2).Infof("[multi]window enumerate error timeout.\n")
 				select {
 				case <-self.ctx.Done():
 					return
 				case <-time.After(self.settings.WindowEnumerateErrorTimeout):
-					glog.V(2).Infof("[multi]window enumerate error timeout.\n")
 				}
 			} else if 0 < len(nextDestinationEstimatedBytesPerSecond) {
 				for destination, estimatedBytesPerSecond := range nextDestinationEstimatedBytesPerSecond {
@@ -763,11 +844,11 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			} else {
 				// reset
 				visitedDestinations = map[MultiHopId]bool{}
+				glog.V(2).Infof("[multi]window enumerate empty timeout.\n")
 				select {
 				case <-self.ctx.Done():
 					return
 				case <-time.After(self.settings.WindowEnumerateEmptyTimeout):
-					glog.V(2).Infof("[multi]window enumerate empty timeout.\n")
 				}
 			}
 		}
@@ -781,23 +862,33 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			}
 		}()
 
-		for destination, estimatedBytesPerSecond := range destinationEstimatedBytesPerSecond {
-			if clientArgs, err := self.generator.NewClientArgs(); err == nil {
-				args := &multiClientChannelArgs{
-					Destination:                    destination,
-					EstimatedBytesPerSecond:        estimatedBytesPerSecond,
-					MultiClientGeneratorClientArgs: *clientArgs,
+		if 0 < len(destinationEstimatedBytesPerSecond) {
+			for destination, estimatedBytesPerSecond := range destinationEstimatedBytesPerSecond {
+				if clientArgs, err := self.generator.NewClientArgs(); err == nil {
+					args := &multiClientChannelArgs{
+						Destination:                    destination,
+						EstimatedBytesPerSecond:        estimatedBytesPerSecond,
+						MultiClientGeneratorClientArgs: *clientArgs,
+					}
+					select {
+					case <-self.ctx.Done():
+						self.generator.RemoveClientArgs(clientArgs)
+						return
+					case self.clientChannelArgs <- args:
+					}
+				} else {
+					glog.Infof("[multi]create client args error = %s\n", err)
 				}
-				select {
-				case <-self.ctx.Done():
-					self.generator.RemoveClientArgs(clientArgs)
-					return
-				case self.clientChannelArgs <- args:
-				}
-			} else {
-				glog.Infof("[multi]create client args error = %s\n", err)
-			}
 
+			}
+		} else {
+			// this case happens when find providers is not correctly excluding clients
+			glog.V(2).Infof("[multi]window enumerate empty timeout (api mismatch).\n")
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-time.After(self.settings.WindowEnumerateEmptyTimeout):
+			}
 		}
 	}
 }
@@ -1283,6 +1374,9 @@ type multiClientChannel struct {
 	packetStats               *clientWindowStats
 	endErr                    error
 
+	affinityCount int
+	affinityTime  time.Time
+
 	clientReceiveUnsub func()
 }
 
@@ -1332,6 +1426,8 @@ func newMultiClientChannel(
 		ip6DestinationSourceCount: map[Ip6Path]map[Ip6Path]int{},
 		packetStats:               &clientWindowStats{},
 		endErr:                    nil,
+		affinityCount:             0,
+		affinityTime:              time.Time{},
 	}
 	go HandleError(clientChannel.detectBlackhole, cancel)
 
@@ -1347,6 +1443,29 @@ func (self *multiClientChannel) ClientId() Id {
 
 func (self *multiClientChannel) IsP2pOnly() bool {
 	return self.args.MultiClientGeneratorClientArgs.P2pOnly
+}
+
+func (self *multiClientChannel) UpdateAffinity() {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	self.affinityCount += 1
+	self.affinityTime = time.Now()
+}
+
+func (self *multiClientChannel) ClearAffinity() {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	self.affinityCount = 0
+	self.affinityTime = time.Time{}
+}
+
+func (self *multiClientChannel) MostRecentAffinity() (int, time.Time) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	return self.affinityCount, self.affinityTime
 }
 
 func (self *multiClientChannel) Send(parsedPacket *parsedPacket, timeout time.Duration) bool {
