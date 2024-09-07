@@ -136,7 +136,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		dialer := &clientDialer{
 			description:    "normal",
 			minimumWeight:  0.5,
-			priority:       0,
+			priority:       25,
 			dialTlsContext: tlsDialer.DialContext,
 		}
 		dialers[dialer] = true
@@ -150,10 +150,11 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
 		}
 		// fragment
+		// this is the highest priority because it has no performance impact and additional security benefits
 		dialer2 := &clientDialer{
 			description:    "fragment",
 			minimumWeight:  0.25,
-			priority:       50,
+			priority:       0,
 			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
 		}
 		// reorder

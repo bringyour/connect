@@ -85,7 +85,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 			return settings
 		},
 		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
+			client := NewClient(ctx, args.ClientId, newNoContractClientOob(), clientSettings)
 
 			routesSend := []Route{
 				make(chan []byte),
@@ -199,7 +199,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 		},
 		newClientSettings: DefaultClientSettings,
 		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
+			client := NewClient(ctx, args.ClientId, newNoContractClientOob(), clientSettings)
 			return client, nil
 		},
 	}

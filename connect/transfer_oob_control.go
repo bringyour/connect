@@ -18,8 +18,11 @@ import (
 // and the receive/send may be blocked on the send/receive
 // for example think of a remote provider setup forwarding traffic as fast as possible
 // to an "echo" server with a finite buffer
+
+type OobResultFunction = func(resultFrames []*protocol.Frame, err error)
+
 type OutOfBandControl interface {
-	SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error))
+	SendControl(frames []*protocol.Frame, callback OobResultFunction)
 }
 
 type ApiOutOfBandControl struct {
@@ -47,14 +50,22 @@ func NewApiOutOfBandControlWithApi(api *BringYourApi) *ApiOutOfBandControl {
 
 func (self *ApiOutOfBandControl) SendControl(
 	frames []*protocol.Frame,
-	callback func(resultFrames []*protocol.Frame, err error),
+	callback OobResultFunction,
 ) {
+	safeCallback := func(resultFrames []*protocol.Frame, err error) {
+		if callback != nil {
+			HandleError(func() {
+				callback(resultFrames, err)
+			})
+		}
+	}
+
 	pack := &protocol.Pack{
 		Frames: frames,
 	}
 	packBytes, err := proto.Marshal(pack)
 	if err != nil {
-		callback(nil, err)
+		safeCallback(nil, err)
 		return
 	}
 
@@ -66,24 +77,24 @@ func (self *ApiOutOfBandControl) SendControl(
 		},
 		NewApiCallback(func(result *ConnectControlResult, err error) {
 			if err != nil {
-				callback(nil, err)
+				safeCallback(nil, err)
 				return
 			}
 
 			packBytes, err := base64.StdEncoding.DecodeString(result.Pack)
 			if err != nil {
-				callback(nil, err)
+				safeCallback(nil, err)
 				return
 			}
 
 			responsePack := &protocol.Pack{}
 			err = proto.Unmarshal(packBytes, responsePack)
 			if err != nil {
-				callback(nil, err)
+				safeCallback(nil, err)
 				return
 			}
 
-			callback(responsePack.Frames, nil)
+			safeCallback(responsePack.Frames, nil)
 		}),
 	)
 }
@@ -91,10 +102,18 @@ func (self *ApiOutOfBandControl) SendControl(
 type noContractClientOob struct {
 }
 
-func NewNoContractClientOob() *noContractClientOob {
+func newNoContractClientOob() *noContractClientOob {
 	return &noContractClientOob{}
 }
 
 func (self *noContractClientOob) SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error)) {
-	callback(nil, errors.New("Not supported."))
+	safeCallback := func(resultFrames []*protocol.Frame, err error) {
+		if callback != nil {
+			HandleError(func() {
+				callback(resultFrames, err)
+			})
+		}
+	}
+
+	safeCallback(nil, errors.New("Not supported."))
 }

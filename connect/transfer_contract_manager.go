@@ -114,6 +114,8 @@ type ContractManager struct {
 	mutex sync.Mutex
 
 	provideSecretKeys map[protocol.ProvideMode][]byte
+	// provide paused overrides the set provide modes
+	providePaused bool
 
 	destinationContracts map[ContractKey]*contractQueue
 
@@ -152,6 +154,7 @@ func NewContractManager(
 		client:                     client,
 		settings:                   settings,
 		provideSecretKeys:          map[protocol.ProvideMode][]byte{},
+		providePaused:              false,
 		destinationContracts:       map[ContractKey]*contractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds:    sendNoContractClientIds,
@@ -271,6 +274,52 @@ func (self *ContractManager) contractError(contractError protocol.ContractError)
 	}
 }
 
+func (self *ContractManager) SetProvidePaused(providePaused bool) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if self.providePaused == providePaused {
+		return
+	}
+
+	self.providePaused = providePaused
+
+	if providePaused {
+		provide := &protocol.Provide{
+			Keys: []*protocol.ProvideKey{},
+		}
+		// FIXME this should use normal control not oob
+		self.client.ClientOob().SendControl(
+			[]*protocol.Frame{RequireToFrame(provide)},
+			nil,
+		)
+	} else {
+		provideKeys := []*protocol.ProvideKey{}
+		for provideMode, provideSecretKey := range self.provideSecretKeys {
+			provideKeys = append(provideKeys, &protocol.ProvideKey{
+				Mode:             provideMode,
+				ProvideSecretKey: provideSecretKey,
+			})
+		}
+
+		provide := &protocol.Provide{
+			Keys: provideKeys,
+		}
+		// FIXME use normal control
+		self.client.ClientOob().SendControl(
+			[]*protocol.Frame{RequireToFrame(provide)},
+			nil,
+		)
+	}
+}
+
+func (self *ContractManager) IsProvidePaused() bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return self.providePaused
+}
+
 func (self *ContractManager) SetProvideModesWithReturnTraffic(provideModes map[protocol.ProvideMode]bool) {
 	self.SetProvideModesWithReturnTrafficWithAckCallback(provideModes, func(err error) {})
 }
@@ -319,15 +368,18 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 		}
 	}
 
-	provide := &protocol.Provide{
-		Keys: provideKeys,
+	if !self.providePaused {
+		provide := &protocol.Provide{
+			Keys: provideKeys,
+		}
+		// FIXME use normal control
+		self.client.ClientOob().SendControl(
+			[]*protocol.Frame{RequireToFrame(provide)},
+			func(resultFrames []*protocol.Frame, err error) {
+				ackCallback(err)
+			},
+		)
 	}
-	self.client.ClientOob().SendControl(
-		[]*protocol.Frame{RequireToFrame(provide)},
-		func(resultFrames []*protocol.Frame, err error) {
-			ackCallback(err)
-		},
-	)
 }
 
 func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
@@ -344,6 +396,10 @@ func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
+
+	if self.providePaused {
+		return false
+	}
 
 	provideSecretKey, ok := self.provideSecretKeys[provideMode]
 	if !ok {

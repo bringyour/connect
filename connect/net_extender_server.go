@@ -298,6 +298,8 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 
 	// fmt.Printf("Extender 1\n")
 
+	// FIXME switch to normal proxy if there are no tls fragments
+
 	/*
 	   handshakeBytes, clientHello, err := func()([]byte, *tlshacks.ClientHelloInfo, error) {
 	       handshakeBytes := make([]byte, 8192)
@@ -325,64 +327,64 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 	   }
 	*/
 	/*
-	    recordReader := newReaderRecordInitialBytes(conn)
-	    handshakeReader := tlshacks.NewHandshakeReader(recordReader)
-	    handshakeBytes, err := handshakeReader.ReadMessage()
-	    if err != nil {
-	        return
-	    }
+		    recordReader := newReaderRecordInitialBytes(conn)
+		    handshakeReader := tlshacks.NewHandshakeReader(recordReader)
+		    handshakeBytes, err := handshakeReader.ReadMessage()
+		    if err != nil {
+		        return
+		    }
 
-	    clientHello := UnmarshalClientHello(handshakeBytes)
-	    if clientHello == nil {
-	        return
-	    }
-
-
-
-	    fmt.Printf("Extender 2\n")
-
-	    if clientHello.Info.ServerName == nil {
-	        return
-	    }
-
-
-	    fmt.Printf("Extender 3: %s\n", *clientHello.Info.ServerName)
-
-		// generate a cert for that server name
-
-		// start a tls server connection using the cert and pass in the hello bytes
-		// pass in future bytes to the connection
-
-	    certPemBytes, keyPemBytes, err := selfSign(
-	        []string{*clientHello.Info.ServerName},
-	        guessOrganizationName(*clientHello.Info.ServerName),
-	    )
-	    if err != nil {
-	        return
-	    }
-	    // X509KeyPair
-	    cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
-	    if err != nil {
-	        return
-	    }
-
-	    fmt.Printf("Extender 4 with initial bytes: %s\n", string(recordReader.InitialBytes()))
-	    fmt.Printf("Cert: %s\n\n", string(certPemBytes))
-	    fmt.Printf("Key: %s\n\n", string(keyPemBytes))
+		    clientHello := UnmarshalClientHello(handshakeBytes)
+		    if clientHello == nil {
+		        return
+		    }
 
 
 
-		// todo need a net.COnn implementation that allows inserting bytes back at the front
+		    fmt.Printf("Extender 2\n")
+
+		    if clientHello.Info.ServerName == nil {
+		        return
+		    }
 
 
-	    tlsConfig := &tls.Config{
-	        Certificates: []tls.Certificate{cert},
-	        ServerName: *clientHello.Info.ServerName,
-	    }
-	    // put the handshake bytes back in front
-	    rewindConn := newConnWithInitialBytes(conn, recordReader.InitialBytes())
-		clientConn := tls.Server(rewindConn, tlsConfig)
-	    defer clientConn.Close()
+		    fmt.Printf("Extender 3: %s\n", *clientHello.Info.ServerName)
+
+			// generate a cert for that server name
+
+			// start a tls server connection using the cert and pass in the hello bytes
+			// pass in future bytes to the connection
+
+		    certPemBytes, keyPemBytes, err := selfSign(
+		        []string{*clientHello.Info.ServerName},
+		        guessOrganizationName(*clientHello.Info.ServerName),
+		    )
+		    if err != nil {
+		        return
+		    }
+		    // X509KeyPair
+		    cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
+		    if err != nil {
+		        return
+		    }
+
+		    fmt.Printf("Extender 4 with initial bytes: %s\n", string(recordReader.InitialBytes()))
+		    fmt.Printf("Cert: %s\n\n", string(certPemBytes))
+		    fmt.Printf("Key: %s\n\n", string(keyPemBytes))
+
+
+
+			// todo need a net.COnn implementation that allows inserting bytes back at the front
+
+
+		    tlsConfig := &tls.Config{
+		        Certificates: []tls.Certificate{cert},
+		        ServerName: *clientHello.Info.ServerName,
+		    }
+		    // put the handshake bytes back in front
+		    rewindConn := newConnWithInitialBytes(conn, recordReader.InitialBytes())
+			clientConn := tls.Server(rewindConn, tlsConfig)
+		    defer clientConn.Close()
 	*/
 
 	tlsConfig := &tls.Config{
@@ -702,7 +704,8 @@ func (self *readerRecordInitialBytes) InitialBytes() []byte {
 func (self *readerRecordInitialBytes) Read(b []byte) (int, error) {
     n, err := self.conn.Read(b)
     if 0 < n {
-        self.initialBytes = append(self.initialBytes, b[0:n]...)
+    	// FIXME need to make a copy
+        self.initialBytes = append(self.initialBytes, COPY(b[0:n])...)
     }
     return n, err
 }

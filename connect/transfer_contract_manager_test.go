@@ -26,7 +26,7 @@ func TestTakeContract(t *testing.T) {
 
 	ctx := context.Background()
 	clientId := NewId()
-	client := NewClientWithDefaults(ctx, clientId, NewNoContractClientOob())
+	client := NewClientWithDefaults(ctx, clientId, newNoContractClientOob())
 	defer client.Cancel()
 	contractManager := client.ContractManager()
 
