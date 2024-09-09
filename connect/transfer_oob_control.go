@@ -35,7 +35,7 @@ func NewApiOutOfBandControl(
 	byJwt string,
 	apiUrl string,
 ) *ApiOutOfBandControl {
-	api := NewBringYourApiWithContext(ctx, clientStrategy, apiUrl)
+	api := NewBringYourApi(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 	return &ApiOutOfBandControl{
 		api: api,

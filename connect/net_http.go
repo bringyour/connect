@@ -37,6 +37,9 @@ type DialTlsContextFunction = func(ctx context.Context, network string, addr str
 
 func DefaultClientStrategySettings() *ClientStrategySettings {
 	return &ClientStrategySettings{
+		ExposeServerIps:       true,
+		ExposeServerHostNames: true,
+
 		EnableNormal:    true,
 		EnableResilient: true,
 
@@ -75,6 +78,16 @@ type ConnectSettings struct {
 }
 
 type ClientStrategySettings struct {
+	// expose consistent ips
+	// if true, enables ech
+	ExposeServerIps bool
+	// expose server names
+	// if true, enables non-ech
+	// TODO set this to default false
+	ExposeServerHostNames bool
+	// note that extenders and proxy are the only strategies that will be enabled if
+	// `ExposeServerIps == false` and `ExposeServerNames == false`
+
 	EnableNormal bool
 	// tls frag, retransmit, tls frag + retransmit
 	EnableResilient bool
@@ -126,48 +139,54 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 	resolvedExtenderIps := []netip.Addr{}
 
 	if settings.EnableNormal {
-		tlsDialer := &tls.Dialer{
-			NetDialer: &net.Dialer{
-				Timeout: settings.ConnectTimeout,
-			},
-			Config: settings.TlsConfig,
-		}
+		// TODO ECH support
+		if settings.ExposeServerHostNames && settings.ExposeServerIps {
+			tlsDialer := &tls.Dialer{
+				NetDialer: &net.Dialer{
+					Timeout: settings.ConnectTimeout,
+				},
+				Config: settings.TlsConfig,
+			}
 
-		dialer := &clientDialer{
-			description:    "normal",
-			minimumWeight:  0.5,
-			priority:       25,
-			dialTlsContext: tlsDialer.DialContext,
+			dialer := &clientDialer{
+				description:    "normal",
+				minimumWeight:  0.5,
+				priority:       25,
+				dialTlsContext: tlsDialer.DialContext,
+			}
+			dialers[dialer] = true
 		}
-		dialers[dialer] = true
 	}
 	if settings.EnableResilient {
-		// fragment+reorder
-		dialer1 := &clientDialer{
-			description:    "fragment+reorder",
-			minimumWeight:  0.25,
-			priority:       50,
-			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
-		}
-		// fragment
-		// this is the highest priority because it has no performance impact and additional security benefits
-		dialer2 := &clientDialer{
-			description:    "fragment",
-			minimumWeight:  0.25,
-			priority:       0,
-			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
-		}
-		// reorder
-		dialer3 := &clientDialer{
-			description:    "reorder",
-			minimumWeight:  0.25,
-			priority:       50,
-			dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
-		}
+		// TODO ECH support
+		if settings.ExposeServerHostNames && settings.ExposeServerIps {
+			// fragment+reorder
+			dialer1 := &clientDialer{
+				description:    "fragment+reorder",
+				minimumWeight:  0.25,
+				priority:       50,
+				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
+			}
+			// fragment
+			// this is the highest priority because it has no performance impact and additional security benefits
+			dialer2 := &clientDialer{
+				description:    "fragment",
+				minimumWeight:  0.25,
+				priority:       0,
+				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
+			}
+			// reorder
+			dialer3 := &clientDialer{
+				description:    "reorder",
+				minimumWeight:  0.25,
+				priority:       50,
+				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
+			}
 
-		dialers[dialer1] = true
-		dialers[dialer2] = true
-		dialers[dialer3] = true
+			dialers[dialer1] = true
+			dialers[dialer2] = true
+			dialers[dialer3] = true
+		}
 	}
 
 	return &ClientStrategy{
