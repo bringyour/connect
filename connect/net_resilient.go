@@ -41,10 +41,12 @@ import (
 	"src.agwa.name/tlshacks"
 )
 
+// see https://upb-syssec.github.io/blog/2023/record-fragmentation/
+
 // (ctx, network, address)
 // type DialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
 
-// // set this as the `DialTLSContext` or equivalent
+// set this as the `DialTLSContext` or equivalent
 // returns a tls connection
 func NewResilientDialTlsContext(
 	connectSettings *ConnectSettings,
