@@ -2,13 +2,15 @@ package connect
 
 import (
 	"context"
-	"time"
 	"sync"
+	"time"
+
 	// "errors"
 	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
+
 	// "slices"
 	// "runtime/debug"
 
@@ -21,31 +23,28 @@ import (
 	"bringyour.com/protocol"
 )
 
-
 // manage contracts which are embedded into each transfer sequence
-
 
 type ContractErrorFunction = func(contractError protocol.ContractError)
 
-
 type ContractManagerStats struct {
-	ContractOpenCount int64
+	ContractOpenCount  int64
 	ContractCloseCount int64
 	// contract id -> byte count
 	ContractOpenByteCounts map[Id]ByteCount
 	// contract id -> destination id
-	ContractOpenDestinationIds map[Id]Id
-	ContractCloseByteCount ByteCount
+	ContractOpenDestinationIds    map[Id]Id
+	ContractCloseByteCount        ByteCount
 	ReceiveContractCloseByteCount ByteCount
 }
 
-func NewContractManagerStats() *ContractManagerStats{
+func NewContractManagerStats() *ContractManagerStats {
 	return &ContractManagerStats{
-		ContractOpenCount: 0,
-		ContractCloseCount: 0,
-		ContractOpenByteCounts: map[Id]ByteCount{},
-		ContractOpenDestinationIds: map[Id]Id{},
-		ContractCloseByteCount: 0,
+		ContractOpenCount:             0,
+		ContractCloseCount:            0,
+		ContractOpenByteCounts:        map[Id]ByteCount{},
+		ContractOpenDestinationIds:    map[Id]Id{},
+		ContractCloseByteCount:        0,
 		ReceiveContractCloseByteCount: 0,
 	}
 }
@@ -57,7 +56,6 @@ func (self *ContractManagerStats) ContractOpenByteCount() ByteCount {
 	}
 	return netContractOpenByteCount
 }
-
 
 func DefaultContractManagerSettings() *ContractManagerSettings {
 	// NETWORK EVENT: at the enable contracts date, all clients will require contracts
@@ -79,7 +77,6 @@ func DefaultContractManagerSettingsNoNetworkEvents() *ContractManagerSettings {
 	return settings
 }
 
-
 type ContractManagerSettings struct {
 	StandardContractTransferByteCount ByteCount
 
@@ -92,9 +89,8 @@ func (self *ContractManagerSettings) ContractsEnabled() bool {
 	return self.NetworkEventTimeEnableContracts.Before(time.Now())
 }
 
-
 type ContractManager struct {
-	ctx context.Context
+	ctx    context.Context
 	client *Client
 
 	settings *ContractManagerSettings
@@ -104,10 +100,10 @@ type ContractManager struct {
 	provideSecretKeys map[protocol.ProvideMode][]byte
 
 	destinationContracts map[Id]*contractQueue
-	sourceContracts map[Id]bool
-	
+	sourceContracts      map[Id]bool
+
 	receiveNoContractClientIds map[Id]bool
-	sendNoContractClientIds map[Id]bool
+	sendNoContractClientIds    map[Id]bool
 
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
 
@@ -123,30 +119,30 @@ func NewContractManager(
 	client *Client,
 	settings *ContractManagerSettings,
 ) *ContractManager {
-	// at a minimum 
+	// at a minimum
 	// - messages to/from the platform (ControlId) do not need a contract
 	//   this is because the platform is needed to create contracts
 	// - messages to self do not need a contract
 	receiveNoContractClientIds := map[Id]bool{
-		ControlId: true,
+		ControlId:         true,
 		client.ClientId(): true,
 	}
 	sendNoContractClientIds := map[Id]bool{
-		ControlId: true,
+		ControlId:         true,
 		client.ClientId(): true,
 	}
 
 	contractManager := &ContractManager{
-		ctx: ctx,
-		client: client,
-		settings: settings,
-		provideSecretKeys: map[protocol.ProvideMode][]byte{},
-		destinationContracts: map[Id]*contractQueue{},
-		sourceContracts: map[Id]bool{},
+		ctx:                        ctx,
+		client:                     client,
+		settings:                   settings,
+		provideSecretKeys:          map[protocol.ProvideMode][]byte{},
+		destinationContracts:       map[Id]*contractQueue{},
+		sourceContracts:            map[Id]bool{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
-		sendNoContractClientIds: sendNoContractClientIds,
-		contractErrorCallbacks: NewCallbackList[ContractErrorFunction](),
-		localStats: NewContractManagerStats(),
+		sendNoContractClientIds:    sendNoContractClientIds,
+		contractErrorCallbacks:     NewCallbackList[ContractErrorFunction](),
+		localStats:                 NewContractManagerStats(),
 	}
 
 	return contractManager
@@ -169,7 +165,7 @@ func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, prov
 	case ControlId:
 		contracts, contractErrors := parseControlContractFrames(frames)
 		for _, contract := range contracts {
-			c := func()(error) {
+			c := func() error {
 				return self.addContract(contract)
 			}
 			if glog.V(2) {
@@ -225,7 +221,7 @@ func (self *ContractManager) contractError(contractError protocol.ContractError)
 }
 
 func (self *ContractManager) SetProvideModesWithReturnTraffic(provideModes map[protocol.ProvideMode]bool) {
-	self.SetProvideModesWithReturnTrafficWithAckCallback(provideModes, func(err error){})
+	self.SetProvideModesWithReturnTrafficWithAckCallback(provideModes, func(err error) {})
 }
 
 // clients must enable `ProvideMode_Stream` to allow return traffic
@@ -237,7 +233,7 @@ func (self *ContractManager) SetProvideModesWithReturnTrafficWithAckCallback(pro
 }
 
 func (self *ContractManager) SetProvideModes(provideModes map[protocol.ProvideMode]bool) {
-	self.SetProvideModesWithAckCallback(provideModes, func(err error){})
+	self.SetProvideModesWithAckCallback(provideModes, func(err error) {})
 }
 
 func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[protocol.ProvideMode]bool, ackCallback func(err error)) {
@@ -259,14 +255,14 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 			if !ok {
 				// generate a new key
 				provideSecretKey = make([]byte, 32)
-		    	_, err := rand.Read(provideSecretKey)
-		    	if err != nil {
-		    		panic(err)
-		    	}
+				_, err := rand.Read(provideSecretKey)
+				if err != nil {
+					panic(err)
+				}
 				self.provideSecretKeys[provideMode] = provideSecretKey
 			}
 			provideKeys = append(provideKeys, &protocol.ProvideKey{
-				Mode: provideMode,
+				Mode:             provideMode,
 				ProvideSecretKey: provideSecretKey,
 			})
 		}
@@ -340,7 +336,7 @@ func (self *ContractManager) SendNoContract(destinationId Id, companionContract 
 
 	// migration helper. this can be removed when contracts are fully enabled
 	if companionContract && self.sourceContracts[destinationId] {
-		// use contracts if a companion sequence and 
+		// use contracts if a companion sequence and
 		// the destination has an active contract into this client
 		return false
 	}
@@ -396,11 +392,11 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 
 		if timeout < 0 {
 			select {
-			case <- self.ctx.Done():
+			case <-self.ctx.Done():
 				return nil
-			case <- ctx.Done():
+			case <-ctx.Done():
 				return nil
-			case <- notify:
+			case <-notify:
 			}
 		} else if timeout == 0 {
 			return nil
@@ -410,16 +406,16 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 				return nil
 			}
 			select {
-			case <- self.ctx.Done():
+			case <-self.ctx.Done():
 				return nil
-			case <- ctx.Done():
+			case <-ctx.Done():
 				return nil
-			case <- notify:
-			case <- time.After(remainingTimeout):
+			case <-notify:
+			case <-time.After(remainingTimeout):
 				return nil
 			}
 		}
-	}	
+	}
 }
 
 func (self *ContractManager) addContract(contract *protocol.Contract) error {
@@ -496,16 +492,16 @@ func (self *ContractManager) closeContractQueue(destinationId Id) {
 }
 
 func (self *ContractManager) CreateContract(destinationId Id, companionContract bool, timeout time.Duration) {
-	
+
 	// look at destinationContracts and last contract to get previous contract id
 	contractQueue := self.openContractQueue(destinationId)
 	defer self.closeContractQueue(destinationId)
 
 	createContract := &protocol.CreateContract{
-		DestinationId: destinationId.Bytes(),
+		DestinationId:     destinationId.Bytes(),
 		TransferByteCount: uint64(self.settings.StandardContractTransferByteCount),
-		Companion: companionContract,
-		UsedContractIds: contractQueue.UsedContractIdBytes(),
+		Companion:         companionContract,
+		UsedContractIds:   contractQueue.UsedContractIdBytes(),
 	}
 	self.client.ClientOob().SendControl(
 		[]*protocol.Frame{RequireToFrame(createContract)},
@@ -562,10 +558,10 @@ func (self *ContractManager) CompleteContractWithCheckpoint(
 	}()
 
 	closeContract := &protocol.CloseContract{
-		ContractId: contractId.Bytes(),
-		AckedByteCount: uint64(ackedByteCount),
+		ContractId:       contractId.Bytes(),
+		AckedByteCount:   uint64(ackedByteCount),
 		UnackedByteCount: uint64(unackedByteCount),
-		Checkpoint: checkpoint,
+		Checkpoint:       checkpoint,
 	}
 	self.client.ClientOob().SendControl(
 		[]*protocol.Frame{RequireToFrame(closeContract)},
@@ -587,11 +583,11 @@ func (self *ContractManager) LocalStats() *ContractManagerStats {
 	defer self.mutex.Unlock()
 
 	return &ContractManagerStats{
-		ContractOpenCount: self.localStats.ContractOpenCount,
-		ContractCloseCount: self.localStats.ContractCloseCount,
-		ContractOpenByteCounts: maps.Clone(self.localStats.ContractOpenByteCounts),
-		ContractOpenDestinationIds: maps.Clone(self.localStats.ContractOpenDestinationIds),
-		ContractCloseByteCount: self.localStats.ContractCloseByteCount,
+		ContractOpenCount:             self.localStats.ContractOpenCount,
+		ContractCloseCount:            self.localStats.ContractCloseCount,
+		ContractOpenByteCounts:        maps.Clone(self.localStats.ContractOpenByteCounts),
+		ContractOpenDestinationIds:    maps.Clone(self.localStats.ContractOpenDestinationIds),
+		ContractCloseByteCount:        self.localStats.ContractCloseByteCount,
 		ReceiveContractCloseByteCount: self.localStats.ReceiveContractCloseByteCount,
 	}
 }
@@ -605,7 +601,7 @@ func (self *ContractManager) ResetLocalStats() {
 
 func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 	// close queued contracts
-	contracts := func()([]*protocol.Contract) {
+	contracts := func() []*protocol.Contract {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
@@ -644,11 +640,10 @@ func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id
 	return contractIds
 }
 
-
 type contractQueue struct {
 	updateMonitor *Monitor
 
-	mutex sync.Mutex
+	mutex     sync.Mutex
 	openCount int
 	contracts map[Id]*protocol.Contract
 	// remember all added contract ids
@@ -657,9 +652,9 @@ type contractQueue struct {
 
 func newContractQueue() *contractQueue {
 	return &contractQueue{
-		updateMonitor: NewMonitor(),
-		openCount: 0,
-		contracts: map[Id]*protocol.Contract{},
+		updateMonitor:   NewMonitor(),
+		openCount:       0,
+		contracts:       map[Id]*protocol.Contract{},
 		usedContractIds: map[Id]bool{},
 	}
 }
@@ -760,4 +755,3 @@ func (self *contractQueue) UsedContractIdBytes() [][]byte {
 	}
 	return usedContractIdBytes
 }
-

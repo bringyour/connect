@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 
+	"bringyour.com/tetherctl/api"
+	"bringyour.com/tetherctl/helper"
 	"bringyour.com/wireguard/conn"
 	"bringyour.com/wireguard/device"
 	"github.com/docopt/docopt-go"
@@ -25,8 +27,10 @@ const DefaultConfigFile = "/etc/tethercli/"
 const DefaultApiUrl = "localhost:9090"
 const DefaultEndpointType = string(tether.EndpointIPv4)
 
+var tc tether.Client
+
 var cliDeviceName string = DefaultDeviceName
-var apiServer *Api
+var apiServer *api.Api
 
 func cli() {
 	usage := fmt.Sprintf(
@@ -72,6 +76,18 @@ Options:
 		DefaultEndpointType,
 		DefaultApiUrl,
 	)
+
+	tc = *tether.New() // create client
+
+	// add ipv4 endpoint for peer
+	ipv4, err := helper.GetPublicIP(true)
+	if err != nil {
+		l.Errorf("Failed to get peer endpoint")
+		return
+	}
+	if err := tc.AddEndpoint(tether.EndpointIPv4, ipv4); err != nil {
+		panic(err)
+	}
 
 	l.Verbosef("Tether cli started.")
 
@@ -163,7 +179,7 @@ func addCli(opts docopt.Opts) {
 	// logger
 
 	logL, _ := opts.String("--log")
-	logger := logger.NewLogger(getLogLevel(logL), fmt.Sprintf("(%s) ", cliDeviceName))
+	logger := logger.NewLogger(helper.GetLogLevel(logL), fmt.Sprintf("(%s) ", cliDeviceName))
 
 	// ipv4 and ipv6
 
@@ -171,7 +187,7 @@ func addCli(opts docopt.Opts) {
 	var pubIPv4P *net.IP // nil if pubIPv4 is not provided and default is not possible
 	if err1 != nil {
 		// no ipv4 provided try default
-		ip, err2 := getPublicIP(true)
+		ip, err2 := helper.GetPublicIP(true)
 		if err2 != nil {
 			pubIPv4 = ""
 		} else {
@@ -191,7 +207,7 @@ func addCli(opts docopt.Opts) {
 	var pubIPv6P *net.IP // nil if pubIPv6 is not provided and default is not possible
 	if err1 != nil {
 		// no ipv6 provided try default
-		ip, err2 := getPublicIP(false)
+		ip, err2 := helper.GetPublicIP(false)
 		if err2 != nil {
 			pubIPv6 = ""
 		} else {
@@ -513,14 +529,22 @@ func startApiCli(opts docopt.Opts) {
 		apiUrl = DefaultApiUrl
 	}
 
-	apiOpts := ApiOptions{
-		ApiUrl: apiUrl,
-		Dname:  cliDeviceName,
+	apiOpts := api.ApiOptions{
+		ApiUrl:       apiUrl,
+		Dname:        cliDeviceName,
+		TetherClient: &tc,
 	}
 
-	apiServer, err = startApi(apiOpts, func(e error) { stopApiCli() })
+	errorCallback := func(e error) {
+		l.Errorf("Error running API: %v", e)
+		stopApiCli()
+	}
+
+	apiServer, err = api.StartApi(apiOpts, errorCallback)
 	if err != nil {
 		l.Errorf("Error starting API: %v", err)
+	} else {
+		l.Verbosef("Started API server at %s for device %q", apiUrl, cliDeviceName)
 	}
 }
 
@@ -529,6 +553,10 @@ func stopApiCli() {
 		l.Verbosef("API server not running")
 		return
 	}
-	apiServer.stopApi()
+	if err := apiServer.StopApi(); err != nil {
+		l.Errorf("Error stopping API: %v", err)
+	} else {
+		l.Verbosef("API server stopped.")
+	}
 	apiServer = nil
 }

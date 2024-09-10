@@ -33,7 +33,7 @@ func (et EndpointType) IsValid() error {
 // AddEndpoint adds an endpoint of the requested type. If the endpoint type already exists, it is overwritten.
 //
 // Returns an error if the endpoint type is invalid which can be checked using errors.Is(err, ErrInvalidEndpointType).
-// Additionally, if the endpoint type is EndpointAny, an error is returned which can be checked using errors.Is(err, ErrEndpointAddAny).
+// Additionally, and endpoint of type EndpointAny cannot be added resulting in an error which can be checked using errors.Is(err, ErrEndpointAddAny).
 func (c *Client) AddEndpoint(endpointType EndpointType, endpoint string) error {
 	if err := endpointType.IsValid(); err != nil {
 		return err
