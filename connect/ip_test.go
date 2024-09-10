@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"os"
 	"reflect"
 	"testing"
 	"time"
+
 	// "sync"
 	"fmt"
 
@@ -315,7 +317,7 @@ func tcp6Packet(s int, i int, j int, k int) (packet []byte, payload []byte) {
 }
 
 func testingNewClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
-	client := NewClientWithDefaults(ctx, NewId(), NewNoContractClientOob())
+	client := NewClientWithDefaults(ctx, NewId(), NewNoContractClientOob(), NewNoOpWebRTCConnProvider())
 
 	routesSend := []Route{
 		make(chan []byte),
@@ -355,6 +357,11 @@ func testClient[P comparable](
 	packetGenerator PacketGeneratorFunction,
 	toComparableIpPath func(*IpPath) P,
 ) {
+
+	if os.Getenv("SKIP_SLOW_TESTS") == "true" {
+		t.SkipNow()
+	}
+
 	// runs a send-receive test on the `UserNatClient` produced by `userNatClientGenerator`
 	// this is a multi-threaded stress test that is meant to stress the buffers and routing
 
@@ -394,7 +401,7 @@ func testClient[P comparable](
 	settings.ReceiveBufferSettings.SequenceBufferSize = 0
 	// settings.ReceiveBufferSettings.AckBufferSize = 0
 	settings.ForwardBufferSettings.SequenceBufferSize = 0
-	providerClient := NewClient(ctx, providerClientId, NewNoContractClientOob(), settings)
+	providerClient := NewClient(ctx, providerClientId, NewNoContractClientOob(), settings, NewNoOpWebRTCConnProvider())
 	defer providerClient.Cancel()
 
 	type receivePacket struct {

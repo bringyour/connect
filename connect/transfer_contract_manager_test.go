@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
+
 	// mathrand "math/rand"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -26,7 +27,7 @@ func TestTakeContract(t *testing.T) {
 
 	ctx := context.Background()
 	clientId := NewId()
-	client := NewClientWithDefaults(ctx, clientId, NewNoContractClientOob())
+	client := NewClientWithDefaults(ctx, clientId, NewNoContractClientOob(), NewNoOpWebRTCConnProvider())
 	defer client.Cancel()
 	contractManager := client.ContractManager()
 

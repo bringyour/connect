@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"time"
+
 	// "reflect"
 	"errors"
 	"fmt"
@@ -725,7 +726,8 @@ func (self *ApiMultiClientGenerator) NewClient(
 		return nil, err
 	}
 	clientOob := NewApiOutOfBandControl(ctx, self.clientStrategy, args.ClientAuth.ByJwt, self.apiUrl)
-	client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings)
+	webRTCConnProvider := NewApiWebRTCConnProvider(ctx, self.clientStrategy, args.ClientAuth.ByJwt, self.apiUrl, byJwt.ClientId)
+	client := NewClient(ctx, byJwt.ClientId, clientOob, clientSettings, webRTCConnProvider)
 	settings := DefaultPlatformTransportSettings()
 	if args.P2pOnly {
 		settings.TransportGenerator = func() (sendTransport Transport, receiveTransport Transport) {

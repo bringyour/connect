@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+
 	// "os/exec"
 	// "path/filepath"
 	// "encoding/json"
@@ -20,6 +21,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+
 	// "encoding/base64"
 	"bytes"
 
@@ -509,7 +511,7 @@ func send(opts docopt.Opts) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	api := connect.NewBringYourApi(apiUrl)
+	api := connect.NewBringYourApi(connect.DefaultClientStrategy(cancelCtx), apiUrl)
 	api.SetByJwt(jwt)
 	oobControl := connect.NewApiOutOfBandControlWithApi(api)
 
@@ -517,6 +519,13 @@ func send(opts docopt.Opts) {
 		cancelCtx,
 		clientId,
 		oobControl,
+		connect.NewApiWebRTCConnProvider(
+			cancelCtx,
+			connect.DefaultClientStrategy(cancelCtx),
+			jwt,
+			apiUrl,
+			clientId,
+		),
 	)
 	defer client.Close()
 
@@ -535,9 +544,10 @@ func send(opts docopt.Opts) {
 	for i := 0; i < transportCount; i += 1 {
 		platformTransport := connect.NewPlatformTransportWithDefaults(
 			cancelCtx,
+			connect.DefaultClientStrategy(cancelCtx),
+			client.RouteManager(),
 			fmt.Sprintf("%s/", connectUrl),
 			auth,
-			client.RouteManager(),
 		)
 		defer platformTransport.Close()
 		// go platformTransport.Run(routeManager)
@@ -646,7 +656,7 @@ func sink(opts docopt.Opts) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	api := connect.NewBringYourApi(apiUrl)
+	api := connect.NewBringYourApi(connect.DefaultClientStrategy(cancelCtx), apiUrl)
 	api.SetByJwt(jwt)
 	oobControl := connect.NewApiOutOfBandControlWithApi(api)
 
@@ -654,6 +664,13 @@ func sink(opts docopt.Opts) {
 		cancelCtx,
 		clientId,
 		oobControl,
+		connect.NewApiWebRTCConnProvider(
+			cancelCtx,
+			connect.DefaultClientStrategy(cancelCtx),
+			jwt,
+			apiUrl,
+			clientId,
+		),
 	)
 	defer client.Close()
 
@@ -678,9 +695,10 @@ func sink(opts docopt.Opts) {
 	for i := 0; i < transportCount; i += 1 {
 		platformTransport := connect.NewPlatformTransportWithDefaults(
 			cancelCtx,
+			connect.DefaultClientStrategy(cancelCtx),
+			client.RouteManager(),
 			fmt.Sprintf("%s/", connectUrl),
 			auth,
-			client.RouteManager(),
 		)
 		defer platformTransport.Close()
 		// go platformTransport.Run(routeManager)

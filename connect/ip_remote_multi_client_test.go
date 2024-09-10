@@ -3,8 +3,10 @@ package connect
 import (
 	"context"
 	"math"
+	"os"
 	"testing"
 	"time"
+
 	// "slices"
 	"sync"
 
@@ -85,7 +87,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 			return settings
 		},
 		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
+			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings, NewNoOpWebRTCConnProvider())
 
 			routesSend := []Route{
 				make(chan []byte),
@@ -172,6 +174,10 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	// ensure that the bucket counts are bounded
 	// if this is broken, the coalesce logic is broken and there will be a memory issue
 
+	if os.Getenv("SKIP_SLOW_TESTS") == "true" {
+		t.SkipNow()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -199,7 +205,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 		},
 		newClientSettings: DefaultClientSettings,
 		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
+			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings, NewNoOpWebRTCConnProvider())
 			return client, nil
 		},
 	}

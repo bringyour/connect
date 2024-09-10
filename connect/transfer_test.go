@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	mathrand "math/rand"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,11 @@ import (
 )
 
 func TestSendReceiveSenderReset(t *testing.T) {
+
+	if os.Getenv("SKIP_SLOW_TESTS") == "true" {
+		t.SkipNow()
+	}
+
 	// in this case two senders with the same client_id send after each other
 	// The receiver should be able to reset using the new sequence_id
 
@@ -64,7 +70,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsA.ReceiveBufferSettings.SequenceBufferSize = 0
 	// clientSettingsA.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsA.ForwardBufferSettings.SequenceBufferSize = 0
-	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA)
+	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA, NewNoOpWebRTCConnProvider())
 	aRouteManager := a.RouteManager()
 	aContractManager := a.ContractManager()
 	// aRouteManager := NewRouteManager(a)
@@ -84,7 +90,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsB.ReceiveBufferSettings.SequenceBufferSize = 0
 	// clientSettingsB.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsB.ForwardBufferSettings.SequenceBufferSize = 0
-	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB)
+	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB, NewNoOpWebRTCConnProvider())
 	bRouteManager := b.RouteManager()
 	bContractManager := b.ContractManager()
 	// bRouteManager := NewRouteManager(b)
@@ -179,7 +185,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	aRouteManager.RemoveTransport(aSendTransport)
 	aRouteManager.RemoveTransport(aReceiveTransport)
 
-	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
+	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob(), NewNoOpWebRTCConnProvider())
 	a2RouteManager := a2.RouteManager()
 	a2ContractManager := a2.ContractManager()
 	// a2RouteManager := NewRouteManager(a2)

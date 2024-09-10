@@ -52,7 +52,7 @@ func NewStreamManager(ctx context.Context, client *Client, streamManagerSettings
 		streamManagerSettings: streamManagerSettings,
 	}
 
-	webRtcManager := NewWebRtcManager(ctx, streamManagerSettings.WebRtcSettings)
+	webRtcManager := NewWebRtcManager(ctx, client, streamManagerSettings.WebRtcSettings)
 
 	streamManager.initBuffers(webRtcManager)
 

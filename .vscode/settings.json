@@ -1,0 +1,9 @@
+{
+    "editor.formatOnSave": false,
+    "go.testEnvVars": {
+        "SKIP_SLOW_TESTS": "true"
+    },
+    "cSpell.words": [
+        "webrtc"
+    ]
+}
