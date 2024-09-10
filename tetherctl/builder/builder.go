@@ -21,13 +21,13 @@ type PeerOptions struct {
 }
 
 type IDeviceBuilder interface {
-	CreateDevice(dname string, configPath string, logLevel int) error // creates and brings up a device
-	StopDevice(dname string, configPath string) error                 // brings down a device
-	ManageEndpoint(opts EndpointOptions) error
-	ManagePeer(dname string, opts PeerOptions) (string, error) // add/remove peer from device (and get config if requested)
-	StartApi(dname string, apiURL string, errorCallback func(err error)) error
-	StopApi(dname string) error
-	StopClient()
+	CreateDevice(dname string, configPath string, logLevel int) error          // creates and brings up a device
+	StopDevice(dname string, configPath string) error                          // brings down a device
+	ManageEndpoint(opts EndpointOptions) error                                 // add/remove/reset endpoint
+	ManagePeer(dname string, opts PeerOptions) (string, error)                 // add/remove peer from device (and get config if requested)
+	StartApi(dname string, apiURL string, errorCallback func(err error)) error // start API for device
+	StopApi(dname string) error                                                // stop api of device
+	StopClient()                                                               // closes tether client
 }
 
 func GetDeviceBuilder(builderType string, logger *logger.Logger) IDeviceBuilder {
