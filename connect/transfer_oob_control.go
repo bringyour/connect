@@ -99,14 +99,14 @@ func (self *ApiOutOfBandControl) SendControl(
 	)
 }
 
-type noContractClientOob struct {
+type NoContractClientOob struct {
 }
 
-func newNoContractClientOob() *noContractClientOob {
-	return &noContractClientOob{}
+func NewNoContractClientOob() *NoContractClientOob {
+	return &NoContractClientOob{}
 }
 
-func (self *noContractClientOob) SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error)) {
+func (self *NoContractClientOob) SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error)) {
 	safeCallback := func(resultFrames []*protocol.Frame, err error) {
 		if callback != nil {
 			HandleError(func() {

@@ -42,6 +42,7 @@ const debugVerifyHeaders = false
 
 // send from a raw socket
 // note `ipProtocol` is not supplied. The implementation must do a packet inspection to determine protocol
+// `provideMode` is the relationship between the source and this device
 type SendPacketFunction func(source TransferPath, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool
 
 // receive into a raw socket

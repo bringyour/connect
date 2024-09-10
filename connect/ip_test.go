@@ -315,7 +315,7 @@ func tcp6Packet(s int, i int, j int, k int) (packet []byte, payload []byte) {
 }
 
 func testingNewClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
-	client := NewClientWithDefaults(ctx, NewId(), newNoContractClientOob())
+	client := NewClientWithDefaults(ctx, NewId(), NewNoContractClientOob())
 
 	routesSend := []Route{
 		make(chan []byte),
@@ -394,7 +394,7 @@ func testClient[P comparable](
 	settings.ReceiveBufferSettings.SequenceBufferSize = 0
 	// settings.ReceiveBufferSettings.AckBufferSize = 0
 	settings.ForwardBufferSettings.SequenceBufferSize = 0
-	providerClient := NewClient(ctx, providerClientId, newNoContractClientOob(), settings)
+	providerClient := NewClient(ctx, providerClientId, NewNoContractClientOob(), settings)
 	defer providerClient.Cancel()
 
 	type receivePacket struct {

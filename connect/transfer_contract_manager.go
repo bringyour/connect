@@ -288,9 +288,8 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) {
 		provide := &protocol.Provide{
 			Keys: []*protocol.ProvideKey{},
 		}
-		// FIXME this should use normal control not oob
-		self.client.ClientOob().SendControl(
-			[]*protocol.Frame{RequireToFrame(provide)},
+		self.client.SendControl(
+			RequireToFrame(provide),
 			nil,
 		)
 	} else {
@@ -305,9 +304,8 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) {
 		provide := &protocol.Provide{
 			Keys: provideKeys,
 		}
-		// FIXME use normal control
-		self.client.ClientOob().SendControl(
-			[]*protocol.Frame{RequireToFrame(provide)},
+		self.client.SendControl(
+			RequireToFrame(provide),
 			nil,
 		)
 	}
@@ -372,12 +370,9 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 		provide := &protocol.Provide{
 			Keys: provideKeys,
 		}
-		// FIXME use normal control
-		self.client.ClientOob().SendControl(
-			[]*protocol.Frame{RequireToFrame(provide)},
-			func(resultFrames []*protocol.Frame, err error) {
-				ackCallback(err)
-			},
+		self.client.SendControl(
+			RequireToFrame(provide),
+			ackCallback,
 		)
 	}
 }
