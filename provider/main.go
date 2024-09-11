@@ -84,11 +84,13 @@ func provide(opts docopt.Opts) {
 
 	ctx := event.Ctx()
 
-	byClientJwt, clientId := provideAuth(ctx, apiUrl, opts)
+	clientStrategy := connect.NewClientStrategyWithDefaults(ctx)
+
+	byClientJwt, clientId := provideAuth(ctx, clientStrategy, apiUrl, opts)
 
 	instanceId := connect.NewId()
 
-	clientOob := connect.NewApiOutOfBandControl(ctx, byClientJwt, apiUrl)
+	clientOob := connect.NewApiOutOfBandControl(ctx, clientStrategy, byClientJwt, apiUrl)
 	connectClient := connect.NewClientWithDefaults(ctx, clientId, clientOob)
 
 	// routeManager := connect.NewRouteManager(connectClient)
@@ -105,7 +107,7 @@ func provide(opts docopt.Opts) {
 		InstanceId: instanceId,
 		AppVersion: RequireVersion(),
 	}
-	connect.NewPlatformTransportWithDefaults(ctx, connectUrl, auth, connectClient.RouteManager())
+	connect.NewPlatformTransportWithDefaults(ctx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
 	// go platformTransport.Run(connectClient.RouteManager())
 
 	localUserNat := connect.NewLocalUserNatWithDefaults(ctx, clientId.String())
@@ -150,7 +152,7 @@ func provide(opts docopt.Opts) {
 	os.Exit(0)
 }
 
-func provideAuth(ctx context.Context, apiUrl string, opts docopt.Opts) (byClientJwt string, clientId connect.Id) {
+func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts) (byClientJwt string, clientId connect.Id) {
 	userAuth := opts["--user_auth"].(string)
 
 	var password string
@@ -168,9 +170,9 @@ func provideAuth(ctx context.Context, apiUrl string, opts docopt.Opts) (byClient
 
 	// fmt.Printf("userAuth='%s'; password='%s'\n", userAuth, password)
 
-	api := connect.NewBringYourApiWithContext(ctx, apiUrl)
+	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
 
-	loginCallback, loginChannel := connect.NewBlockingApiCallback[*connect.AuthLoginWithPasswordResult]()
+	loginCallback, loginChannel := connect.NewBlockingApiCallback[*connect.AuthLoginWithPasswordResult](ctx)
 
 	loginArgs := &connect.AuthLoginWithPasswordArgs{
 		UserAuth: userAuth,
@@ -198,7 +200,7 @@ func provideAuth(ctx context.Context, apiUrl string, opts docopt.Opts) (byClient
 
 	api.SetByJwt(loginResult.Result.Network.ByJwt)
 
-	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult]()
+	authClientCallback, authClientChannel := connect.NewBlockingApiCallback[*connect.AuthNetworkClientResult](ctx)
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
 		Description: fmt.Sprintf("provider %s", RequireVersion()),
