@@ -18,8 +18,11 @@ import (
 // and the receive/send may be blocked on the send/receive
 // for example think of a remote provider setup forwarding traffic as fast as possible
 // to an "echo" server with a finite buffer
+
+type OobResultFunction = func(resultFrames []*protocol.Frame, err error)
+
 type OutOfBandControl interface {
-	SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error))
+	SendControl(frames []*protocol.Frame, callback OobResultFunction)
 }
 
 type ApiOutOfBandControl struct {
@@ -32,7 +35,7 @@ func NewApiOutOfBandControl(
 	byJwt string,
 	apiUrl string,
 ) *ApiOutOfBandControl {
-	api := NewBringYourApiWithContext(ctx, clientStrategy, apiUrl)
+	api := NewBringYourApi(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 	return &ApiOutOfBandControl{
 		api: api,
@@ -47,14 +50,22 @@ func NewApiOutOfBandControlWithApi(api *BringYourApi) *ApiOutOfBandControl {
 
 func (self *ApiOutOfBandControl) SendControl(
 	frames []*protocol.Frame,
-	callback func(resultFrames []*protocol.Frame, err error),
+	callback OobResultFunction,
 ) {
+	safeCallback := func(resultFrames []*protocol.Frame, err error) {
+		if callback != nil {
+			HandleError(func() {
+				callback(resultFrames, err)
+			})
+		}
+	}
+
 	pack := &protocol.Pack{
 		Frames: frames,
 	}
 	packBytes, err := proto.Marshal(pack)
 	if err != nil {
-		callback(nil, err)
+		safeCallback(nil, err)
 		return
 	}
 
@@ -66,35 +77,43 @@ func (self *ApiOutOfBandControl) SendControl(
 		},
 		NewApiCallback(func(result *ConnectControlResult, err error) {
 			if err != nil {
-				callback(nil, err)
+				safeCallback(nil, err)
 				return
 			}
 
 			packBytes, err := base64.StdEncoding.DecodeString(result.Pack)
 			if err != nil {
-				callback(nil, err)
+				safeCallback(nil, err)
 				return
 			}
 
 			responsePack := &protocol.Pack{}
 			err = proto.Unmarshal(packBytes, responsePack)
 			if err != nil {
-				callback(nil, err)
+				safeCallback(nil, err)
 				return
 			}
 
-			callback(responsePack.Frames, nil)
+			safeCallback(responsePack.Frames, nil)
 		}),
 	)
 }
 
-type noContractClientOob struct {
+type NoContractClientOob struct {
 }
 
-func NewNoContractClientOob() *noContractClientOob {
-	return &noContractClientOob{}
+func NewNoContractClientOob() *NoContractClientOob {
+	return &NoContractClientOob{}
 }
 
-func (self *noContractClientOob) SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error)) {
-	callback(nil, errors.New("Not supported."))
+func (self *NoContractClientOob) SendControl(frames []*protocol.Frame, callback func(resultFrames []*protocol.Frame, err error)) {
+	safeCallback := func(resultFrames []*protocol.Frame, err error) {
+		if callback != nil {
+			HandleError(func() {
+				callback(resultFrames, err)
+			})
+		}
+	}
+
+	safeCallback(nil, errors.New("Not supported."))
 }

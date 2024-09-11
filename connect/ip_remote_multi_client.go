@@ -563,6 +563,7 @@ type ApiMultiClientGenerator struct {
 }
 
 func NewApiMultiClientGeneratorWithDefaults(
+	ctx context.Context,
 	specs []*ProviderSpec,
 	clientStrategy *ClientStrategy,
 	excludeClientIds []Id,
@@ -574,6 +575,7 @@ func NewApiMultiClientGeneratorWithDefaults(
 	appVersion string,
 ) *ApiMultiClientGenerator {
 	return NewApiMultiClientGenerator(
+		ctx,
 		specs,
 		clientStrategy,
 		excludeClientIds,
@@ -589,6 +591,7 @@ func NewApiMultiClientGeneratorWithDefaults(
 }
 
 func NewApiMultiClientGenerator(
+	ctx context.Context,
 	specs []*ProviderSpec,
 	clientStrategy *ClientStrategy,
 	excludeClientIds []Id,
@@ -601,7 +604,7 @@ func NewApiMultiClientGenerator(
 	clientSettingsGenerator func() *ClientSettings,
 	settings *ApiMultiClientGeneratorSettings,
 ) *ApiMultiClientGenerator {
-	api := NewBringYourApi(clientStrategy, apiUrl)
+	api := NewBringYourApi(ctx, clientStrategy, apiUrl)
 	api.SetByJwt(byJwt)
 
 	return &ApiMultiClientGenerator{

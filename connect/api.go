@@ -13,8 +13,10 @@ import (
 	// "errors"
 	// "strings"
 	// "github.com/golang/glog"
+	"sync"
 )
 
+// FIXME rename to Api
 type BringYourApi struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -23,14 +25,15 @@ type BringYourApi struct {
 
 	apiUrl string
 
+	mutex sync.Mutex
 	byJwt string
 }
 
-func NewBringYourApi(clientStrategy *ClientStrategy, apiUrl string) *BringYourApi {
-	return NewBringYourApiWithContext(context.Background(), clientStrategy, apiUrl)
-}
+// func NewBringYourApi(clientStrategy *ClientStrategy, apiUrl string) *BringYourApi {
+// 	return NewBringYourApiWithContext(context.Background(), clientStrategy, apiUrl)
+// }
 
-func NewBringYourApiWithContext(ctx context.Context, clientStrategy *ClientStrategy, apiUrl string) *BringYourApi {
+func NewBringYourApi(ctx context.Context, clientStrategy *ClientStrategy, apiUrl string) *BringYourApi {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	return &BringYourApi{
@@ -43,7 +46,21 @@ func NewBringYourApiWithContext(ctx context.Context, clientStrategy *ClientStrat
 
 // this gets attached to api calls that need it
 func (self *BringYourApi) SetByJwt(byJwt string) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
 	self.byJwt = byJwt
+}
+
+func (self *BringYourApi) ByJwt() string {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return self.byJwt
+}
+
+func (self *BringYourApi) Close() {
+	self.cancel()
 }
 
 type AuthLoginCallback ApiCallback[*AuthLoginResult]
@@ -81,7 +98,7 @@ func (self *BringYourApi) AuthLogin(authLogin *AuthLoginArgs, callback AuthLogin
 		self.clientStrategy,
 		fmt.Sprintf("%s/auth/login", self.apiUrl),
 		authLogin,
-		self.byJwt,
+		self.ByJwt(),
 		&AuthLoginResult{},
 		callback,
 	)
@@ -119,7 +136,7 @@ func (self *BringYourApi) AuthLoginWithPassword(authLoginWithPassword *AuthLogin
 		self.clientStrategy,
 		fmt.Sprintf("%s/auth/login-with-password", self.apiUrl),
 		authLoginWithPassword,
-		self.byJwt,
+		self.ByJwt(),
 		&AuthLoginWithPasswordResult{},
 		callback,
 	)
@@ -151,7 +168,7 @@ func (self *BringYourApi) AuthVerify(authVerify *AuthVerifyArgs, callback AuthVe
 		self.clientStrategy,
 		fmt.Sprintf("%s/auth/verify", self.apiUrl),
 		authVerify,
-		self.byJwt,
+		self.ByJwt(),
 		&AuthVerifyResult{},
 		callback,
 	)
@@ -173,7 +190,7 @@ func (self *BringYourApi) AuthPasswordReset(authPasswordReset *AuthPasswordReset
 		self.clientStrategy,
 		fmt.Sprintf("%s/auth/password-reset", self.apiUrl),
 		authPasswordReset,
-		self.byJwt,
+		self.ByJwt(),
 		&AuthPasswordResetResult{},
 		callback,
 	)
@@ -195,7 +212,7 @@ func (self *BringYourApi) AuthVerifySend(authVerifySend *AuthVerifySendArgs, cal
 		self.clientStrategy,
 		fmt.Sprintf("%s/auth/verify-send", self.apiUrl),
 		authVerifySend,
-		self.byJwt,
+		self.ByJwt(),
 		&AuthVerifySendResult{},
 		callback,
 	)
@@ -228,7 +245,7 @@ func (self *BringYourApi) AuthNetworkClient(authNetworkClient *AuthNetworkClient
 		self.clientStrategy,
 		fmt.Sprintf("%s/network/auth-client", self.apiUrl),
 		authNetworkClient,
-		self.byJwt,
+		self.ByJwt(),
 		&AuthNetworkClientResult{},
 		callback,
 	)
@@ -240,7 +257,7 @@ func (self *BringYourApi) AuthNetworkClientSync(authNetworkClient *AuthNetworkCl
 		self.clientStrategy,
 		fmt.Sprintf("%s/network/auth-client", self.apiUrl),
 		authNetworkClient,
-		self.byJwt,
+		self.ByJwt(),
 		&AuthNetworkClientResult{},
 		NewNoopApiCallback[*AuthNetworkClientResult](),
 	)
@@ -266,7 +283,7 @@ func (self *BringYourApi) RemoveNetworkClient(removeNetworkClient *RemoveNetwork
 		self.clientStrategy,
 		fmt.Sprintf("%s/network/remove-client", self.apiUrl),
 		removeNetworkClient,
-		self.byJwt,
+		self.ByJwt(),
 		&RemoveNetworkClientResult{},
 		callback,
 	)
@@ -278,7 +295,7 @@ func (self *BringYourApi) RemoveNetworkClientSync(removeNetworkClient *RemoveNet
 		self.clientStrategy,
 		fmt.Sprintf("%s/network/remove-client", self.apiUrl),
 		removeNetworkClient,
-		self.byJwt,
+		self.ByJwt(),
 		&RemoveNetworkClientResult{},
 		NewNoopApiCallback[*RemoveNetworkClientResult](),
 	)
@@ -315,7 +332,7 @@ func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, cal
 		self.clientStrategy,
 		fmt.Sprintf("%s/network/find-providers2", self.apiUrl),
 		findProviders2,
-		self.byJwt,
+		self.ByJwt(),
 		&FindProviders2Result{},
 		callback,
 	)
@@ -327,7 +344,7 @@ func (self *BringYourApi) FindProviders2Sync(findProviders2 *FindProviders2Args)
 		self.clientStrategy,
 		fmt.Sprintf("%s/network/find-providers2", self.apiUrl),
 		findProviders2,
-		self.byJwt,
+		self.ByJwt(),
 		&FindProviders2Result{},
 		NewNoopApiCallback[*FindProviders2Result](),
 	)
@@ -353,7 +370,7 @@ func (self *BringYourApi) ConnectControl(connectControl *ConnectControlArgs, cal
 		self.clientStrategy,
 		fmt.Sprintf("%s/connect/control", self.apiUrl),
 		connectControl,
-		self.byJwt,
+		self.ByJwt(),
 		&ConnectControlResult{},
 		callback,
 	)
