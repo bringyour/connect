@@ -128,7 +128,7 @@ type ClientStrategy struct {
 	extenderIpSecrets map[netip.Addr]string
 }
 
-func DefaultClientStrategy(ctx context.Context) *ClientStrategy {
+func NewClientStrategyWithDefaults(ctx context.Context) *ClientStrategy {
 	return NewClientStrategy(ctx, DefaultClientStrategySettings())
 }
 
