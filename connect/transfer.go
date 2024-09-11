@@ -1392,7 +1392,7 @@ func (self *SendSequence) Run() {
 				}
 
 				var itemAckTimeout time.Duration
-				if self.destination == DestinationId(ControlId) {
+				if self.destination == DestinationId(ControlId) || self.client.ClientId() == ControlId {
 					// control messages do not time out
 					itemAckTimeout = -1
 				} else {
