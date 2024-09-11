@@ -1391,22 +1391,29 @@ func (self *SendSequence) Run() {
 					break
 				}
 
-				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
+				var itemAckTimeout time.Duration
+				if self.destination == DestinationId(ControlId) || self.client.ClientId() == ControlId {
+					// control messages do not time out
+					itemAckTimeout = -1
+				} else {
+					itemAckTimeout = item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
 
-				if itemAckTimeout <= 0 {
-					// message took too long to ack
-					// close the sequence
-					glog.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
-					return
+					if itemAckTimeout <= 0 {
+						// message took too long to ack
+						// close the sequence
+						glog.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+						return
+					}
+
+					if itemAckTimeout < timeout {
+						timeout = itemAckTimeout
+					}
 				}
 
 				if sendTime.Before(item.resendTime) {
 					itemResendTimeout := item.resendTime.Sub(sendTime)
 					if itemResendTimeout < timeout {
 						timeout = itemResendTimeout
-					}
-					if itemAckTimeout < timeout {
-						timeout = itemAckTimeout
 					}
 					break
 				}
@@ -1457,10 +1464,10 @@ func (self *SendSequence) Run() {
 				// linear backoff
 				// itemResendTimeout := self.sendBufferSettings.ResendInterval
 				itemResendTimeout := time.Duration(float64(self.sendBufferSettings.ResendInterval) * (1 + self.sendBufferSettings.ResendBackoffScale*float64(item.sendCount)))
-				if itemResendTimeout < itemAckTimeout {
-					item.resendTime = sendTime.Add(itemResendTimeout)
-				} else {
+				if 0 <= itemAckTimeout && itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
+				} else {
+					item.resendTime = sendTime.Add(itemResendTimeout)
 				}
 				self.resendQueue.Add(item)
 			}
