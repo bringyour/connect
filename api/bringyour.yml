@@ -1059,6 +1059,109 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/HelloResult"
 
+    /account/payout-wallet:
+        post:
+            description: |
+                Set an existing account wallet as the wallet to receive network payments.
+            operationId: Account Set Payout Wallet
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/SetPayoutWalletArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SetPayoutWalletResult"
+
+    /account/payout-wallet:
+        get:
+            description: |
+                Fetches the payout wallet associated with the network
+            operationId: Account Get Payout Wallet
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/GetPayoutWalletResult"
+
+    /account/wallet:
+        post:
+            description: |
+                Create a new wallet for your network. You can then use it as a payout wallet
+                by posting to /account/payout-wallet.
+            operationId: Account Create Wallet
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/CreateAccountWalletExternalArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/CreateAccountWalletResult"
+
+    /account/wallets:
+        get:
+            description: |
+                Get a list of wallets associated with your network
+            operationId: Account Get Wallets
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/GetAccountWalletsResult"
+
+    /account/wallets/remove:
+        post:
+            description: |
+                Remove a wallet from your list of account wallets
+            operationId: Account Remove Wallet
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/RemoveWalletArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/RemoveWalletResult"
+
+    /account/referral-code:
+        get:
+            description: |
+                Unique network code to refer new users
+            operationId: Account Referral Code
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/GetAccountWalletsResult"
+
 components:
     securitySchemes:
         BearerAuth:
@@ -2493,3 +2596,113 @@ components:
             properties:
                 client_address:
                     type: string
+
+        SetPayoutWalletArgs:
+            type: object
+            properties:
+                wallet_id:
+                    description: udid
+                    type: string
+
+        SetPayoutWalletResult:
+            type: object
+            properties: {}
+
+        GetPayoutWalletResult:
+            type: object
+            properties:
+                wallet_id:
+                    description: udid
+                    type: string
+        
+        CreateAccountWalletExternalArgs:
+            type: object
+            properties:
+                blockchain:
+                    description: |
+                        The blockchain associated with the address
+                    type: string
+                    enum:
+                        - SOL
+                        - MATIC
+                wallet_address:
+                    description: The "SOL" or "MATIC" wallet address
+                    type: string
+                default_token_type:
+                    description: We only support "USDC"
+                    type: string
+                    enum:
+                        - USDC
+
+        CreateAccountWalletResult:
+            type: object
+            properties:
+                wallet_id:
+                    description: udid
+                    type: string
+
+        AccountWallet:
+            type: object
+            properties:
+                wallet_id:
+                    description: udid
+                    type: string
+                circle_wallet_id:
+                    description: |
+                        If the wallet was created through the Circle flow, it is the ID associated
+                        with the Circle wallet.
+                    type: string
+                network_id:
+                    description: udid
+                    type: string
+                wallet_type:
+                    type: string
+                    enum: 
+                        - circle_uc
+                        - external
+                blockchain:
+                    type: string
+                    enum:
+                        - SOL
+                        - MATIC
+                wallet_address:
+                    description: Blockchain wallet address
+                    type: string
+                active:
+                    type: boolean
+                default_token_type:
+                    type: string
+                    enum:
+                        - USDC
+                create_time:
+                    description: datetime
+                    type: string
+                    
+
+        GetAccountWalletsResult:
+            type: object
+            properties:
+                wallets:
+                    description: A list of wallets associated with your network
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/AccountWallet"
+
+        RemoveWalletArgs:
+            type: object
+            properties:
+                wallet_id:
+                    description: udid
+                    type: string
+
+        RemoveWalletResult:
+            type: object
+            properties:
+                success:
+                    description: Wallet successfully removed
+                    type: boolean
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
