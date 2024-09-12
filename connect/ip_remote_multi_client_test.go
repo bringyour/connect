@@ -2,66 +2,70 @@ package connect
 
 import (
 	"context"
-    "testing"
-    "time"
-    "math"
-    "slices"
-    "sync"
+	"math"
+	"testing"
+	"time"
+	// "slices"
+	"sync"
 
-    "github.com/go-playground/assert/v2"
+	"github.com/go-playground/assert/v2"
+
+	"bringyour.com/protocol"
 )
-
 
 func TestMultiClientUdp4(t *testing.T) {
 	testClient(t, testingNewMultiClient, udp4Packet, (*IpPath).ToIp4Path)
 }
 
-
 func TestMultiClientTcp4(t *testing.T) {
 	testClient(t, testingNewMultiClient, tcp4Packet, (*IpPath).ToIp4Path)
 }
-
 
 func TestMultiClientUdp6(t *testing.T) {
 	testClient(t, testingNewMultiClient, udp6Packet, (*IpPath).ToIp6Path)
 }
 
-
 func TestMultiClientTcp6(t *testing.T) {
 	testClient(t, testingNewMultiClient, tcp6Packet, (*IpPath).ToIp6Path)
 }
-
 
 func testingNewMultiClient(ctx context.Context, providerClient *Client, receivePacketCallback ReceivePacketFunction) (UserNatClient, error) {
 
 	mutex := sync.Mutex{}
 	unsubs := map[*Client]func(){}
 
-
 	generator := &TestMultiClientGenerator{
-		nextDestintationIds: func(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
-			next := map[Id]ByteCount{}
-			if !slices.Contains(excludedClientIds, providerClient.ClientId()) {
-				 next[providerClient.ClientId()] = ByteCount(0)
+		nextDestinations: func(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
+			next := map[MultiHopId]ByteCount{}
+			containsTail := func() bool {
+				for _, destination := range excludeDestinations {
+					if 0 < destination.Len() && destination.Tail() == providerClient.ClientId() {
+						return true
+					}
+				}
+				return false
+			}
+			if !containsTail() {
+				next[RequireMultiHopId(providerClient.ClientId())] = ByteCount(0)
 			}
 			return next, nil
 		},
-	    newClientArgs: func()(*MultiClientGeneratorClientArgs, error) {
-	    	args := &MultiClientGeneratorClientArgs{
-	    		ClientId: NewId(),
+		newClientArgs: func() (*MultiClientGeneratorClientArgs, error) {
+			args := &MultiClientGeneratorClientArgs{
+				ClientId:   NewId(),
 				ClientAuth: nil,
 			}
 			return args, nil
-	    },
-	    removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
-	    	// do nothing
-	    },
-	    removeClientWithArgs: func(client *Client, args *MultiClientGeneratorClientArgs) {
-	    	var unsub func()
-	    	var ok bool
-	    	func() {
-	    		mutex.Lock()
-	    		defer mutex.Unlock()
+		},
+		removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
+			// do nothing
+		},
+		removeClientWithArgs: func(client *Client, args *MultiClientGeneratorClientArgs) {
+			var unsub func()
+			var ok bool
+			func() {
+				mutex.Lock()
+				defer mutex.Unlock()
 				unsub, ok = unsubs[client]
 				if ok {
 					delete(unsubs, client)
@@ -70,34 +74,34 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 			if ok {
 				unsub()
 			}
-	    },
-	    newClientSettings: func()(*ClientSettings) {
-	    	settings := DefaultClientSettings()
+		},
+		newClientSettings: func() *ClientSettings {
+			settings := DefaultClientSettings()
 			settings.SendBufferSettings.SequenceBufferSize = 0
 			settings.SendBufferSettings.AckBufferSize = 0
 			settings.ReceiveBufferSettings.SequenceBufferSize = 0
 			// settings.ReceiveBufferSettings.AckBufferSize = 0
 			settings.ForwardBufferSettings.SequenceBufferSize = 0
 			return settings
-	    },
-	    newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-	    	client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
+		},
+		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
+			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
 
-	    	routesSend := []Route{
+			routesSend := []Route{
 				make(chan []byte),
 			}
 			routesReceive := []Route{
 				make(chan []byte),
 			}
 
-	    	transportSend := NewSendGatewayTransport()
+			transportSend := NewSendGatewayTransport()
 			transportReceive := NewReceiveGatewayTransport()
 			client.RouteManager().UpdateTransport(transportSend, routesSend)
 			client.RouteManager().UpdateTransport(transportReceive, routesReceive)
 
 			client.ContractManager().AddNoContractPeer(providerClient.ClientId())
 
-			providerTransportSend := NewSendClientTransport(args.ClientId)
+			providerTransportSend := NewSendClientTransport(DestinationId(args.ClientId))
 			providerTransportReceive := NewReceiveGatewayTransport()
 			providerClient.RouteManager().UpdateTransport(providerTransportReceive, routesSend)
 			providerClient.RouteManager().UpdateTransport(providerTransportSend, routesReceive)
@@ -110,7 +114,7 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 				providerClient.RouteManager().RemoveTransport(providerTransportReceive)
 				providerClient.RouteManager().RemoveTransport(providerTransportSend)
 			}
-			
+
 			func() {
 				mutex.Lock()
 				defer mutex.Unlock()
@@ -118,31 +122,30 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 			}()
 
 			return client, nil
-	    },
+		},
 	}
-
 
 	multiClient := NewRemoteUserNatMultiClientWithDefaults(
 		ctx,
 		generator,
 		receivePacketCallback,
+		protocol.ProvideMode_Network,
 	)
 
-	return multiClient, nil	
+	return multiClient, nil
 }
-
 
 type TestMultiClientGenerator struct {
-	nextDestintationIds func(count int, excludedClientIds []Id) (map[Id]ByteCount, error)
-    newClientArgs func()(*MultiClientGeneratorClientArgs, error)
-    removeClientArgs func(args *MultiClientGeneratorClientArgs)
-    removeClientWithArgs func(client *Client, args *MultiClientGeneratorClientArgs)
-    newClientSettings func() (*ClientSettings)
-    newClient func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
+	nextDestinations     func(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error)
+	newClientArgs        func() (*MultiClientGeneratorClientArgs, error)
+	removeClientArgs     func(args *MultiClientGeneratorClientArgs)
+	removeClientWithArgs func(client *Client, args *MultiClientGeneratorClientArgs)
+	newClientSettings    func() *ClientSettings
+	newClient            func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 }
 
-func (self *TestMultiClientGenerator) NextDestintationIds(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
-	return self.nextDestintationIds(count, excludedClientIds)
+func (self *TestMultiClientGenerator) NextDestinations(count int, excludeDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
+	return self.nextDestinations(count, excludeDestinations)
 }
 
 func (self *TestMultiClientGenerator) NewClientArgs() (*MultiClientGeneratorClientArgs, error) {
@@ -165,7 +168,6 @@ func (self *TestMultiClientGenerator) NewClient(ctx context.Context, args *Multi
 	return self.newClient(ctx, args, clientSettings)
 }
 
-
 func TestMultiClientChannelWindowStats(t *testing.T) {
 	// ensure that the bucket counts are bounded
 	// if this is broken, the coalesce logic is broken and there will be a memory issue
@@ -181,28 +183,28 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	parallelCount := 6
 
 	generator := &TestMultiClientGenerator{
-		nextDestintationIds: func(count int, excludedClientIds []Id) (map[Id]ByteCount, error) {
+		nextDestinations: func(count int, excludedDestinations []MultiHopId) (map[MultiHopId]ByteCount, error) {
 			// not used
 			return nil, nil
 		},
-	    newClientArgs: func()(*MultiClientGeneratorClientArgs, error) {
-	    	args := &MultiClientGeneratorClientArgs{
-	    		ClientId: NewId(),
+		newClientArgs: func() (*MultiClientGeneratorClientArgs, error) {
+			args := &MultiClientGeneratorClientArgs{
+				ClientId:   NewId(),
 				ClientAuth: nil,
 			}
 			return args, nil
-	    },
-	    removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
-	    	// do nothing
-	    },
-	    newClientSettings: DefaultClientSettings,
-	    newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
-	    	client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
+		},
+		removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
+			// do nothing
+		},
+		newClientSettings: DefaultClientSettings,
+		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
+			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)
 			return client, nil
-	    },
+		},
 	}
 
-	receivePacket := func(source Path, ipProtocol IpProtocol, packet []byte) {
+	receivePacket := func(source TransferPath, ipProtocol IpProtocol, packet []byte) {
 		// Do nothing
 	}
 
@@ -212,19 +214,18 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 
 	// the coalesce logic trims from the last event in a bucket
 	// if events are uniformly distributed in a bucket, this means there will be an extra bucket
-	maxBucketCount := 1 + int(math.Ceil(float64(settings.StatsWindowDuration) / float64(settings.StatsWindowBucketDuration)))
+	maxBucketCount := 1 + int(math.Ceil(float64(settings.StatsWindowDuration)/float64(settings.StatsWindowBucketDuration)))
 
 	args, err := generator.NewClientArgs()
 	channelArgs := &multiClientChannelArgs{
 		MultiClientGeneratorClientArgs: *args,
-		DestinationId: NewId(),
-		EstimatedBytesPerSecond: 0,
+		Destination:                    RequireMultiHopId(NewId()),
+		EstimatedBytesPerSecond:        0,
 	}
 	assert.Equal(t, nil, err)
 	clientChannel, err := newMultiClientChannel(ctx, channelArgs, generator, receivePacket, settings)
 	assert.Equal(t, nil, err)
 
-	
 	cancelCtxs := []context.Context{}
 
 	for p := 0; p < parallelCount; p += 1 {
@@ -246,7 +247,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 									clientChannel.addSendAck(1)
 									clientChannel.addReceiveAck(1)
 									clientChannel.addSource(ipPath)
-									
+
 								}
 							}
 						}
@@ -257,7 +258,7 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 	}
 
 	for _, cancelCtx := range cancelCtxs {
-		<- cancelCtx.Done()
+		<-cancelCtx.Done()
 	}
 
 	stats, err := clientChannel.windowStatsWithCoalesce(false)
@@ -270,4 +271,3 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 
 	assert.Equal(t, maxBucketCount, stats.bucketCount)
 }
-

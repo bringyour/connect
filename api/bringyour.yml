@@ -1045,6 +1045,20 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/ConnectControlResult"
 
+    /hello:
+        get:
+            description: |
+                Simple hello to the network that returns some useful information.
+                This can be used for discovery.
+            operationId: Hello
+            security: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/HelloResult"
+
 components:
     securitySchemes:
         BearerAuth:
@@ -1718,6 +1732,9 @@ components:
                     type: string
                 client_id:
                     description: udid
+                    type: string
+                best_available:
+                    type: boolean
 
         FindProviders2Args:
             type: object
@@ -1734,6 +1751,13 @@ components:
                     items:
                         description: udid
                         type: string
+                exclude_destinations:
+                    type: array
+                    items:
+                        type: array
+                        items:
+                            description: udid
+                            type: string
 
         FindProviders2Result:
             type: object
@@ -1748,6 +1772,11 @@ components:
                                 type: string
                             estimated_bytes_per_second:
                                 type: integer
+                            intermediary_ids:
+                                type: array
+                                items:
+                                    description: udid
+                                    type: string
 
         CreateProviderSpecArgs:
             type: object
@@ -2458,3 +2487,9 @@ components:
                     properties:
                         message:
                             type: string
+
+        HelloResult:
+            type: object
+            properties:
+                client_address:
+                    type: string

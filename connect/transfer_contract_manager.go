@@ -25,6 +25,19 @@ import (
 
 // manage contracts which are embedded into each transfer sequence
 
+type ContractKey struct {
+	Destination       TransferPath
+	IntermediaryIds   MultiHopId
+	CompanionContract bool
+	ForceStream       bool
+}
+
+func (self ContractKey) Legacy() ContractKey {
+	return ContractKey{
+		Destination: self.Destination,
+	}
+}
+
 type ContractErrorFunction = func(contractError protocol.ContractError)
 
 type ContractManagerStats struct {
@@ -32,8 +45,8 @@ type ContractManagerStats struct {
 	ContractCloseCount int64
 	// contract id -> byte count
 	ContractOpenByteCounts map[Id]ByteCount
-	// contract id -> destination id
-	ContractOpenDestinationIds    map[Id]Id
+	// contract id -> contract key
+	ContractOpenKeys              map[Id]ContractKey
 	ContractCloseByteCount        ByteCount
 	ReceiveContractCloseByteCount ByteCount
 }
@@ -43,7 +56,7 @@ func NewContractManagerStats() *ContractManagerStats {
 		ContractOpenCount:             0,
 		ContractCloseCount:            0,
 		ContractOpenByteCounts:        map[Id]ByteCount{},
-		ContractOpenDestinationIds:    map[Id]Id{},
+		ContractOpenKeys:              map[Id]ContractKey{},
 		ContractCloseByteCount:        0,
 		ReceiveContractCloseByteCount: 0,
 	}
@@ -68,6 +81,9 @@ func DefaultContractManagerSettings() *ContractManagerSettings {
 		StandardContractTransferByteCount: mib(32),
 
 		NetworkEventTimeEnableContracts: networkEventTimeEnableContracts,
+
+		// TODO change this once main has been deployed with the p2p contract changes
+		LegacyCreateContract: true,
 	}
 }
 
@@ -83,6 +99,8 @@ type ContractManagerSettings struct {
 	// enable contracts on the network
 	// this can be removed after wide adoption
 	NetworkEventTimeEnableContracts time.Time
+
+	LegacyCreateContract bool
 }
 
 func (self *ContractManagerSettings) ContractsEnabled() bool {
@@ -98,9 +116,10 @@ type ContractManager struct {
 	mutex sync.Mutex
 
 	provideSecretKeys map[protocol.ProvideMode][]byte
+	// provide paused overrides the set provide modes
+	providePaused bool
 
-	destinationContracts map[Id]*contractQueue
-	sourceContracts      map[Id]bool
+	destinationContracts map[ContractKey]*contractQueue
 
 	receiveNoContractClientIds map[Id]bool
 	sendNoContractClientIds    map[Id]bool
@@ -137,8 +156,8 @@ func NewContractManager(
 		client:                     client,
 		settings:                   settings,
 		provideSecretKeys:          map[protocol.ProvideMode][]byte{},
-		destinationContracts:       map[Id]*contractQueue{},
-		sourceContracts:            map[Id]bool{},
+		providePaused:              false,
+		destinationContracts:       map[ContractKey]*contractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds:    sendNoContractClientIds,
 		contractErrorCallbacks:     NewCallbackList[ContractErrorFunction](),
@@ -160,13 +179,18 @@ func (self *ContractManager) addContractErrorCallback(contractErrorCallback Cont
 }
 
 // ReceiveFunction
-func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
-	switch sourceId {
-	case ControlId:
-		contracts, contractErrors := parseControlContractFrames(frames)
-		for _, contract := range contracts {
+func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Frame, provideMode protocol.ProvideMode) {
+	if source.IsControlSource() {
+		contracts := map[*protocol.Contract]ContractKey{}
+		contractErrors := []protocol.ContractError{}
+		for _, frame := range frames {
+			frameContracts, frameContractErrors := self.parseControlFrame(frame)
+			maps.Copy(contracts, frameContracts)
+			contractErrors = append(contractErrors, frameContractErrors...)
+		}
+		for contract, contractKey := range contracts {
 			c := func() error {
-				return self.addContract(contract)
+				return self.addContract(contractKey, contract)
 			}
 			if glog.V(2) {
 				TraceWithReturn(
@@ -194,16 +218,48 @@ func (self *ContractManager) Receive(sourceId Id, frames []*protocol.Frame, prov
 }
 
 // frames are verified before calling to be from source ControlId
-func parseControlContractFrames(frames []*protocol.Frame) (contracts []*protocol.Contract, contractErrors []protocol.ContractError) {
-	for _, frame := range frames {
-		if message, err := FromFrame(frame); err == nil {
-			switch v := message.(type) {
-			case *protocol.CreateContractResult:
-				if contractError := v.Error; contractError != nil {
-					contractErrors = append(contractErrors, *contractError)
-				} else if contract := v.Contract; contract != nil {
-					contracts = append(contracts, contract)
+func (self *ContractManager) parseControlFrame(frame *protocol.Frame) (
+	contracts map[*protocol.Contract]ContractKey,
+	contractErrors []protocol.ContractError,
+) {
+	contracts = map[*protocol.Contract]ContractKey{}
+	contractErrors = []protocol.ContractError{}
+	if message, err := FromFrame(frame); err == nil {
+		switch v := message.(type) {
+		case *protocol.CreateContractResult:
+			if contractError := v.Error; contractError != nil {
+				contractErrors = append(contractErrors, *contractError)
+			} else if contract := v.Contract; contract != nil {
+				contractKey := ContractKey{}
+
+				var storedContract protocol.StoredContract
+				err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
+				if err != nil {
+					return
 				}
+
+				contractKey.Destination, err = TransferPathFromBytes(
+					nil,
+					storedContract.DestinationId,
+					storedContract.StreamId,
+				)
+				if err != nil {
+					return
+				}
+
+				if v.CreateContract != nil {
+					contractKey.CompanionContract = v.CreateContract.Companion
+					if v.CreateContract.ForceStream != nil {
+						contractKey.ForceStream = *v.CreateContract.ForceStream
+					}
+					if v.CreateContract.IntermediaryIds != nil {
+						if intermediaryIds, err := MultiHopIdFromBytes(v.CreateContract.IntermediaryIds); err == nil {
+							contractKey.IntermediaryIds = intermediaryIds
+						}
+					}
+				}
+
+				contracts[contract] = contractKey
 			}
 		}
 	}
@@ -218,6 +274,50 @@ func (self *ContractManager) contractError(contractError protocol.ContractError)
 			contractErrorCallback(contractError)
 		}()
 	}
+}
+
+func (self *ContractManager) SetProvidePaused(providePaused bool) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if self.providePaused == providePaused {
+		return
+	}
+
+	self.providePaused = providePaused
+
+	if providePaused {
+		provide := &protocol.Provide{
+			Keys: []*protocol.ProvideKey{},
+		}
+		self.client.SendControl(
+			RequireToFrame(provide),
+			nil,
+		)
+	} else {
+		provideKeys := []*protocol.ProvideKey{}
+		for provideMode, provideSecretKey := range self.provideSecretKeys {
+			provideKeys = append(provideKeys, &protocol.ProvideKey{
+				Mode:             provideMode,
+				ProvideSecretKey: provideSecretKey,
+			})
+		}
+
+		provide := &protocol.Provide{
+			Keys: provideKeys,
+		}
+		self.client.SendControl(
+			RequireToFrame(provide),
+			nil,
+		)
+	}
+}
+
+func (self *ContractManager) IsProvidePaused() bool {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return self.providePaused
 }
 
 func (self *ContractManager) SetProvideModesWithReturnTraffic(provideModes map[protocol.ProvideMode]bool) {
@@ -268,15 +368,15 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 		}
 	}
 
-	provide := &protocol.Provide{
-		Keys: provideKeys,
+	if !self.providePaused {
+		provide := &protocol.Provide{
+			Keys: provideKeys,
+		}
+		self.client.SendControl(
+			RequireToFrame(provide),
+			ackCallback,
+		)
 	}
-	self.client.ClientOob().SendControl(
-		[]*protocol.Frame{RequireToFrame(provide)},
-		func(resultFrames []*protocol.Frame, err error) {
-			ackCallback(err)
-		},
-	)
 }
 
 func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
@@ -293,6 +393,10 @@ func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
+
+	if self.providePaused {
+		return false
+	}
 
 	provideSecretKey, ok := self.provideSecretKeys[provideMode]
 	if !ok {
@@ -326,19 +430,12 @@ func (self *ContractManager) AddNoContractPeer(clientId Id) {
 	self.receiveNoContractClientIds[clientId] = true
 }
 
-func (self *ContractManager) SendNoContract(destinationId Id, companionContract bool) bool {
+func (self *ContractManager) SendNoContract(destinationId Id) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	if allow, ok := self.sendNoContractClientIds[destinationId]; ok {
 		return allow
-	}
-
-	// migration helper. this can be removed when contracts are fully enabled
-	if companionContract && self.sourceContracts[destinationId] {
-		// use contracts if a companion sequence and
-		// the destination has an active contract into this client
-		return false
 	}
 
 	if !self.settings.ContractsEnabled() {
@@ -363,23 +460,13 @@ func (self *ContractManager) ReceiveNoContract(sourceId Id) bool {
 	return false
 }
 
-func (self *ContractManager) OpenSourceContract(sourceId Id) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	self.sourceContracts[sourceId] = true
-}
-
-func (self *ContractManager) CloseSourceContract(sourceId Id) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	delete(self.sourceContracts, sourceId)
-}
-
-func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id, timeout time.Duration) *protocol.Contract {
-	contractQueue := self.openContractQueue(destinationId)
-	defer self.closeContractQueue(destinationId)
+func (self *ContractManager) TakeContract(
+	ctx context.Context,
+	contractKey ContractKey,
+	timeout time.Duration,
+) *protocol.Contract {
+	contractQueue := self.openContractQueue(contractKey)
+	defer self.closeContractQueue(contractKey)
 
 	enterTime := time.Now()
 	for {
@@ -418,25 +505,24 @@ func (self *ContractManager) TakeContract(ctx context.Context, destinationId Id,
 	}
 }
 
-func (self *ContractManager) addContract(contract *protocol.Contract) error {
+func (self *ContractManager) addContract(contractKey ContractKey, contract *protocol.Contract) error {
 	var storedContract protocol.StoredContract
 	err := proto.Unmarshal(contract.StoredContractBytes, &storedContract)
 	if err != nil {
 		return err
 	}
 
-	sourceId, err := IdFromBytes(storedContract.SourceId)
+	path, err := TransferPathFromBytes(
+		storedContract.SourceId,
+		storedContract.DestinationId,
+		storedContract.StreamId,
+	)
 	if err != nil {
 		return err
 	}
 
-	if sourceId != self.client.ClientId() {
-		return fmt.Errorf("Contract source must be this client: %s<>%s", sourceId, self.client.ClientId())
-	}
-
-	destinationId, err := IdFromBytes(storedContract.DestinationId)
-	if err != nil {
-		return err
+	if !path.IsStream() && path.SourceId != self.client.ClientId() {
+		return fmt.Errorf("Contract source must be this client: %s<>%s", path.SourceId, self.client.ClientId())
 	}
 
 	contractId, err := IdFromBytes(storedContract.ContractId)
@@ -445,8 +531,8 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 	}
 
 	func() {
-		contractQueue := self.openContractQueue(destinationId)
-		defer self.closeContractQueue(destinationId)
+		contractQueue := self.openContractQueue(contractKey)
+		defer self.closeContractQueue(contractKey)
 
 		contractQueue.Add(contract, &storedContract)
 	}()
@@ -457,57 +543,31 @@ func (self *ContractManager) addContract(contract *protocol.Contract) error {
 
 		self.localStats.ContractOpenCount += 1
 		self.localStats.ContractOpenByteCounts[contractId] = ByteCount(storedContract.TransferByteCount)
-		self.localStats.ContractOpenDestinationIds[contractId] = destinationId
+		self.localStats.ContractOpenKeys[contractId] = contractKey
 	}()
 
 	return nil
 }
 
-func (self *ContractManager) openContractQueue(destinationId Id) *contractQueue {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	contractQueue, ok := self.destinationContracts[destinationId]
-	if !ok {
-		contractQueue = newContractQueue()
-		self.destinationContracts[destinationId] = contractQueue
-	}
-	contractQueue.Open()
-
-	return contractQueue
-}
-
-func (self *ContractManager) closeContractQueue(destinationId Id) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	contractQueue, ok := self.destinationContracts[destinationId]
-	if !ok {
-		panic("Open and close must be equally paired")
-	}
-	contractQueue.Close()
-	if contractQueue.IsDone() {
-		delete(self.destinationContracts, destinationId)
-	}
-}
-
-func (self *ContractManager) CreateContract(destinationId Id, companionContract bool, timeout time.Duration) {
-
+func (self *ContractManager) CreateContract(contractKey ContractKey, timeout time.Duration) {
 	// look at destinationContracts and last contract to get previous contract id
-	contractQueue := self.openContractQueue(destinationId)
-	defer self.closeContractQueue(destinationId)
+	contractQueue := self.openContractQueue(contractKey)
+	defer self.closeContractQueue(contractKey)
 
 	createContract := &protocol.CreateContract{
-		DestinationId:     destinationId.Bytes(),
+		DestinationId:     contractKey.Destination.DestinationId.Bytes(),
+		IntermediaryIds:   contractKey.IntermediaryIds.Bytes(),
+		StreamId:          contractKey.Destination.StreamId.Bytes(),
 		TransferByteCount: uint64(self.settings.StandardContractTransferByteCount),
-		Companion:         companionContract,
+		Companion:         contractKey.CompanionContract,
+		ForceStream:       &contractKey.ForceStream,
 		UsedContractIds:   contractQueue.UsedContractIdBytes(),
 	}
 	self.client.ClientOob().SendControl(
 		[]*protocol.Frame{RequireToFrame(createContract)},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err == nil {
-				self.Receive(ControlId, resultFrames, protocol.ProvideMode_Network)
+				self.Receive(SourceId(ControlId), resultFrames, protocol.ProvideMode_Network)
 			} else {
 				glog.Warningf("[contract]oob err = %s\n", err)
 			}
@@ -520,25 +580,25 @@ func (self *ContractManager) CheckpointContract(
 	ackedByteCount ByteCount,
 	unackedByteCount ByteCount,
 ) {
-	self.CompleteContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
+	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
 }
 
-func (self *ContractManager) CompleteContract(
+func (self *ContractManager) CloseContract(
 	contractId Id,
 	ackedByteCount ByteCount,
 	unackedByteCount ByteCount,
 ) {
-	self.CompleteContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, false)
+	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, false)
 }
 
-func (self *ContractManager) CompleteContractWithCheckpoint(
+func (self *ContractManager) CloseContractWithCheckpoint(
 	contractId Id,
 	ackedByteCount ByteCount,
 	unackedByteCount ByteCount,
 	checkpoint bool,
 ) {
 	opened := false
-	var destinationId Id
+	var contractKey ContractKey
 
 	func() {
 		self.mutex.Lock()
@@ -547,10 +607,10 @@ func (self *ContractManager) CompleteContractWithCheckpoint(
 		if _, ok := self.localStats.ContractOpenByteCounts[contractId]; ok {
 			// opened via the contract manager
 			opened = true
-			destinationId = self.localStats.ContractOpenDestinationIds[contractId]
+			contractKey = self.localStats.ContractOpenKeys[contractId]
 			self.localStats.ContractCloseCount += 1
 			delete(self.localStats.ContractOpenByteCounts, contractId)
-			delete(self.localStats.ContractOpenDestinationIds, contractId)
+			delete(self.localStats.ContractOpenKeys, contractId)
 			self.localStats.ContractCloseByteCount += ackedByteCount
 		} else {
 			self.localStats.ReceiveContractCloseByteCount += ackedByteCount
@@ -567,8 +627,8 @@ func (self *ContractManager) CompleteContractWithCheckpoint(
 		[]*protocol.Frame{RequireToFrame(closeContract)},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err == nil && opened {
-				contractQueue := self.openContractQueue(destinationId)
-				defer self.closeContractQueue(destinationId)
+				contractQueue := self.openContractQueue(contractKey)
+				defer self.closeContractQueue(contractKey)
 
 				// the contract is partially closed on the platform now
 				// it can be safely removed from the local used list
@@ -583,10 +643,10 @@ func (self *ContractManager) LocalStats() *ContractManagerStats {
 	defer self.mutex.Unlock()
 
 	return &ContractManagerStats{
-		ContractOpenCount:             self.localStats.ContractOpenCount,
-		ContractCloseCount:            self.localStats.ContractCloseCount,
-		ContractOpenByteCounts:        maps.Clone(self.localStats.ContractOpenByteCounts),
-		ContractOpenDestinationIds:    maps.Clone(self.localStats.ContractOpenDestinationIds),
+		ContractOpenCount:      self.localStats.ContractOpenCount,
+		ContractCloseCount:     self.localStats.ContractCloseCount,
+		ContractOpenByteCounts: maps.Clone(self.localStats.ContractOpenByteCounts),
+		// ContractOpenDestinationIds: maps.Clone(self.localStats.ContractOpenDestinationIds),
 		ContractCloseByteCount:        self.localStats.ContractCloseByteCount,
 		ReceiveContractCloseByteCount: self.localStats.ReceiveContractCloseByteCount,
 	}
@@ -617,9 +677,9 @@ func (self *ContractManager) Flush(resetUsedContractIds bool) []Id {
 	return self.closeContracts(contracts)
 }
 
-func (self *ContractManager) FlushContractQueue(destinationId Id, resetUsedContractIds bool) []Id {
-	contractQueue := self.openContractQueue(destinationId)
-	defer self.closeContractQueue(destinationId)
+func (self *ContractManager) FlushContractQueue(contractKey ContractKey, resetUsedContractIds bool) []Id {
+	contractQueue := self.openContractQueue(contractKey)
+	defer self.closeContractQueueWithForceRemove(contractKey, true)
 
 	contracts := contractQueue.Flush(resetUsedContractIds)
 
@@ -633,11 +693,51 @@ func (self *ContractManager) closeContracts(contracts []*protocol.Contract) []Id
 		if err := proto.Unmarshal(contract.StoredContractBytes, &storedContract); err == nil {
 			if contractId, err := IdFromBytes(storedContract.ContractId); err == nil {
 				contractIds = append(contractIds, contractId)
-				self.CompleteContract(contractId, ByteCount(0), ByteCount(0))
+				self.CloseContract(contractId, ByteCount(0), ByteCount(0))
 			}
 		}
 	}
 	return contractIds
+}
+
+func (self *ContractManager) openContractQueue(contractKey ContractKey) *contractQueue {
+	if self.settings.LegacyCreateContract {
+		contractKey = contractKey.Legacy()
+	}
+
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	contractQueue, ok := self.destinationContracts[contractKey]
+	if !ok {
+		contractQueue = newContractQueue()
+		self.destinationContracts[contractKey] = contractQueue
+	}
+	contractQueue.Open()
+
+	return contractQueue
+}
+
+func (self *ContractManager) closeContractQueue(contractKey ContractKey) {
+	self.closeContractQueueWithForceRemove(contractKey, false)
+}
+
+func (self *ContractManager) closeContractQueueWithForceRemove(contractKey ContractKey, forceRemove bool) {
+	if self.settings.LegacyCreateContract {
+		contractKey = contractKey.Legacy()
+	}
+
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	contractQueue, ok := self.destinationContracts[contractKey]
+	if !ok {
+		panic("Open and close must be equally paired")
+	}
+	contractQueue.Close()
+	if contractQueue.IsDone() || forceRemove {
+		delete(self.destinationContracts, contractKey)
+	}
 }
 
 type contractQueue struct {
@@ -700,11 +800,12 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 
 	if self.usedContractIds[contractId] {
 		glog.V(2).Infof("[contract]add already used %s\n", contractId)
-		// update contract
+		// update contract if present
 		if _, ok := self.contracts[contractId]; ok {
 			self.contracts[contractId] = contract
 			self.updateMonitor.NotifyAll()
 		}
+		// else drop this contract. it has already been used locally
 	} else {
 		glog.V(2).Infof("[contract]add %s\n", contractId)
 		self.usedContractIds[contractId] = true

@@ -1,0 +1,125 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+
+// the audit protocol protects providers by creating a cryptographic record
+// of egress traffic that can be used for the specific purpose of abuse reports.
+// It's in the interest of providers to enable the audit protocol,
+// because it lets the network operator enforce abuse reports
+// as the back line of abuse prevention as detailed at https://bringyour.com/trustandsafety
+
+// The goal of the audit database is to be computationally intractable to
+// extract data without some prior knowledge of the record to extract.
+// Typically the prior knowledge would come in the form of an abuse report,
+// which is created from a destination server log.
+
+// the provider creates an `EgressRecord` which contains a key 
+// that the platform uses to further encrypt an `AccountRecord`.
+// each `EgressRecord` is keyed by an `EgressKeyWithSalt`, which is password hashed
+// using a specific salt per record to prevent pre-computed tables.
+// The `EgressRecord` is symetrically encrypted using a `EgressRecordSecret`,
+// which is the `EgressKey` plus an N-bit nonce. The nonce is thrown away,
+// so that decryption requires enumating all the N-bit possiblities. 
+
+// hence, to lookup a record, one provides the EgressKey and the system
+// must do a table scan of all records using the specific salt per record.
+// If the salted key matches, the system must brute-force the N-bit nonce
+// to decrypt the `EgressRecord`. The system must then use the account secret
+// from the record to decrypt the `AccountRecord`. N is chosen sufficiently large
+// to take minutes to decrypt a single record on a modern multi core server.
+
+// without a prior `EgressKey`, the system must enumerate K bits of possible
+// `EgressKeys` to find a match for a single record.
+// For an IPv4 where nothing is known, K is ~130 bits.
+// For specific probing for a single server where an IPv4 source IP, destination IP, 
+// and destination port are known, and approximate day is known, K is ~40 bits.
+// K bits must be brute forced per record, 
+// where each attempt requires creating the salted password hash.
+// In addition, decrypting a single record has the nonce brute force cost.
+
+// The specific bit sizes and encryption algorithms used are:
+// salt: 128 bits
+// nonce: 24 bits
+// password hash: Argon2id
+// symmetric encryption: AES-256
+
+
+// this is sent to the platform
+// note the platform does not have prior knowledge and would have to brute force decrypt the audit record
+// the provider creates and encrypts the final `AccountRecord` from the partial and discards the partial
+message ProviderAudit {
+    EncryptedEgressRecord Egress = 1;
+    // this data is used to encode the associated `AccountRecord`
+    // this data is not stored and should be thrown out by the platform
+    AccountRecordPartial AccountPartial = 2;
+}
+
+
+enum EgressProtocol {
+    IP_TCP = 0;
+    IP_UDP = 1;
+}
+
+// kept local on provider
+// time block is UTC in 50ms blocks
+// a typical abuse report will have to account for +-60s, or look up about 1200 blocks per record
+message EgressKey {
+    uint64 TimeBlock = 1;
+    EgressProtocol Protocol = 2;
+    bytes SourceIp = 3;
+    uint32 SourcePort = 4;
+    bytes DestinationIp = 5;
+    uint32 DestinationPort = 6;
+}
+
+// kept local on provider
+message EgressKeyWithSalt {
+    EgressKey Key = 1;
+    // 128-bit
+    bytes Salt = 2;
+}
+
+
+// this created on the provider so that the platform cannot see the raw data
+// a complete audit record is an `EgressRecord` and an `AccountRecord`
+message EncryptedEgressRecord {
+    // 128-bit
+    bytes Salt = 1;
+    // Argon2id of `EgressKeyWithSalt`
+    bytes KeyWithSaltHash = 2;
+    // AES256 using `EgressRecordSecret`
+    bytes EncryptedEgress = 3;
+}
+
+message AccountRecordPartial {
+    // ulid
+    bytes ContractId = 4;
+    bytes AccountRecordSecret = 5;
+}
+
+message EgressRecordSecret {
+    EgressKey Key = 1;
+    // 128-bit
+    bytes Salt = 2;
+    // 24-bit
+    bytes Nonce = 3;
+}
+
+message EgressRecord {
+    EgressKey Key = 1;
+    uint64 StartTime = 2;
+    optional uint64 EndTime = 3;
+    bytes AccountRecordSecret = 4;
+}
+
+message AccountRecord {
+    // ulid
+    bytes ContractId = 1;
+    // ulid
+    bytes ClientAccountId = 2;
+    // ulid
+    bytes ProviderAccountId = 3;
+}
+

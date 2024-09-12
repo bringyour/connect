@@ -6,24 +6,30 @@ import "frame.proto";
 option go_package = "bringyour.com/protocol";
 
 
+// changes 2024-08: 
+// 1. transfer can now be addressed to/from a stream_id
+//    Anywhere transfer would be addressed to a destination_id or from a source_id,
+//    it can now be to/from a stream_id.
+// 2. stream_ids are created by adding intermediary_destination_ids to CreateContract
+// 3. multi-hop state is created with StreamOpen
+//    This is sent each time a stream contract is created,
+//    so that the hop state can time out the same as the sender state.
+
+
+// stream_id replaces the source_id and destination_id
 message TransferPath {
     // ulid
-    bytes destination_id = 1;
+    optional bytes source_id = 2;
     // ulid
-    bytes source_id = 2;
+    optional bytes destination_id = 1;
     // ulid
-    bytes stream_id = 3;
+    optional bytes stream_id = 3;
 }
 
 
 message TransferFrame {
     TransferPath transfer_path = 1;
-
     Frame frame = 2;
-
-    // TODO have the option to use fully encrypt the frame bytes using pke
-    // TODO for the initial use case of already encrypted frame data, this is not needed
-    // optional bool encrypted = 4;
 }
 
 
@@ -31,6 +37,7 @@ message TransferFrame {
 message FilteredTransferFrame {
     TransferPath transfer_path = 1;
 }
+
 
 message FilteredTransferFrameWithFrame {
     TransferPath transfer_path = 1;
@@ -56,13 +63,13 @@ message Pack {
     // default to false for backward compatibility
     bool nack = 6;
 
-    Frame contract_frame = 7;
+    optional Frame contract_frame = 7;
 }
 
 
 // used for deep message inspection
 message FilteredPack {
-    Frame contract_frame = 7;
+    optional Frame contract_frame = 7;
 }
 
 
@@ -75,7 +82,6 @@ message Ack {
     // all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
     bool selective = 3;
 }
-// TODO potential sender improvement: consider blocking send items to be fast retransmitted once if a later selective ack is received
 
 
 // this is a connection local message that is sent at the start of each connection to the control platform
@@ -94,7 +100,7 @@ message Auth {
 }
 
 
-// each mode implies all the lower modes
+// CHANGE FROM PRIOR VERSION, modes should be considered individually as a mask and do not imply other modes
 enum ProvideMode {
     None = 0; // this is interpreted the same as a `null` provide mode
     Network = 1;
@@ -105,7 +111,6 @@ enum ProvideMode {
 
 
 message Provide {
-    // FIXME move this to PKE public key
     repeated ProvideKey keys = 1;
 }
 
@@ -117,46 +122,23 @@ message ProvideKey {
 }
 
 
-message CreateStream {
-    // ulid
-    repeated bytes destination_ids = 1;
-}
-// the creator knows all the hops on the stream
-// when evaluating the completed contracts, the send and receive count involving the source_id
-// is the baseline to evaluate the other contracts for disputes
-
-
-enum StreamError {
-    STREAM_NO_PERMISSION = 0;
-}
-
-
-// the client uses this stream_id to send a message to the first destination_id
-message CreateStreamResult {
-    StreamError error = 1;
-    bytes stream_id = 2;
-}
-
-
-message CloseStream {
-    // ulid
-    bytes stream_id = 1;
-}
-
-
-// each hop on the stream receives this to configure its state
+// each hop on the stream receives this to configure its state,
+// including the first and last hops
+// this is sent each time a stream contract is created
 message StreamOpen {
-    TransferPath source = 1;
-    TransferPath destination = 2;
-    // FIXME move this to PKE public key
-    // all contracts for this stream will be signed with this key
-    ProvideKey key = 3;
+    // ulid
+    optional bytes source_id = 2;
+    // ulid
+    optional bytes destination_id = 1;
+    // ulid
+    bytes stream_id = 3;
 }
 
 // each hop on the stream receives this to configure its state
+// this is sent when all open contracts for the stream are closed
 message StreamClose {
-    TransferPath source = 1;
-    TransferPath destination = 2;
+    // ulid
+    bytes stream_id = 3;
 }
 
 
@@ -164,13 +146,24 @@ message StreamClose {
 // platform sends a CreateContractResult
 message CreateContract {
     // ulid
-    bytes destination_id = 1;
+    optional bytes destination_id = 1;
     uint64 transfer_byte_count = 2;
     // restrict the contract to a companion of an existing open contract
     bool companion = 3;
     // ulids
     repeated bytes used_contract_ids = 4;
+
+    // ulids
+    repeated bytes intermediary_ids = 5;
+    // ulid
+    optional bytes stream_id = 6;
+    // stream will be used when intermediary_ids or stream_id is set
+    // in the case of wanting to use streams with no intermediaries, set `force_stream=true`
+    optional bool force_stream = 7;
 }
+// the creator knows all the hops on the stream from the enumerated linpaths
+// when evaluating the completed contracts, the send and receive count involving the source_id
+// is the baseline to evaluate the other contracts for disputes
 
 
 enum ContractError {
@@ -180,9 +173,14 @@ enum ContractError {
 }
 
 
-message CreateContractResult {    
-    ContractError error = 1;
-    Contract contract = 2;
+message CreateContractResult {
+    optional ContractError error = 1;
+    // the public contract to share with the transfer destination
+    // note this may contain a `stream_id` which directs the client to switch to a stream
+    optional Contract contract = 2;
+
+    // echo the `CreateContract` to allow associating the result with the request
+    optional CreateContract create_contract = 3;
 }
 
 
@@ -190,7 +188,6 @@ message CreateContractResult {
 message Contract {
     // ulid
     bytes stored_contract_bytes = 1;
-    // FIXME move this to PKE encrypted value
     // `stored_contract_bytes` signed with the `provider_secret_key`
     bytes stored_contract_hmac = 2;
     // the client must always verify the provide mode by matching the `provider_secret_key` for that mode to the hmac
@@ -198,13 +195,24 @@ message Contract {
 }
 
 
+// stream_id replaces the source_id and destination_id
 message StoredContract {
     bytes contract_id = 1;
     uint64 transfer_byte_count = 2;
-    // ulid, used only for non-stream provide modes
-    bytes source_id = 3;
-    // ulid, used only for non-stream provide modes
-    bytes destination_id = 4;
+    // ulid
+    optional bytes source_id = 3;
+    // ulid
+    optional bytes destination_id = 4;
+    // ulid
+    optional bytes stream_id = 5;
+    
+    // relative priority
+    // 0 (missing) is least priority
+    // any positive priority value is 100% more than 0
+    // generally only positive priority data will matter for the community payouts,
+    // and priority will scale the payout amount,
+    // so it is in a provider's interest to prioritize data with positive priority
+    optional uint32 priority = 6;
 }
 
 
@@ -234,5 +242,6 @@ message PeerAudit {
     uint64 send_count = 10;
     uint64 resend_byte_count = 11;
     uint64 resend_count = 12;
+    // ulid
+    bytes stream_id = 13;
 }
-

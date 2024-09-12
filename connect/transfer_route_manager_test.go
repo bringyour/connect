@@ -1,16 +1,15 @@
 package connect
 
 import (
+	"bytes"
 	"context"
-    "testing"
-    "encoding/binary"
-    "bytes"
-    "time"
-    "slices"
+	"encoding/binary"
+	"slices"
+	"testing"
+	"time"
 
-    "github.com/go-playground/assert/v2"
+	"github.com/go-playground/assert/v2"
 )
-
 
 func TestMultiRoute(t *testing.T) {
 	// create route manager
@@ -20,7 +19,7 @@ func TestMultiRoute(t *testing.T) {
 
 	WriteTimeout := 1 * time.Second
 	ReadTimeout := 1 * time.Second
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -29,17 +28,15 @@ func TestMultiRoute(t *testing.T) {
 
 	routeManager := NewRouteManager(ctx, "test")
 
-
 	sendTransports := map[Transport][]Route{}
 	receiveTransports := map[Transport][]Route{}
 
 	transportCount := 20
 	burstSize := 2048
-	
-	multiRouteWriter := routeManager.OpenMultiRouteWriter(clientId)
 
-	multiRouteReader := routeManager.OpenMultiRouteReader(clientId)
+	multiRouteWriter := routeManager.OpenMultiRouteWriter(DestinationId(clientId))
 
+	multiRouteReader := routeManager.OpenMultiRouteReader(DestinationId(clientId))
 
 	for i := 0; i < transportCount; i += 1 {
 		r := make(chan []byte)
@@ -52,7 +49,6 @@ func TestMultiRoute(t *testing.T) {
 		receiveTransports[receiveTransport] = receiveRoutes
 	}
 
-
 	go func() {
 		for sendTransport, sendRoutes := range sendTransports {
 			routeManager.UpdateTransport(sendTransport, sendRoutes)
@@ -62,8 +58,7 @@ func TestMultiRoute(t *testing.T) {
 		}
 	}()
 
-
-	messageBytes := func(i int)([]byte) {
+	messageBytes := func(i int) []byte {
 		b := new(bytes.Buffer)
 		err := binary.Write(b, binary.LittleEndian, int64(i))
 		if err != nil {
@@ -71,7 +66,6 @@ func TestMultiRoute(t *testing.T) {
 		}
 		return b.Bytes()
 	}
-
 
 	go func() {
 		for i := 0; i < burstSize; i += 1 {
@@ -90,7 +84,7 @@ func TestMultiRoute(t *testing.T) {
 
 	assert.Equal(t, burstSize, len(messages))
 
-	littleEndianCmp := func(a []byte, b []byte)(int) {
+	littleEndianCmp := func(a []byte, b []byte) int {
 		if len(a) < len(b) {
 			return -1
 		} else if len(b) < len(a) {
@@ -114,7 +108,6 @@ func TestMultiRoute(t *testing.T) {
 		assert.Equal(t, messageBytes(i), messages[i])
 	}
 
-		
 	for sendTransport, _ := range sendTransports {
 		routeManager.RemoveTransport(sendTransport)
 	}
@@ -122,5 +115,3 @@ func TestMultiRoute(t *testing.T) {
 		routeManager.RemoveTransport(receiveTransport)
 	}
 }
-
-

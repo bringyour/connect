@@ -4,14 +4,12 @@ import (
 	gojwt "github.com/golang-jwt/jwt/v5"
 )
 
-
 type ByJwt struct {
-	UserId Id
+	UserId      Id
 	NetworkName string
-	NetworkId Id
-	ClientId Id
+	NetworkId   Id
+	ClientId    Id
 }
-
 
 func ParseByJwtUnverified(byJwtStr string) (*ByJwt, error) {
 	parser := gojwt.NewParser()
@@ -45,4 +43,3 @@ func ParseByJwtUnverified(byJwtStr string) (*ByJwt, error) {
 
 	return byJwt, nil
 }
-
