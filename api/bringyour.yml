@@ -1160,7 +1160,7 @@ paths:
                     content:
                         application/json:
                             schema:
-                                $ref: "#/components/schemas/GetAccountWalletsResult"
+                                $ref: "#/components/schemas/NetworkReferralResult"
 
 components:
     securitySchemes:
@@ -2706,3 +2706,10 @@ components:
                     properties:
                         message:
                             type: string
+
+        NetworkReferralResult:
+            type: object
+            properties:
+                referral_code:
+                    description: udid
+                    type: string
