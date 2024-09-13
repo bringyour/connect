@@ -19,11 +19,13 @@ import (
 	"github.com/google/gopacket/layers"
 
 	"golang.org/x/exp/maps"
+	"golang.org/x/sync/errgroup"
 
 	// "google.golang.org/protobuf/proto"
 
 	"github.com/golang/glog"
 
+	"bringyour.com/connect/netstack"
 	"bringyour.com/protocol"
 )
 
@@ -211,8 +213,91 @@ func (self *LocalUserNat) Run() {
 
 	udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
 	udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
-	tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
-	tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+	// tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+	// tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+
+	dev, tnet, err := netstack.CreateNetTUN(nil, nil, 1500)
+	if err != nil {
+		glog.Infof("[lnr]error = %s\n", err)
+		return
+	}
+
+	go func() {
+		buffer := make([]byte, 2000)
+		for self.ctx.Err() == nil {
+			n, err := dev.Read(buffer)
+			if err != nil {
+				glog.Infof("[lnr]read error = %s\n", err)
+				return
+			}
+			self.receive(TransferPath{}, IpProtocolUnknown, buffer[0:n])
+		}
+	}()
+
+	forwardPort := func(portNumber int) {
+
+		go func() {
+			listener, err := tnet.ListenTCP(&net.TCPAddr{IP: net.IPv4zero, Port: portNumber})
+			if err != nil {
+				glog.Error("failed to listen", err)
+				return
+			}
+
+			for {
+				c, err := listener.Accept()
+				if err != nil {
+					glog.Error("failed to accept", err)
+					continue
+				}
+
+				go func() {
+					defer c.Close()
+					if glog.V(2) {
+						glog.Info("Accepted connection to ", c.LocalAddr())
+					}
+
+					local := c.LocalAddr()
+
+					addr := local.(*net.TCPAddr)
+					oc, err := net.DialTCP("tcp", nil, addr)
+
+					if err != nil && glog.V(2) {
+						glog.Error("failed to dial", err)
+						return
+					}
+
+					defer oc.Close()
+
+					eg := errgroup.Group{}
+					eg.Go(func() error {
+						_, err := io.Copy(oc, c)
+						return err
+					})
+
+					eg.Go(func() error {
+						_, err := io.Copy(c, oc)
+						return err
+					})
+
+					err = eg.Wait()
+					if err != nil && glog.V(2) {
+						glog.Error("failed to copy", err)
+					}
+
+				}()
+
+			}
+
+		}()
+	}
+
+	forwardPort(8080)
+	forwardPort(80)
+	forwardPort(443)
+	forwardPort(465)
+	forwardPort(993)
+	forwardPort(995)
+	forwardPort(853)
 
 	for {
 		select {
@@ -249,26 +334,9 @@ func (self *LocalUserNat) Run() {
 						c()
 					}
 				case layers.IPProtocolTCP:
-					tcp := layers.TCP{}
-					tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
-
-					c := func() bool {
-						success, err := tcp4Buffer.send(
-							sendPacket.source,
-							sendPacket.provideMode,
-							&ipv4,
-							&tcp,
-							self.settings.BufferTimeout,
-						)
-						return success && err == nil
-					}
-					if glog.V(2) {
-						TraceWithReturn(
-							fmt.Sprintf("[lnr]send tcp4 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
-							c,
-						)
-					} else {
-						c()
+					_, err = dev.Write(ipPacket)
+					if err != nil {
+						glog.Infof("[lnr]write error = %s\n", err)
 					}
 				default:
 					// no support for this protocol, drop
@@ -300,26 +368,9 @@ func (self *LocalUserNat) Run() {
 						c()
 					}
 				case layers.IPProtocolTCP:
-					tcp := layers.TCP{}
-					tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
-
-					c := func() bool {
-						success, err := tcp6Buffer.send(
-							sendPacket.source,
-							sendPacket.provideMode,
-							&ipv6,
-							&tcp,
-							self.settings.BufferTimeout,
-						)
-						return success && err == nil
-					}
-					if glog.V(2) {
-						TraceWithReturn(
-							fmt.Sprintf("[lnr]send tcp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
-							c,
-						)
-					} else {
-						c()
+					_, err = dev.Write(ipPacket)
+					if err != nil {
+						glog.Infof("[lnr]write error = %s\n", err)
 					}
 				default:
 					// no support for this protocol, drop
