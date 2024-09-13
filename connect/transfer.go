@@ -144,6 +144,7 @@ type SendPack struct {
 	// called (true) when the pack is ack'd, or (false) if not ack'd (closed before ack)
 	AckCallback      AckFunction
 	MessageByteCount ByteCount
+	Ctx              context.Context
 }
 
 type ReceivePack struct {
@@ -152,11 +153,13 @@ type ReceivePack struct {
 	Pack             *protocol.Pack
 	ReceiveCallback  ReceiveFunction
 	MessageByteCount ByteCount
+	Ctx              context.Context
 }
 
 type ForwardPack struct {
 	Destination        TransferPath
 	TransferFrameBytes []byte
+	Ctx                context.Context
 }
 
 type TransferOptions struct {
@@ -207,6 +210,16 @@ type transferOptionsSetForceStream struct {
 func ForceStream() transferOptionsSetForceStream {
 	return transferOptionsSetForceStream{
 		ForceStream: true,
+	}
+}
+
+type transferCtx struct {
+	Ctx context.Context
+}
+
+func Ctx(ctx context.Context) transferCtx {
+	return transferCtx{
+		Ctx: ctx,
 	}
 }
 
@@ -349,12 +362,12 @@ func (self *Client) ReportAbuse(source TransferPath) {
 	peerAudit.Complete()
 }
 
-func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.Duration) bool {
-	success, err := self.ForwardWithTimeoutDetailed(transferFrameBytes, timeout)
+func (self *Client) ForwardWithTimeout(transferFrameBytes []byte, timeout time.Duration, opts ...any) bool {
+	success, err := self.ForwardWithTimeoutDetailed(transferFrameBytes, timeout, opts...)
 	return success && err == nil
 }
 
-func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeout time.Duration) (bool, error) {
+func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeout time.Duration, opts ...any) (bool, error) {
 	select {
 	case <-self.ctx.Done():
 		return false, errors.New("Done")
@@ -375,16 +388,25 @@ func (self *Client) ForwardWithTimeoutDetailed(transferFrameBytes []byte, timeou
 
 	destination := path.DestinationMask()
 
+	ctx := context.Background()
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case transferCtx:
+			ctx = v.Ctx
+		}
+	}
+
 	forwardPack := &ForwardPack{
 		Destination:        destination,
 		TransferFrameBytes: transferFrameBytes,
+		Ctx:                ctx,
 	}
 
 	return self.forwardBuffer.Pack(forwardPack, timeout)
 }
 
-func (self *Client) Forward(transferFrameBytes []byte) bool {
-	return self.ForwardWithTimeout(transferFrameBytes, -1)
+func (self *Client) Forward(transferFrameBytes []byte, opts ...any) bool {
+	return self.ForwardWithTimeout(transferFrameBytes, -1, opts...)
 }
 
 func (self *Client) SendWithTimeout(
@@ -487,6 +509,7 @@ func (self *Client) sendWithTimeoutDetailed(
 		}
 	}
 
+	ctx := context.Background()
 	transferOpts := DefaultTransferOpts()
 	for _, opt := range opts {
 		switch v := opt.(type) {
@@ -498,6 +521,8 @@ func (self *Client) sendWithTimeoutDetailed(
 			transferOpts.ForceStream = v.ForceStream
 		case transferOptionsSetCompanionContract:
 			transferOpts.CompanionContract = v.CompanionContract
+		case transferCtx:
+			ctx = v.Ctx
 		}
 	}
 
@@ -509,12 +534,15 @@ func (self *Client) sendWithTimeoutDetailed(
 		IntermediaryIds:  intermediaryIds,
 		AckCallback:      safeAckCallback,
 		MessageByteCount: messageByteCount,
+		Ctx:              ctx,
 	}
 
 	if sendPack.Destination.DestinationId == self.clientId {
 		// loopback
 		if timeout < 0 {
 			select {
+			case <-ctx.Done():
+				return false, errors.New("Done")
 			case <-self.ctx.Done():
 				return false, errors.New("Done")
 			case self.loopback <- sendPack:
@@ -522,6 +550,8 @@ func (self *Client) sendWithTimeoutDetailed(
 			}
 		} else if timeout == 0 {
 			select {
+			case <-ctx.Done():
+				return false, errors.New("Done")
 			case <-self.ctx.Done():
 				return false, errors.New("Done")
 			case self.loopback <- sendPack:
@@ -531,6 +561,8 @@ func (self *Client) sendWithTimeoutDetailed(
 			}
 		} else {
 			select {
+			case <-ctx.Done():
+				return false, errors.New("Done")
 			case <-self.ctx.Done():
 				return false, errors.New("Done")
 			case self.loopback <- sendPack:
@@ -1219,6 +1251,8 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	defer self.packMutex.Unlock()
 
 	select {
+	case <-sendPack.Ctx.Done():
+		return false, errors.New("Done.")
 	case <-self.ctx.Done():
 		return false, errors.New("Done.")
 	default:
@@ -1231,6 +1265,8 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 
 	if timeout < 0 {
 		select {
+		case <-sendPack.Ctx.Done():
+			return false, errors.New("Done.")
 		case <-self.ctx.Done():
 			return false, errors.New("Done.")
 		case self.packs <- sendPack:
@@ -1238,6 +1274,8 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 		}
 	} else if timeout == 0 {
 		select {
+		case <-sendPack.Ctx.Done():
+			return false, errors.New("Done.")
 		case <-self.ctx.Done():
 			return false, errors.New("Done.")
 		case self.packs <- sendPack:
@@ -1247,6 +1285,8 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 		}
 	} else {
 		select {
+		case <-sendPack.Ctx.Done():
+			return false, errors.New("Done.")
 		case <-self.ctx.Done():
 			return false, errors.New("Done.")
 		case self.packs <- sendPack:
@@ -1391,23 +1431,15 @@ func (self *SendSequence) Run() {
 					break
 				}
 
-				var itemAckTimeout time.Duration
-				if self.destination == DestinationId(ControlId) || self.client.ClientId() == ControlId {
-					// control messages do not time out
-					itemAckTimeout = -1
-				} else {
-					itemAckTimeout = item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
-
-					if itemAckTimeout <= 0 {
-						// message took too long to ack
-						// close the sequence
-						glog.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
-						return
-					}
-
-					if itemAckTimeout < timeout {
-						timeout = itemAckTimeout
-					}
+				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
+				if itemAckTimeout <= 0 {
+					// message took too long to ack
+					// close the sequence
+					glog.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+					return
+				}
+				if itemAckTimeout < timeout {
+					timeout = itemAckTimeout
 				}
 
 				if sendTime.Before(item.resendTime) {
@@ -1464,7 +1496,7 @@ func (self *SendSequence) Run() {
 				// linear backoff
 				// itemResendTimeout := self.sendBufferSettings.ResendInterval
 				itemResendTimeout := time.Duration(float64(self.sendBufferSettings.ResendInterval) * (1 + self.sendBufferSettings.ResendBackoffScale*float64(item.sendCount)))
-				if 0 <= itemAckTimeout && itemAckTimeout <= itemResendTimeout {
+				if itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
 					item.resendTime = sendTime.Add(itemResendTimeout)
@@ -3207,6 +3239,8 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 	defer self.packMutex.Unlock()
 
 	select {
+	case <-forwardPack.Ctx.Done():
+		return false, errors.New("Done.")
 	case <-self.ctx.Done():
 		return false, errors.New("Done.")
 	default:
@@ -3219,6 +3253,8 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 
 	if timeout < 0 {
 		select {
+		case <-forwardPack.Ctx.Done():
+			return false, errors.New("Done.")
 		case <-self.ctx.Done():
 			return false, errors.New("Done.")
 		case self.packs <- forwardPack:
@@ -3226,6 +3262,8 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 		}
 	} else if timeout == 0 {
 		select {
+		case <-forwardPack.Ctx.Done():
+			return false, errors.New("Done.")
 		case <-self.ctx.Done():
 			return false, errors.New("Done.")
 		case self.packs <- forwardPack:
@@ -3235,6 +3273,8 @@ func (self *ForwardSequence) Pack(forwardPack *ForwardPack, timeout time.Duratio
 		}
 	} else {
 		select {
+		case <-forwardPack.Ctx.Done():
+			return false, errors.New("Done.")
 		case <-self.ctx.Done():
 			return false, errors.New("Done.")
 		case self.packs <- forwardPack:

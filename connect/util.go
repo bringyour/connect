@@ -33,11 +33,12 @@ func (self *Monitor) NotifyChannel() chan struct{} {
 	return self.notify
 }
 
-func (self *Monitor) NotifyAll() {
+func (self *Monitor) NotifyAll() chan struct{} {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	close(self.notify)
 	self.notify = make(chan struct{})
+	return self.notify
 }
 
 // makes a copy of the list on update
