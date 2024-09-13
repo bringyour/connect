@@ -125,6 +125,8 @@ type ContractManager struct {
 	contractErrorCallbacks *CallbackList[ContractErrorFunction]
 
 	localStats *ContractManagerStats
+
+	controlSyncProvide *ControlSync
 }
 
 func NewContractManagerWithDefaults(ctx context.Context, client *Client) *ContractManager {
@@ -160,6 +162,7 @@ func NewContractManager(
 		sendNoContractClientIds:    sendNoContractClientIds,
 		contractErrorCallbacks:     NewCallbackList[ContractErrorFunction](),
 		localStats:                 NewContractManagerStats(),
+		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
 	}
 
 	return contractManager
@@ -288,8 +291,9 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) {
 		provide := &protocol.Provide{
 			Keys: []*protocol.ProvideKey{},
 		}
-		self.client.SendControl(
+		self.controlSyncProvide.Send(
 			RequireToFrame(provide),
+			nil,
 			nil,
 		)
 	} else {
@@ -304,8 +308,9 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) {
 		provide := &protocol.Provide{
 			Keys: provideKeys,
 		}
-		self.client.SendControl(
+		self.controlSyncProvide.Send(
 			RequireToFrame(provide),
+			nil,
 			nil,
 		)
 	}
@@ -370,8 +375,9 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 		provide := &protocol.Provide{
 			Keys: provideKeys,
 		}
-		self.client.SendControl(
+		self.controlSyncProvide.Send(
 			RequireToFrame(provide),
+			nil,
 			ackCallback,
 		)
 	}
