@@ -9,6 +9,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -208,6 +209,12 @@ func (self *LocalUserNat) receive(source TransferPath, ipProtocol IpProtocol, pa
 	}
 }
 
+// comparable
+type SourceID struct {
+	ip   netip.Addr
+	port uint16
+}
+
 func (self *LocalUserNat) Run() {
 	defer self.cancel()
 
@@ -215,6 +222,9 @@ func (self *LocalUserNat) Run() {
 	udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
 	// tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
 	// tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+
+	sourceMap := map[SourceID]TransferPath{}
+	sourceMapLock := sync.Mutex{}
 
 	dev, tnet, err := netstack.CreateNetTUN(nil, nil, 1500)
 	if err != nil {
@@ -230,7 +240,57 @@ func (self *LocalUserNat) Run() {
 				glog.Infof("[lnr]read error = %s\n", err)
 				return
 			}
-			self.receive(TransferPath{}, IpProtocolUnknown, buffer[0:n])
+
+			if n == 0 {
+				return
+			}
+
+			ipVersion := uint8(buffer[0]) >> 4
+
+			tp := TransferPath{}
+
+			switch ipVersion {
+			case 4:
+				ipv4 := layers.IPv4{}
+				ipv4.DecodeFromBytes(buffer[0:n], gopacket.NilDecodeFeedback)
+				switch ipv4.Protocol {
+				case layers.IPProtocolTCP:
+					tcp := layers.TCP{}
+					tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+
+					sourceId := SourceID{
+						ip:   netip.AddrFrom4([4]byte(ipv4.DstIP)),
+						port: uint16(tcp.DstPort),
+					}
+
+					sourceMapLock.Lock()
+					tp = sourceMap[sourceId]
+					sourceMapLock.Unlock()
+
+				}
+
+			case 6:
+				ipv6 := layers.IPv6{}
+				ipv6.DecodeFromBytes(buffer[0:n], gopacket.NilDecodeFeedback)
+				switch ipv6.NextHeader {
+				case layers.IPProtocolTCP:
+					tcp := layers.TCP{}
+					tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+
+					sourceId := SourceID{
+						ip:   netip.AddrFrom16([16]byte(ipv6.DstIP)),
+						port: uint16(tcp.DstPort),
+					}
+
+					sourceMapLock.Lock()
+					tp = sourceMap[sourceId]
+					sourceMapLock.Unlock()
+
+				}
+
+			}
+
+			self.receive(tp, IpProtocolUnknown, buffer[0:n])
 		}
 	}()
 
@@ -334,6 +394,19 @@ func (self *LocalUserNat) Run() {
 						c()
 					}
 				case layers.IPProtocolTCP:
+
+					tcp := layers.TCP{}
+					tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
+
+					sourceId := SourceID{
+						ip:   netip.AddrFrom4([4]byte(ipv4.SrcIP)),
+						port: uint16(tcp.SrcPort),
+					}
+
+					sourceMapLock.Lock()
+					sourceMap[sourceId] = sendPacket.source
+					sourceMapLock.Unlock()
+
 					_, err = dev.Write(ipPacket)
 					if err != nil {
 						glog.Infof("[lnr]write error = %s\n", err)
@@ -368,6 +441,18 @@ func (self *LocalUserNat) Run() {
 						c()
 					}
 				case layers.IPProtocolTCP:
+					tcp := layers.TCP{}
+					tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+
+					sourceId := SourceID{
+						ip:   netip.AddrFrom16([16]byte(ipv6.SrcIP)),
+						port: uint16(tcp.SrcPort),
+					}
+
+					sourceMapLock.Lock()
+					sourceMap[sourceId] = sendPacket.source
+					sourceMapLock.Unlock()
+
 					_, err = dev.Write(ipPacket)
 					if err != nil {
 						glog.Infof("[lnr]write error = %s\n", err)
