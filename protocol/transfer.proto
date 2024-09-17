@@ -245,4 +245,3 @@ message PeerAudit {
     // ulid
     bytes stream_id = 13;
 }
-
