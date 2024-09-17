@@ -41,6 +41,10 @@ func ToFrame(message proto.Message) (*protocol.Frame, error) {
 		messageType = protocol.MessageType_IpIpPacketFromProvider
 	case *protocol.IpPing:
 		messageType = protocol.MessageType_IpIpPing
+	case *protocol.ControlPing:
+		messageType = protocol.MessageType_TransferControlPing
+	case *protocol.ProvidePing:
+		messageType = protocol.MessageType_TransferProvidePing
 	default:
 		return nil, fmt.Errorf("Unknown message type: %T", v)
 	}
@@ -95,6 +99,10 @@ func FromFrame(frame *protocol.Frame) (proto.Message, error) {
 		message = &protocol.IpPacketFromProvider{}
 	case protocol.MessageType_IpIpPing:
 		message = &protocol.IpPing{}
+	case protocol.MessageType_TransferControlPing:
+		message = &protocol.ControlPing{}
+	case protocol.MessageType_TransferProvidePing:
+		message = &protocol.ProvidePing{}
 	default:
 		return nil, fmt.Errorf("Unknown message type: %s", frame.MessageType)
 	}

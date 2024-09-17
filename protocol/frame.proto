@@ -25,6 +25,8 @@ enum MessageType {
     IpIpPacketToProvider = 15;
     IpIpPacketFromProvider = 16;
     IpIpPing = 17;
+    TransferControlPing = 18;
+    TransferProvidePing = 19;
 }
 
 

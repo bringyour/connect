@@ -10,6 +10,7 @@ import (
 	// "runtime/debug"
 	// "runtime"
 	// "reflect"
+	mathrand "math/rand"
 	"strings"
 
 	"golang.org/x/exp/maps"
@@ -70,6 +71,7 @@ func DefaultClientSettings() *ClientSettings {
 		ReadTimeout:             30 * time.Second,
 		BufferTimeout:           30 * time.Second,
 		ControlWriteTimeout:     30 * time.Second,
+		ControlPingTimeout:      time.Duration(0),
 		SendBufferSettings:      DefaultSendBufferSettings(),
 		ReceiveBufferSettings:   DefaultReceiveBufferSettings(),
 		ForwardBufferSettings:   DefaultForwardBufferSettings(),
@@ -229,6 +231,8 @@ type ClientSettings struct {
 	ReadTimeout         time.Duration
 	BufferTimeout       time.Duration
 	ControlWriteTimeout time.Duration
+	// if 0, the client will not send control pings
+	ControlPingTimeout time.Duration
 
 	SendBufferSettings      *SendBufferSettings
 	ReceiveBufferSettings   *ReceiveBufferSettings
@@ -665,6 +669,41 @@ func (self *Client) run() {
 		peerAudit := NewSequencePeerAudit(self, source, 0)
 		peerAudit.Update(callback)
 		peerAudit.Complete()
+	}
+
+	// control ping
+	if 0 < self.settings.ControlPingTimeout {
+		go func() {
+			for {
+				// uniform timeout with mean `ControlPingTimeout`
+				timeout := time.Duration(mathrand.Int63n(int64(2 * self.settings.ControlPingTimeout)))
+				select {
+				case <-self.ctx.Done():
+					return
+				case <-time.After(timeout):
+				}
+
+				ack := make(chan error)
+				controlPing := &protocol.ControlPing{}
+				self.SendControl(RequireToFrame(controlPing), func(err error) {
+					select {
+					case ack <- err:
+					case <-self.ctx.Done():
+					}
+				})
+				// wait for the ack before sending another ping
+				select {
+				case err := <-ack:
+					if err == nil {
+						glog.Infof("[c]ping\n")
+					} else {
+						glog.Infof("[c]ping err = %s\n", err)
+					}
+				case <-self.ctx.Done():
+					return
+				}
+			}
+		}()
 	}
 
 	// loopback messages must be serialized

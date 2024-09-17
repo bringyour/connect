@@ -107,6 +107,7 @@ enum ProvideMode {
     FriendsAndFamily = 2;
     Public = 3;
     Stream = 4;
+    PublicStream = 5;
 }
 
 
@@ -244,5 +245,13 @@ message PeerAudit {
     uint64 resend_count = 12;
     // ulid
     bytes stream_id = 13;
+}
+
+
+message ControlPing {
+}
+
+
+message ProvidePing {
 }
 

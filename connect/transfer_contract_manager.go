@@ -11,6 +11,7 @@ import (
 	"fmt"
 	// "slices"
 	// "runtime/debug"
+	mathrand "math/rand"
 
 	"golang.org/x/exp/maps"
 
@@ -82,6 +83,8 @@ func DefaultContractManagerSettings() *ContractManagerSettings {
 
 		// TODO change this once main has been deployed with the p2p contract changes
 		LegacyCreateContract: true,
+
+		ProvidePingTimeout: 5 * time.Second,
 	}
 }
 
@@ -99,6 +102,9 @@ type ContractManagerSettings struct {
 	NetworkEventTimeEnableContracts time.Time
 
 	LegacyCreateContract bool
+
+	// an active ping to the control fast-tracks any timeouts
+	ProvidePingTimeout time.Duration
 }
 
 func (self *ContractManagerSettings) ContractsEnabled() bool {
@@ -113,9 +119,14 @@ type ContractManager struct {
 
 	mutex sync.Mutex
 
+	// `provideSecretKeys` retains all keys until app restart (typically system restart)
+	// this makes it faster for clients to reconnect with existing contracts
+	// otherwise the client will have to time out the send sequence and flush its pending contracts
 	provideSecretKeys map[protocol.ProvideMode][]byte
+	provideModes      map[protocol.ProvideMode]bool
 	// provide paused overrides the set provide modes
-	providePaused bool
+	providePaused  bool
+	provideMonitor *Monitor
 
 	destinationContracts map[ContractKey]*contractQueue
 
@@ -156,7 +167,9 @@ func NewContractManager(
 		client:                     client,
 		settings:                   settings,
 		provideSecretKeys:          map[protocol.ProvideMode][]byte{},
+		provideModes:               map[protocol.ProvideMode]bool{},
 		providePaused:              false,
+		provideMonitor:             NewMonitor(),
 		destinationContracts:       map[ContractKey]*contractQueue{},
 		receiveNoContractClientIds: receiveNoContractClientIds,
 		sendNoContractClientIds:    sendNoContractClientIds,
@@ -165,7 +178,70 @@ func NewContractManager(
 		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
 	}
 
+	go contractManager.providePing()
+
 	return contractManager
+}
+
+func (self *ContractManager) providePing() {
+	waitForProvide := func() bool {
+		for {
+			notify := self.provideMonitor.NotifyChannel()
+			var provide bool
+			func() {
+				self.mutex.Lock()
+				defer self.mutex.Unlock()
+
+				if self.providePaused {
+					provide = false
+				} else {
+					provide = self.provideModes[protocol.ProvideMode_Public] || self.provideModes[protocol.ProvideMode_PublicStream]
+				}
+			}()
+			if provide {
+				return true
+			}
+			select {
+			case <-self.ctx.Done():
+				return false
+			case <-notify:
+			}
+		}
+	}
+
+	for {
+		if !waitForProvide() {
+			return
+		}
+
+		// uniform timeout with mean `ProvidePingTimeout`
+		timeout := time.Duration(mathrand.Int63n(int64(2 * self.settings.ProvidePingTimeout)))
+		select {
+		case <-self.ctx.Done():
+			return
+		case <-time.After(timeout):
+		}
+
+		ack := make(chan error)
+		providePing := &protocol.ProvidePing{}
+		self.client.SendControl(RequireToFrame(providePing), func(err error) {
+			select {
+			case ack <- err:
+			case <-self.ctx.Done():
+			}
+		})
+		// wait for the ack before sending another ping
+		select {
+		case err := <-ack:
+			if err == nil {
+				glog.Infof("[contract]provide ping\n")
+			} else {
+				glog.Infof("[contract]provide ping err = %s\n", err)
+			}
+		case <-self.ctx.Done():
+			return
+		}
+	}
 }
 
 func (self *ContractManager) StandardContractTransferByteCount() ByteCount {
@@ -286,6 +362,7 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) {
 	}
 
 	self.providePaused = providePaused
+	self.provideMonitor.NotifyAll()
 
 	if providePaused {
 		provide := &protocol.Provide{
@@ -298,11 +375,14 @@ func (self *ContractManager) SetProvidePaused(providePaused bool) {
 		)
 	} else {
 		provideKeys := []*protocol.ProvideKey{}
-		for provideMode, provideSecretKey := range self.provideSecretKeys {
-			provideKeys = append(provideKeys, &protocol.ProvideKey{
-				Mode:             provideMode,
-				ProvideSecretKey: provideSecretKey,
-			})
+		for provideMode, allow := range self.provideModes {
+			if allow {
+				provideSecretKey := self.provideSecretKeys[provideMode]
+				provideKeys = append(provideKeys, &protocol.ProvideKey{
+					Mode:             provideMode,
+					ProvideSecretKey: provideSecretKey,
+				})
+			}
 		}
 
 		provide := &protocol.Provide{
@@ -343,13 +423,9 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	// keep current keys included in the new modes
+	// keep all keys (see note on `provideSecretKeys`)
 
-	for provideMode, _ := range self.provideSecretKeys {
-		if allow, ok := provideModes[provideMode]; !ok || !allow {
-			delete(self.provideSecretKeys, provideMode)
-		}
-	}
+	self.provideModes = maps.Clone(provideModes)
 
 	provideKeys := []*protocol.ProvideKey{}
 	for provideMode, allow := range provideModes {
@@ -370,6 +446,7 @@ func (self *ContractManager) SetProvideModesWithAckCallback(provideModes map[pro
 			})
 		}
 	}
+	self.provideMonitor.NotifyAll()
 
 	if !self.providePaused {
 		provide := &protocol.Provide{
@@ -387,11 +464,7 @@ func (self *ContractManager) GetProvideModes() map[protocol.ProvideMode]bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	provideModes := map[protocol.ProvideMode]bool{}
-	for provideMode, _ := range self.provideSecretKeys {
-		provideModes[provideMode] = true
-	}
-	return provideModes
+	return maps.Clone(self.provideModes)
 }
 
 func (self *ContractManager) Verify(storedContractHmac []byte, storedContractBytes []byte, provideMode protocol.ProvideMode) bool {
@@ -399,6 +472,10 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 	defer self.mutex.Unlock()
 
 	if self.providePaused {
+		return false
+	}
+
+	if !self.provideModes[provideMode] {
 		return false
 	}
 
@@ -414,6 +491,13 @@ func (self *ContractManager) Verify(storedContractHmac []byte, storedContractByt
 }
 
 func (self *ContractManager) GetProvideSecretKey(provideMode protocol.ProvideMode) ([]byte, bool) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if !self.provideModes[provideMode] {
+		return nil, false
+	}
+
 	provideSecretKey, ok := self.provideSecretKeys[provideMode]
 	return provideSecretKey, ok
 }
