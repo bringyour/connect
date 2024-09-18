@@ -19,6 +19,22 @@ func initGlog() {
 	flag.Set("v", "0")
 }
 
+func TestIdOrder(t *testing.T) {
+	// ulids are ordered by create time
+	// we use this property in the system, where ulids from the same source can be ordered
+
+	a := NewId()
+	for range 1024 * 1024 {
+		b := NewId()
+		assert.Equal(t, a.LessThan(b), true)
+		assert.Equal(t, b.LessThan(a), false)
+		assert.Equal(t, b.LessThan(b), false)
+		assert.Equal(t, b == a, false)
+		assert.Equal(t, b == b, true)
+		a = b
+	}
+}
+
 func TestIdJsonCodec(t *testing.T) {
 	type Test struct {
 		A Id  `json:"a,omitempty"`

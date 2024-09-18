@@ -204,6 +204,13 @@ func TestSendReceiveSenderReset(t *testing.T) {
 		aClientId,
 	)
 
+	select {
+	case message := <-receives:
+		// an older message was delivered
+		assert.Equal(t, message, nil)
+	default:
+	}
+
 	go func() {
 		for i := 0; i < n; i += 1 {
 			message := &protocol.SimpleMessage{
