@@ -39,7 +39,7 @@ type PlatformTransportSettings struct {
 }
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
-	pingTimeout := 15 * time.Second
+	pingTimeout := 1 * time.Second
 	return &PlatformTransportSettings{
 		HttpConnectTimeout: 2 * time.Second,
 		WsHandshakeTimeout: 2 * time.Second,
@@ -47,7 +47,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		ReconnectTimeout:   5 * time.Second,
 		PingTimeout:        pingTimeout,
 		WriteTimeout:       5 * time.Second,
-		ReadTimeout:        4 * pingTimeout,
+		ReadTimeout:        15 * time.Second,
 	}
 }
 

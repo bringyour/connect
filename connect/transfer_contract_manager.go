@@ -184,6 +184,9 @@ func NewContractManager(
 }
 
 func (self *ContractManager) providePing() {
+	// used for logging states only
+	logWait := false
+
 	waitForProvide := func() bool {
 		for {
 			notify := self.provideMonitor.NotifyChannel()
@@ -199,7 +202,15 @@ func (self *ContractManager) providePing() {
 				}
 			}()
 			if provide {
+				if logWait {
+					logWait = false
+					glog.Infof("[contract]provide ping continue\n")
+				}
 				return true
+			}
+			if !logWait {
+				logWait = true
+				glog.Infof("[contract]provide ping wait\n")
 			}
 			select {
 			case <-self.ctx.Done():
@@ -209,17 +220,26 @@ func (self *ContractManager) providePing() {
 		}
 	}
 
+	lastPingTime := time.Time{}
 	for {
 		if !waitForProvide() {
 			return
 		}
 
 		// uniform timeout with mean `ProvidePingTimeout`
-		timeout := time.Duration(mathrand.Int63n(int64(2 * self.settings.ProvidePingTimeout)))
-		select {
-		case <-self.ctx.Done():
-			return
-		case <-time.After(timeout):
+		timeout := time.Duration(mathrand.Int63n(int64(2*self.settings.ProvidePingTimeout))) - time.Now().Sub(lastPingTime)
+		if 0 < timeout {
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-time.After(timeout):
+			}
+		} else {
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
 		}
 
 		ack := make(chan error)
@@ -233,14 +253,13 @@ func (self *ContractManager) providePing() {
 		// wait for the ack before sending another ping
 		select {
 		case err := <-ack:
-			if err == nil {
-				glog.Infof("[contract]provide ping\n")
-			} else {
+			if err != nil {
 				glog.Infof("[contract]provide ping err = %s\n", err)
 			}
 		case <-self.ctx.Done():
 			return
 		}
+		lastPingTime = time.Now()
 	}
 }
 
