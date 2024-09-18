@@ -1150,6 +1150,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	tcpBufferSettings *TcpBufferSettings) *TcpSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
+	// FIXME scaled window size
 	var windowSize uint16
 	if math.MaxUint16 < tcpBufferSettings.WindowSize {
 		windowSize = math.MaxUint16
