@@ -21,7 +21,7 @@ func TestControlSync(t *testing.T) {
 
 	timeout := 60 * time.Second
 	dropTimeout := 5 * time.Second
-	allowTimeout := 500 * time.Millisecond
+	allowTimeout := 2 * time.Second
 	ackTimeout := 100 * time.Millisecond
 	sendDelay := 20 * time.Millisecond
 
@@ -69,7 +69,7 @@ func TestControlSync(t *testing.T) {
 					nil,
 				)
 				select {
-				case <-time.After(time.Duration(mathrand.Intn(int(sendDelay)))):
+				case <-time.After(time.Duration(mathrand.Int63n(int64(sendDelay)))):
 				case <-ctx.Done():
 					return
 				}
@@ -85,7 +85,7 @@ func TestControlSync(t *testing.T) {
 
 				select {
 				case <-ctx.Done():
-				case <-time.After(dropTimeout):
+				case <-time.After(time.Duration(mathrand.Int63n(int64(dropTimeout)))):
 				}
 
 				clientASendTransport := NewSendGatewayTransport()
@@ -105,7 +105,7 @@ func TestControlSync(t *testing.T) {
 
 				select {
 				case <-ctx.Done():
-				case <-time.After(allowTimeout):
+				case <-time.After(time.Duration(mathrand.Int63n(int64(allowTimeout)))):
 				}
 
 				clientA.RouteManager().UpdateTransport(clientASendTransport, nil)
