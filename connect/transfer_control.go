@@ -56,15 +56,6 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 	}
 
 	handleCtx, handleCancel := context.WithCancel(self.ctx)
-	notify := self.monitor.NotifyAll()
-	go func() {
-		defer handleCancel()
-
-		select {
-		case <-notify:
-		case <-handleCtx.Done():
-		}
-	}()
 
 	self.sendLock.Lock()
 	defer self.sendLock.Unlock()
@@ -72,13 +63,28 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 	self.syncCount += 1
 	syncIndex := self.syncCount
 
-	select {
-	case <-notify:
-		return
-	case <-handleCtx.Done():
-		return
-	default:
-	}
+	notify := self.monitor.NotifyAll()
+	go func() {
+		defer handleCancel()
+
+		for {
+			done := false
+			select {
+			case <-notify:
+				func() {
+					self.sendLock.Lock()
+					defer self.sendLock.Unlock()
+					done = syncIndex != self.syncCount
+				}()
+			case <-handleCtx.Done():
+				done = true
+			}
+
+			if done {
+				return
+			}
+		}
+	}()
 
 	var controlSync func()
 	controlSync = func() {
@@ -88,16 +94,16 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 			self.sendLock.Lock()
 			defer self.sendLock.Unlock()
 			if self.syncCount == syncIndex {
-				glog.Infof("[control][%d]stop sync for scope = %s\n", syncIndex, self.scopeTag)
+				glog.V(2).Infof("[control][%d]stop sync for scope = %s\n", syncIndex, self.scopeTag)
 			} else {
-				glog.Infof("[control][%d]replace sync for scope = %s\n", syncIndex, self.scopeTag)
+				glog.V(2).Infof("[control][%d]replace sync for scope = %s\n", syncIndex, self.scopeTag)
 			}
 		}()
 
 		updatedFrame := frame
 
 		for {
-			glog.Infof("[control][%d]start sync for scope = %s\n", syncIndex, self.scopeTag)
+			glog.V(2).Infof("[control][%d]start sync for scope = %s\n", syncIndex, self.scopeTag)
 
 			done := false
 			success := false
@@ -107,13 +113,14 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 				defer self.sendLock.Unlock()
 
 				select {
-				case <-notify:
-					done = true
-					return
 				case <-handleCtx.Done():
 					done = true
-					return
 				default:
+					done = syncIndex != self.syncCount
+				}
+
+				if done {
+					return
 				}
 
 				success, err = self.client.SendWithTimeoutDetailed(
@@ -150,7 +157,7 @@ func (self *ControlSync) Send(frame *protocol.Frame, updateFrame func() *protoco
 		}
 	}
 
-	success, _ := self.client.SendWithTimeoutDetailed(
+	success := self.client.SendWithTimeout(
 		frame,
 		DestinationId(ControlId),
 		func(err error) {

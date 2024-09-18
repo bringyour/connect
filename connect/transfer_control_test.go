@@ -125,10 +125,11 @@ func TestControlSync(t *testing.T) {
 
 				select {
 				case m := <-receive:
+					end := uint32(b*i + b - 1)
+					fmt.Printf("[csync]%d/%d (%d)\n", m.MessageIndex, end, p)
+
 					assert.Equal(t, p <= m.MessageIndex, true)
 					p = m.MessageIndex
-					end := uint32(b*i + b - 1)
-					fmt.Printf("[cs0]%d/%d\n", m.MessageIndex, end)
 					if m.MessageIndex == end {
 						return
 					}

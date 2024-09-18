@@ -220,6 +220,18 @@ func (self Id) Bytes() []byte {
 	return self[0:16]
 }
 
+func (self Id) LessThan(b Id) bool {
+	for i, v := range self {
+		if v < b[i] {
+			return true
+		}
+		if b[i] < v {
+			return false
+		}
+	}
+	return false
+}
+
 func (self Id) String() string {
 	return encodeUuid(self)
 }

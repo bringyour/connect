@@ -10,6 +10,7 @@ import (
 	// "runtime/debug"
 	// "runtime"
 	// "reflect"
+	mathrand "math/rand"
 	"strings"
 
 	"golang.org/x/exp/maps"
@@ -70,6 +71,7 @@ func DefaultClientSettings() *ClientSettings {
 		ReadTimeout:             30 * time.Second,
 		BufferTimeout:           30 * time.Second,
 		ControlWriteTimeout:     30 * time.Second,
+		ControlPingTimeout:      time.Duration(0),
 		SendBufferSettings:      DefaultSendBufferSettings(),
 		ReceiveBufferSettings:   DefaultReceiveBufferSettings(),
 		ForwardBufferSettings:   DefaultForwardBufferSettings(),
@@ -229,6 +231,8 @@ type ClientSettings struct {
 	ReadTimeout         time.Duration
 	BufferTimeout       time.Duration
 	ControlWriteTimeout time.Duration
+	// if 0, the client will not send control pings
+	ControlPingTimeout time.Duration
 
 	SendBufferSettings      *SendBufferSettings
 	ReceiveBufferSettings   *ReceiveBufferSettings
@@ -667,6 +671,41 @@ func (self *Client) run() {
 		peerAudit.Complete()
 	}
 
+	// control ping
+	if 0 < self.settings.ControlPingTimeout {
+		go func() {
+			for {
+				// uniform timeout with mean `ControlPingTimeout`
+				timeout := time.Duration(mathrand.Int63n(int64(2 * self.settings.ControlPingTimeout)))
+				select {
+				case <-self.ctx.Done():
+					return
+				case <-time.After(timeout):
+				}
+
+				ack := make(chan error)
+				controlPing := &protocol.ControlPing{}
+				self.SendControl(RequireToFrame(controlPing), func(err error) {
+					select {
+					case ack <- err:
+					case <-self.ctx.Done():
+					}
+				})
+				// wait for the ack before sending another ping
+				select {
+				case err := <-ack:
+					if err == nil {
+						glog.Infof("[c]ping\n")
+					} else {
+						glog.Infof("[c]ping err = %s\n", err)
+					}
+				case <-self.ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	// loopback messages must be serialized
 	go func() {
 		for {
@@ -1012,7 +1051,7 @@ func (self *SendBuffer) Pack(sendPack *SendPack, timeout time.Duration) (bool, e
 				return sendSequence
 			} else {
 				sendSequence.Cancel()
-				delete(self.sendSequences, sendSequenceId)
+				// delete(self.sendSequences, sendSequenceId)
 			}
 		}
 		sendSequence = NewSendSequence(
@@ -1989,7 +2028,6 @@ func (self *SendSequence) closeContractMultiRouteWriter() {
 
 func (self *SendSequence) Close() {
 	self.cancel()
-	self.idleCondition.WaitForClose()
 
 	func() {
 		self.packMutex.Lock()
@@ -2090,18 +2128,21 @@ type ReceiveBuffer struct {
 	receiveBufferSettings *ReceiveBufferSettings
 
 	mutex sync.Mutex
+	// the head receive sequences
 	// source id -> receive sequence
-	receiveSequences map[receiveSequenceId]*ReceiveSequence
+	receiveSequences       map[receiveSequenceId]*ReceiveSequence
+	headReceiveSequenceIds map[TransferPath]receiveSequenceId
 }
 
 func NewReceiveBuffer(ctx context.Context,
 	client *Client,
 	receiveBufferSettings *ReceiveBufferSettings) *ReceiveBuffer {
 	return &ReceiveBuffer{
-		ctx:                   ctx,
-		client:                client,
-		receiveBufferSettings: receiveBufferSettings,
-		receiveSequences:      map[receiveSequenceId]*ReceiveSequence{},
+		ctx:                    ctx,
+		client:                 client,
+		receiveBufferSettings:  receiveBufferSettings,
+		receiveSequences:       map[receiveSequenceId]*ReceiveSequence{},
+		headReceiveSequenceIds: map[TransferPath]receiveSequenceId{},
 	}
 }
 
@@ -2121,9 +2162,35 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 				return receiveSequence
 			} else {
 				receiveSequence.Cancel()
-				delete(self.receiveSequences, receiveSequenceId)
+				// delete(self.receiveSequences, receiveSequenceId)
+				// delete(self.headSequenceIds, receiveSequenceId.Source)
+			}
+			if headReceiveSequenceId := self.headReceiveSequenceIds[receivePack.Source]; headReceiveSequenceId != receiveSequenceId {
+				panic(fmt.Errorf("[r]incorrect head sequence %s != %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId))
+			}
+		} else if headReceiveSequenceId, ok := self.headReceiveSequenceIds[receivePack.Source]; ok {
+			if receivePack.SequenceId.LessThan(headReceiveSequenceId.SequenceId) {
+				// drop older sequences for source
+				// this case happens when a client closes a sequence, then opens a new one,
+				// before messages from the first are received
+				glog.V(2).Infof("[r]drop older sequence %s < %s\n", receivePack.SequenceId, headReceiveSequenceId.SequenceId)
+				return nil
+			} else {
+				// newer sequence for source
+				if headReceiveSequenceId.SequenceId == receivePack.SequenceId {
+					panic(fmt.Errorf("[r]upgrade older sequence %s = %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId))
+				}
+				glog.V(2).Infof("[r]upgrade older sequence %s < %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId)
+				headReceiveSequence := self.receiveSequences[headReceiveSequenceId]
+				headReceiveSequence.Cancel()
+				// wait for exit to ensure receives are correctly ordered across sequence versions
+				headReceiveSequence.WaitForExit()
+				delete(self.receiveSequences, headReceiveSequenceId)
 			}
 		}
+
+		glog.V(2).Infof("[r]new sequence %s\n", receivePack.SequenceId)
+
 		receiveSequence = NewReceiveSequence(
 			self.ctx,
 			self.client,
@@ -2132,6 +2199,7 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 			self.receiveBufferSettings,
 		)
 		self.receiveSequences[receiveSequenceId] = receiveSequence
+		self.headReceiveSequenceIds[receivePack.Source] = receiveSequenceId
 		go func() {
 			HandleError(receiveSequence.Run)
 
@@ -2142,6 +2210,8 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 			// clean up
 			if receiveSequence == self.receiveSequences[receiveSequenceId] {
 				delete(self.receiveSequences, receiveSequenceId)
+				// use `receiveSequenceId.Source` instead of `receivePack.Source` to release pointer to receivePack
+				delete(self.headReceiveSequenceIds, receiveSequenceId.Source)
 			}
 		}()
 		return receiveSequence
@@ -2157,6 +2227,10 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 		default:
 		}
 		receiveSequence = initReceiveSequence(receiveSequence)
+		if receiveSequence == nil {
+			// drop
+			return true, nil
+		}
 		if success, err = receiveSequence.Pack(receivePack, timeout); err == nil {
 			return success, nil
 		}
@@ -2236,6 +2310,8 @@ type ReceiveSequence struct {
 	peerAudit *SequencePeerAudit
 
 	ackWindow *sequenceAckWindow
+
+	exit chan struct{}
 }
 
 func NewReceiveSequence(
@@ -2258,6 +2334,7 @@ func NewReceiveSequence(
 		nextSequenceNumber:    0,
 		idleCondition:         NewIdleCondition(),
 		ackWindow:             newSequenceAckWindow(),
+		exit:                  make(chan struct{}),
 	}
 }
 
@@ -2338,6 +2415,8 @@ func (self *ReceiveSequence) Run() {
 		}
 
 		self.peerAudit.Complete()
+
+		close(self.exit)
 	}()
 
 	self.peerAudit = NewSequencePeerAudit(
@@ -2858,18 +2937,22 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 
 func (self *ReceiveSequence) Close() {
 	self.cancel()
-	self.idleCondition.WaitForClose()
 
 	func() {
 		self.packMutex.Lock()
 		defer self.packMutex.Unlock()
-
 		close(self.packs)
 	}()
 }
 
 func (self *ReceiveSequence) Cancel() {
 	self.cancel()
+}
+
+func (self *ReceiveSequence) WaitForExit() {
+	select {
+	case <-self.exit:
+	}
 }
 
 type receiveItem struct {
@@ -3121,7 +3204,7 @@ func (self *ForwardBuffer) Pack(forwardPack *ForwardPack, timeout time.Duration)
 				return forwardSequence
 			} else {
 				forwardSequence.Cancel()
-				delete(self.forwardSequences, forwardPack.Destination)
+				// delete(self.forwardSequences, forwardPack.Destination)
 			}
 		}
 		forwardSequence = NewForwardSequence(
@@ -3326,7 +3409,6 @@ func (self *ForwardSequence) Run() {
 
 func (self *ForwardSequence) Close() {
 	self.cancel()
-	self.idleCondition.WaitForClose()
 
 	func() {
 		self.packMutex.Lock()
