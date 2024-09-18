@@ -288,7 +288,7 @@ func (self *LocalUserNat) Run() {
 
 			}
 
-			self.receive(tp, IpProtocolUnknown, buffer[0:n])
+			self.receive(tp, IpProtocolTcp, buffer[0:n])
 		}
 	}()
 
