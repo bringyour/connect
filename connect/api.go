@@ -302,9 +302,10 @@ func (self *BringYourApi) RemoveNetworkClientSync(removeNetworkClient *RemoveNet
 }
 
 type ProviderSpec struct {
-	LocationId      *Id `json:"location_id,omitempty"`
-	LocationGroupId *Id `json:"location_group_id,omitempty"`
-	ClientId        *Id `json:"client_id,omitempty"`
+	LocationId      *Id  `json:"location_id,omitempty"`
+	LocationGroupId *Id  `json:"location_group_id,omitempty"`
+	ClientId        *Id  `json:"client_id,omitempty"`
+	BestAvailable   bool `json:"best_available,omitempty"`
 }
 
 type FindProviders2Callback ApiCallback[*FindProviders2Result]
