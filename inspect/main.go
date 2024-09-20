@@ -5,10 +5,11 @@ import (
 	"log"
 	"os"
 	"sort"
-	"time"
 
 	"bringyour.com/inspect/data"
 	"github.com/oklog/ulid/v2"
+	"gonum.org/v1/gonum/floats"
+	"gonum.org/v1/gonum/stat"
 )
 
 func main() {
@@ -21,69 +22,38 @@ func main() {
 	}
 	fname := os.Args[1]
 
-	dataPath := "data/capture.pcap"
+	// dataPath := "data/capture.pcap"
+	dataPath := "data/100k_tcp.pcap"
+
 	savePath := "data/test_transports.pb"
+	// savePath := "data/test_2k_records.pb"
+
+	coOccurrencePath := "data/cooccurrence_data_small.pb"
+	// coOccurrencePath := "data/cooccurrence_data_2k.pb"
 
 	switch fname {
 	case "parse_pcap", "p":
 		data.PcapToTransportFiles(dataPath, savePath)
 	case "display_transports", "dt":
 		data.DisplayTransports(savePath)
-	case "test", "t":
-		test(savePath)
+	case "timestamps", "t":
+		makeTimestamps(savePath, coOccurrencePath)
+	case "cluster", "c":
+		cluster(coOccurrencePath)
 	default:
 		testIntervals()
 		// log.Fatalf("Unknown mode: %s", fname)
 	}
 }
 
-type interval struct {
-	tid   ulid.ULID
-	start uint64
-	end   uint64
-}
+func makeTimestamps(savePath string, coOccurrencePath string) {
+	// times1 := []uint64{100, 120, 110, 123}
+	// times2 := []uint64{110, 110, 122, 115}
+	// fixedMargin := uint64(10)
 
-type coOccurrence struct {
-	cMap map[ulid.ULID]map[ulid.ULID]uint64
-}
+	// overlap := FixedMarginOverlap(times1, times2, fixedMargin)
+	// fmt.Printf("Total overlap: %d\n", overlap)
 
-func (c *coOccurrence) init() {
-	c.cMap = make(map[ulid.ULID]map[ulid.ULID]uint64, 0)
-}
-
-func (c *coOccurrence) add(intv1 *interval, intv2 *interval) {
-	min_ends := min(intv1.end, intv2.end)
-	max_starts := max(intv1.start, intv2.start)
-	// handle overflow
-	if min_ends <= max_starts {
-		return // no overlap (keep default value of 0)
-	}
-	overlap := min_ends - max_starts
-
-	switch intv1.tid.Compare(intv2.tid) {
-	case -1: // intv1.tid < intv2.tid
-		if _, ok := c.cMap[intv1.tid]; !ok {
-			c.cMap[intv1.tid] = make(map[ulid.ULID]uint64, 0)
-		}
-		c.cMap[intv1.tid][intv2.tid] = overlap
-	case 1: // intv1.tid > intv2.tid
-		if _, ok := c.cMap[intv2.tid]; !ok {
-			c.cMap[intv2.tid] = make(map[ulid.ULID]uint64, 0)
-		}
-		c.cMap[intv2.tid][intv1.tid] = overlap
-	}
-	// do nothing when intv1.tid == intv2.tid (no overlap with itself so keep default of 0)
-}
-
-func (c *coOccurrence) get(intv1 *interval, intv2 *interval) uint64 {
-	// if value doesnt exist then 0 value is returned (which is desired)
-	if intv1.tid.Compare(intv2.tid) < 0 {
-		return c.cMap[intv1.tid][intv2.tid]
-	}
-	return c.cMap[intv2.tid][intv1.tid]
-}
-
-func test(savePath string) {
 	// need to make sure that transport ids are different
 
 	records, err := data.LoadTransportsFromFiles(savePath)
@@ -91,66 +61,68 @@ func test(savePath string) {
 		log.Fatalf("Error loading transports: %v", err)
 	}
 
-	intervals := make([]*interval, 0)
-
+	// extract timestamps from records
+	allTimestamps := make([]*timestamps, 0)
 	for _, record := range records {
-		intv := &interval{
-			tid:   ulid.ULID(record.Open.TransportId), // should be the same as Close.TransportId
-			start: record.Open.OpenTime,
+		times := []uint64{record.Open.OpenTime}
+		for _, write := range record.Writes {
+			times = append(times, write.WriteToBufferEndTime)
 		}
-
+		for _, read := range record.Reads {
+			times = append(times, read.ReadFromBufferEndTime)
+		}
 		if record.Close != nil {
-			intv.end = record.Close.CloseTime
-		} else {
-			var lastWriteTime uint64 = 0
-			if len(record.Writes) > 0 {
-				lastWriteTime = record.Writes[len(record.Writes)-1].WriteToBufferEndTime
-			}
-			var lastReadTime uint64 = 0
-			if len(record.Reads) > 0 {
-				lastReadTime = record.Reads[len(record.Reads)-1].ReadFromBufferEndTime
-			}
-			intv.end = max(lastWriteTime, lastReadTime, record.Open.OpenTime)
+			times = append(times, record.Close.CloseTime)
 		}
-
-		if intv.end < intv.start {
-			log.Fatalf("End time is less than start time for transport id: %x", intv.tid)
+		ts := &timestamps{
+			tid:   ulid.ULID(record.Open.TransportId),
+			times: times,
+			overlapFunc: func(times1 []uint64, times2 []uint64) uint64 {
+				return FixedMarginOverlap(times1, times2, FIXED_MARGIN)
+			},
 		}
-
-		intervals = append(intervals, intv)
+		allTimestamps = append(allTimestamps, ts)
 	}
-
-	sort.Slice(intervals, func(i, j int) bool {
-		// if intervals[i].start == intervals[j].start {
-		// 	return intervals[i].end < intervals[j].end
-		// }
-		return intervals[i].start < intervals[j].start
+	sort.Slice(allTimestamps, func(i, j int) bool {
+		return allTimestamps[i].times[0] < allTimestamps[j].times[0] // sort by open time
 	})
 
-	for _, intv := range intervals {
-		startTime := time.Unix(0, int64(intv.start)).UTC()
-		endTime := time.Unix(0, int64(intv.end)).UTC()
-
-		fmt.Printf("TransportId: %x, Start: %s, End: %s\n", intv.tid, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339))
-	}
-
-	var cooc coOccurrence
-	cooc.init()
-
-	i := 0
-	for _, intv1 := range intervals {
-		for _, intv2 := range intervals {
-			if intv1.end < intv2.start {
-				// no overlap since intervals are sorted by start time
-				break
+	// populate co-occurrence map
+	cooc := NewCoOccurrence(nil)
+	for _, ts1 := range allTimestamps {
+		for _, ts2 := range allTimestamps {
+			if ts1.times[len(ts1.times)-1]+2*FIXED_MARGIN < ts2.times[0] {
+				break // no overlap further ahead since intervals are sorted by open time
 			}
-			cooc.add(intv1, intv2)
-			i++
+			cooc.CalcAndSet(ts1, ts2)
 		}
 	}
-	fmt.Printf("Total overlap checks (for %d intervals): %d\n", len(intervals), i)
+	cooc.SaveData(coOccurrencePath)
 
-	cooc.testOverlaps(intervals)
+	// print statistics about overlaps
+	float64Overlaps := make([]float64, 0)
+	for _, cmap := range *cooc.cMap {
+		for _, v := range cmap {
+			new_v := OverlapInSec(v) // convert to seconds
+			if new_v > 0 {
+				float64Overlaps = append(float64Overlaps, new_v)
+			}
+		}
+	}
+	fmt.Printf(`# of timestamps: %d
+# non-zero overlaps: %d
+	Min: %.9f
+	Max: %.9f
+	Mean: %.9f
+	StdDev: %.9f
+`,
+		len(allTimestamps),
+		len(float64Overlaps),
+		floats.Min(float64Overlaps),
+		floats.Max(float64Overlaps),
+		stat.Mean(float64Overlaps, nil),
+		stat.StdDev(float64Overlaps, nil),
+	)
 }
 
 func testIntervals() {
@@ -188,8 +160,7 @@ func testIntervals() {
 		fmt.Printf("TransportId: %s, Start: %d, End: %d\n", intv.tid, intv.start, intv.end)
 	}
 
-	var cooc coOccurrence
-	cooc.init()
+	cooc := NewCoOccurrence(nil)
 
 	for _, intv1 := range intervals {
 		for _, intv2 := range intervals {
@@ -197,7 +168,7 @@ func testIntervals() {
 				// no overlap since intervals are sorted by start time
 				break
 			}
-			cooc.add(intv1, intv2)
+			cooc.CalcAndSet(intv1, intv2)
 		}
 	}
 
@@ -207,7 +178,7 @@ func testIntervals() {
 func (c *coOccurrence) testOverlaps(intvs []*interval) {
 	for _, intv1 := range intvs {
 		for _, intv2 := range intvs {
-			overlap := c.get(intv1, intv2)
+			overlap := c.Get(intv1, intv2)
 			correctOverlap := max(0, min(int(intv1.end), int(intv2.end))-max(int(intv1.start), int(intv2.start))) // converts to int to avoid overflow
 			if intv1.tid.Compare(intv2.tid) == 0 {
 				correctOverlap = 0 // no overlap with itself

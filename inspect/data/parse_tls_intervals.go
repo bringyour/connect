@@ -90,7 +90,13 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 		return (*packets[i]).Metadata().Timestamp.UnixNano() < (*packets[j]).Metadata().Timestamp.UnixNano()
 	})
 
-	for _, packet := range packets {
+	for i, packet := range packets {
+		if i%1000 == 0 && i > 0 {
+			fmt.Print(".")
+		}
+		if i%10_000 == 0 && i > 0 {
+			fmt.Println(i)
+		}
 		ipLayer := (*packet).Layer(layers.LayerTypeIPv4)
 		tcpLayer := (*packet).Layer(layers.LayerTypeTCP)
 
@@ -114,8 +120,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 				if _, exists := transportMap[key.String()]; exists {
 					// TODO: should we ignore duplicates like these?
 					// i.e., retransmissions of the same SYN packet
-					fmt.Println(key.String())
-					fmt.Println("Ignoring duplicate open packet")
+					// fmt.Println("Ignoring duplicate open packet")
 					continue
 				}
 
@@ -140,7 +145,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 						// and also we dont check which side of connection sends the termination packet
 						// should we?
 						// also, should we get the earliest close time or any?
-						fmt.Println("Close already exists -> ignoring")
+						// fmt.Println("Close already exists -> ignoring")
 						continue
 					}
 					transportClose := &protocol.TransportClose{
@@ -149,7 +154,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 					}
 					record.Close = transportClose
 				} else {
-					fmt.Println("Ignoring out of order close packet")
+					// fmt.Println("Ignoring out of order close packet")
 				}
 			} else if tcp.PSH && tcp.ACK { // data packet (PSH and ACK set)
 				if ipv4.SrcIP.String() == sourceIP { // write packet
@@ -163,7 +168,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 						}
 						record.Writes = append(record.Writes, writeDataChunk)
 					} else {
-						fmt.Println("Ignoring out of order write packet")
+						// fmt.Println("Ignoring out of order write packet")
 					}
 				} else { // read packet
 					if record, exists := transportMap[key.String()]; exists {
@@ -176,7 +181,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 						}
 						record.Reads = append(record.Reads, readDataChunk)
 					} else {
-						fmt.Println("Ignoring out of order read packet")
+						// fmt.Println("Ignoring out of order read packet")
 					}
 				}
 			}
@@ -266,6 +271,7 @@ func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) 
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
 
 	var offset int64
 	transportMap := make(map[ulid.ULID]*TransportRecord, 0)
@@ -385,6 +391,7 @@ func DisplayTransports(filePath string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("[Loaded %d transport records]\n", len(transportMap))
 
 	for _, record := range transportMap {
 		fmt.Println("Open:")

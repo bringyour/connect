@@ -1,0 +1,18 @@
+syntax = "proto3";
+package bringyour;
+
+option go_package = "bringyour.com/protocol";
+
+message InnerMap {
+    bytes key = 1;  // Corresponds to the inner [16]byte key
+    uint64 value = 2; // Corresponds to the uint64 value
+}
+
+message OuterMap {
+    bytes key = 1;  // Corresponds to the outer [16]byte key
+    repeated InnerMap inner_map = 2; // List of inner maps
+}
+
+message OuterMaps {
+    repeated OuterMap outer_map = 1; // List of outer maps
+}
