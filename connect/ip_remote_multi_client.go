@@ -308,6 +308,7 @@ func (self *RemoteUserNatMultiClient) updateClientPath(ipPath *IpPath, callback 
 
 // remove a client from all paths
 // this acts as a drop. it does not lock the client update
+/*
 func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -330,6 +331,7 @@ func (self *RemoteUserNatMultiClient) removeClient(client *multiClientChannel) {
 		}
 	}
 }
+*/
 
 // `SendPacketFunction`
 func (self *RemoteUserNatMultiClient) SendPacket(
@@ -387,12 +389,12 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 		}()
 
 		for {
-			orderedClients, removedClients := self.window.OrderedClients()
+			orderedClients := self.window.OrderedClients()
 
-			for _, client := range removedClients {
-				glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.Destination)
-				self.removeClient(client)
-			}
+			// for _, client := range removedClients {
+			// 	glog.V(2).Infof("[multi]remove client %s->%s.\n", client.args.ClientId, client.args.Destination)
+			// 	self.removeClient(client)
+			// }
 
 			// in order, try
 			// - the temporal affinity
@@ -908,6 +910,8 @@ func (self *multiClientWindow) resize() {
 		weights := map[*multiClientChannel]float32{}
 		durations := map[*multiClientChannel]time.Duration{}
 
+		removedClients := []*multiClientChannel{}
+
 		for _, client := range self.clients() {
 			if stats, err := client.WindowStats(); err == nil {
 				clients = append(clients, client)
@@ -915,9 +919,25 @@ func (self *multiClientWindow) resize() {
 				// byte count per second
 				weights[client] = float32(stats.ByteCountPerSecond())
 				durations[client] = stats.duration
+			} else {
+				glog.Infof("[multi]remove client = %s\n", err)
+				removedClients = append(removedClients, client)
 			}
-			// else ignore the client for optimization
-			// it will get cleaned up on the next call to `OrderedClients`
+		}
+
+		if 0 < len(removedClients) {
+			func() {
+				self.stateLock.Lock()
+				defer self.stateLock.Unlock()
+
+				for _, client := range removedClients {
+					client.Cancel()
+					delete(self.destinationClients, client.Destination())
+				}
+			}()
+			for _, client := range removedClients {
+				self.monitor.AddProviderEvent(client.ClientId(), ProviderStateRemoved)
+			}
 		}
 
 		slices.SortFunc(clients, func(a *multiClientChannel, b *multiClientChannel) int {
@@ -952,33 +972,37 @@ func (self *multiClientWindow) resize() {
 		)
 		collapseWindowSize := int(math.Ceil(self.settings.WindowCollapseScale * float64(len(clients))))
 
-		collapseLowestWeighted := func(windowSize int) int {
+		collapseLowestWeighted := func(windowSize int) []*multiClientChannel {
 			// try to remove the lowest weighted clients to resize the window to `windowSize`
 			// clients in the graceperiod or with activity cannot be removed
 
 			self.stateLock.Lock()
 			defer self.stateLock.Unlock()
 
-			n := 0
+			// n := 0
 
-			collapseClients := clients[windowSize:]
-			clients = clients[:windowSize]
-			for _, client := range collapseClients {
+			removedClients := []*multiClientChannel{}
+			// collapseClients := clients[windowSize:]
+			// clients = clients[:windowSize]
+			for _, client := range clients[windowSize:] {
 				if self.settings.StatsWindowGraceperiod <= durations[client] && weights[client] <= 0 {
 					client.Cancel()
-					n += 1
-				} else {
-					clients = append(clients, client)
+					// n += 1
+					removedClients = append(removedClients, client)
+					delete(self.destinationClients, client.Destination())
 				}
+				//  else {
+				// 	clients = append(clients, client)
+				// }
 			}
 
-			destinationClients := map[MultiHopId]*multiClientChannel{}
-			for _, client := range clients {
-				destinationClients[client.Destination()] = client
-			}
-			self.destinationClients = destinationClients
+			// destinationClients := map[MultiHopId]*multiClientChannel{}
+			// for _, client := range clients {
+			// 	destinationClients[client.Destination()] = client
+			// }
+			// self.destinationClients = destinationClients
 
-			return n
+			return removedClients
 		}
 
 		p2pOnlyWindowSize := 0
@@ -989,14 +1013,17 @@ func (self *multiClientWindow) resize() {
 		}
 		if expandWindowSize <= targetWindowSize && len(clients) < expandWindowSize || p2pOnlyWindowSize < self.settings.WindowSizeMinP2pOnly {
 			// collapse badly performing clients before expanding
-			n := collapseLowestWeighted(0)
-			if 0 < n {
-				glog.Infof("[multi]window optimize -%d ->%d\n", n, len(clients))
+			removedClients := collapseLowestWeighted(0)
+			if 0 < len(removedClients) {
+				glog.Infof("[multi]window optimize -%d ->%d\n", len(removedClients), len(clients))
+				for _, client := range removedClients {
+					self.monitor.AddProviderEvent(client.ClientId(), ProviderStateRemoved)
+				}
 			}
 
 			// expand
-			n = expandWindowSize - len(clients)
-			self.monitor.AddWindowExpandEvent(len(clients), expandWindowSize)
+			n := expandWindowSize - len(clients)
+			self.monitor.AddWindowExpandEvent(false, expandWindowSize)
 			overN := int(math.Ceil(expandOvershotScale * float64(n)))
 			glog.Infof("[multi]window expand +%d(%d) %d->%d\n", n, overN, len(clients), expandWindowSize)
 			self.expand(len(clients), p2pOnlyWindowSize, expandWindowSize, overN)
@@ -1017,14 +1044,17 @@ func (self *multiClientWindow) resize() {
 				)
 			}
 		} else if targetWindowSize <= collapseWindowSize && collapseWindowSize < len(clients) {
-			self.monitor.AddWindowExpandEvent(len(clients), collapseWindowSize)
-			n := collapseLowestWeighted(collapseWindowSize)
-			if 0 < n {
-				glog.Infof("[multi]window collapse -%d ->%d\n", n, len(clients))
+			self.monitor.AddWindowExpandEvent(true, collapseWindowSize)
+			removedClients := collapseLowestWeighted(collapseWindowSize)
+			if 0 < len(removedClients) {
+				glog.Infof("[multi]window collapse -%d ->%d\n", len(removedClients), len(clients))
+				for _, client := range removedClients {
+					self.monitor.AddProviderEvent(client.ClientId(), ProviderStateRemoved)
+				}
 			}
-			self.monitor.AddWindowExpandEvent(len(clients), collapseWindowSize)
+			self.monitor.AddWindowExpandEvent(true, collapseWindowSize)
 		} else {
-			self.monitor.AddWindowExpandEvent(len(clients), len(clients))
+			self.monitor.AddWindowExpandEvent(true, len(clients))
 			glog.Infof("[multi]window stable =%d\n", len(clients))
 		}
 
@@ -1113,20 +1143,30 @@ func (self *multiClientWindow) expand(currentWindowSize int, currentP2pOnlyWindo
 						&protocol.IpPing{},
 						self.settings.PingWriteTimeout,
 						func(err error) {
-							defer close(pingDone)
+							close(pingDone)
 							if err == nil {
 								glog.Infof("[multi]expand new client\n")
+
 								self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded)
+								var replacedClient *multiClientChannel
 								func() {
 									self.stateLock.Lock()
 									defer self.stateLock.Unlock()
+									replacedClient = self.destinationClients[args.Destination]
 									self.destinationClients[args.Destination] = client
 								}()
+								if replacedClient != nil {
+									replacedClient.Cancel()
+									self.monitor.AddProviderEvent(replacedClient.ClientId(), ProviderStateRemoved)
+								}
 								func() {
 									mutex.Lock()
 									defer mutex.Unlock()
 									addedCount += 1
-									self.monitor.AddWindowExpandEvent(currentWindowSize+addedCount, targetWindowSize)
+									self.monitor.AddWindowExpandEvent(
+										targetWindowSize <= currentWindowSize+addedCount,
+										targetWindowSize,
+									)
 								}()
 							} else {
 								glog.Infof("[multi]create ping error = %s\n", err)
@@ -1188,36 +1228,18 @@ func (self *multiClientWindow) clients() []*multiClientChannel {
 	return maps.Values(self.destinationClients)
 }
 
-func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multiClientChannel) {
+func (self *multiClientWindow) OrderedClients() []*multiClientChannel {
 
 	clients := []*multiClientChannel{}
 
-	removedClients := []*multiClientChannel{}
 	weights := map[*multiClientChannel]float32{}
 	durations := map[*multiClientChannel]time.Duration{}
 
 	for _, client := range self.clients() {
-		if stats, err := client.WindowStats(); err != nil {
-			glog.Infof("[multi]remove client = %s\n", err)
-			removedClients = append(removedClients, client)
-		} else {
+		if stats, err := client.WindowStats(); err == nil {
 			clients = append(clients, client)
 			weights[client] = float32(stats.ByteCountPerSecond())
 			durations[client] = stats.duration
-		}
-	}
-
-	if 0 < len(removedClients) {
-		func() {
-			self.stateLock.Lock()
-			defer self.stateLock.Unlock()
-			for _, client := range removedClients {
-				client.Cancel()
-				delete(self.destinationClients, client.Destination())
-			}
-		}()
-		for _, client := range removedClients {
-			self.monitor.AddProviderEvent(client.ClientId(), ProviderStateRemoved)
 		}
 	}
 
@@ -1242,7 +1264,7 @@ func (self *multiClientWindow) OrderedClients() ([]*multiClientChannel, []*multi
 
 	WeightedShuffleWithEntropy(nonNegativeClients, weights, self.settings.StatsWindowEntropy)
 
-	return nonNegativeClients, removedClients
+	return nonNegativeClients
 }
 
 func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChannel]float32) {
@@ -1862,6 +1884,13 @@ func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientW
 		bucketCount:         len(self.eventBuckets),
 	}
 	err := self.endErr
+	if err == nil {
+		select {
+		case <-self.ctx.Done():
+			err = errors.New("Done.")
+		default:
+		}
+	}
 
 	return stats, err
 }
