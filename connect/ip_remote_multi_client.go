@@ -1156,6 +1156,7 @@ func (self *multiClientWindow) expand(currentWindowSize int, currentP2pOnlyWindo
 									self.destinationClients[args.Destination] = client
 								}()
 								if replacedClient != nil {
+									replacedClient.Cancel()
 									self.monitor.AddProviderEvent(replacedClient.ClientId(), ProviderStateRemoved)
 								}
 								func() {
