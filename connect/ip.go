@@ -213,6 +213,11 @@ type SourceID struct {
 	port uint16
 }
 
+type EndpointAddress struct {
+	realSource   netip.AddrPort
+	transferPath TransferPath
+}
+
 func (self *LocalUserNat) Run() {
 	defer self.cancel()
 
@@ -221,7 +226,7 @@ func (self *LocalUserNat) Run() {
 	// tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
 	// tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
 
-	sourceMap := map[SourceID]TransferPath{}
+	sourceMap := map[SourceID]EndpointAddress{}
 	sourceMapLock := sync.Mutex{}
 
 	dev, tnet, err := netstack.CreateNetTUN(nil, nil, 1500)
@@ -262,8 +267,12 @@ func (self *LocalUserNat) Run() {
 					}
 
 					sourceMapLock.Lock()
-					tp = sourceMap[sourceId]
+					epa := sourceMap[sourceId]
 					sourceMapLock.Unlock()
+
+					// TODO: rewrite the destination address
+
+					tp = epa.transferPath
 
 				}
 
@@ -281,8 +290,10 @@ func (self *LocalUserNat) Run() {
 					}
 
 					sourceMapLock.Lock()
-					tp = sourceMap[sourceId]
+					epa := sourceMap[sourceId]
 					sourceMapLock.Unlock()
+
+					tp = epa.transferPath
 
 				}
 
@@ -402,8 +413,13 @@ func (self *LocalUserNat) Run() {
 					}
 
 					sourceMapLock.Lock()
-					sourceMap[sourceId] = sendPacket.source
+					sourceMap[sourceId] = EndpointAddress{
+						realSource:   netip.AddrPortFrom(netip.AddrFrom4([4]byte(ipv4.SrcIP)), uint16(tcp.SrcPort)),
+						transferPath: sendPacket.source,
+					}
 					sourceMapLock.Unlock()
+
+					//TODO: rewrite the source address
 
 					_, err = dev.Write(ipPacket)
 					if err != nil {
@@ -448,7 +464,10 @@ func (self *LocalUserNat) Run() {
 					}
 
 					sourceMapLock.Lock()
-					sourceMap[sourceId] = sendPacket.source
+					sourceMap[sourceId] = EndpointAddress{
+						realSource:   netip.AddrPortFrom(netip.AddrFrom16([16]byte(ipv6.SrcIP)), uint16(tcp.SrcPort)),
+						transferPath: sendPacket.source,
+					}
 					sourceMapLock.Unlock()
 
 					_, err = dev.Write(ipPacket)
