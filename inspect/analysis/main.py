@@ -3,68 +3,105 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
+import numpy as np
+from sklearn.cluster import OPTICS
+from scipy.spatial.distance import pdist, squareform
+import seaborn as sns
+
+ENABLE_LABELS = False
+
+
 def load_map(filename):
-    with open(filename, 'rb') as f:
+    with open(filename, "rb") as f:
         data = f.read()
 
     outer_maps = cooccurrence_pb2.OuterMaps()
     outer_maps.ParseFromString(data)
 
+    max_value = -1
+
     result = {}
     for outer in outer_maps.outer_map:
-        outer_key = outer.key.hex()  # Convert bytes to the appropriate format
+        outer_key = outer.key.hex()
         inner_map = {}
         for inner in outer.inner_map:
-            inner_key = inner.key.hex()  # Convert bytes to the appropriate format
+            inner_key = inner.key.hex()
             inner_map[inner_key] = inner.value
+            if inner.value > max_value:
+                max_value = inner.value
         result[outer_key] = inner_map
 
-    return result
+    return result, max_value
 
-def create_heatmap(data):
+
+def create_heatmap(data, max_value):
     keys = list(data.keys())
     size = len(keys)
-    heatmap_data = np.zeros((size, size))
-    
-    for i, outer_key in enumerate(keys):
-        for j, inner_key in enumerate(keys):
-            if i == j:
-                heatmap_data[i, j] = 5
-            # if j > i:
-                continue
-            if inner_key in data[outer_key]:
-                heatmap_data[i, j] = data[outer_key][inner_key] / 1e9
-                
-                
-    for i, outer_key in enumerate(heatmap_data):
-        for j, inner_key in enumerate(heatmap_data):
-            if heatmap_data[i, j] != heatmap_data[j, i]:
-                print("dhsdfhdfs")
-                break
-        
+    heatmap_data = np.ones((size, size))
 
-    plt.imshow(heatmap_data, cmap='hot', interpolation='nearest')
-    
+    for i, key_i in enumerate(keys):
+        for j, key_j in enumerate(keys):
+            if key_j in data[key_i]:
+                if heatmap_data[i, j] + heatmap_data[j, i] < 2:
+                    # non-zero value exists for data[key_i][key_j] and data[key_j][key_i]
+                    print(f"Duplicate entry found for {key_i} and {key_j}")
+                    return
+                large = max(i, j)
+                small = min(i, j)
+                # time_in_sec = data[key_i][key_j]  # / 1e9
+                # final_val = 1 / (time_in_sec + 1e-9)
+                final_val = data[key_i][key_j] / max_value
+                heatmap_data[large, small] = final_val
+                heatmap_data[small, large] = final_val
+
+    optics = OPTICS(
+        min_samples=10, metric="precomputed"  # , max_eps=0.97
+    )  # use 'precomputed' since we're providing a distance matrix
+    optics.fit(heatmap_data)
+
+    labels = optics.labels_  # Cluster labels for each ID
+    # for i, label in enumerate(labels):
+    #     print(f"ID {keys[i]} is in cluster {label}")
+
+    clusters = {}
+    for id_, cluster_id in enumerate(labels):
+        if cluster_id not in clusters:
+            clusters[cluster_id] = []
+        clusters[cluster_id].append(id_)
+
+    print(clusters)
+
+    # Reorder the shared time matrix
+    ordered_ids = []
+    for cluster_id in sorted(clusters.keys()):
+        ordered_ids.extend(clusters[cluster_id])
+
+    reordered_matrix = heatmap_data[np.ix_(ordered_ids, ordered_ids)]
+    plt.imshow(reordered_matrix, cmap="hot", interpolation="nearest")
+
     cb = plt.colorbar()
-    cb.set_label('Overlap Time (seconds)')
-    plt.xticks(ticks=np.arange(size), labels=keys, rotation=90)
-    plt.yticks(ticks=np.arange(size), labels=keys)
-    plt.tick_params(axis='both', labelsize=3)  # Set the size of the tick labels
-    plt.xlabel("Transport IDs (per TCP session)")
-    plt.ylabel("Transport IDs (per TCP session)")
+    cb.set_label("Overlap time (seconds)")
+    if ENABLE_LABELS:
+        truncated_keys = []
+        for cluster_id in sorted(clusters.keys()):
+            for id_ in clusters[cluster_id]:
+                truncated_keys.append(f"…{keys[id_][-5:]}({cluster_id})")
+        plt.xticks(ticks=np.arange(size), labels=truncated_keys, rotation=90)
+        plt.yticks(ticks=np.arange(size), labels=truncated_keys)
+        plt.tick_params(axis="both", labelsize=4)
+    xy_label = "Truncated transport IDs (per TCP session)"
+    plt.xlabel(xy_label)
+    plt.ylabel(xy_label)
 
-    plt.title('Heatmap of Co-occurrences')
+    plt.title("Heatmap of Co-occurrences")
     plt.tight_layout()
 
-    # Save the heatmap as an image
-    plt.savefig("../images/heatmap.png", dpi=300)  # Adjust the dpi value as needed
-    plt.close()  # Close the plot to free memory
+    plt.savefig("../images/heatmap.png", dpi=300)
+    plt.close()
 
-# Example usage
+
 if __name__ == "__main__":
-    filename = "../data/cooccurrence_data_small.pb"  # Replace with your actual file name
-    loaded_data = load_map(filename)
-    # print("Loaded data:", loaded_data)
-
-    # Create the heatmap
-    create_heatmap(loaded_data)
+    filename = "../data/cooccurrence_data_2k.pb"
+    # filename = "../data/cooccurrence_data_small.pb"
+    loaded_data, max_value = load_map(filename)
+    create_heatmap(loaded_data, max_value)
