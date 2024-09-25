@@ -84,17 +84,32 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (Device, *Ne
 	}
 
 	// Set the TCP receive and send buffer sizes to 4MB.
-	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPReceiveBufferSizeRangeOption{
+	err := dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPReceiveBufferSizeRangeOption{
 		Min:     4 << 20,
 		Max:     4 << 20,
 		Default: 4 << 20,
 	})
 
-	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPSendBufferSizeRangeOption{
+	if err != nil {
+		return nil, nil, fmt.Errorf("TCPReceiveBufferSizeRangeOption failed: %v", err)
+	}
+
+	err = dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPSendBufferSizeRangeOption{
 		Min:     4 << 20,
 		Max:     4 << 20,
 		Default: 4 << 20,
 	})
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("TCPSendBufferSizeRangeOption failed: %v", err)
+	}
+
+	delayEnabled := tcpip.TCPDelayEnabled(true)
+
+	err = dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &delayEnabled)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TCPDelayEnabled failed: %v", err)
+	}
 
 	for _, ip := range localAddresses {
 		var protoNumber tcpip.NetworkProtocolNumber
