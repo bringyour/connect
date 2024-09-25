@@ -77,11 +77,15 @@ func (e *Egress) Write(pkt []byte) (int, error) {
 
 							eg := errgroup.Group{}
 							eg.Go(func() error {
+								defer c.Close()
+								defer oc.Close()
 								_, err := io.Copy(oc, c)
 								return err
 							})
 
 							eg.Go(func() error {
+								defer c.Close()
+								defer oc.Close()
 								_, err := io.Copy(c, oc)
 								return err
 							})
