@@ -20,13 +20,13 @@ import (
 	"github.com/google/gopacket/layers"
 
 	"golang.org/x/exp/maps"
-	"golang.org/x/sync/errgroup"
 
 	// "google.golang.org/protobuf/proto"
 
 	"github.com/golang/glog"
 
 	"bringyour.com/connect/netstack"
+	"bringyour.com/connect/netstack/egress"
 	"bringyour.com/protocol"
 )
 
@@ -239,10 +239,12 @@ func (self *LocalUserNat) Run() {
 		return
 	}
 
+	eg := egress.NewEgress(dev, tnet)
+
 	go func() {
 		buffer := make([]byte, 2000)
 		for self.ctx.Err() == nil {
-			n, err := dev.Read(buffer)
+			n, err := eg.Read(buffer)
 			if err != nil {
 				glog.Infof("[lnr]read error = %s\n", err)
 				return
@@ -303,71 +305,6 @@ func (self *LocalUserNat) Run() {
 		}
 	}()
 
-	forwardPort := func(portNumber int) {
-
-		go func() {
-			listener, err := tnet.ListenTCP(&net.TCPAddr{IP: net.IPv4zero, Port: portNumber})
-			if err != nil {
-				glog.Error("failed to listen", err)
-				return
-			}
-
-			for {
-				c, err := listener.Accept()
-				if err != nil {
-					glog.Error("failed to accept", err)
-					continue
-				}
-
-				go func() {
-					defer c.Close()
-					if glog.V(2) {
-						glog.Info("Accepted connection to ", c.LocalAddr())
-					}
-
-					local := c.LocalAddr()
-
-					addr := local.(*net.TCPAddr)
-					oc, err := net.DialTCP("tcp", nil, addr)
-
-					if err != nil && glog.V(2) {
-						glog.Error("failed to dial", err)
-						return
-					}
-
-					defer oc.Close()
-
-					eg := errgroup.Group{}
-					eg.Go(func() error {
-						_, err := io.Copy(oc, c)
-						return err
-					})
-
-					eg.Go(func() error {
-						_, err := io.Copy(c, oc)
-						return err
-					})
-
-					err = eg.Wait()
-					if err != nil && glog.V(2) {
-						glog.Error("failed to copy", err)
-					}
-
-				}()
-
-			}
-
-		}()
-	}
-
-	forwardPort(8080)
-	forwardPort(80)
-	forwardPort(443)
-	forwardPort(465)
-	forwardPort(993)
-	forwardPort(995)
-	forwardPort(853)
-
 	for {
 		select {
 		case <-self.ctx.Done():
@@ -427,7 +364,7 @@ func (self *LocalUserNat) Run() {
 						continue
 					}
 
-					_, err = dev.Write(rewritten)
+					_, err = eg.Write(rewritten)
 					if err != nil {
 						glog.Infof("[lnr]write error = %s\n", err)
 					}
