@@ -8,6 +8,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,11 +19,13 @@ import (
 	"github.com/google/gopacket/layers"
 
 	"golang.org/x/exp/maps"
+	"golang.org/x/sync/errgroup"
 
 	// "google.golang.org/protobuf/proto"
 
 	"github.com/golang/glog"
 
+	"bringyour.com/connect/netstack"
 	"bringyour.com/protocol"
 )
 
@@ -204,13 +207,164 @@ func (self *LocalUserNat) receive(source TransferPath, ipProtocol IpProtocol, pa
 	}
 }
 
+// comparable
+type SourceID struct {
+	ip   netip.Addr
+	port uint16
+}
+
+type EndpointAddress struct {
+	realSource   netip.AddrPort
+	transferPath TransferPath
+}
+
 func (self *LocalUserNat) Run() {
 	defer self.cancel()
 
 	udp4Buffer := NewUdp4Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
 	udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings)
-	tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
-	tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+	// tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+	// tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings)
+
+	sourceMap := map[SourceID]EndpointAddress{}
+	sourceMapLock := sync.Mutex{}
+
+	packetTransformer := NewPacketTransformer(self.ctx)
+
+	dev, tnet, err := netstack.CreateNetTUN(nil, nil, 1500)
+	if err != nil {
+		glog.Infof("[lnr]error = %s\n", err)
+		return
+	}
+
+	go func() {
+		buffer := make([]byte, 2000)
+		for self.ctx.Err() == nil {
+			n, err := dev.Read(buffer)
+			if err != nil {
+				glog.Infof("[lnr]read error = %s\n", err)
+				return
+			}
+
+			if n == 0 {
+				return
+			}
+
+			outPacket := buffer[0:n]
+
+			ipVersion := uint8(buffer[0]) >> 4
+
+			tp := TransferPath{}
+
+			switch ipVersion {
+			case 4:
+				ipv4 := layers.IPv4{}
+				ipv4.DecodeFromBytes(buffer[0:n], gopacket.NilDecodeFeedback)
+				switch ipv4.Protocol {
+				case layers.IPProtocolTCP:
+
+					pkt, pth, err := packetTransformer.RewritePacketToVPN(buffer[0:n])
+					if err != nil {
+						glog.Infof("[lnr]rewrite error = %s\n", err)
+						continue
+					}
+
+					tp = *pth
+					outPacket = pkt
+
+				}
+
+			case 6:
+				ipv6 := layers.IPv6{}
+				ipv6.DecodeFromBytes(buffer[0:n], gopacket.NilDecodeFeedback)
+				switch ipv6.NextHeader {
+				case layers.IPProtocolTCP:
+					tcp := layers.TCP{}
+					tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
+
+					sourceId := SourceID{
+						ip:   netip.AddrFrom16([16]byte(ipv6.DstIP)),
+						port: uint16(tcp.DstPort),
+					}
+
+					sourceMapLock.Lock()
+					epa := sourceMap[sourceId]
+					sourceMapLock.Unlock()
+
+					tp = epa.transferPath
+
+				}
+
+			}
+
+			self.receive(tp, IpProtocolTcp, outPacket)
+		}
+	}()
+
+	forwardPort := func(portNumber int) {
+
+		go func() {
+			listener, err := tnet.ListenTCP(&net.TCPAddr{IP: net.IPv4zero, Port: portNumber})
+			if err != nil {
+				glog.Error("failed to listen", err)
+				return
+			}
+
+			for {
+				c, err := listener.Accept()
+				if err != nil {
+					glog.Error("failed to accept", err)
+					continue
+				}
+
+				go func() {
+					defer c.Close()
+					if glog.V(2) {
+						glog.Info("Accepted connection to ", c.LocalAddr())
+					}
+
+					local := c.LocalAddr()
+
+					addr := local.(*net.TCPAddr)
+					oc, err := net.DialTCP("tcp", nil, addr)
+
+					if err != nil && glog.V(2) {
+						glog.Error("failed to dial", err)
+						return
+					}
+
+					defer oc.Close()
+
+					eg := errgroup.Group{}
+					eg.Go(func() error {
+						_, err := io.Copy(oc, c)
+						return err
+					})
+
+					eg.Go(func() error {
+						_, err := io.Copy(c, oc)
+						return err
+					})
+
+					err = eg.Wait()
+					if err != nil && glog.V(2) {
+						glog.Error("failed to copy", err)
+					}
+
+				}()
+
+			}
+
+		}()
+	}
+
+	forwardPort(8080)
+	forwardPort(80)
+	forwardPort(443)
+	forwardPort(465)
+	forwardPort(993)
+	forwardPort(995)
+	forwardPort(853)
 
 	for {
 		select {
@@ -247,26 +401,33 @@ func (self *LocalUserNat) Run() {
 						c()
 					}
 				case layers.IPProtocolTCP:
+
 					tcp := layers.TCP{}
 					tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-					c := func() bool {
-						success, err := tcp4Buffer.send(
-							sendPacket.source,
-							sendPacket.provideMode,
-							&ipv4,
-							&tcp,
-							self.settings.BufferTimeout,
-						)
-						return success && err == nil
+					sourceId := SourceID{
+						ip:   netip.AddrFrom4([4]byte(ipv4.SrcIP)),
+						port: uint16(tcp.SrcPort),
 					}
-					if glog.V(2) {
-						TraceWithReturn(
-							fmt.Sprintf("[lnr]send tcp4 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
-							c,
-						)
-					} else {
-						c()
+
+					sourceMapLock.Lock()
+					sourceMap[sourceId] = EndpointAddress{
+						realSource:   netip.AddrPortFrom(netip.AddrFrom4([4]byte(ipv4.SrcIP)), uint16(tcp.SrcPort)),
+						transferPath: sendPacket.source,
+					}
+					sourceMapLock.Unlock()
+
+					//TODO: rewrite the source address
+
+					rewritten, err := packetTransformer.RewritePacketFromVPN(ipPacket, sendPacket.source)
+					if err != nil {
+						glog.Infof("[lnr]rewrite error = %s\n", err)
+						continue
+					}
+
+					_, err = dev.Write(rewritten)
+					if err != nil {
+						glog.Infof("[lnr]write error = %s\n", err)
 					}
 				default:
 					// no support for this protocol, drop
@@ -301,23 +462,21 @@ func (self *LocalUserNat) Run() {
 					tcp := layers.TCP{}
 					tcp.DecodeFromBytes(ipv6.Payload, gopacket.NilDecodeFeedback)
 
-					c := func() bool {
-						success, err := tcp6Buffer.send(
-							sendPacket.source,
-							sendPacket.provideMode,
-							&ipv6,
-							&tcp,
-							self.settings.BufferTimeout,
-						)
-						return success && err == nil
+					sourceId := SourceID{
+						ip:   netip.AddrFrom16([16]byte(ipv6.SrcIP)),
+						port: uint16(tcp.SrcPort),
 					}
-					if glog.V(2) {
-						TraceWithReturn(
-							fmt.Sprintf("[lnr]send tcp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
-							c,
-						)
-					} else {
-						c()
+
+					sourceMapLock.Lock()
+					sourceMap[sourceId] = EndpointAddress{
+						realSource:   netip.AddrPortFrom(netip.AddrFrom16([16]byte(ipv6.SrcIP)), uint16(tcp.SrcPort)),
+						transferPath: sendPacket.source,
+					}
+					sourceMapLock.Unlock()
+
+					_, err = dev.Write(ipPacket)
+					if err != nil {
+						glog.Infof("[lnr]write error = %s\n", err)
 					}
 				default:
 					// no support for this protocol, drop
