@@ -82,6 +82,20 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (Device, *Ne
 	if tcpipErr != nil {
 		return nil, nil, fmt.Errorf("CreateNIC: %v", tcpipErr)
 	}
+
+	// Set the TCP receive and send buffer sizes to 4MB.
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     4 << 20,
+		Max:     4 << 20,
+		Default: 4 << 20,
+	})
+
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPSendBufferSizeRangeOption{
+		Min:     4 << 20,
+		Max:     4 << 20,
+		Default: 4 << 20,
+	})
+
 	for _, ip := range localAddresses {
 		var protoNumber tcpip.NetworkProtocolNumber
 		if ip.Is4() {
