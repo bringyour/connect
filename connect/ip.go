@@ -229,6 +229,8 @@ func (self *LocalUserNat) Run() {
 	sourceMap := map[SourceID]EndpointAddress{}
 	sourceMapLock := sync.Mutex{}
 
+	packetTransformer := NewPacketTransformer(self.ctx)
+
 	dev, tnet, err := netstack.CreateNetTUN(nil, nil, 1500)
 	if err != nil {
 		glog.Infof("[lnr]error = %s\n", err)
@@ -248,6 +250,8 @@ func (self *LocalUserNat) Run() {
 				return
 			}
 
+			outPacket := buffer[0:n]
+
 			ipVersion := uint8(buffer[0]) >> 4
 
 			tp := TransferPath{}
@@ -258,21 +262,15 @@ func (self *LocalUserNat) Run() {
 				ipv4.DecodeFromBytes(buffer[0:n], gopacket.NilDecodeFeedback)
 				switch ipv4.Protocol {
 				case layers.IPProtocolTCP:
-					tcp := layers.TCP{}
-					tcp.DecodeFromBytes(ipv4.Payload, gopacket.NilDecodeFeedback)
 
-					sourceId := SourceID{
-						ip:   netip.AddrFrom4([4]byte(ipv4.DstIP)),
-						port: uint16(tcp.DstPort),
+					pkt, pth, err := packetTransformer.RewritePacketToVPN(buffer[0:n])
+					if err != nil {
+						glog.Infof("[lnr]rewrite error = %s\n", err)
+						continue
 					}
 
-					sourceMapLock.Lock()
-					epa := sourceMap[sourceId]
-					sourceMapLock.Unlock()
-
-					// TODO: rewrite the destination address
-
-					tp = epa.transferPath
+					tp = *pth
+					outPacket = pkt
 
 				}
 
@@ -299,7 +297,7 @@ func (self *LocalUserNat) Run() {
 
 			}
 
-			self.receive(tp, IpProtocolTcp, buffer[0:n])
+			self.receive(tp, IpProtocolTcp, outPacket)
 		}
 	}()
 
@@ -421,7 +419,13 @@ func (self *LocalUserNat) Run() {
 
 					//TODO: rewrite the source address
 
-					_, err = dev.Write(ipPacket)
+					rewritten, err := packetTransformer.RewritePacketFromVPN(ipPacket, sendPacket.source)
+					if err != nil {
+						glog.Infof("[lnr]rewrite error = %s\n", err)
+						continue
+					}
+
+					_, err = dev.Write(rewritten)
 					if err != nil {
 						glog.Infof("[lnr]write error = %s\n", err)
 					}
