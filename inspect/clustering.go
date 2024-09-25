@@ -12,7 +12,7 @@ func cluster(coOccurrencePath string) {
 
 	// for tid1, tid2Map := range *cooc.cMap {
 	// 	for tid2, overlap := range tid2Map {
-	// 		log.Printf("%s %s %.9f\n", tid1.String(), tid2.String(), OverlapInSec(overlap))
+	// 		log.Printf("%s %s %.9f\n", tid1.String(), tid2.String(), TsFloatv(overlap))
 	// 	}
 	// }
 }

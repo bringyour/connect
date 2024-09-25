@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x63ooccurrence.proto\x12\tbringyour\"&\n\x08InnerMap\x12\x0b\n\x03key\x18\x01 \x01(\x0c\x12\r\n\x05value\x18\x02 \x01(\x04\"?\n\x08OuterMap\x12\x0b\n\x03key\x18\x01 \x01(\x0c\x12&\n\tinner_map\x18\x02 \x03(\x0b\x32\x13.bringyour.InnerMap\"3\n\tOuterMaps\x12&\n\touter_map\x18\x01 \x03(\x0b\x32\x13.bringyour.OuterMapB\x18Z\x16\x62ringyour.com/protocolb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x63ooccurrence.proto\x12\tbringyour\"&\n\x08InnerMap\x12\x0b\n\x03key\x18\x01 \x01(\x0c\x12\r\n\x05value\x18\x02 \x01(\x04\"?\n\x08OuterMap\x12\x0b\n\x03key\x18\x01 \x01(\x0c\x12&\n\tinner_map\x18\x02 \x03(\x0b\x32\x13.bringyour.InnerMap\"3\n\tOuterMaps\x12&\n\touter_map\x18\x01 \x03(\x0b\x32\x13.bringyour.OuterMap\"*\n\x13TransportsInCluster\x12\x13\n\x0btransportID\x18\x01 \x03(\x0c\"P\n\x07\x43luster\x12\x11\n\tclusterID\x18\x01 \x01(\x04\x12\x32\n\ntransports\x18\x02 \x01(\x0b\x32\x1e.bringyour.TransportsInCluster\"/\n\x08\x43lusters\x12#\n\x07\x63luster\x18\x01 \x03(\x0b\x32\x12.bringyour.ClusterB\x18Z\x16\x62ringyour.com/protocolb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -38,4 +38,10 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_OUTERMAP']._serialized_end=136
   _globals['_OUTERMAPS']._serialized_start=138
   _globals['_OUTERMAPS']._serialized_end=189
+  _globals['_TRANSPORTSINCLUSTER']._serialized_start=191
+  _globals['_TRANSPORTSINCLUSTER']._serialized_end=233
+  _globals['_CLUSTER']._serialized_start=235
+  _globals['_CLUSTER']._serialized_end=315
+  _globals['_CLUSTERS']._serialized_start=317
+  _globals['_CLUSTERS']._serialized_end=364
 # @@protoc_insertion_point(module_scope)

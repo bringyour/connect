@@ -23,13 +23,16 @@ require (
 	github.com/go-latex/latex v0.0.0-20231108140139-5c1ce85aa4ea // indirect
 	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
+	github.com/humilityai/hdbscan v0.0.0-20200803015015-25a3a222c745 // indirect
+	github.com/mpraski/clusters v0.0.0-20171016094157-18104487c312 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	golang.org/x/exp v0.0.0-20240909161429-701f63a606c0 // indirect
 	golang.org/x/image v0.14.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
 
 require (
 	github.com/oklog/ulid/v2 v2.1.0
-	golang.org/x/sys v0.11.0 // indirect
+	golang.org/x/sys v0.14.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 )

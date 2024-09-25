@@ -12,6 +12,7 @@ import (
 
 type coOccurrenceData map[ulid.ULID]map[ulid.ULID]uint64
 
+// used to precompute distances for clustering
 type coOccurrence struct {
 	cMap *coOccurrenceData
 }
@@ -24,6 +25,10 @@ func NewCoOccurrence(cmapData *coOccurrenceData) *coOccurrence {
 	return &coOccurrence{
 		cMap: cmapData,
 	}
+}
+
+func (c *coOccurrence) SetInnerKeys(tid ulid.ULID) {
+	(*c.cMap)[tid] = make(map[ulid.ULID]uint64, 0)
 }
 
 func (c *coOccurrence) CalcAndSet(ov1 Overlap, ov2 Overlap) {
@@ -65,12 +70,6 @@ func (c *coOccurrence) Get(ov1 Overlap, ov2 Overlap) uint64 {
 }
 
 func (c *coOccurrence) SaveData(dataPath string) error {
-	// file, err := os.Create(dataPath)
-	// if err != nil {
-	// 	return err
-	// }
-	// defer file.Close()
-
 	// return gob.NewEncoder(file).Encode(c.cMap)
 	//
 
@@ -114,38 +113,26 @@ func (c *coOccurrence) SaveData(dataPath string) error {
 }
 
 func (c *coOccurrence) LoadData(dataPath string) error {
-	// file, err := os.Open(dataPath)
-	// if err != nil {
-	// 	return err
-	// }
-	// defer file.Close()
-
-	// return gob.NewDecoder(file).Decode(c.cMap)
-	//
-
-	// Read the file
 	data, err := os.ReadFile(dataPath)
 	if err != nil {
 		return fmt.Errorf("could not read file: %w", err)
 	}
 
-	// Unmarshal the data into OuterMaps
 	outerMaps := &protocol.OuterMaps{}
 	if err := proto.Unmarshal(data, outerMaps); err != nil {
 		return fmt.Errorf("could not unmarshal data: %w", err)
 	}
 
-	// reconstruct the nested map structure
 	result := make(coOccurrenceData, 0)
 
 	for _, outer := range outerMaps.OuterMap {
 		outerKey := [16]byte{}
-		copy(outerKey[:], outer.Key) // Convert []byte back to [16]byte
+		copy(outerKey[:], outer.Key)
 
 		innerMap := make(map[ulid.ULID]uint64)
 		for _, inner := range outer.InnerMap {
 			innerKey := [16]byte{}
-			copy(innerKey[:], inner.Key) // Convert []byte back to [16]byte
+			copy(innerKey[:], inner.Key)
 			innerMap[innerKey] = inner.Value
 		}
 

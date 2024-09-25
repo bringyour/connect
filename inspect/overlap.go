@@ -48,12 +48,12 @@ func (ts1 *timestamps) Overlap(other Overlap) uint64 {
 	return ts1.overlapFunc(ts1.times, ts2.times)
 }
 
-const NANO_IN_SEC = 1e9
-const FIXED_MARGIN = 1 * NANO_IN_SEC // 1 second in nanoseconds
+const NANO_IN_SEC = float64(1e9)
+const FIXED_MARGIN = 1 // * NANO_IN_SEC // 1 second in nanoseconds
 
-// convert overlap to float representing seconds of overlap
-func OverlapInSec(overlap uint64) float64 {
-	return float64(overlap) / NANO_IN_SEC
+// convert timestamp to float representing seconds of timestamp
+func TsFloat(timestamp uint64) float64 {
+	return float64(timestamp) / NANO_IN_SEC
 }
 
 func FixedMarginOverlap(times1 []uint64, times2 []uint64, fixedMargin uint64) uint64 {
