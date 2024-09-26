@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -78,7 +79,8 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		Mtu:                DefaultMtu,
 		// avoid fragmentation
 		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
-		WindowSize:          int(mib(1)),
+		WindowSize:          uint32(mib(1)),
+		WindowScale:         uint32(4),
 		UserLimit:           128,
 	}
 	return tcpBufferSettings
@@ -919,9 +921,9 @@ type TcpBufferSettings struct {
 	SequenceBufferSize  int
 	Mtu                 int
 	// the window size is the max amount of packet data in memory for each sequence
-	// TODO currently we do not enable window scale
-	// TODO this value is max 2^16
-	WindowSize int
+	// `WindowSize / 2^WindowScale` must fit in uint16
+	WindowScale uint32
+	WindowSize  uint32
 	// the number of open sockets per user
 	// uses an lru cleanup where new sockets over the limit close old sockets
 	UserLimit int
@@ -956,14 +958,6 @@ func (self *Tcp4Buffer) send(source TransferPath, provideMode protocol.ProvideMo
 		tcp,
 		timeout,
 	)
-}
-
-func (self *TcpSequence) Cancel() {
-	self.cancel()
-}
-
-func (self *TcpSequence) Close() {
-	self.cancel()
 }
 
 type Tcp6Buffer struct {
@@ -1150,14 +1144,6 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	tcpBufferSettings *TcpBufferSettings) *TcpSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
-	// FIXME scaled window size
-	var windowSize uint16
-	if math.MaxUint16 < tcpBufferSettings.WindowSize {
-		windowSize = math.MaxUint16
-	} else {
-		windowSize = uint16(tcpBufferSettings.WindowSize)
-	}
-
 	connectionState := ConnectionState{
 		source:          source,
 		ipVersion:       ipVersion,
@@ -1166,8 +1152,10 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 		destinationIp:   destinationIp,
 		destinationPort: destinationPort,
 		// the window size starts at the fixed value
-		windowSize:  windowSize,
-		userLimited: *newUserLimited(),
+		enableWindowScale: false,
+		windowSize:        tcpBufferSettings.WindowSize,
+		windowScale:       tcpBufferSettings.WindowScale,
+		userLimited:       *newUserLimited(),
 	}
 	return &TcpSequence{
 		ctx:               cancelCtx,
@@ -1271,7 +1259,36 @@ func (self *TcpSequence) Run() {
 					// this is arbitrary, and since there is no transport security risk back to sender is fine
 					self.receiveSeq = sendItem.tcp.Seq
 					self.receiveSeqAck = sendItem.tcp.Seq
-					self.receiveWindowSize = sendItem.tcp.Window
+
+					parseWindowScaleOpts := func() (bool, uint32) {
+						for _, opt := range sendItem.tcp.Options {
+							if opt.OptionType == layers.TCPOptionKindWindowScale {
+								// fmt.Printf("[init]OPTION DATA = %v (%d,%d)\n", opt.OptionData, len(opt.OptionData), opt.OptionLength)
+								windowScaleBytes := make([]byte, 4)
+								copy(windowScaleBytes[4-len(opt.OptionData):4], opt.OptionData)
+								windowScale := min(
+									binary.BigEndian.Uint32(windowScaleBytes[0:4]),
+									// see 2.3  Using the Window Scale Option
+									14,
+								)
+								return true, windowScale
+							}
+						}
+						return false, 0
+					}
+
+					self.enableWindowScale, self.receiveWindowScale = parseWindowScaleOpts()
+					self.receiveWindowSize = uint32(sendItem.tcp.Window) << self.receiveWindowScale
+					if !self.enableWindowScale {
+						// turn off window scale for send
+						self.windowScale = 0
+					}
+					glog.V(2).Infof("[init]window=%d/%d, receive=%d/%d\n", self.windowSize, self.windowScale, self.receiveWindowSize, self.receiveWindowScale)
+					self.encodedWindowSize = uint16(min(
+						uint32(self.windowSize>>self.windowScale),
+						uint32(math.MaxUint16),
+					))
+
 					packet, err = self.SynAck()
 					self.receiveSeq += 1
 				}()
@@ -1418,59 +1435,23 @@ func (self *TcpSequence) Run() {
 		}
 	}()
 
+	type writePayload struct {
+		sendIter uint64
+		payload  []byte
+	}
+
+	writePayloads := make(chan writePayload, self.tcpBufferSettings.SequenceBufferSize)
 	go func() {
 		defer self.cancel()
 
-		for sendIter := 0; ; sendIter += 1 {
-			checkpointId := self.idleCondition.Checkpoint()
+		for {
 			select {
 			case <-self.ctx.Done():
 				return
-			case sendItem := <-self.sendItems:
-				if glog.V(2) {
-					if "ACK" != tcpFlagsString(sendItem.tcp) {
-						glog.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
-					}
-				}
-
-				drop := false
-				seq := 0
-
-				func() {
-					self.mutex.Lock()
-					defer self.mutex.Unlock()
-
-					if self.sendSeq != sendItem.tcp.Seq {
-						// a retransmit
-						// since the transfer from local to remote is lossless and preserves order,
-						// the packet is already pending. Ignore.
-						drop = true
-					} else if sendItem.tcp.ACK {
-						// acks are reliably delivered (see above)
-						// we do not need to resend receive packets on missing acks
-						// note the window size can be be adjusted at any time for the same receive seq number,
-						// e.g. ->0 then ->full on receiver full
-						if self.receiveSeqAck <= sendItem.tcp.Ack {
-							self.receiveWindowSize = sendItem.tcp.Window
-							self.receiveSeqAck = sendItem.tcp.Ack
-							receiveAckCond.Broadcast()
-						}
-					}
-				}()
-
-				if drop {
-					continue
-				}
-
-				if sendItem.tcp.FIN {
-					glog.V(2).Infof("[r%d]FIN\n", sendIter)
-					seq += 1
-				}
-
+			case writePayload := <-writePayloads:
+				payload := writePayload.payload
+				sendIter := writePayload.sendIter
 				writeEndTime := time.Now().Add(self.tcpBufferSettings.WriteTimeout)
-
-				payload := sendItem.tcp.Payload
-				seq += len(payload)
 				for i := 0; i < len(payload); {
 					select {
 					case <-self.ctx.Done():
@@ -1504,47 +1485,111 @@ func (self *TcpSequence) Run() {
 						}
 					}
 				}
-
-				if 0 < seq {
-					var packet []byte
-					var err error
-					func() {
-						self.mutex.Lock()
-						defer self.mutex.Unlock()
-
-						self.sendSeq += uint32(seq)
-						packet, err = self.PureAck()
-					}()
-					if err == nil {
-						receive(packet)
-					}
-				}
-
-				if sendItem.tcp.FIN {
-					// close the socket to propage the FIN and close the sequence
-					socket.Close()
-				}
-
-				if sendItem.tcp.RST {
-					// a RST typically appears for a bad TCP segment
-					glog.V(2).Infof("[r%d]RST\n", sendIter)
-					return
-				}
-
-			case <-time.After(self.tcpBufferSettings.IdleTimeout):
-				if self.idleCondition.Close(checkpointId) {
-					// close the sequence
-					glog.V(2).Infof("[r%d]timeout\n", sendIter)
-					return
-				}
-				// else there pending updates
 			}
 		}
 	}()
 
-	select {
-	case <-self.ctx.Done():
+	for sendIter := uint64(0); ; sendIter += 1 {
+		checkpointId := self.idleCondition.Checkpoint()
+		select {
+		case <-self.ctx.Done():
+			return
+		case sendItem := <-self.sendItems:
+			if glog.V(2) {
+				if "ACK" != tcpFlagsString(sendItem.tcp) {
+					glog.Infof("[r%d]receive(%d %s)\n", sendIter, len(sendItem.tcp.Payload), tcpFlagsString(sendItem.tcp))
+				}
+			}
+
+			drop := false
+			seq := 0
+
+			func() {
+				self.mutex.Lock()
+				defer self.mutex.Unlock()
+
+				if self.sendSeq != sendItem.tcp.Seq {
+					// a retransmit
+					// since the transfer from local to remote is lossless and preserves order,
+					// the packet is already pending. Ignore.
+					drop = true
+				} else if sendItem.tcp.ACK {
+					// acks are reliably delivered (see above)
+					// we do not need to resend receive packets on missing acks
+					// note the window size can be be adjusted at any time for the same receive seq number,
+					// e.g. ->0 then ->full on receiver full
+					if self.receiveSeqAck <= sendItem.tcp.Ack {
+						self.receiveWindowSize = uint32(sendItem.tcp.Window) << self.receiveWindowScale
+						self.receiveSeqAck = sendItem.tcp.Ack
+						receiveAckCond.Broadcast()
+					}
+				}
+			}()
+
+			if drop {
+				continue
+			}
+
+			if sendItem.tcp.FIN {
+				glog.V(2).Infof("[r%d]FIN\n", sendIter)
+				seq += 1
+			}
+
+			payload := sendItem.tcp.Payload
+			seq += len(payload)
+
+			select {
+			case <-self.ctx.Done():
+				return
+			case writePayloads <- writePayload{
+				payload:  payload,
+				sendIter: sendIter,
+			}:
+			}
+
+			if 0 < seq {
+				var packet []byte
+				var err error
+				func() {
+					self.mutex.Lock()
+					defer self.mutex.Unlock()
+
+					self.sendSeq += uint32(seq)
+					packet, err = self.PureAck()
+				}()
+				if err == nil {
+					receive(packet)
+				}
+			}
+
+			if sendItem.tcp.FIN {
+				// close the socket to propage the FIN and close the sequence
+				socket.Close()
+			}
+
+			if sendItem.tcp.RST {
+				// a RST typically appears for a bad TCP segment
+				glog.V(2).Infof("[r%d]RST\n", sendIter)
+				return
+			}
+
+		case <-time.After(self.tcpBufferSettings.IdleTimeout):
+			if self.idleCondition.Close(checkpointId) {
+				// close the sequence
+				glog.V(2).Infof("[r%d]timeout\n", sendIter)
+				return
+			}
+			// else there pending updates
+		}
 	}
+}
+
+func (self *TcpSequence) Cancel() {
+	self.cancel()
+}
+
+func (self *TcpSequence) Close() {
+	self.cancel()
 }
 
 type TcpSendItem struct {
@@ -1562,11 +1607,15 @@ type ConnectionState struct {
 
 	mutex sync.Mutex
 
-	sendSeq           uint32
-	receiveSeq        uint32
-	receiveSeqAck     uint32
-	receiveWindowSize uint16
-	windowSize        uint16
+	sendSeq            uint32
+	receiveSeq         uint32
+	receiveSeqAck      uint32
+	receiveWindowSize  uint32
+	receiveWindowScale uint32
+	enableWindowScale  bool
+	windowSize         uint32
+	windowScale        uint32
+	encodedWindowSize  uint16
 
 	userLimited
 }
@@ -1609,6 +1658,20 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 		headerSize += Ipv6HeaderSize
 	}
 
+	opts := []layers.TCPOption{}
+
+	if self.enableWindowScale {
+		windowScaleBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(windowScaleBytes[0:4], self.windowScale)
+
+		windowScaleOpt := layers.TCPOption{
+			OptionType:   layers.TCPOptionKindWindowScale,
+			OptionLength: 3,
+			OptionData:   windowScaleBytes[1:4],
+		}
+		opts = append(opts, windowScaleOpt)
+	}
+
 	tcp := layers.TCP{
 		SrcPort: self.destinationPort,
 		DstPort: self.sourcePort,
@@ -1616,9 +1679,10 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 		Ack:     self.sendSeq,
 		ACK:     true,
 		SYN:     true,
-		Window:  self.windowSize,
+		Window:  self.encodedWindowSize,
 		// TODO window scale
 		// https://datatracker.ietf.org/doc/html/rfc1323#page-8
+		Options: opts,
 	}
 	tcp.SetNetworkLayerForChecksum(ip)
 	headerSize += TcpHeaderSizeWithoutExtensions
@@ -1672,7 +1736,7 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
 		Seq:     self.receiveSeq,
 		Ack:     self.sendSeq,
 		ACK:     true,
-		Window:  self.windowSize,
+		Window:  self.encodedWindowSize,
 	}
 	tcp.SetNetworkLayerForChecksum(ip)
 	headerSize += TcpHeaderSizeWithoutExtensions
@@ -1727,7 +1791,7 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
 		Ack:     self.sendSeq,
 		ACK:     true,
 		FIN:     true,
-		Window:  self.windowSize,
+		Window:  self.encodedWindowSize,
 	}
 	tcp.SetNetworkLayerForChecksum(ip)
 	headerSize += TcpHeaderSizeWithoutExtensions
@@ -1782,7 +1846,7 @@ func (self *ConnectionState) RstAck() ([]byte, error) {
 		Ack:     self.sendSeq,
 		ACK:     true,
 		RST:     true,
-		Window:  self.windowSize,
+		Window:  self.encodedWindowSize,
 	}
 	tcp.SetNetworkLayerForChecksum(ip)
 	headerSize += TcpHeaderSizeWithoutExtensions
@@ -1836,7 +1900,7 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
 		Seq:     self.receiveSeq,
 		Ack:     self.sendSeq,
 		ACK:     true,
-		Window:  self.windowSize,
+		Window:  self.encodedWindowSize,
 	}
 	tcp.SetNetworkLayerForChecksum(ip)
 	headerSize += TcpHeaderSizeWithoutExtensions
