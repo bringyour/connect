@@ -66,8 +66,8 @@ message Pack {
     optional Frame contract_frame = 7;
 
     // this is threaded back by the `Ack`
-    // so that the client can compute a single message rtt using `now()-ack.SendTime`
-    optional uint64 SendTime = 8;
+    // so that the client can compute a single message rtt
+    optional Tag tag = 8;
 }
 
 
@@ -86,8 +86,13 @@ message Ack {
     // all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
     bool selective = 3;
 
-    // the send time from the `Pack` this responds to
-    optional uint64 SendTime = 4;
+    // from the `Pack` this responds to
+    optional Tag tag = 4;
+}
+
+
+message Tag {
+    uint64 send_time = 1;
 }
 
 

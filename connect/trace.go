@@ -41,6 +41,7 @@ func IsDoneError(r any) bool {
 func HandleError(do func(), handlers ...any) (r any) {
 	defer func() {
 		if r = recover(); r != nil {
+			fmt.Printf("HANDLE ERROR: %s\n", r)
 			if IsDoneError(r) {
 				// the context was canceled and raised. this is a standard pattern, do not log
 			} else {

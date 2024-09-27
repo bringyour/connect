@@ -922,6 +922,7 @@ type TcpBufferSettings struct {
 	Mtu                 int
 	// the window size is the max amount of packet data in memory for each sequence
 	// `WindowSize / 2^WindowScale` must fit in uint16
+	// see https://datatracker.ietf.org/doc/html/rfc1323#page-8
 	WindowScale uint32
 	WindowSize  uint32
 	// the number of open sockets per user
@@ -1667,7 +1668,8 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 		windowScaleOpt := layers.TCPOption{
 			OptionType:   layers.TCPOptionKindWindowScale,
 			OptionLength: 3,
-			OptionData:   windowScaleBytes[1:4],
+			// one byte
+			OptionData: windowScaleBytes[3:4],
 		}
 		opts = append(opts, windowScaleOpt)
 	}
@@ -1680,8 +1682,6 @@ func (self *ConnectionState) SynAck() ([]byte, error) {
 		ACK:     true,
 		SYN:     true,
 		Window:  self.encodedWindowSize,
-		// TODO window scale
-		// https://datatracker.ietf.org/doc/html/rfc1323#page-8
 		Options: opts,
 	}
 	tcp.SetNetworkLayerForChecksum(ip)
