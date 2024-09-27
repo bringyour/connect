@@ -120,7 +120,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 				if _, exists := transportMap[key.String()]; exists {
 					// TODO: should we ignore duplicates like these?
 					// i.e., retransmissions of the same SYN packet
-					// fmt.Println("Ignoring duplicate open packet")
+					// log.Println("Ignoring duplicate open packet")
 					continue
 				}
 
@@ -145,7 +145,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 						// and also we dont check which side of connection sends the termination packet
 						// should we?
 						// also, should we get the earliest close time or any?
-						// fmt.Println("Close already exists -> ignoring")
+						// log.Println("Close already exists -> ignoring")
 						continue
 					}
 					transportClose := &protocol.TransportClose{
@@ -154,7 +154,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 					}
 					record.Close = transportClose
 				} else {
-					// fmt.Println("Ignoring out of order close packet")
+					// log.Println("Ignoring out of order close packet")
 				}
 			} else if tcp.PSH && tcp.ACK { // data packet (PSH and ACK set)
 				if ipv4.SrcIP.String() == sourceIP { // write packet
@@ -167,8 +167,18 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 							WriteToBufferEndTime:   uint64((*packet).Metadata().Timestamp.UnixNano()),
 						}
 						record.Writes = append(record.Writes, writeDataChunk)
+
+						// get tls name
+						serverName, err := parseTls(tcp.Payload)
+						if err == nil && serverName != "" {
+							if record.Open != nil {
+								record.Open.TlsServerName = &serverName
+							} else {
+								log.Println("Open record not found for server name")
+							}
+						}
 					} else {
-						// fmt.Println("Ignoring out of order write packet")
+						// log.Println("Ignoring out of order write packet")
 					}
 				} else { // read packet
 					if record, exists := transportMap[key.String()]; exists {
@@ -181,13 +191,14 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 						}
 						record.Reads = append(record.Reads, readDataChunk)
 					} else {
-						// fmt.Println("Ignoring out of order read packet")
+						// log.Println("Ignoring out of order read packet")
 					}
 				}
 			}
 			// technically currently SYN+ACK from server is ignored and we assume that we are the client in the exchange
 		}
 	}
+	fmt.Println()
 
 	packets = nil
 
@@ -208,7 +219,7 @@ func saveToFile(data map[string]*TransportRecord, filePath string) error {
 
 	for _, transportRecord := range data {
 		if transportRecord.Open == nil {
-			fmt.Println("Skipping record without open")
+			log.Println("Skipping record without open")
 			continue
 		}
 
@@ -316,7 +327,7 @@ func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) 
 			}
 			if record, exists := transportMap[ulid.ULID(open.TransportId)]; exists {
 				if record.Open != nil {
-					fmt.Println("Duplicate open record")
+					log.Println("Duplicate open record")
 					continue
 				}
 				record.Open = open
@@ -330,12 +341,12 @@ func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) 
 			}
 			if record, exists := transportMap[ulid.ULID(close.TransportId)]; exists {
 				if record.Close != nil {
-					fmt.Println("Duplicate close record")
+					log.Println("Duplicate close record")
 					continue
 				}
 				record.Close = close
 			} else {
-				fmt.Println("Close record without open")
+				log.Println("Close record without open")
 			}
 		case TransportWrite:
 			write := &protocol.WriteDataChunk{}
@@ -345,7 +356,7 @@ func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) 
 			if record, exists := transportMap[ulid.ULID(write.TransportId)]; exists {
 				record.Writes = append(record.Writes, write)
 			} else {
-				fmt.Println("Write record without open")
+				log.Println("Write record without open")
 			}
 		case TransportRead:
 			read := &protocol.ReadDataChunk{}
@@ -355,10 +366,10 @@ func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) 
 			if record, exists := transportMap[ulid.ULID(read.TransportId)]; exists {
 				record.Reads = append(record.Reads, read)
 			} else {
-				fmt.Println("Read record without open")
+				log.Println("Read record without open")
 			}
 		default:
-			fmt.Println("Unknown transport type")
+			log.Println("Unknown transport type")
 		}
 
 		offset += int64(itemSize)
@@ -367,9 +378,7 @@ func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) 
 	return transportMap, nil
 }
 
-func PcapToTransportFiles(dataPath string, savePath string) {
-	sourceIP := "172.245.118.233"
-
+func PcapToTransportFiles(dataPath string, savePath string, sourceIP string) {
 	transportRecords, err := parsePcapFile(dataPath, sourceIP)
 	if err != nil {
 		panic(err)
@@ -379,7 +388,7 @@ func PcapToTransportFiles(dataPath string, savePath string) {
 		log.Fatalf("Error saving to binary file: %v", err)
 	}
 
-	fmt.Printf("Successfully saved transport records to %q\n", savePath)
+	log.Printf("Successfully saved %d transport records to %q\n", len(transportRecords), savePath)
 }
 
 func LoadTransportsFromFiles(filePath string) (map[ulid.ULID]*TransportRecord, error) {

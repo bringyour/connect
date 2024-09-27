@@ -2,24 +2,22 @@ package main
 
 import (
 	"sort"
-
-	"github.com/oklog/ulid/v2"
 )
 
 type Overlap interface {
-	TID() ulid.ULID
+	SID() sessionID
 	Overlap(other Overlap) uint64
 }
 
 // implements Overlap interface
 type interval struct {
-	tid   ulid.ULID
+	sid   sessionID
 	start uint64
 	end   uint64
 }
 
-func (intv *interval) TID() ulid.ULID {
-	return intv.tid
+func (intv *interval) SID() sessionID {
+	return intv.sid
 }
 
 func (int1 *interval) Overlap(other Overlap) uint64 {
@@ -34,13 +32,13 @@ func (int1 *interval) Overlap(other Overlap) uint64 {
 
 // implements Overlap interface
 type timestamps struct {
-	tid         ulid.ULID
+	sid         sessionID
 	times       []uint64
 	overlapFunc func([]uint64, []uint64) uint64 // calculates overlap between two lists of times
 }
 
-func (ts *timestamps) TID() ulid.ULID {
-	return ts.tid
+func (ts *timestamps) SID() sessionID {
+	return ts.sid
 }
 
 func (ts1 *timestamps) Overlap(other Overlap) uint64 {
@@ -49,7 +47,7 @@ func (ts1 *timestamps) Overlap(other Overlap) uint64 {
 }
 
 const NANO_IN_SEC = float64(1e9)
-const FIXED_MARGIN = 1 // * NANO_IN_SEC // 1 second in nanoseconds
+const FIXED_MARGIN = 1 // * NANO_IN_SEC
 
 // convert timestamp to float representing seconds of timestamp
 func TsFloat(timestamp uint64) float64 {

@@ -3,29 +3,18 @@ package bringyour;
 
 option go_package = "bringyour.com/protocol";
 
-message InnerMap {
-    bytes key = 1;  // Corresponds to the inner [16]byte key
-    uint64 value = 2; // Corresponds to the uint64 value
+// Converts a struct of type map[tid]map[tid]uint64
+
+message CoocInner {
+    bytes sid = 1;  // inner ti
+    uint64 overlap = 2; // inner map value
 }
 
-message OuterMap {
-    bytes key = 1;  // Corresponds to the outer [16]byte key
-    repeated InnerMap inner_map = 2; // List of inner maps
+message CoocOuter {
+    bytes sid = 1;  // outer tid
+    repeated CoocInner cooc_inner = 2; // list of inner maps
 }
 
-message OuterMaps {
-    repeated OuterMap outer_map = 1; // List of outer maps
-}
-
-message TransportsInCluster {
-    repeated bytes transportID = 1;
-}
-
-message Cluster {
-    uint64 clusterID = 1;
-    TransportsInCluster transports = 2;
-}
-
-message Clusters {
-    repeated Cluster cluster = 1;
+message CooccurrenceData {
+    repeated CoocOuter cooc_outer = 1; // list of outer maps
 }

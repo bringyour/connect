@@ -10,9 +10,9 @@ func cluster(coOccurrencePath string) {
 		log.Fatalf("Error loading co-occurrence data: %v", err)
 	}
 
-	// for tid1, tid2Map := range *cooc.cMap {
-	// 	for tid2, overlap := range tid2Map {
-	// 		log.Printf("%s %s %.9f\n", tid1.String(), tid2.String(), TsFloatv(overlap))
+	// for sid1, sid2Map := range *cooc.cMap {
+	// 	for sid2, overlap := range sid2Map {
+	// 		log.Printf("%s %s %.9f\n", sid1.String(), sid2.String(), TsFloatv(overlap))
 	// 	}
 	// }
 }

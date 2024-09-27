@@ -10,7 +10,14 @@ import (
 	"bringyour.com/protocol"
 )
 
-type coOccurrenceData map[ulid.ULID]map[ulid.ULID]uint64
+type sessionID ulid.ULID
+
+// Compare returns -1 if s < other, 0 if s == other, and 1 if s > other.
+func (s sessionID) Compare(other sessionID) int {
+	return ulid.ULID(s).Compare(ulid.ULID(other))
+}
+
+type coOccurrenceData map[sessionID]map[sessionID]uint64
 
 // used to precompute distances for clustering
 type coOccurrence struct {
@@ -27,81 +34,68 @@ func NewCoOccurrence(cmapData *coOccurrenceData) *coOccurrence {
 	}
 }
 
-func (c *coOccurrence) SetInnerKeys(tid ulid.ULID) {
-	(*c.cMap)[tid] = make(map[ulid.ULID]uint64, 0)
+func (c *coOccurrence) SetInnerKeys(sid sessionID) {
+	(*c.cMap)[sid] = make(map[sessionID]uint64, 0)
 }
 
 func (c *coOccurrence) CalcAndSet(ov1 Overlap, ov2 Overlap) {
-	tid1 := ov1.TID()
-	tid2 := ov2.TID()
+	sid1 := ov1.SID()
+	sid2 := ov2.SID()
 
-	if tid1.Compare(tid2) == 0 { // tid1 == tid2
+	if sid1.Compare(sid2) == 0 { // sid1 == sid2
 		return // no overlap with itself
 	}
 
 	totalOverlap := ov1.Overlap(ov2)
 	if totalOverlap == 0 {
-		return
+		return // do not record 0 overlap
 	}
 
-	switch tid1.Compare(tid2) {
-	case -1: // tid1 < tid2
-		if _, ok := (*c.cMap)[tid1]; !ok {
-			(*c.cMap)[tid1] = make(map[ulid.ULID]uint64, 0)
+	switch sid1.Compare(sid2) {
+	case -1: // sid1 < sid2
+		if _, ok := (*c.cMap)[sid1]; !ok {
+			(*c.cMap)[sid1] = make(map[sessionID]uint64, 0)
 		}
-		(*c.cMap)[tid1][tid2] = totalOverlap
-	case 1: // tid1 > tid2
-		if _, ok := (*c.cMap)[tid2]; !ok {
-			(*c.cMap)[tid2] = make(map[ulid.ULID]uint64, 0)
+		(*c.cMap)[sid1][sid2] = totalOverlap
+	case 1: // sid1 > sid2
+		if _, ok := (*c.cMap)[sid2]; !ok {
+			(*c.cMap)[sid2] = make(map[sessionID]uint64, 0)
 		}
-		(*c.cMap)[tid2][tid1] = totalOverlap
+		(*c.cMap)[sid2][sid1] = totalOverlap
 	}
 }
 
 func (c *coOccurrence) Get(ov1 Overlap, ov2 Overlap) uint64 {
-	tid1 := ov1.TID()
-	tid2 := ov2.TID()
+	sid1 := ov1.SID()
+	sid2 := ov2.SID()
 
 	// if value doesnt exist then 0 value is returned (which is desired)
-	if tid1.Compare(tid2) < 0 {
-		return (*c.cMap)[tid1][tid2]
+	if sid1.Compare(sid2) < 0 {
+		return (*c.cMap)[sid1][sid2]
 	}
-	return (*c.cMap)[tid2][tid1]
+	return (*c.cMap)[sid2][sid1]
 }
 
 func (c *coOccurrence) SaveData(dataPath string) error {
-	// return gob.NewEncoder(file).Encode(c.cMap)
-	//
+	coocData := make([]*protocol.CoocOuter, 0)
 
-	outerMaps := make([]*protocol.OuterMap, 0)
-
-	// for _, ts1 := range allTimestamps {
-	// 	for _, ts2 := range allTimestamps {
-	// 		a := cooc.Get(ts1, ts2)
-	// 		b := cooc.Get(ts2, ts1)
-	// 		if a != b {
-	// 			fmt.Println("WHYYY")
-	// 		}
-	// 	}
-	// }
-
-	for outerKey, innerMap := range *c.cMap {
-		outer := &protocol.OuterMap{
-			Key: outerKey[:], // Convert [16]byte to []byte
+	for outerSid, coocInner := range *c.cMap {
+		outer := &protocol.CoocOuter{
+			Sid: outerSid[:],
 		}
 
-		for innerKey, value := range innerMap {
-			outer.InnerMap = append(outer.InnerMap, &protocol.InnerMap{
-				Key:   innerKey[:], // Convert [16]byte to []byte
-				Value: value,
+		for innerSid, overlap := range coocInner {
+			outer.CoocInner = append(outer.CoocInner, &protocol.CoocInner{
+				Sid:     innerSid[:],
+				Overlap: overlap,
 			})
 		}
 
-		outerMaps = append(outerMaps, outer)
+		coocData = append(coocData, outer)
 	}
 
-	dataToSave := &protocol.OuterMaps{
-		OuterMap: outerMaps,
+	dataToSave := &protocol.CooccurrenceData{
+		CoocOuter: coocData,
 	}
 
 	out, err := proto.Marshal(dataToSave)
@@ -118,25 +112,25 @@ func (c *coOccurrence) LoadData(dataPath string) error {
 		return fmt.Errorf("could not read file: %w", err)
 	}
 
-	outerMaps := &protocol.OuterMaps{}
-	if err := proto.Unmarshal(data, outerMaps); err != nil {
+	coocData := &protocol.CooccurrenceData{}
+	if err := proto.Unmarshal(data, coocData); err != nil {
 		return fmt.Errorf("could not unmarshal data: %w", err)
 	}
 
 	result := make(coOccurrenceData, 0)
 
-	for _, outer := range outerMaps.OuterMap {
-		outerKey := [16]byte{}
-		copy(outerKey[:], outer.Key)
+	for _, outer := range coocData.CoocOuter {
+		outerSid := [16]byte{}
+		copy(outerSid[:], outer.Sid)
 
-		innerMap := make(map[ulid.ULID]uint64)
-		for _, inner := range outer.InnerMap {
-			innerKey := [16]byte{}
-			copy(innerKey[:], inner.Key)
-			innerMap[innerKey] = inner.Value
+		innerMap := make(map[sessionID]uint64)
+		for _, inner := range outer.CoocInner {
+			innerSid := [16]byte{}
+			copy(innerSid[:], inner.Sid)
+			innerMap[innerSid] = inner.Overlap
 		}
 
-		result[outerKey] = innerMap
+		result[outerSid] = innerMap
 	}
 
 	c.cMap = &result
