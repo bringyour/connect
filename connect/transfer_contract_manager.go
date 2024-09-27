@@ -178,7 +178,9 @@ func NewContractManager(
 		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
 	}
 
-	go contractManager.providePing()
+	if client.ClientId() != ControlId {
+		go contractManager.providePing()
+	}
 
 	return contractManager
 }

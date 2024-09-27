@@ -542,7 +542,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	// 3. continue from 1 until timeout
 
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]http serial %s %s\n", request.Method, request.URL)
+		glog.V(2).Infof("[net]http serial %s %s\n", request.Method, request.URL)
 
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
@@ -552,7 +552,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		return newEvalResultFromHttpResponse(response, err)
 	}
 	helloEval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]http serial hello %s %s\n", request.Method, request.URL)
+		glog.V(2).Infof("[net]http serial hello %s %s\n", request.Method, request.URL)
 
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(helloRequest.WithContext(handleCtx))
@@ -571,7 +571,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]ws dial %s\n", url)
+		glog.V(2).Infof("[net]ws dial %s\n", url)
 
 		wsDialer := dialer.WsDialer(self.settings)
 		wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)

@@ -22,7 +22,7 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	// The receiver should be able to reset using the new sequence_id
 
 	// timeout between receives or acks
-	timeout := 30 * time.Second
+	timeout := 60 * time.Second
 	// number of messages
 	n := 16 * 1024
 

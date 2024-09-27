@@ -90,13 +90,13 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 	return &SendBufferSettings{
 		CreateContractTimeout:       30 * time.Second,
 		CreateContractRetryInterval: 5 * time.Second,
-		MinResendInterval:           500 * time.Millisecond,
+		MinResendInterval:           1 * time.Second,
 		MaxResendInterval:           4 * time.Second,
 		// no backoff
 		ResendBackoffScale: 0,
 		RttScale:           1.0,
-		RttWindowSize:      256,
-		RttWindowTimeout:   15 * time.Second,
+		RttWindowSize:      128,
+		RttWindowTimeout:   5 * time.Second,
 		AckTimeout:         60 * time.Second,
 		IdleTimeout:        60 * time.Second,
 		// pause on resend for selectively acked messaged
@@ -131,9 +131,9 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 
 func DefaultForwardBufferSettings() *ForwardBufferSettings {
 	return &ForwardBufferSettings{
-		IdleTimeout:        300 * time.Second,
+		IdleTimeout:        60 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
-		WriteTimeout:       1 * time.Second,
+		WriteTimeout:       30 * time.Second,
 	}
 }
 
@@ -674,7 +674,7 @@ func (self *Client) run() {
 	}
 
 	// control ping
-	if 0 < self.settings.ControlPingTimeout {
+	if self.clientId != ControlId && 0 < self.settings.ControlPingTimeout {
 		go func() {
 			for {
 				// uniform timeout with mean `ControlPingTimeout`
@@ -982,7 +982,7 @@ type SendBufferSettings struct {
 	// resend timeout is the initial time between successive send attempts. Does linear backoff
 	MinResendInterval  time.Duration
 	MaxResendInterval  time.Duration
-	ResendBackoffScale float64
+	ResendBackoffScale float32
 
 	RttScale         float32
 	RttWindowSize    int
@@ -1492,7 +1492,7 @@ func (self *SendSequence) Run() {
 				if itemAckTimeout <= 0 {
 					// message took too long to ack
 					// close the sequence
-					glog.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+					glog.Infof("[s]%s->%s...%s s(%s) exit ack timeout (%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, self.sendBufferSettings.AckTimeout)
 					return
 				}
 				if itemAckTimeout < timeout {
@@ -1558,7 +1558,7 @@ func (self *SendSequence) Run() {
 				item.sendCount += 1
 				// linear backoff
 				// itemResendTimeout := self.sendBufferSettings.ResendInterval
-				itemResendTimeout := time.Duration(float64(self.rttWindow.ScaledRtt()) * (1 + self.sendBufferSettings.ResendBackoffScale*float64(item.sendCount)))
+				itemResendTimeout := time.Duration(float32(self.rttWindow.ScaledRtt()/time.Millisecond)*(1+self.sendBufferSettings.ResendBackoffScale*float32(item.sendCount))) * time.Millisecond
 				if itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
@@ -1621,6 +1621,7 @@ func (self *SendSequence) Run() {
 					// idle timeout
 					if self.idleCondition.Close(checkpointId) {
 						// close the sequence
+						glog.Errorf("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 						return
 					}
 					// else there are pending updates

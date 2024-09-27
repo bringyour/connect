@@ -134,7 +134,7 @@ func (self *RttWindow) scaledRtt(sendTime time.Time) time.Duration {
 
 	self.coalesce(sendTime)
 
-	useRtt := self.rtts.MinRtt()
+	useRtt := self.rtts.MeanRtt()
 	scaledRtt := min(
 		max(
 			time.Duration(float32(useRtt/time.Millisecond)*self.rttScale)*time.Millisecond,

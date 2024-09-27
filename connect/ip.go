@@ -80,8 +80,9 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		// avoid fragmentation
 		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
 		WindowSize:          uint32(mib(1)),
-		WindowScale:         uint32(4),
-		UserLimit:           128,
+		// TODO can this be auto computed?
+		WindowScale: uint32(4),
+		UserLimit:   128,
 	}
 	return tcpBufferSettings
 }
