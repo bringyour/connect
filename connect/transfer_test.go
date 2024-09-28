@@ -61,9 +61,14 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsA := DefaultClientSettings()
 	clientSettingsA.SendBufferSettings.SequenceBufferSize = 0
 	clientSettingsA.SendBufferSettings.AckBufferSize = 0
+	clientSettingsA.SendBufferSettings.AckTimeout = 90 * time.Second
+	clientSettingsA.SendBufferSettings.IdleTimeout = 180 * time.Second
 	clientSettingsA.ReceiveBufferSettings.SequenceBufferSize = 0
+	clientSettingsA.ReceiveBufferSettings.GapTimeout = 90 * time.Second
+	clientSettingsA.ReceiveBufferSettings.IdleTimeout = 180 * time.Second
 	// clientSettingsA.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsA.ForwardBufferSettings.SequenceBufferSize = 0
+	clientSettingsA.ForwardBufferSettings.IdleTimeout = 180 * time.Second
 	a := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA)
 	aRouteManager := a.RouteManager()
 	aContractManager := a.ContractManager()
@@ -81,9 +86,14 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	clientSettingsB := DefaultClientSettings()
 	clientSettingsB.SendBufferSettings.SequenceBufferSize = 0
 	clientSettingsB.SendBufferSettings.AckBufferSize = 0
+	clientSettingsB.SendBufferSettings.AckTimeout = 90 * time.Second
+	clientSettingsB.SendBufferSettings.IdleTimeout = 180 * time.Second
 	clientSettingsB.ReceiveBufferSettings.SequenceBufferSize = 0
+	clientSettingsB.ReceiveBufferSettings.GapTimeout = 90 * time.Second
+	clientSettingsB.ReceiveBufferSettings.IdleTimeout = 180 * time.Second
 	// clientSettingsB.ReceiveBufferSettings.AckBufferSize = 0
 	clientSettingsB.ForwardBufferSettings.SequenceBufferSize = 0
+	clientSettingsB.ForwardBufferSettings.IdleTimeout = 180 * time.Second
 	b := NewClient(ctx, bClientId, NewNoContractClientOob(), clientSettingsB)
 	bRouteManager := b.RouteManager()
 	bContractManager := b.ContractManager()
@@ -179,7 +189,12 @@ func TestSendReceiveSenderReset(t *testing.T) {
 	aRouteManager.RemoveTransport(aSendTransport)
 	aRouteManager.RemoveTransport(aReceiveTransport)
 
-	a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
+	select {
+	case <-time.After(1 * time.Second):
+	}
+
+	a2 := NewClient(ctx, aClientId, NewNoContractClientOob(), clientSettingsA)
+	// a2 := NewClientWithDefaults(ctx, aClientId, NewNoContractClientOob())
 	a2RouteManager := a2.RouteManager()
 	a2ContractManager := a2.ContractManager()
 	// a2RouteManager := NewRouteManager(a2)

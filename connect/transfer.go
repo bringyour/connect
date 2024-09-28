@@ -89,12 +89,12 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		MinResendInterval:           1 * time.Second,
 		MaxResendInterval:           5 * time.Second,
 		// no backoff
-		ResendBackoffScale: 0,
-		RttScale:           1.5,
-		RttWindowSize:      128,
-		RttWindowTimeout:   5 * time.Second,
-		AckTimeout:         60 * time.Second,
-		IdleTimeout:        60 * time.Second,
+		// ResendBackoffScale: 0,
+		RttScale:         1.2,
+		RttWindowSize:    128,
+		RttWindowTimeout: 5 * time.Second,
+		AckTimeout:       30 * time.Second,
+		IdleTimeout:      60 * time.Second,
 		// pause on resend for selectively acked messaged
 		SelectiveAckTimeout: 5 * time.Second,
 		SequenceBufferSize:  DefaultTransferBufferSize,
@@ -109,7 +109,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 
 func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 	return &ReceiveBufferSettings{
-		GapTimeout: 60 * time.Second,
+		GapTimeout: 30 * time.Second,
 		// the receive idle timeout should be a bit longer than the send idle timeout
 		IdleTimeout:        120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
@@ -976,9 +976,9 @@ type SendBufferSettings struct {
 	CreateContractRetryInterval time.Duration
 
 	// resend timeout is the initial time between successive send attempts. Does linear backoff
-	MinResendInterval  time.Duration
-	MaxResendInterval  time.Duration
-	ResendBackoffScale float32
+	MinResendInterval time.Duration
+	MaxResendInterval time.Duration
+	// ResendBackoffScale float32
 
 	RttScale         float32
 	RttWindowSize    int
@@ -1552,9 +1552,7 @@ func (self *SendSequence) Run() {
 				}
 
 				item.sendCount += 1
-				// linear backoff
-				// itemResendTimeout := self.sendBufferSettings.ResendInterval
-				itemResendTimeout := time.Duration(float32(self.rttWindow.ScaledRtt()/time.Millisecond)*(1+self.sendBufferSettings.ResendBackoffScale*float32(item.sendCount))) * time.Millisecond
+				itemResendTimeout := self.rttWindow.ScaledRtt()
 				if itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
