@@ -60,10 +60,11 @@ func DefaultClientStrategySettings() *ClientStrategySettings {
 
 func DefaultConnectSettings() *ConnectSettings {
 	return &ConnectSettings{
-		RequestTimeout:   60 * time.Second,
-		ConnectTimeout:   2 * time.Second,
-		TlsTimeout:       4 * time.Second,
-		HandshakeTimeout: 4 * time.Second,
+		RequestTimeout:   30 * time.Second,
+		ConnectTimeout:   5 * time.Second,
+		TlsTimeout:       5 * time.Second,
+		HandshakeTimeout: 5 * time.Second,
+		IdleConnTimeout:  90 * time.Second,
 		TlsConfig:        nil,
 	}
 }
@@ -73,6 +74,7 @@ type ConnectSettings struct {
 	ConnectTimeout   time.Duration
 	TlsTimeout       time.Duration
 	HandshakeTimeout time.Duration
+	IdleConnTimeout  time.Duration
 
 	TlsConfig *tls.Config
 }
@@ -153,6 +155,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.5,
 				priority:       25,
 				dialTlsContext: tlsDialer.DialContext,
+				settings:       &settings.ConnectSettings,
 			}
 			dialers[dialer] = true
 		}
@@ -166,6 +169,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.25,
 				priority:       50,
 				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
+				settings:       &settings.ConnectSettings,
 			}
 			// fragment
 			// this is the highest priority because it has no performance impact and additional security benefits
@@ -174,6 +178,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.25,
 				priority:       0,
 				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
+				settings:       &settings.ConnectSettings,
 			}
 			// reorder
 			dialer3 := &clientDialer{
@@ -181,6 +186,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				minimumWeight:  0.25,
 				priority:       50,
 				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
+				settings:       &settings.ConnectSettings,
 			}
 
 			dialers[dialer1] = true
@@ -351,6 +357,8 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		if result.err == nil {
 			glog.Infof("[net][p]select: %s\n", dialer.String())
 			return result
+		} else {
+			glog.Infof("[net][p]select: %s = %s\n", dialer.String(), result.err)
 		}
 		result.Close()
 	}
@@ -370,6 +378,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 				glog.Infof("[net][p]select: %s\n", result.dialer.String())
 				return result
 			} else {
+				glog.Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
 				result.Close()
 				go run(dialer)
 			}
@@ -406,6 +415,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 					glog.Infof("[net][p]select: %s\n", result.dialer.String())
 					return result
 				} else {
+					glog.Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
 					result.Close()
 					go run(dialer)
 				}
@@ -493,6 +503,8 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 			if result.err == nil {
 				glog.Infof("[net][s]select: %s\n", dialer.String())
 				return result
+			} else {
+				glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
 			}
 			result.Close()
 		}
@@ -782,6 +794,7 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 			priority:       100,
 			dialTlsContext: dialTlsContext,
 			extenderConfig: extenderConfig,
+			settings:       &self.settings.ConnectSettings,
 		}
 		expandedDialers = append(expandedDialers, dialer)
 	}
@@ -813,6 +826,8 @@ type clientDialer struct {
 
 	httpClient      *http.Client
 	websocketDialer *websocket.Dialer
+
+	settings *ConnectSettings
 }
 
 func (self *clientDialer) HttpClient(settings *ClientStrategySettings) *http.Client {
@@ -821,7 +836,9 @@ func (self *clientDialer) HttpClient(settings *ClientStrategySettings) *http.Cli
 
 	if self.httpClient == nil {
 		transport := &http.Transport{
-			DialTLSContext: self.dialTlsContext,
+			DialTLSContext:      self.dialTlsContext,
+			IdleConnTimeout:     self.settings.IdleConnTimeout,
+			TLSHandshakeTimeout: self.settings.TlsTimeout,
 		}
 		self.httpClient = &http.Client{
 			Transport: transport,
