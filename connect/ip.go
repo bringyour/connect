@@ -80,9 +80,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		// avoid fragmentation
 		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
 		WindowSize:          uint32(mib(1)),
-		// TODO can this be auto computed?
-		WindowScale: uint32(4),
-		UserLimit:   128,
+		UserLimit:           128,
 	}
 	return tcpBufferSettings
 }
@@ -90,7 +88,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 func DefaultLocalUserNatSettings() *LocalUserNatSettings {
 	return &LocalUserNatSettings{
 		SequenceBufferSize: DefaultIpBufferSize,
-		BufferTimeout:      5 * time.Second,
+		BufferTimeout:      15 * time.Second,
 		UdpBufferSettings:  DefaultUdpBufferSettings(),
 		TcpBufferSettings:  DefaultTcpBufferSettings(),
 	}
@@ -1156,7 +1154,7 @@ func NewTcpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 		// the window size starts at the fixed value
 		enableWindowScale: false,
 		windowSize:        tcpBufferSettings.WindowSize,
-		windowScale:       tcpBufferSettings.WindowScale,
+		windowScale:       0,
 		userLimited:       *newUserLimited(),
 	}
 	return &TcpSequence{
@@ -1281,7 +1279,15 @@ func (self *TcpSequence) Run() {
 
 					self.enableWindowScale, self.receiveWindowScale = parseWindowScaleOpts()
 					self.receiveWindowSize = uint32(sendItem.tcp.Window) << self.receiveWindowScale
-					if !self.enableWindowScale {
+					if self.enableWindowScale {
+						// compute the window scale to fit the window size in uint16
+						bits := math.Log2(float64(self.windowSize) / float64(math.MaxUint16))
+						if 0 <= bits {
+							self.windowScale = uint32(math.Ceil(bits))
+						} else {
+							self.windowScale = 0
+						}
+					} else {
 						// turn off window scale for send
 						self.windowScale = 0
 					}

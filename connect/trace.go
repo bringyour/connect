@@ -92,6 +92,17 @@ func TraceWithReturn[R any](tag string, do func() R) (result R) {
 	return
 }
 
+func TraceWithReturnError[R any](tag string, do func() (R, error)) (result R, returnErr error) {
+	trace(tag, func() string {
+		result, returnErr = do()
+		if returnErr != nil {
+			return fmt.Sprintf(" err = %s", returnErr)
+		}
+		return fmt.Sprintf(" = %v", result)
+	})
+	return
+}
+
 func trace(tag string, do func() string) {
 	start := time.Now()
 	glog.Infof("[%-8s]%s (%d)\n", "start", tag, start.UnixMilli())

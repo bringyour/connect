@@ -138,7 +138,7 @@ func (self *PlatformTransport) run() {
 
 	for {
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
-		ws, err := func() (*websocket.Conn, error) {
+		connect := func() (*websocket.Conn, error) {
 			ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, nil)
 			if err != nil {
 				return nil, err
@@ -172,7 +172,15 @@ func (self *PlatformTransport) run() {
 
 			success = true
 			return ws, nil
-		}()
+		}
+
+		var ws *websocket.Conn
+		var err error
+		if glog.V(2) {
+			ws, err = TraceWithReturnError(fmt.Sprintf("[t]connect %s", clientId), connect)
+		} else {
+			ws, err = connect()
+		}
 		if err != nil {
 			glog.Infof("[t]auth error %s = %s\n", clientId, err)
 			select {
@@ -229,7 +237,7 @@ func (self *PlatformTransport) run() {
 						ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 						if err := ws.WriteMessage(websocket.BinaryMessage, message); err != nil {
 							// note that for websocket a dealine timeout cannot be recovered
-							glog.V(2).Infof("[ts]%s-> error = %s\n", clientId, err)
+							glog.Infof("[ts]%s-> error = %s\n", clientId, err)
 							return
 						}
 						glog.V(2).Infof("[ts]%s->\n", clientId)
@@ -259,7 +267,7 @@ func (self *PlatformTransport) run() {
 					ws.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 					messageType, message, err := ws.ReadMessage()
 					if err != nil {
-						glog.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
+						glog.Infof("[tr]%s<- error = %s\n", clientId, err)
 						return
 					}
 
@@ -279,6 +287,8 @@ func (self *PlatformTransport) run() {
 						case <-time.After(self.settings.ReadTimeout):
 							glog.Infof("[tr]drop %s<-\n", clientId)
 						}
+					default:
+						glog.V(2).Infof("[tr]other=%s %s<-\n", messageType, clientId)
 					}
 				}
 			}()
@@ -289,7 +299,7 @@ func (self *PlatformTransport) run() {
 		}
 		reconnect = NewReconnect(self.settings.ReconnectTimeout)
 		if glog.V(2) {
-			Trace(fmt.Sprintf("[t]connect %s", clientId), c)
+			Trace(fmt.Sprintf("[t]connect run %s", clientId), c)
 		} else {
 			c()
 		}

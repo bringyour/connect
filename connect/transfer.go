@@ -48,10 +48,6 @@ Each transport should apply the forwarding ACL:
 // In this a client is similar to a socket. Multiple clients
 // can be active in parallel, each limited by their slowest destination.
 
-// FIXME MinContractCloseCount
-// FIXME minimum byte count when closing a contract
-// FIXME set this to 1MiB or something large to prevent users from dusting the network
-
 // use 0 for deadlock testing
 const DefaultTransferBufferSize = 32
 
@@ -70,7 +66,7 @@ func DefaultClientSettings() *ClientSettings {
 		ForwardBufferSize:       DefaultTransferBufferSize,
 		ReadTimeout:             30 * time.Second,
 		BufferTimeout:           30 * time.Second,
-		ControlWriteTimeout:     30 * time.Second,
+		ControlWriteTimeout:     15 * time.Second,
 		ControlPingTimeout:      time.Duration(0),
 		SendBufferSettings:      DefaultSendBufferSettings(),
 		ReceiveBufferSettings:   DefaultReceiveBufferSettings(),
@@ -91,10 +87,10 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		CreateContractTimeout:       30 * time.Second,
 		CreateContractRetryInterval: 5 * time.Second,
 		MinResendInterval:           1 * time.Second,
-		MaxResendInterval:           4 * time.Second,
+		MaxResendInterval:           5 * time.Second,
 		// no backoff
 		ResendBackoffScale: 0,
-		RttScale:           1.0,
+		RttScale:           1.5,
 		RttWindowSize:      128,
 		RttWindowTimeout:   5 * time.Second,
 		AckTimeout:         60 * time.Second,
@@ -105,7 +101,7 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		AckBufferSize:       DefaultTransferBufferSize,
 		MinMessageByteCount: ByteCount(1),
 		// this includes transport reconnections
-		WriteTimeout:            30 * time.Second,
+		WriteTimeout:            15 * time.Second,
 		ResendQueueMaxByteCount: mib(1),
 		ContractFillFraction:    0.5,
 	}
@@ -118,13 +114,13 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		IdleTimeout:        120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
 		// AckBufferSize: DefaultTransferBufferSize,
-		AckCompressTimeout:   10 * time.Millisecond,
-		MinMessageByteCount:  ByteCount(1),
-		ResendAbuseThreshold: 4,
-		ResendAbuseMultiple:  0.5,
+		AckCompressTimeout:  0 * time.Millisecond,
+		MinMessageByteCount: ByteCount(1),
+		// ResendAbuseThreshold: 4,
+		// ResendAbuseMultiple:  0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
 		// this includes transport reconnections
-		WriteTimeout:             30 * time.Second,
+		WriteTimeout:             15 * time.Second,
 		ReceiveQueueMaxByteCount: mib(2),
 	}
 }
@@ -133,7 +129,7 @@ func DefaultForwardBufferSettings() *ForwardBufferSettings {
 	return &ForwardBufferSettings{
 		IdleTimeout:        60 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
-		WriteTimeout:       30 * time.Second,
+		WriteTimeout:       15 * time.Second,
 	}
 }
 
@@ -2169,9 +2165,9 @@ type ReceiveBufferSettings struct {
 	MinMessageByteCount ByteCount
 
 	// min number of resends before checking abuse
-	ResendAbuseThreshold int
+	// ResendAbuseThreshold int
 	// max legit fraction of sends that are resends
-	ResendAbuseMultiple float64
+	// ResendAbuseMultiple float64
 
 	MaxPeerAuditDuration time.Duration
 
@@ -2694,26 +2690,6 @@ func (self *ReceiveSequence) Run() {
 				// else there are pending updates
 			}
 		}
-
-		// FIXME audit SendCount is currently not being updated
-		/*
-			// check the resend abuse limits
-			// resends can appear normal but waste bandwidth
-			abuse := false
-			self.peerAudit.Update(func(a *PeerAudit) {
-				if self.receiveBufferSettings.ResendAbuseThreshold <= a.ResendCount {
-					resendByteCountAbuse := ByteCount(float64(a.SendByteCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendByteCount
-					resendCountAbuse := int(float64(a.SendCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendCount
-					abuse = resendByteCountAbuse || resendCountAbuse
-					a.Abuse = abuse
-				}
-			})
-			if abuse {
-				// close the sequence
-				self.routeManager.DowngradeReceiverConnection(self.sourceId)
-				return
-			}
-		*/
 	}
 }
 

@@ -384,9 +384,9 @@ func kib(c ByteCount) ByteCount {
 }
 
 func mib(c ByteCount) ByteCount {
-	return c * ByteCount(1024*1024)
+	return c * ByteCount(1024) * ByteCount(1024)
 }
 
 func gib(c ByteCount) ByteCount {
-	return c * ByteCount(1024*1024*1024)
+	return c * ByteCount(1024) * ByteCount(1024) * ByteCount(1024)
 }

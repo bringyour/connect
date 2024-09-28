@@ -374,6 +374,41 @@ func (self *ContractManager) contractError(contractError protocol.ContractError)
 	}
 }
 
+func (self *ContractManager) GetProvideSecretKeys() map[protocol.ProvideMode][]byte {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return maps.Clone(self.provideSecretKeys)
+}
+
+func (self *ContractManager) LoadProvideSecretKeys(provideSecretKeys map[protocol.ProvideMode][]byte) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	for provideMode, provideSecretKey := range provideSecretKeys {
+		self.provideSecretKeys[provideMode] = provideSecretKey
+	}
+}
+
+func (self *ContractManager) InitProvideSecretKeys() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	for i, _ := range protocol.ProvideMode_name {
+		provideMode := protocol.ProvideMode(i)
+		provideSecretKey, ok := self.provideSecretKeys[provideMode]
+		if !ok {
+			// generate a new key
+			provideSecretKey = make([]byte, 32)
+			_, err := rand.Read(provideSecretKey)
+			if err != nil {
+				panic(err)
+			}
+			self.provideSecretKeys[provideMode] = provideSecretKey
+		}
+	}
+}
+
 func (self *ContractManager) SetProvidePaused(providePaused bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
