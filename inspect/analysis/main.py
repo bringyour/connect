@@ -3,9 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import statistics
+import matplotlib.cm as cm
 
 import numpy as np
 from sklearn.cluster import OPTICS, HDBSCAN
+from sklearn.manifold import TSNE
 from scipy.spatial.distance import pdist, squareform
 import seaborn as sns
 
@@ -34,18 +36,30 @@ def load_map(filename1):
     return result, max_overlap
 
 
-def heatmap_labels(clusters):
+def heatmap_labels(clusters, only_first=True, sids=None):
     new_labels = []
     for cluster_id in sorted(clusters.keys()):
-        # add cluster id only once
-        cluster_labels = [""] * len(clusters[cluster_id])
-        cluster_labels[0] = f"{int(cluster_id)}"
-        new_labels.extend(cluster_labels)
-
-        # add truncated transport IDs
-        # for idx in clusters[cluster_id]:
-        #     truncated_labels.append(f"…{sids[idx][-5:]}({cluster_id})")
+        if only_first:
+            # add cluster id only once
+            cluster_labels = [""] * len(clusters[cluster_id])
+            cluster_labels[0] = f"{int(cluster_id)}"
+            new_labels.extend(cluster_labels)
+        else:
+            # add truncated transport IDs
+            for idx in clusters[cluster_id]:
+                new_labels.append(f"…{sids[idx][-5:]}")
+                # new_labels.append(cluster_id)
     return new_labels
+
+
+def scatter_colors(clusters):
+    unique_clusters = clusters.keys()
+    colors = cm.rainbow(np.linspace(0, 1, len(unique_clusters)))
+    cluster_colors = []
+    for cluster_id in sorted(clusters.keys()):
+        for idx in clusters[cluster_id]:
+            cluster_colors.append(colors[cluster_id])
+    return cluster_colors
 
 
 def stats(list_of_lists):
@@ -93,7 +107,9 @@ def compute_distance_from_overlap(overlap_data, max_overlap, sid1, sid2):
 
 
 def cluster(samples, distance_func):
-    labels = OPTICS(min_samples=5, metric=distance_func, eps=0.9).fit_predict(samples)
+    labels = OPTICS(min_samples=5, metric=distance_func, max_eps=0.9).fit_predict(
+        samples
+    )
     # labels = HDBSCAN(
     #     min_cluster_size=3,
     #     metric=distance_func,
@@ -147,7 +163,7 @@ def create_heatmap(data, max_overlap):
             clusters[cluster_id] = []
         clusters[cluster_id].append(id_)
 
-    print(clusters)
+    print(f"Found {len(clusters)} clusters: {clusters}")
 
     # reorder based on the formed clusters
     ordered_ids = []
@@ -172,6 +188,30 @@ def create_heatmap(data, max_overlap):
     plt.tight_layout()
 
     plt.savefig("../images/heatmap.png", dpi=300)
+    plt.close()
+
+    projection = TSNE().fit_transform(reordered_matrix)
+    cluster_colors = scatter_colors(clusters)
+    plt.scatter(projection[:, 0], projection[:, 1], color=cluster_colors)
+    scatter_labels = heatmap_labels(clusters, False, sids)
+
+    offset = 0.333  # Adjust the offset size if needed
+    x_offset = np.random.uniform(-offset, offset, size=len(sids))
+    y_offset = np.random.uniform(-offset, offset, size=len(sids))
+    for i, label in enumerate(scatter_labels):
+        # plt.text(projection[i, 0], projection[i, 1], label, fontsize=9, alpha=0.75)
+        plt.text(
+            projection[i, 0] + x_offset[i],
+            projection[i, 1] + y_offset[i],
+            label,
+            fontsize=4,
+            alpha=0.75,
+        )
+    plt.title("2D Projection of Heatmap Data")
+    plt.xlabel("Component 1")
+    plt.ylabel("Component 2")
+    plt.tight_layout()
+    plt.savefig("../images/projected.png", dpi=300)
     plt.close()
 
 
