@@ -1605,6 +1605,8 @@ func (self *multiClientChannel) detectBlackhole() {
 			select {
 			case <-self.ctx.Done():
 				return
+			case <-self.client.Done():
+				return
 			case <-time.After(timeout):
 			}
 		}
@@ -1887,6 +1889,8 @@ func (self *multiClientChannel) windowStatsWithCoalesce(coalesce bool) (*clientW
 	if err == nil {
 		select {
 		case <-self.ctx.Done():
+			err = errors.New("Done.")
+		case <-self.client.Done():
 			err = errors.New("Done.")
 		default:
 		}
