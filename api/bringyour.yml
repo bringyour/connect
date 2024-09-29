@@ -1078,8 +1078,6 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/SetPayoutWalletResult"
-
-    /account/payout-wallet:
         get:
             description: |
                 Fetches the payout wallet associated with the network

@@ -208,8 +208,6 @@ func (self *transferQueue[T]) PeekLast() T {
 	return self.maxHeap.PeekFirst()
 }
 
-// FIXME RemoveLast
-
 // heap.Interface
 
 func (self *transferQueue[T]) Push(x any) {
@@ -289,7 +287,7 @@ func (self *transferQueueMaxHeap[T]) Pop() any {
 	return item
 }
 
-// sort.Interface
+// `sort.Interface`
 
 func (self *transferQueueMaxHeap[T]) Len() int {
 	return len(self.orderedItems)

@@ -48,10 +48,6 @@ Each transport should apply the forwarding ACL:
 // In this a client is similar to a socket. Multiple clients
 // can be active in parallel, each limited by their slowest destination.
 
-// FIXME MinContractCloseCount
-// FIXME minimum byte count when closing a contract
-// FIXME set this to 1MiB or something large to prevent users from dusting the network
-
 // use 0 for deadlock testing
 const DefaultTransferBufferSize = 32
 
@@ -70,7 +66,7 @@ func DefaultClientSettings() *ClientSettings {
 		ForwardBufferSize:       DefaultTransferBufferSize,
 		ReadTimeout:             30 * time.Second,
 		BufferTimeout:           30 * time.Second,
-		ControlWriteTimeout:     30 * time.Second,
+		ControlWriteTimeout:     15 * time.Second,
 		ControlPingTimeout:      time.Duration(0),
 		SendBufferSettings:      DefaultSendBufferSettings(),
 		ReceiveBufferSettings:   DefaultReceiveBufferSettings(),
@@ -90,20 +86,22 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 	return &SendBufferSettings{
 		CreateContractTimeout:       30 * time.Second,
 		CreateContractRetryInterval: 5 * time.Second,
-		// this should be greater than the rtt under load
-		// TODO use an rtt estimator based on the ack times
-		ResendInterval: 1 * time.Second,
+		MinResendInterval:           1 * time.Second,
+		MaxResendInterval:           5 * time.Second,
 		// no backoff
-		ResendBackoffScale: 0,
-		AckTimeout:         60 * time.Second,
-		IdleTimeout:        60 * time.Second,
+		// ResendBackoffScale: 0,
+		RttScale:         1.2,
+		RttWindowSize:    128,
+		RttWindowTimeout: 5 * time.Second,
+		AckTimeout:       30 * time.Second,
+		IdleTimeout:      60 * time.Second,
 		// pause on resend for selectively acked messaged
 		SelectiveAckTimeout: 5 * time.Second,
 		SequenceBufferSize:  DefaultTransferBufferSize,
 		AckBufferSize:       DefaultTransferBufferSize,
 		MinMessageByteCount: ByteCount(1),
 		// this includes transport reconnections
-		WriteTimeout:            30 * time.Second,
+		WriteTimeout:            15 * time.Second,
 		ResendQueueMaxByteCount: mib(1),
 		ContractFillFraction:    0.5,
 	}
@@ -111,27 +109,27 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 
 func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 	return &ReceiveBufferSettings{
-		GapTimeout: 60 * time.Second,
+		GapTimeout: 30 * time.Second,
 		// the receive idle timeout should be a bit longer than the send idle timeout
 		IdleTimeout:        120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
 		// AckBufferSize: DefaultTransferBufferSize,
-		AckCompressTimeout:   10 * time.Millisecond,
-		MinMessageByteCount:  ByteCount(1),
-		ResendAbuseThreshold: 4,
-		ResendAbuseMultiple:  0.5,
+		AckCompressTimeout:  0 * time.Millisecond,
+		MinMessageByteCount: ByteCount(1),
+		// ResendAbuseThreshold: 4,
+		// ResendAbuseMultiple:  0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
 		// this includes transport reconnections
-		WriteTimeout:             30 * time.Second,
+		WriteTimeout:             15 * time.Second,
 		ReceiveQueueMaxByteCount: mib(2),
 	}
 }
 
 func DefaultForwardBufferSettings() *ForwardBufferSettings {
 	return &ForwardBufferSettings{
-		IdleTimeout:        300 * time.Second,
+		IdleTimeout:        60 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
-		WriteTimeout:       1 * time.Second,
+		WriteTimeout:       15 * time.Second,
 	}
 }
 
@@ -672,7 +670,7 @@ func (self *Client) run() {
 	}
 
 	// control ping
-	if 0 < self.settings.ControlPingTimeout {
+	if self.clientId != ControlId && 0 < self.settings.ControlPingTimeout {
 		go func() {
 			for {
 				// uniform timeout with mean `ControlPingTimeout`
@@ -977,10 +975,14 @@ type SendBufferSettings struct {
 	CreateContractTimeout       time.Duration
 	CreateContractRetryInterval time.Duration
 
-	// TODO replace this with round trip time estimation
 	// resend timeout is the initial time between successive send attempts. Does linear backoff
-	ResendInterval     time.Duration
-	ResendBackoffScale float64
+	MinResendInterval time.Duration
+	MaxResendInterval time.Duration
+	// ResendBackoffScale float32
+
+	RttScale         float32
+	RttWindowSize    int
+	RttWindowTimeout time.Duration
 
 	// on ack timeout, no longer attempt to retransmit and notify of ack failure
 	AckTimeout  time.Duration
@@ -1242,6 +1244,8 @@ type SendSequence struct {
 
 	idleCondition *IdleCondition
 
+	rttWindow *RttWindow
+
 	contractMultiRouteWriter            MultiRouteWriter
 	contractMultiRouteWriterDestination TransferPath
 }
@@ -1256,6 +1260,14 @@ func NewSendSequence(
 	forceStream bool,
 	sendBufferSettings *SendBufferSettings) *SendSequence {
 	cancelCtx, cancel := context.WithCancel(ctx)
+
+	rttWindow := NewRttWindow(
+		sendBufferSettings.RttWindowSize,
+		sendBufferSettings.RttWindowTimeout,
+		sendBufferSettings.RttScale,
+		sendBufferSettings.MinResendInterval,
+		sendBufferSettings.MaxResendInterval,
+	)
 
 	return &SendSequence{
 		ctx:                cancelCtx,
@@ -1276,6 +1288,7 @@ func NewSendSequence(
 		sendItems:          []*sendItem{},
 		nextSequenceNumber: 0,
 		idleCondition:      NewIdleCondition(),
+		rttWindow:          rttWindow,
 	}
 }
 
@@ -1438,6 +1451,7 @@ func (self *SendSequence) Run() {
 							messageId:      messageId,
 							sequenceNumber: sequenceNumber,
 							selective:      ack.Selective,
+							tag:            ack.Tag,
 						}
 						ackWindow.Update(ack)
 					}
@@ -1450,10 +1464,10 @@ func (self *SendSequence) Run() {
 		// apply the acks
 		ackSnapshot := ackWindow.Snapshot(true)
 		if 0 < ackSnapshot.ackUpdateCount {
-			self.receiveAck(ackSnapshot.headAck.messageId, false)
+			self.receiveAck(ackSnapshot.headAck.messageId, false, ackSnapshot.headAck.tag)
 		}
-		for messageId, _ := range ackSnapshot.selectiveAcks {
-			self.receiveAck(messageId, true)
+		for messageId, ack := range ackSnapshot.selectiveAcks {
+			self.receiveAck(messageId, true, ack.tag)
 		}
 
 		sendTime := time.Now()
@@ -1474,7 +1488,7 @@ func (self *SendSequence) Run() {
 				if itemAckTimeout <= 0 {
 					// message took too long to ack
 					// close the sequence
-					glog.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+					glog.Infof("[s]%s->%s...%s s(%s) exit ack timeout (%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, self.sendBufferSettings.AckTimeout)
 					return
 				}
 				if itemAckTimeout < timeout {
@@ -1502,6 +1516,12 @@ func (self *SendSequence) Run() {
 						return
 					}
 				} else {
+					// var err error
+					// transferFrameBytes, err = self.setTag(item)
+					// if err != nil {
+					// 	glog.Errorf("[s]%s->%s...%s s(%s) exit could not set tag = %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, err)
+					// 	return
+					// }
 					transferFrameBytes = item.transferFrameBytes
 				}
 
@@ -1532,9 +1552,7 @@ func (self *SendSequence) Run() {
 				}
 
 				item.sendCount += 1
-				// linear backoff
-				// itemResendTimeout := self.sendBufferSettings.ResendInterval
-				itemResendTimeout := time.Duration(float64(self.sendBufferSettings.ResendInterval) * (1 + self.sendBufferSettings.ResendBackoffScale*float64(item.sendCount)))
+				itemResendTimeout := self.rttWindow.ScaledRtt()
 				if itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
@@ -1597,6 +1615,7 @@ func (self *SendSequence) Run() {
 					// idle timeout
 					if self.idleCondition.Close(checkpointId) {
 						// close the sequence
+						glog.Errorf("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 						return
 					}
 					// else there are pending updates
@@ -1811,6 +1830,7 @@ func (self *SendSequence) sendWithSetContract(
 		Frames:         frames,
 		ContractFrame:  contractFrame,
 		Nack:           !ack,
+		Tag:            self.rttWindow.OpenTag(),
 	}
 
 	packBytes, _ := proto.Marshal(pack)
@@ -1841,7 +1861,7 @@ func (self *SendSequence) sendWithSetContract(
 		},
 		contractId:         contractId,
 		sendTime:           sendTime,
-		resendTime:         sendTime.Add(self.sendBufferSettings.ResendInterval),
+		resendTime:         sendTime.Add(self.rttWindow.ScaledRtt()),
 		sendCount:          1,
 		head:               head,
 		hasContractFrame:   (contractFrame != nil),
@@ -1899,6 +1919,7 @@ func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
 	}
 
 	pack.Head = true
+	pack.Tag = self.rttWindow.OpenTag()
 	// attach the contract frame to the head
 	if item.contractId != nil && !item.hasContractFrame {
 		sendContract := self.openSendContracts[*item.contractId]
@@ -1923,12 +1944,49 @@ func (self *SendSequence) setHead(item *sendItem) ([]byte, error) {
 	return transferFrameBytesWithHead, nil
 }
 
-func (self *SendSequence) receiveAck(messageId Id, selective bool) {
+/*
+func (self *SendSequence) setTag(item *sendItem) ([]byte, error) {
+	glog.V(1).Infof("[s]set tag %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+
+	var transferFrame protocol.TransferFrame
+	err := proto.Unmarshal(item.transferFrameBytes, &transferFrame)
+	if err != nil {
+		return nil, err
+	}
+
+	var pack protocol.Pack
+	err = proto.Unmarshal(transferFrame.Frame.MessageBytes, &pack)
+	if err != nil {
+		return nil, err
+	}
+
+	pack.Tag = self.rttWindow.OpenTag()
+
+	packBytes, err := proto.Marshal(&pack)
+	if err != nil {
+		return nil, err
+	}
+	transferFrame.Frame.MessageBytes = packBytes
+
+	transferFrameBytesWithTag, err := proto.Marshal(&transferFrame)
+	if err != nil {
+		return nil, err
+	}
+
+	return transferFrameBytesWithTag, nil
+}
+*/
+
+func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol.Tag) {
 	item := self.resendQueue.GetByMessageId(messageId)
 	if item == nil {
 		glog.V(1).Infof("[s]ack miss %s->%s...%s s(%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 		// message not pending ack
 		return
+	}
+
+	if tag != nil {
+		self.rttWindow.CloseTag(tag)
 	}
 
 	if selective {
@@ -2105,9 +2163,9 @@ type ReceiveBufferSettings struct {
 	MinMessageByteCount ByteCount
 
 	// min number of resends before checking abuse
-	ResendAbuseThreshold int
+	// ResendAbuseThreshold int
 	// max legit fraction of sends that are resends
-	ResendAbuseMultiple float64
+	// ResendAbuseMultiple float64
 
 	MaxPeerAuditDuration time.Duration
 
@@ -2437,6 +2495,7 @@ func (self *ReceiveSequence) Run() {
 				MessageId:  sendAck.messageId.Bytes(),
 				SequenceId: self.sequenceId.Bytes(),
 				Selective:  sendAck.selective,
+				Tag:        sendAck.tag,
 			}
 
 			ackBytes, _ := proto.Marshal(ack)
@@ -2507,11 +2566,12 @@ func (self *ReceiveSequence) Run() {
 			if 0 < ackSnapshot.ackUpdateCount {
 				writeAck(ackSnapshot.headAck)
 			}
-			for messageId, sequenceNumber := range ackSnapshot.selectiveAcks {
+			for messageId, ack := range ackSnapshot.selectiveAcks {
 				writeAck(&sequenceAck{
 					messageId:      messageId,
-					sequenceNumber: sequenceNumber,
+					sequenceNumber: ack.sequenceNumber,
 					selective:      true,
+					tag:            ack.tag,
 				})
 			}
 		}
@@ -2566,7 +2626,7 @@ func (self *ReceiveSequence) Run() {
 				} else {
 					// this item is a resend of a previous item
 					if item.ack {
-						self.sendAck(item.sequenceNumber, item.messageId, false)
+						self.sendAck(item.sequenceNumber, item.messageId, false, nil)
 					}
 				}
 			}
@@ -2628,34 +2688,15 @@ func (self *ReceiveSequence) Run() {
 				// else there are pending updates
 			}
 		}
-
-		// FIXME audit SendCount is currently not being updated
-		/*
-			// check the resend abuse limits
-			// resends can appear normal but waste bandwidth
-			abuse := false
-			self.peerAudit.Update(func(a *PeerAudit) {
-				if self.receiveBufferSettings.ResendAbuseThreshold <= a.ResendCount {
-					resendByteCountAbuse := ByteCount(float64(a.SendByteCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendByteCount
-					resendCountAbuse := int(float64(a.SendCount) * self.receiveBufferSettings.ResendAbuseMultiple) <= a.ResendCount
-					abuse = resendByteCountAbuse || resendCountAbuse
-					a.Abuse = abuse
-				}
-			})
-			if abuse {
-				// close the sequence
-				self.routeManager.DowngradeReceiverConnection(self.sourceId)
-				return
-			}
-		*/
 	}
 }
 
-func (self *ReceiveSequence) sendAck(sequenceNumber uint64, messageId Id, selective bool) {
+func (self *ReceiveSequence) sendAck(sequenceNumber uint64, messageId Id, selective bool, tag *protocol.Tag) {
 	ack := &sequenceAck{
 		sequenceNumber: sequenceNumber,
 		messageId:      messageId,
 		selective:      selective,
+		tag:            tag,
 	}
 	self.ackWindow.Update(ack)
 }
@@ -2687,6 +2728,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		receiveCallback: receivePack.ReceiveCallback,
 		head:            receivePack.Pack.Head,
 		ack:             !receivePack.Pack.Nack,
+		tag:             receivePack.Pack.Tag,
 	}
 
 	// this case happens when the receiver is reformed or loses state.
@@ -2734,7 +2776,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			glog.V(1).Infof("[r]drop past sequence number %d <> %d ack=%t %s<-%s s(%s)\n", sequenceNumber, self.nextSequenceNumber, item.ack, self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
 			// this item is a resend of a previous item
 			if item.ack {
-				self.sendAck(sequenceNumber, messageId, false)
+				self.sendAck(sequenceNumber, messageId, false, nil)
 			}
 			return true, nil
 		}
@@ -2761,7 +2803,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 
 		if canQueue(receivePack.MessageByteCount) {
 			self.receiveQueue.Add(item)
-			self.sendAck(sequenceNumber, messageId, true)
+			self.sendAck(sequenceNumber, messageId, true, item.tag)
 			return true, nil
 		} else {
 			glog.V(1).Infof("[r]drop ack cannot queue %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
@@ -2797,6 +2839,7 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 		receiveCallback: receivePack.ReceiveCallback,
 		head:            receivePack.Pack.Head,
 		ack:             !receivePack.Pack.Nack,
+		tag:             receivePack.Pack.Tag,
 	}
 
 	if err := self.registerContracts(item); err != nil {
@@ -2841,7 +2884,7 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 		provideMode,
 	)
 	if item.ack {
-		self.sendAck(item.sequenceNumber, item.messageId, false)
+		self.sendAck(item.sequenceNumber, item.messageId, false, item.tag)
 	}
 }
 
@@ -2965,6 +3008,7 @@ type receiveItem struct {
 	contractFrame   *protocol.Frame
 	receiveCallback ReceiveFunction
 	ack             bool
+	tag             *protocol.Tag
 }
 
 // ordered by sequenceNumber
@@ -2986,13 +3030,14 @@ type sequenceAck struct {
 	sequenceNumber uint64
 	messageId      Id
 	selective      bool
+	tag            *protocol.Tag
 }
 
 type sequenceAckWindowSnapshot struct {
 	ackNotify      <-chan struct{}
 	headAck        *sequenceAck
 	ackUpdateCount int
-	selectiveAcks  map[Id]uint64
+	selectiveAcks  map[Id]*sequenceAck
 }
 
 type sequenceAckWindow struct {
@@ -3000,7 +3045,7 @@ type sequenceAckWindow struct {
 	ackLock        sync.Mutex
 	headAck        *sequenceAck
 	ackUpdateCount int
-	selectiveAcks  map[Id]uint64
+	selectiveAcks  map[Id]*sequenceAck
 }
 
 func newSequenceAckWindow() *sequenceAckWindow {
@@ -3008,7 +3053,7 @@ func newSequenceAckWindow() *sequenceAckWindow {
 		ackMonitor:     NewMonitor(),
 		headAck:        nil,
 		ackUpdateCount: 0,
-		selectiveAcks:  map[Id]uint64{},
+		selectiveAcks:  map[Id]*sequenceAck{},
 	}
 }
 
@@ -3018,7 +3063,7 @@ func (self *sequenceAckWindow) Update(ack *sequenceAck) {
 
 	if self.headAck == nil || self.headAck.sequenceNumber < ack.sequenceNumber {
 		if ack.selective {
-			self.selectiveAcks[ack.messageId] = ack.sequenceNumber
+			self.selectiveAcks[ack.messageId] = ack
 		} else {
 			self.ackUpdateCount += 1
 			self.headAck = ack
@@ -3038,12 +3083,12 @@ func (self *sequenceAckWindow) Snapshot(reset bool) *sequenceAckWindowSnapshot {
 	self.ackLock.Lock()
 	defer self.ackLock.Unlock()
 
-	var selectiveAcksAfterHead map[Id]uint64
+	var selectiveAcksAfterHead map[Id]*sequenceAck
 	if 0 < self.ackUpdateCount {
-		selectiveAcksAfterHead = map[Id]uint64{}
-		for messageId, sequenceNumber := range self.selectiveAcks {
-			if self.headAck.sequenceNumber < sequenceNumber {
-				selectiveAcksAfterHead[messageId] = sequenceNumber
+		selectiveAcksAfterHead = map[Id]*sequenceAck{}
+		for messageId, ack := range self.selectiveAcks {
+			if self.headAck.sequenceNumber < ack.sequenceNumber {
+				selectiveAcksAfterHead[messageId] = ack
 			}
 		}
 	} else {
@@ -3060,7 +3105,7 @@ func (self *sequenceAckWindow) Snapshot(reset bool) *sequenceAckWindowSnapshot {
 	if reset {
 		// keep the head ack in place
 		self.ackUpdateCount = 0
-		self.selectiveAcks = map[Id]uint64{}
+		self.selectiveAcks = map[Id]*sequenceAck{}
 	}
 
 	return snapshot

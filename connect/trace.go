@@ -41,6 +41,7 @@ func IsDoneError(r any) bool {
 func HandleError(do func(), handlers ...any) (r any) {
 	defer func() {
 		if r = recover(); r != nil {
+			fmt.Printf("HANDLE ERROR: %s\n", r)
 			if IsDoneError(r) {
 				// the context was canceled and raised. this is a standard pattern, do not log
 			} else {
@@ -86,6 +87,17 @@ func Trace(tag string, do func()) {
 func TraceWithReturn[R any](tag string, do func() R) (result R) {
 	trace(tag, func() string {
 		result = do()
+		return fmt.Sprintf(" = %v", result)
+	})
+	return
+}
+
+func TraceWithReturnError[R any](tag string, do func() (R, error)) (result R, returnErr error) {
+	trace(tag, func() string {
+		result, returnErr = do()
+		if returnErr != nil {
+			return fmt.Sprintf(" err = %s", returnErr)
+		}
 		return fmt.Sprintf(" = %v", result)
 	})
 	return

@@ -197,6 +197,9 @@ func TestMultiClientChannelWindowStats(t *testing.T) {
 		removeClientArgs: func(args *MultiClientGeneratorClientArgs) {
 			// do nothing
 		},
+		removeClientWithArgs: func(client *Client, args *MultiClientGeneratorClientArgs) {
+			// do nothing
+		},
 		newClientSettings: DefaultClientSettings,
 		newClient: func(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error) {
 			client := NewClient(ctx, args.ClientId, NewNoContractClientOob(), clientSettings)

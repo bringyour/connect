@@ -178,7 +178,9 @@ func NewContractManager(
 		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
 	}
 
-	go contractManager.providePing()
+	if client.ClientId() != ControlId {
+		go contractManager.providePing()
+	}
 
 	return contractManager
 }
@@ -298,6 +300,7 @@ func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Fra
 			}
 		}
 		for _, contractError := range contractErrors {
+			glog.Infof("[contract]error = %s\n", contractError)
 			c := func() {
 				self.contractError(contractError)
 			}
@@ -369,6 +372,41 @@ func (self *ContractManager) contractError(contractError protocol.ContractError)
 			defer recover()
 			contractErrorCallback(contractError)
 		}()
+	}
+}
+
+func (self *ContractManager) GetProvideSecretKeys() map[protocol.ProvideMode][]byte {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	return maps.Clone(self.provideSecretKeys)
+}
+
+func (self *ContractManager) LoadProvideSecretKeys(provideSecretKeys map[protocol.ProvideMode][]byte) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	for provideMode, provideSecretKey := range provideSecretKeys {
+		self.provideSecretKeys[provideMode] = provideSecretKey
+	}
+}
+
+func (self *ContractManager) InitProvideSecretKeys() {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	for i, _ := range protocol.ProvideMode_name {
+		provideMode := protocol.ProvideMode(i)
+		provideSecretKey, ok := self.provideSecretKeys[provideMode]
+		if !ok {
+			// generate a new key
+			provideSecretKey = make([]byte, 32)
+			_, err := rand.Read(provideSecretKey)
+			if err != nil {
+				panic(err)
+			}
+			self.provideSecretKeys[provideMode] = provideSecretKey
+		}
 	}
 }
 
@@ -676,7 +714,12 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, timeout tim
 			if err == nil {
 				self.Receive(SourceId(ControlId), resultFrames, protocol.ProvideMode_Network)
 			} else {
-				glog.Warningf("[contract]oob err = %s\n", err)
+				select {
+				case <-self.client.Done():
+					// no need to log warnings when the client closes
+				default:
+					glog.Infof("[contract]oob err = %s\n", err)
+				}
 			}
 		},
 	)
