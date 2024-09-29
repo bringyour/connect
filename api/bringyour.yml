@@ -407,6 +407,21 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/PreferencesSetResult"
 
+
+    /preferences:
+        get:
+            description: |
+                Get account preferences.
+            operationId: Preferences Get
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/PreferencesGetResult"
+
     /feedback/send-feedback:
         post:
             description: |
@@ -1665,6 +1680,12 @@ components:
         PreferencesSetResult:
             type: object
             properties: {}
+
+        PreferencesGetResult:
+            type: object
+            properties:
+                product_updates:
+                    type: boolean
 
         FeedbackSendArgs:
             type: object
