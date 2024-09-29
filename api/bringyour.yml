@@ -387,6 +387,39 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/NetworkClientsResult"
 
+    /network/user:
+        get:
+            description: Get the network user
+            operationId: Network User
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/NetworkUserResult"
+
+
+    /network/user/update:
+        post:
+            description: Update network user profile
+            operationId: Network User Update
+            security:
+                - BearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/NetworkUserUpdateArgs"
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/NetworkUserUpdateResult"
+
     /preferences/set-preferences:
         post:
             description: |
@@ -2732,3 +2765,54 @@ components:
                 referral_code:
                     description: udid
                     type: string
+
+        NetworkUser:
+            type: object
+            properties:
+                user_id:
+                    description: udid
+                    type: string
+                user_name:
+                    type: string
+                user_auth:
+                    type: string
+                verified:
+                    type: string
+                auth_type:
+                    type: string
+                    enum:
+                        - password
+                        - apple
+                        - google
+                        - bringyour
+                        - guest
+                network_name:
+                    type: string
+
+        NetworkUserResult:
+            type: object
+            properties:
+                network_user:
+                    $ref: "#/components/schemas/NetworkUser"
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
+        
+        NetworkUserUpdateArgs:
+            type: object
+            properties:
+                network_name:
+                    type: string
+                username:
+                    type: string
+
+        NetworkUserUpdateResult:
+            type: object
+            properties:
+                error:
+                    type: object
+                    properties:
+                        message:
+                            type: string
