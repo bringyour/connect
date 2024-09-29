@@ -247,9 +247,13 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 }
 
 type httpResult struct {
-	response          *http.Response
-	responseBodyBytes []byte
-	responseErr       error
+	response *http.Response
+
+	// status string
+	// statusCode int
+	// header http.Header
+	// trailer http.Header
+	bodyBytes []byte
 }
 
 type evalResult struct {
@@ -263,12 +267,16 @@ type evalResult struct {
 func newEvalResultFromHttpResponse(response *http.Response, err error) *evalResult {
 	if err == nil {
 		defer response.Body.Close()
-		responseBodyBytes, responseErr := io.ReadAll(response.Body)
+		bodyBytes, err := io.ReadAll(response.Body)
 		return &evalResult{
+			err: err,
 			httpResult: httpResult{
-				response:          response,
-				responseBodyBytes: responseBodyBytes,
-				responseErr:       responseErr,
+				response: response,
+				// status: response.Status,
+				// statusCode: response.StatusCode,
+				// header: response.Header.Clone(),
+				// trailer: response.Trailer.Clone(),
+				bodyBytes: bodyBytes,
 			},
 		}
 	} else {
@@ -351,15 +359,14 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		}
 
 		result := eval(handleCtx, dialer)
-		if result == nil {
-			return nil
-		}
+		// if result == nil {
+		// 	continue
+		// }
 		if result.err == nil {
 			glog.Infof("[net][p]select: %s\n", dialer.String())
 			return result
-		} else {
-			glog.Infof("[net][p]select: %s = %s\n", dialer.String(), result.err)
 		}
+		glog.V(2).Infof("[net][p]select: %s = %s\n", dialer.String(), result.err)
 		result.Close()
 	}
 
@@ -377,11 +384,10 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			if result.err == nil {
 				glog.Infof("[net][p]select: %s\n", result.dialer.String())
 				return result
-			} else {
-				glog.Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
-				result.Close()
-				go run(dialer)
 			}
+			glog.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+			result.Close()
+			go run(dialer)
 		}
 	}
 
@@ -414,11 +420,10 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 				if result.err == nil {
 					glog.Infof("[net][p]select: %s\n", result.dialer.String())
 					return result
-				} else {
-					glog.Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
-					result.Close()
-					go run(dialer)
 				}
+				glog.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+				result.Close()
+				go run(dialer)
 			}
 		}
 
@@ -497,29 +502,28 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 			}
 
 			result := eval(handleCtx, dialer)
-			if result == nil {
-				return nil
-			}
+			// if result == nil {
+			// 	continue
+			// }
 			if result.err == nil {
 				glog.Infof("[net][s]select: %s\n", dialer.String())
 				return result
-			} else {
-				glog.Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
 			}
+			glog.V(2).Infof("[net][s]select: %s = %s\n", dialer.String(), result.err)
 			result.Close()
 		}
 
 		// it's more efficient to iterate with a parallel hello
 		result := self.parallelEval(handleCtx, helloEval)
 		if result == nil {
-			return nil
+			continue
 		}
 		result.Close()
-		if result.err != nil {
-			return &evalResult{
-				err: result.err,
-			}
-		}
+		// if result.err != nil {
+		// 	return &evalResult{
+		// 		err: result.err,
+		// 	}
+		// }
 	}
 
 	return &evalResult{
@@ -529,10 +533,15 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 
 func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.Infof("[net]http parallel %s %s\n", request.Method, request.URL)
-
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
+			} else {
+				glog.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
@@ -554,20 +563,30 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	// 3. continue from 1 until timeout
 
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.V(2).Infof("[net]http serial %s %s\n", request.Method, request.URL)
-
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(request.WithContext(handleCtx))
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
+			} else {
+				glog.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
 	helloEval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.V(2).Infof("[net]http serial hello %s %s\n", request.Method, request.URL)
-
 		httpClient := dialer.HttpClient(self.settings)
 		response, err := httpClient.Do(helloRequest.WithContext(handleCtx))
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]http serial hello %s %s = %s\n", request.Method, request.URL, err)
+			} else {
+				glog.Infof("[net]http serial hello %s %s = %s\n", request.Method, request.URL, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
@@ -583,10 +602,15 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
-		glog.V(2).Infof("[net]ws dial %s\n", url)
-
 		wsDialer := dialer.WsDialer(self.settings)
 		wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)
+		if glog.V(2) {
+			if err != nil {
+				glog.Infof("[net]ws dial %s = %s\n", url, err)
+			} else {
+				glog.Infof("[net]ws dial %s = %s\n", url, response.Status)
+			}
+		}
 
 		dialer.Update(handleCtx, err)
 
@@ -594,6 +618,9 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 			wsConn: wsConn,
 			err:    err,
 			httpResult: httpResult{
+				// status: response.Status,
+				// statusCode: response.StatusCode,
+				// header: response.Header.Clone(),
 				response: response,
 			},
 		}
@@ -1002,21 +1029,16 @@ func HttpPostWithStrategy[R any](ctx context.Context, clientStrategy *ClientStra
 		callback.Result(empty, err)
 		return empty, err
 	}
-	if r.responseErr != nil {
-		var empty R
-		callback.Result(empty, r.responseErr)
-		return empty, r.responseErr
-	}
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
-		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.bodyBytes)))
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 
-	err = json.Unmarshal(r.responseBodyBytes, &result)
+	err = json.Unmarshal(r.bodyBytes, &result)
 	if err != nil {
 		var empty R
 		callback.Result(empty, err)
@@ -1071,21 +1093,16 @@ func HttpGetWithStrategy[R any](ctx context.Context, clientStrategy *ClientStrat
 		callback.Result(empty, err)
 		return empty, err
 	}
-	if r.responseErr != nil {
-		var empty R
-		callback.Result(empty, r.responseErr)
-		return empty, r.responseErr
-	}
 
 	if http.StatusOK != r.response.StatusCode {
 		// the response body is the error message
-		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.responseBodyBytes)))
+		err = fmt.Errorf("%s: %s", r.response.Status, strings.TrimSpace(string(r.bodyBytes)))
 		var empty R
 		callback.Result(empty, err)
 		return empty, err
 	}
 
-	err = json.Unmarshal(r.responseBodyBytes, &result)
+	err = json.Unmarshal(r.bodyBytes, &result)
 	if err != nil {
 		var empty R
 		callback.Result(empty, err)

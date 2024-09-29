@@ -300,6 +300,7 @@ func (self *ContractManager) Receive(source TransferPath, frames []*protocol.Fra
 			}
 		}
 		for _, contractError := range contractErrors {
+			glog.Infof("[contract]error = %s\n", contractError)
 			c := func() {
 				self.contractError(contractError)
 			}
@@ -713,7 +714,12 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, timeout tim
 			if err == nil {
 				self.Receive(SourceId(ControlId), resultFrames, protocol.ProvideMode_Network)
 			} else {
-				glog.Warningf("[contract]oob err = %s\n", err)
+				select {
+				case <-self.client.Done():
+					// no need to log warnings when the client closes
+				default:
+					glog.Infof("[contract]oob err = %s\n", err)
+				}
 			}
 		},
 	)
