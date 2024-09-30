@@ -41,6 +41,23 @@ func (ts *timestamps) SID() sessionID {
 	return ts.sid
 }
 
+// func (ts *timestamps) AddTimes(times []uint64) {
+// 	if len(times) == 0 {
+// 		ts.times = times
+// 		return
+// 	}
+// 	// get first and last times from curent list and new list
+// 	currentFirst := times[0]
+// 	currentLast := times[len(times)-1]
+// 	possibleFirst := ts.times[0]
+// 	possibleLast := ts.times[len(ts.times)-1]
+
+// 	// get new first
+// 	newFirst := min(currentFirst, possibleFirst)
+// 	// get new last
+// 	newLast := max(currentLast, possibleLast)
+// }
+
 func (ts1 *timestamps) Overlap(other Overlap) uint64 {
 	ts2 := other.(*timestamps)
 	return ts1.overlapFunc(ts1.times, ts2.times)

@@ -125,7 +125,8 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 				}
 
 				randomInt := rand.Intn(1_000_000)
-				var tlsServerName = fmt.Sprintf("%d.placeholder", randomInt) // TODO: add TLS parsing logic later
+				var tlsServerName = fmt.Sprintf("%d.placeholder", randomInt) // TODO: decide what to do with this
+				// var tlsServerName = key.
 
 				transportOpen := &protocol.TransportOpen{
 					Key:           &key,

@@ -4,17 +4,23 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/proto"
 
 	"bringyour.com/protocol"
 )
 
-type sessionID ulid.ULID
+type sessionID string
 
 // Compare returns -1 if s < other, 0 if s == other, and 1 if s > other.
 func (s sessionID) Compare(other sessionID) int {
-	return ulid.ULID(s).Compare(ulid.ULID(other))
+	switch {
+	case s < other:
+		return -1
+	case s > other:
+		return 1
+	default:
+		return 0
+	}
 }
 
 type coOccurrenceData map[sessionID]map[sessionID]uint64
@@ -81,12 +87,12 @@ func (c *coOccurrence) SaveData(dataPath string) error {
 
 	for outerSid, coocInner := range *c.cMap {
 		outer := &protocol.CoocOuter{
-			Sid: outerSid[:],
+			Sid: string(outerSid),
 		}
 
 		for innerSid, overlap := range coocInner {
 			outer.CoocInner = append(outer.CoocInner, &protocol.CoocInner{
-				Sid:     innerSid[:],
+				Sid:     string(innerSid),
 				Overlap: overlap,
 			})
 		}
@@ -120,13 +126,11 @@ func (c *coOccurrence) LoadData(dataPath string) error {
 	result := make(coOccurrenceData, 0)
 
 	for _, outer := range coocData.CoocOuter {
-		outerSid := [16]byte{}
-		copy(outerSid[:], outer.Sid)
+		outerSid := sessionID(outer.Sid)
 
 		innerMap := make(map[sessionID]uint64)
 		for _, inner := range outer.CoocInner {
-			innerSid := [16]byte{}
-			copy(innerSid[:], inner.Sid)
+			innerSid := sessionID(inner.Sid)
 			innerMap[innerSid] = inner.Overlap
 		}
 
