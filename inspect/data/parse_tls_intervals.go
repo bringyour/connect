@@ -104,7 +104,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 			ipv4, _ := ipLayer.(*layers.IPv4)
 			tcp, _ := tcpLayer.(*layers.TCP)
 
-			// TODO: is there another attribtue we are missing to uniquely identify a connection?
+			// TODO: is there another attribute we are missing to uniquely identify a connection?
 			// like maybe a sequence number?
 			key := protocol.TransportKey{
 				IpVersion:         4, // IPv4

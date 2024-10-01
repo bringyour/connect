@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import statistics
 import matplotlib.cm as cm
+import math
 
 import numpy as np
 from sklearn.cluster import OPTICS, HDBSCAN
@@ -47,7 +48,7 @@ def heatmap_labels(clusters, only_first=True, sids=None):
             # add truncated transport IDs
             for idx in clusters[cluster_id]:
                 # new_labels.append(f"…{sids[idx][-5:]}")
-                new_labels.append(sids[idx])
+                new_labels.append(f"{sids[idx]}({cluster_id})")
                 # new_labels.append(cluster_id)
     return new_labels
 
@@ -115,7 +116,7 @@ def graph_data(sids, data, clusters, print_stats):
 
     cb = plt.colorbar()
     cb.set_label("Overlap time (seconds)")
-    truncated_labels = heatmap_labels(clusters)
+    truncated_labels = heatmap_labels(clusters)  # , False, sids)
     plt.xticks(ticks=np.arange(len(sids)), labels=truncated_labels, rotation=90)
     plt.yticks(ticks=np.arange(len(sids)), labels=truncated_labels)
     plt.tick_params(axis="both", labelsize=4)
@@ -164,16 +165,44 @@ def graph_data(sids, data, clusters, print_stats):
     plt.close()
 
 
-# converts overlap to a distance where distance is from [0, 1] and reciprocal of overlap (max_overlap corresponds to 0 distance)
+# # converts overlap to a distance where distance is from [0, 1] and reciprocal of overlap (max_overlap corresponds to 0 distance)
+# def overlap_to_distance(overlap, max_overlap):
+#     # no overlap means max distance
+#     if overlap == 0:
+#         return 1
+#     # max overlap means no distance
+#     if overlap == max_overlap:
+#         return 0
+#     # normalize to [0, 1]
+#     return 1 - (overlap / max_overlap)
+
+
+# converts overlap to a distance where distance is from [0, 1]
+# Exponential decay transformation function f=e^[-alpha*(overlap/max_overlap)]
 def overlap_to_distance(overlap, max_overlap):
+    alpha = 3  # adjust alpha to control the rate of decay
+
     # no overlap means max distance
-    if overlap == 0:
+    if overlap <= 0:
         return 1
     # max overlap means no distance
-    if overlap == max_overlap:
+    if overlap >= max_overlap:
         return 0
-    # normalize to [0, 1]
-    return 1 - (overlap / max_overlap)
+    # exponential decay
+    return math.exp(-alpha * (overlap / max_overlap))
+
+    # example for alpha=3 and max_overlap=10
+    # overlap = 0, distance = 1.00
+    # overlap = 1, distance = 0.74
+    # overlap = 2, distance = 0.54
+    # overlap = 3, distance = 0.40
+    # overlap = 4, distance = 0.30
+    # overlap = 5, distance = 0.22
+    # overlap = 6, distance = 0.16
+    # overlap = 7, distance = 0.12
+    # overlap = 8, distance = 0.09
+    # overlap = 9, distance = 0.06
+    # overlap =10, distance = 0.00
 
 
 def cluster_data(samples, distance_func, processed_args):
@@ -185,7 +214,7 @@ def cluster_data(samples, distance_func, processed_args):
         cluster_args = cluster_args.split(",")
         args_dict = {}
         for arg in cluster_args:
-            key, value = arg.split("->")
+            key, value = arg.split("=", maxsplit=1)
             # try to parse value as int, float, or string
             try:
                 value = int(value)
@@ -211,6 +240,7 @@ def cluster_data(samples, distance_func, processed_args):
 
 def main(data, max_overlap, processed_args):
     sids = list(data.keys())
+    sids.sort()  # order sids for consistent results
 
     def distance_func(idx1, idx2):
         sid1 = sids[int(idx1[0])]
@@ -231,7 +261,9 @@ def main(data, max_overlap, processed_args):
 
     print(f"Found {len(clusters)} clusters")
     for cluster_id, cluster in clusters.items():
-        print(f"[cluster]{cluster_id}:{[sids[index] for index in cluster]}") # list of transport IDs in each cluster
+        print(
+            f"[cluster]{cluster_id}:{[sids[index] for index in cluster]}"
+        )  # list of transport IDs in each cluster
 
     if show_graph := processed_args.get("show_graph"):
         print_stats = show_graph.lower() == "print_stats"
@@ -242,17 +274,18 @@ def get_args(args):
     processed_args = {}
     for arg in args:
         if "=" in arg:
-            key, value = arg.split("=")
+            key, value = arg.split("=", maxsplit=1)
             processed_args[key] = value
     return processed_args
 
 
 if __name__ == "__main__":
     processed_args = get_args(sys.argv[1:])
-
     # filename=../data/ts1_cooccurrence.pb
     if filename := processed_args.get("filename"):
         loaded_data, max_overlap = load_map(filename)
         main(loaded_data, max_overlap, processed_args)
     else:
         sys.exit("argument 'filename' not provided (needed to load cooccurrence data)")
+
+# python3 main.py filename=../data/ts1_cooccurrence.pb cluster_method=OPTICS cluster_args=min_samples=3,max_eps=1.040047 show_graph=no_stats

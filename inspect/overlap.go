@@ -7,6 +7,9 @@ import (
 type Overlap interface {
 	SID() sessionID
 	Overlap(other Overlap) uint64
+	// assuming this overlap starts before the other overlap
+	// returns true if there is no possible overlap between this overlap and the other overlap or any other overlap that starts later than the other overlap
+	NoFutureOverlap(other Overlap) bool
 }
 
 // implements Overlap interface
@@ -30,48 +33,51 @@ func (int1 *interval) Overlap(other Overlap) uint64 {
 	return min_ends - max_starts
 }
 
+func (int1 *interval) NoFutureOverlap(other Overlap) bool {
+	int2 := other.(*interval)
+	return int1.end < int2.start
+}
+
 // implements Overlap interface
 type timestamps struct {
-	sid         sessionID
-	times       []uint64
-	overlapFunc func([]uint64, []uint64) uint64 // calculates overlap between two lists of times
+	sid           sessionID
+	times         []uint64
+	overlapFuncts OverlapFunctions // calculates overlap between two lists of times
 }
 
 func (ts *timestamps) SID() sessionID {
 	return ts.sid
 }
 
-// func (ts *timestamps) AddTimes(times []uint64) {
-// 	if len(times) == 0 {
-// 		ts.times = times
-// 		return
-// 	}
-// 	// get first and last times from curent list and new list
-// 	currentFirst := times[0]
-// 	currentLast := times[len(times)-1]
-// 	possibleFirst := ts.times[0]
-// 	possibleLast := ts.times[len(ts.times)-1]
-
-// 	// get new first
-// 	newFirst := min(currentFirst, possibleFirst)
-// 	// get new last
-// 	newLast := max(currentLast, possibleLast)
-// }
-
 func (ts1 *timestamps) Overlap(other Overlap) uint64 {
 	ts2 := other.(*timestamps)
-	return ts1.overlapFunc(ts1.times, ts2.times)
+	return ts1.overlapFuncts.CalculateOverlap(ts1.times, ts2.times)
 }
 
-const NANO_IN_SEC = float64(1e9)
-const FIXED_MARGIN = 1 // * NANO_IN_SEC
+func (ts1 *timestamps) NoFutureOverlap(other Overlap) bool {
+	ts2 := other.(*timestamps)
+	return ts1.overlapFuncts.NoPossibleOverlap(ts1.times, ts2.times)
+}
+
+const NS_IN_SEC = uint64(1e9) // 1 * NS_TO_SEC = 1 second
 
 // convert timestamp to float representing seconds of timestamp
-func TsFloat(timestamp uint64) float64 {
-	return float64(timestamp) / NANO_IN_SEC
+func TimestampInSeconds(timestamp uint64) float64 {
+	return float64(timestamp) / float64(NS_IN_SEC)
 }
 
-func FixedMarginOverlap(times1 []uint64, times2 []uint64, fixedMargin uint64) uint64 {
+type OverlapFunctions interface {
+	CalculateOverlap([]uint64, []uint64) uint64
+	// assuming the lists of times are sorted in ascending order
+	// returns true if there is no possible overlap between times1 and times2 (or any other list that starts later than times2)
+	NoPossibleOverlap(times1 []uint64, times2 []uint64) bool
+}
+
+type FixedMarginOverlap struct {
+	margin uint64 // fixed margin in nanoseconds
+}
+
+func (fmo *FixedMarginOverlap) CalculateOverlap(times1 []uint64, times2 []uint64) uint64 {
 	// define a fimex margin Event type for the sweep line algorithm
 	type fmEvent struct {
 		eTime   uint64
@@ -84,8 +90,8 @@ func FixedMarginOverlap(times1 []uint64, times2 []uint64, fixedMargin uint64) ui
 	// helper function to add events to the slice
 	addEvents := func(times []uint64, listID uint8) {
 		for _, t := range times {
-			start := t - fixedMargin
-			end := t + fixedMargin
+			start := t - fmo.margin
+			end := t + fmo.margin
 			events = append(events, fmEvent{eTime: start, eType: 1, eListID: listID}) // Start event
 			events = append(events, fmEvent{eTime: end, eType: 2, eListID: listID})   // End event
 		}
@@ -133,4 +139,11 @@ func FixedMarginOverlap(times1 []uint64, times2 []uint64, fixedMargin uint64) ui
 	}
 
 	return totalOverlap
+}
+
+func (fmo *FixedMarginOverlap) NoPossibleOverlap(times1 []uint64, times2 []uint64) bool {
+	if len(times1) == 0 || len(times2) == 0 {
+		return true
+	}
+	return times1[len(times1)-1]+fmo.margin < times2[0]-fmo.margin
 }

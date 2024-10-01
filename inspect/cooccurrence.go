@@ -40,7 +40,7 @@ func NewCoOccurrence(cmapData *coOccurrenceData) *coOccurrence {
 	}
 }
 
-func (c *coOccurrence) SetInnerKeys(sid sessionID) {
+func (c *coOccurrence) SetOuterKey(sid sessionID) {
 	(*c.cMap)[sid] = make(map[sessionID]uint64, 0)
 }
 
