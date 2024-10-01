@@ -1175,6 +1175,20 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/NetworkReferralResult"
 
+    /transfer/stats:
+        get:
+            description: |
+                Retrieves the paid and unpaid byte count provided to the network
+            operationId: Transfer Stats
+            security:
+                - BearerAuth: []
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/TransferStatsResult"
+
 components:
     securitySchemes:
         BearerAuth:
@@ -2732,3 +2746,11 @@ components:
                 referral_code:
                     description: udid
                     type: string
+
+        TransferStatsResult:
+            type: object
+            properties:
+                paid_bytes_provided:
+                    type: integer
+                unpaid_bytes_provided:
+                    type: integer
