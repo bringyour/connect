@@ -1379,6 +1379,12 @@ func (self *TcpSequence) Run() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
 
+					select {
+					case <-self.ctx.Done():
+						return
+					default:
+					}
+
 					packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
 					if packetsErr != nil {
 						glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
@@ -1517,20 +1523,27 @@ func (self *TcpSequence) Run() {
 				self.mutex.Lock()
 				defer self.mutex.Unlock()
 
-				for ackedSendSeq < self.sendSeq {
+				select {
+				case <-self.ctx.Done():
+					return
+				default:
+				}
+
+				for self.sendSeq <= ackedSendSeq {
+					ackCond.Wait()
 					select {
 					case <-self.ctx.Done():
 						return
+					default:
 					}
-
-					var err error
-					packet, err = self.PureAck()
-					if err != nil {
-						glog.Infof("[r]ack err = %s\n", err)
-					}
-					ackedSendSeq = self.sendSeq
-					ackCond.Wait()
 				}
+
+				var err error
+				packet, err = self.PureAck()
+				if err != nil {
+					glog.Infof("[r]ack err = %s\n", err)
+				}
+				ackedSendSeq = self.sendSeq
 			}()
 			if packet != nil {
 				receive(packet)
