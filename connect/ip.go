@@ -1507,16 +1507,16 @@ func (self *TcpSequence) Run() {
 		}
 	}()
 
+	var ackedSendSeq uint32
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		ackedSendSeq = self.sendSeq
+	}()
 	go func() {
 		defer self.cancel()
 
-		var ackedSendSeq uint32
-		func() {
-			self.mutex.Lock()
-			defer self.mutex.Unlock()
-
-			ackedSendSeq = self.sendSeq
-		}()
 		for {
 			var packet []byte
 			func() {
@@ -1529,7 +1529,7 @@ func (self *TcpSequence) Run() {
 				default:
 				}
 
-				for self.sendSeq <= ackedSendSeq {
+				for self.sendSeq == ackedSendSeq {
 					ackCond.Wait()
 					select {
 					case <-self.ctx.Done():
