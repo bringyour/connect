@@ -74,6 +74,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		ConnectTimeout:     60 * time.Second,
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       15 * time.Second,
+		AckTimeout:         30 * time.Millisecond,
 		IdleTimeout:        60 * time.Second,
 		SequenceBufferSize: DefaultIpBufferSize,
 		Mtu:                DefaultMtu,
@@ -913,6 +914,7 @@ type TcpBufferSettings struct {
 	ConnectTimeout time.Duration
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
+	AckTimeout     time.Duration
 	// ReadPollTimeout time.Duration
 	// WritePollTimeout time.Duration
 	IdleTimeout         time.Duration
@@ -1336,11 +1338,13 @@ func (self *TcpSequence) Run() {
 	glog.V(2).Infof("[init]connect success\n")
 
 	receiveAckCond := sync.NewCond(&self.mutex)
+	ackCond := sync.NewCond(&self.mutex)
 	defer func() {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
 		receiveAckCond.Broadcast()
+		ackCond.Broadcast()
 	}()
 
 	go func() {
@@ -1497,6 +1501,49 @@ func (self *TcpSequence) Run() {
 		}
 	}()
 
+	go func() {
+		defer self.cancel()
+
+		var ackedSendSeq uint32
+		func() {
+			self.mutex.Lock()
+			defer self.mutex.Unlock()
+
+			ackedSendSeq = self.sendSeq
+		}()
+		for {
+			var packet []byte
+			func() {
+				self.mutex.Lock()
+				defer self.mutex.Unlock()
+
+				for ackedSendSeq < self.sendSeq {
+					select {
+					case <-self.ctx.Done():
+						return
+					}
+
+					var err error
+					packet, err = self.PureAck()
+					if err != nil {
+						glog.Infof("[r]ack err = %s\n", err)
+					}
+					ackedSendSeq = self.sendSeq
+					ackCond.Wait()
+				}
+			}()
+			if packet != nil {
+				receive(packet)
+			}
+
+			select {
+			case <-time.After(self.tcpBufferSettings.AckTimeout):
+			case <-self.ctx.Done():
+				return
+			}
+		}
+	}()
+
 	for sendIter := uint64(0); ; sendIter += 1 {
 		checkpointId := self.idleCondition.Checkpoint()
 		select {
@@ -1556,18 +1603,13 @@ func (self *TcpSequence) Run() {
 			}
 
 			if 0 < seq {
-				var packet []byte
-				var err error
 				func() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
 
 					self.sendSeq += uint32(seq)
-					packet, err = self.PureAck()
+					ackCond.Broadcast()
 				}()
-				if err == nil {
-					receive(packet)
-				}
 			}
 
 			if sendItem.tcp.FIN {
