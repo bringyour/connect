@@ -1347,7 +1347,6 @@ func (self *TcpSequence) Run() {
 		ackCond.Broadcast()
 	}()
 
-	reackSendSeq := false
 	var ackedSendSeq uint32
 	func() {
 		self.mutex.Lock()
@@ -1418,9 +1417,8 @@ func (self *TcpSequence) Run() {
 					self.receiveSeq += uint32(n)
 
 					ackedSendSeq = self.sendSeq
-					reackSendSeq = false
 				}()
-				if packetsErr != nil {
+				if packets == nil {
 					return
 				}
 
@@ -1523,6 +1521,12 @@ func (self *TcpSequence) Run() {
 		defer self.cancel()
 
 		for {
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
+
 			var packet []byte
 			func() {
 				self.mutex.Lock()
@@ -1535,9 +1539,6 @@ func (self *TcpSequence) Run() {
 				}
 
 				for self.sendSeq == ackedSendSeq {
-					if reackSendSeq {
-						break
-					}
 					ackCond.Wait()
 					select {
 					case <-self.ctx.Done():
@@ -1551,12 +1552,19 @@ func (self *TcpSequence) Run() {
 				if err != nil {
 					glog.Infof("[r]ack err = %s\n", err)
 				}
-				reackSendSeq = false
 				ackedSendSeq = self.sendSeq
 			}()
-			if packet != nil {
-				receive(packet)
+			if packet == nil {
+				return
 			}
+
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
+
+			receive(packet)
 
 			if 0 < self.tcpBufferSettings.AckCompressTimeout {
 				select {
@@ -1592,10 +1600,6 @@ func (self *TcpSequence) Run() {
 					// since the transfer from local to remote is lossless and preserves order,
 					// the packet is already pending. Ignore.
 					drop = true
-
-					// resend the send ack head
-					reackSendSeq = true
-					ackCond.Broadcast()
 				} else if sendItem.tcp.ACK {
 					// acks are reliably delivered (see above)
 					// we do not need to resend receive packets on missing acks
