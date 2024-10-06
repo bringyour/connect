@@ -74,7 +74,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		ConnectTimeout:     60 * time.Second,
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       15 * time.Second,
-		AckTimeout:         30 * time.Millisecond,
+		AckCompressTimeout: time.Duration(0),
 		IdleTimeout:        60 * time.Second,
 		SequenceBufferSize: DefaultIpBufferSize,
 		Mtu:                DefaultMtu,
@@ -911,10 +911,10 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 }
 
 type TcpBufferSettings struct {
-	ConnectTimeout time.Duration
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	AckTimeout     time.Duration
+	ConnectTimeout     time.Duration
+	ReadTimeout        time.Duration
+	WriteTimeout       time.Duration
+	AckCompressTimeout time.Duration
 	// ReadPollTimeout time.Duration
 	// WritePollTimeout time.Duration
 	IdleTimeout         time.Duration
@@ -1347,6 +1347,15 @@ func (self *TcpSequence) Run() {
 		ackCond.Broadcast()
 	}()
 
+	reackSendSeq := false
+	var ackedSendSeq uint32
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		ackedSendSeq = self.sendSeq
+	}()
+
 	go func() {
 		defer self.cancel()
 
@@ -1385,6 +1394,16 @@ func (self *TcpSequence) Run() {
 					default:
 					}
 
+					for uint32(self.receiveWindowSize) < self.receiveSeq-self.receiveSeqAck+uint32(n) {
+						glog.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
+						receiveAckCond.Wait()
+						select {
+						case <-self.ctx.Done():
+							return
+						default:
+						}
+					}
+
 					packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
 					if packetsErr != nil {
 						glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
@@ -1396,17 +1415,10 @@ func (self *TcpSequence) Run() {
 					}
 					glog.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
 
-					for uint32(self.receiveWindowSize) < self.receiveSeq-self.receiveSeqAck+uint32(n) {
-						glog.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
-						receiveAckCond.Wait()
-						select {
-						case <-self.ctx.Done():
-							return
-						default:
-						}
-					}
-
 					self.receiveSeq += uint32(n)
+
+					ackedSendSeq = self.sendSeq
+					reackSendSeq = false
 				}()
 				if packetsErr != nil {
 					return
@@ -1507,13 +1519,6 @@ func (self *TcpSequence) Run() {
 		}
 	}()
 
-	var ackedSendSeq uint32
-	func() {
-		self.mutex.Lock()
-		defer self.mutex.Unlock()
-
-		ackedSendSeq = self.sendSeq
-	}()
 	go func() {
 		defer self.cancel()
 
@@ -1530,6 +1535,9 @@ func (self *TcpSequence) Run() {
 				}
 
 				for self.sendSeq == ackedSendSeq {
+					if reackSendSeq {
+						break
+					}
 					ackCond.Wait()
 					select {
 					case <-self.ctx.Done():
@@ -1543,16 +1551,19 @@ func (self *TcpSequence) Run() {
 				if err != nil {
 					glog.Infof("[r]ack err = %s\n", err)
 				}
+				reackSendSeq = false
 				ackedSendSeq = self.sendSeq
 			}()
 			if packet != nil {
 				receive(packet)
 			}
 
-			select {
-			case <-time.After(self.tcpBufferSettings.AckTimeout):
-			case <-self.ctx.Done():
-				return
+			if 0 < self.tcpBufferSettings.AckCompressTimeout {
+				select {
+				case <-time.After(self.tcpBufferSettings.AckCompressTimeout):
+				case <-self.ctx.Done():
+					return
+				}
 			}
 		}
 	}()
@@ -1581,6 +1592,10 @@ func (self *TcpSequence) Run() {
 					// since the transfer from local to remote is lossless and preserves order,
 					// the packet is already pending. Ignore.
 					drop = true
+
+					// resend the send ack head
+					reackSendSeq = true
+					ackCond.Broadcast()
 				} else if sendItem.tcp.ACK {
 					// acks are reliably delivered (see above)
 					// we do not need to resend receive packets on missing acks
