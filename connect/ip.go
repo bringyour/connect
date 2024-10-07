@@ -74,6 +74,7 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		ConnectTimeout:     60 * time.Second,
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       15 * time.Second,
+		AckCompressTimeout: time.Duration(0),
 		IdleTimeout:        60 * time.Second,
 		SequenceBufferSize: DefaultIpBufferSize,
 		Mtu:                DefaultMtu,
@@ -910,9 +911,10 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 }
 
 type TcpBufferSettings struct {
-	ConnectTimeout time.Duration
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
+	ConnectTimeout     time.Duration
+	ReadTimeout        time.Duration
+	WriteTimeout       time.Duration
+	AckCompressTimeout time.Duration
 	// ReadPollTimeout time.Duration
 	// WritePollTimeout time.Duration
 	IdleTimeout         time.Duration
@@ -1336,11 +1338,21 @@ func (self *TcpSequence) Run() {
 	glog.V(2).Infof("[init]connect success\n")
 
 	receiveAckCond := sync.NewCond(&self.mutex)
+	ackCond := sync.NewCond(&self.mutex)
 	defer func() {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
 		receiveAckCond.Broadcast()
+		ackCond.Broadcast()
+	}()
+
+	var ackedSendSeq uint32
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		ackedSendSeq = self.sendSeq
 	}()
 
 	go func() {
@@ -1375,16 +1387,11 @@ func (self *TcpSequence) Run() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
 
-					packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
-					if packetsErr != nil {
-						glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
+					select {
+					case <-self.ctx.Done():
 						return
+					default:
 					}
-
-					if 1 < len(packets) {
-						glog.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
-					}
-					glog.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
 
 					for uint32(self.receiveWindowSize) < self.receiveSeq-self.receiveSeqAck+uint32(n) {
 						glog.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
@@ -1396,9 +1403,22 @@ func (self *TcpSequence) Run() {
 						}
 					}
 
+					packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
+					if packetsErr != nil {
+						glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
+						return
+					}
+
+					if 1 < len(packets) {
+						glog.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
+					}
+					glog.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
+
 					self.receiveSeq += uint32(n)
+
+					ackedSendSeq = self.sendSeq
 				}()
-				if packetsErr != nil {
+				if packets == nil {
 					return
 				}
 
@@ -1497,6 +1517,65 @@ func (self *TcpSequence) Run() {
 		}
 	}()
 
+	go func() {
+		defer self.cancel()
+
+		for {
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
+
+			var packet []byte
+			func() {
+				self.mutex.Lock()
+				defer self.mutex.Unlock()
+
+				select {
+				case <-self.ctx.Done():
+					return
+				default:
+				}
+
+				for self.sendSeq == ackedSendSeq {
+					ackCond.Wait()
+					select {
+					case <-self.ctx.Done():
+						return
+					default:
+					}
+				}
+
+				var err error
+				packet, err = self.PureAck()
+				if err != nil {
+					glog.Infof("[r]ack err = %s\n", err)
+				}
+				ackedSendSeq = self.sendSeq
+			}()
+			if packet == nil {
+				return
+			}
+
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
+
+			receive(packet)
+
+			if 0 < self.tcpBufferSettings.AckCompressTimeout {
+				select {
+				case <-time.After(self.tcpBufferSettings.AckCompressTimeout):
+				case <-self.ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
 	for sendIter := uint64(0); ; sendIter += 1 {
 		checkpointId := self.idleCondition.Checkpoint()
 		select {
@@ -1556,18 +1635,13 @@ func (self *TcpSequence) Run() {
 			}
 
 			if 0 < seq {
-				var packet []byte
-				var err error
 				func() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
 
 					self.sendSeq += uint32(seq)
-					packet, err = self.PureAck()
+					ackCond.Broadcast()
 				}()
-				if err == nil {
-					receive(packet)
-				}
 			}
 
 			if sendItem.tcp.FIN {

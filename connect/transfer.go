@@ -114,7 +114,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		IdleTimeout:        120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
 		// AckBufferSize: DefaultTransferBufferSize,
-		AckCompressTimeout:  0 * time.Millisecond,
+		AckCompressTimeout:  time.Duration(0),
 		MinMessageByteCount: ByteCount(1),
 		// ResendAbuseThreshold: 4,
 		// ResendAbuseMultiple:  0.5,
