@@ -96,13 +96,13 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		AckTimeout:       30 * time.Second,
 		IdleTimeout:      60 * time.Second,
 		// pause on resend for selectively acked messaged
-		SelectiveAckTimeout: 5 * time.Second,
+		SelectiveAckTimeout: 30 * time.Second,
 		SequenceBufferSize:  DefaultTransferBufferSize,
 		AckBufferSize:       DefaultTransferBufferSize,
 		MinMessageByteCount: ByteCount(1),
 		// this includes transport reconnections
 		WriteTimeout:            15 * time.Second,
-		ResendQueueMaxByteCount: mib(1),
+		ResendQueueMaxByteCount: mib(2),
 		ContractFillFraction:    0.5,
 	}
 }
@@ -121,7 +121,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		MaxPeerAuditDuration: 60 * time.Second,
 		// this includes transport reconnections
 		WriteTimeout:             15 * time.Second,
-		ReceiveQueueMaxByteCount: mib(2),
+		ReceiveQueueMaxByteCount: mib(2) + kib(512),
 	}
 }
 
