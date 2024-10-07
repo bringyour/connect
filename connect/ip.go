@@ -1213,6 +1213,8 @@ func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (boo
 func (self *TcpSequence) Run() {
 	defer self.cancel()
 
+	// note receive is called from multiple go routines
+	// tcp packets with ack may be reordered due to being written in parallel
 	receive := func(packet []byte) {
 		self.receiveCallback(self.source, IpProtocolTcp, packet)
 	}
