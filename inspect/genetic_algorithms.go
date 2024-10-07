@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
+	"time"
 
 	"bringyour.com/inspect/data"
 	"github.com/MaxHalford/eaopt"
+	"github.com/oklog/ulid/v2"
 )
 
 // A Coord2D is a coordinate in two dimensions.
@@ -52,34 +53,42 @@ func (c *Coord2D) Clone() eaopt.Genome {
 	return &Coord2D{X: c.X, Y: c.Y, scoreFunc: c.scoreFunc}
 }
 
-func GeneticHillClimbing(savePath string, coOccurrencePath string) {
-	records, err := data.LoadTransportsFromFiles(savePath)
-	if err != nil {
-		log.Fatalf("Error loading transports: %v", err)
+func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurrencePath string) {
+	// use fixed margin overlap to calculate overlap
+	// overlapFunctions := FixedMarginOverlap{
+	// 	margin: 5 * NS_IN_SEC, // 1 second fixed margin
+	// }
+	overlapFunctions := GaussianOverlap{
+		stdDev: TimestampInNano(0.05), // x seconds
+		cutoff: 4,                     // x standard deviations
 	}
 
+	time1 := time.Now()
 	// build cooccurrence map
-	sessionTimestamps := makeTimestamps(records)
+	sessionTimestamps := makeTimestamps(&overlapFunctions, records)
 	cooc, earliestTimestamp := makeCoOccurrence(sessionTimestamps)
 	cooc.SaveData(coOccurrencePath)
+	fmt.Printf("Cooccurrence took %v\n", time.Since(time1))
 
 	regionLeeway := uint64(3)
 	regions := ConstructTestSession1Regions(earliestTimestamp, regionLeeway)
 
 	customScoreFunc := func(X uint64, Y float64) (float64, error) {
-		// opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", X, Y)
-		// clusterMethod := NewOptics(opticsOpts)
-		hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", X, Y)
-		clusterMethod := NewHDBSCAN(hdbscanOpts)
+		opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", X, Y)
+		clusterMethod := NewOptics(opticsOpts)
+		// hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", X, Y)
+		// clusterMethod := NewHDBSCAN(hdbscanOpts)
 
 		clusterOps := &ClusterOpts{
 			ClusterMethod:    clusterMethod,
 			CoOccurrencePath: coOccurrencePath,
 		}
+		time2 := time.Now()
 		clusters, err := cluster(clusterOps, false)
 		if err != nil {
 			return 0, fmt.Errorf("error clustering: %v", err)
 		}
+		fmt.Printf("Clustering took %v\n", time.Since(time2))
 		fmt.Printf("%v:%v ", clusterMethod.Name(), clusterMethod.Args())
 		score := Evaluate(*sessionTimestamps, *regions, clusters)
 		return -1 * score, nil
@@ -143,14 +152,14 @@ func GeneticHillClimbing(savePath string, coOccurrencePath string) {
 	fmt.Printf("Found a minimum at (%d, %.5f) with score %v.\n", best.X, best.Y, bestScore)
 }
 
-func GeneticOES(savePath string, coOccurrencePath string) {
-	records, err := data.LoadTransportsFromFiles(savePath)
-	if err != nil {
-		log.Fatalf("Error loading transports: %v", err)
+func GeneticOES(records *map[ulid.ULID]*data.TransportRecord, coOccurrencePath string) {
+	// use fixed margin overlap to calculate overlap
+	overlapFunctions := FixedMarginOverlap{
+		margin: 5 * NS_IN_SEC, // 1 second fixed margin
 	}
 
 	// build cooccurrence map
-	sessionTimestamps := makeTimestamps(records)
+	sessionTimestamps := makeTimestamps(&overlapFunctions, records)
 	cooc, earliestTimestamp := makeCoOccurrence(sessionTimestamps)
 	cooc.SaveData(coOccurrencePath)
 

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"bringyour.com/inspect/data"
+	"github.com/oklog/ulid/v2"
 )
 
 func main() {
@@ -32,42 +34,56 @@ func main() {
 	savePath := "data/ts1_transports.pb"
 	coOccurrencePath := "data/ts1_cooccurrence.pb"
 
-	switch fname {
-	case "parse_pcap", "p":
+	opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 2, 0.2)
+	clusterMethod := NewOptics(opticsOpts)
+	// hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 9, 0.2)
+	// clusterMethod := NewHDBSCAN(hdbscanOpts)
+
+	// use fixed margin overlap to calculate overlap
+	// overlapFunctions := FixedMarginOverlap{
+	// 	margin: 5 * NS_IN_SEC, // 1 second fixed margin
+	// }
+	overlapFunctions := GaussianOverlap{
+		stdDev: TimestampInNano(5), // x seconds
+		cutoff: 4,                  // x standard deviations
+	}
+
+	if fname == "parse_pcap" || fname == "p" {
 		data.PcapToTransportFiles(dataPath, savePath, sourceIP)
-	case "display_transports", "dt":
-		data.DisplayTransports(savePath)
-	case "timestamps", "t":
-		testTimestamps(savePath, coOccurrencePath)
-	case "cluster", "c":
-		testCluster(coOccurrencePath)
-	case "evaluate", "e":
-		testEvaluate(savePath, coOccurrencePath)
-	default:
-		GeneticHillClimbing(savePath, coOccurrencePath)
-		// GeneticOES(savePath, coOccurrencePath)
-		// log.Fatalf("Unknown mode: %s", fname)
+	} else {
+		records, err := data.LoadTransportsFromFiles(savePath)
+		if err != nil {
+			log.Fatalf("Error loading transports: %v", err)
+		}
+
+		if fname == "display_transports" || fname == "dt" {
+			data.DisplayTransports(records)
+		} else if fname == "timestamps" || fname == "t" {
+			testTimestamps(&overlapFunctions, records, coOccurrencePath)
+		} else if fname == "cluster" || fname == "c" {
+			testCluster(clusterMethod, coOccurrencePath)
+		} else if fname == "evaluate" || fname == "e" {
+			testEvaluate(&overlapFunctions, clusterMethod, records, coOccurrencePath)
+		} else if fname == "genetic_hill_climbing" || fname == "ghc" {
+			GeneticHillClimbing(records, coOccurrencePath)
+		} else if fname == "genetic_oes" || fname == "goes" {
+			GeneticOES(records, coOccurrencePath)
+		} else {
+			log.Fatalf("Unknown mode: %s", fname)
+		}
 	}
 }
 
-func testTimestamps(savePath, coOccurrencePath string) {
-	records, err := data.LoadTransportsFromFiles(savePath)
-	if err != nil {
-		log.Fatalf("Error loading transports: %v", err)
-	}
-
+func testTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*data.TransportRecord, coOccurrencePath string) {
 	// build cooccurrence map
-	sessionTimestamps := makeTimestamps(records)
+	sessionTimestamps := makeTimestamps(overlapFunctions, records)
 	cooc, _ := makeCoOccurrence(sessionTimestamps)
 	cooc.SaveData(coOccurrencePath)
 	overlapStats(cooc)
 }
 
-func testCluster(coOccurrencePath string) {
+func testCluster(clusterMethod ClusterMethod, coOccurrencePath string) {
 	// cluster
-	opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 4, 0.9)
-	clusterMethod := NewOptics(opticsOpts)
-	// clusterMethod := NewHDBSCAN("min_cluster_size=5")
 	clusterOps := &ClusterOpts{
 		ClusterMethod:    clusterMethod,
 		CoOccurrencePath: coOccurrencePath,
@@ -87,31 +103,26 @@ func testCluster(coOccurrencePath string) {
 	}
 }
 
-func testEvaluate(savePath string, coOccurrencePath string) {
-	records, err := data.LoadTransportsFromFiles(savePath)
-	if err != nil {
-		log.Fatalf("Error loading transports: %v", err)
-	}
-
+func testEvaluate(overlapFunctions OverlapFunctions, clusterMethod ClusterMethod, records *map[ulid.ULID]*data.TransportRecord, coOccurrencePath string) {
+	time1 := time.Now()
 	// build cooccurrence map
-	sessionTimestamps := makeTimestamps(records)
+	sessionTimestamps := makeTimestamps(overlapFunctions, records)
 	cooc, earliestTimestamp := makeCoOccurrence(sessionTimestamps)
 	cooc.SaveData(coOccurrencePath)
+	time1end := time.Since(time1)
 
 	// cluster
-	opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 6, 0.92294)
-	clusterMethod := NewOptics(opticsOpts)
-	// hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 2, 0.84466)
-	// clusterMethod := NewHDBSCAN(hdbscanOpts)
 	clusterOps := &ClusterOpts{
 		ClusterMethod:    clusterMethod,
 		CoOccurrencePath: coOccurrencePath,
 		SaveGraphs:       true,
 	}
+	time2 := time.Now()
 	clusters, err := cluster(clusterOps, true)
 	if err != nil {
 		log.Fatalf("Error clustering: %v", err)
 	}
+	time2end := time.Since(time2)
 	for clusterID, sessionIDs := range clusters {
 		fmt.Printf("\nCluster %s (len=%d):\n", clusterID, len(sessionIDs))
 		for _, sid := range sessionIDs {
@@ -119,11 +130,17 @@ func testEvaluate(savePath string, coOccurrencePath string) {
 		}
 	}
 
+	time3 := time.Now()
 	// evaluate
 	regions := ConstructTestSession1Regions(earliestTimestamp, 3)
 	// for i, r := range regions {
 	// 	fmt.Printf("Region %d: %s - %s\n", i+1, readableTime(r.minT), readableTime(r.maxT))
 	// }
 	score := Evaluate(*sessionTimestamps, *regions, clusters)
+	time3end := time.Since(time3)
 	log.Printf("Score: %f", score)
+
+	fmt.Printf("Time to build cooccurrence map: %v\n", time1end)
+	fmt.Printf("Time to cluster(+heatmap): %v\n", time2end)
+	fmt.Printf("Time to evaluate: %v\n", time3end)
 }

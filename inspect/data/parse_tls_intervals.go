@@ -182,6 +182,10 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 						// log.Println("Ignoring out of order write packet")
 					}
 				} else { // read packet
+					// switch source and destination in key for read packet
+					key.SourceIp, key.DestinationIp = key.DestinationIp, key.SourceIp
+					key.SourcePort, key.DestinationPort = key.DestinationPort, key.SourcePort
+
 					if record, exists := transportMap[key.String()]; exists {
 						readDataChunk := &protocol.ReadDataChunk{
 							TransportId: record.Open.TransportId,
@@ -278,7 +282,7 @@ func WriteProtoToFile(file *os.File, message protoreflect.ProtoMessage, tType Tr
 }
 
 // assumes that record opens appear before all other items in record
-func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) {
+func LoadTransportsFromFiles(filepath string) (*map[ulid.ULID]*TransportRecord, error) {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return nil, err
@@ -376,7 +380,7 @@ func ReadProtoFromFile(filepath string) (map[ulid.ULID]*TransportRecord, error) 
 		offset += int64(itemSize)
 	}
 
-	return transportMap, nil
+	return &transportMap, nil
 }
 
 func PcapToTransportFiles(dataPath string, savePath string, sourceIP string) {
@@ -392,18 +396,9 @@ func PcapToTransportFiles(dataPath string, savePath string, sourceIP string) {
 	log.Printf("Successfully saved %d transport records to %q\n", len(transportRecords), savePath)
 }
 
-func LoadTransportsFromFiles(filePath string) (map[ulid.ULID]*TransportRecord, error) {
-	return ReadProtoFromFile(filePath)
-}
-
-func DisplayTransports(filePath string) error {
-	transportMap, err := LoadTransportsFromFiles(filePath)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("[Loaded %d transport records]\n", len(transportMap))
-
-	for _, record := range transportMap {
+func DisplayTransports(transportMap *map[ulid.ULID]*TransportRecord) {
+	fmt.Printf("[Loaded %d transport records]\n", len(*transportMap))
+	for _, record := range *transportMap {
 		fmt.Println("Open:")
 		fmt.Printf("  %+v\n", record.Open)
 		if len(record.Writes) > 0 {
@@ -424,6 +419,4 @@ func DisplayTransports(filePath string) error {
 		}
 		fmt.Println()
 	}
-
-	return nil
 }

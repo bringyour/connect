@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"sort"
+
+	"gonum.org/v1/gonum/stat/distuv"
 )
 
 type Overlap interface {
@@ -66,6 +69,17 @@ func TimestampInSeconds(timestamp uint64) float64 {
 	return float64(timestamp) / float64(NS_IN_SEC)
 }
 
+// convert timestamp to uint64 representing nanoseconds of timestamp
+// (will keep leading 9 digits after decimal point)
+func TimestampInNano(timestamp float64) uint64 {
+	res := timestamp * float64(NS_IN_SEC)
+	if res < 0 {
+		fmt.Printf("Negative timestamp (%.10f) returning 0\n", timestamp)
+		return 0
+	}
+	return uint64(res)
+}
+
 type OverlapFunctions interface {
 	CalculateOverlap([]uint64, []uint64) uint64
 	// assuming the lists of times are sorted in ascending order
@@ -77,7 +91,7 @@ type FixedMarginOverlap struct {
 	margin uint64 // fixed margin in nanoseconds
 }
 
-func (fmo *FixedMarginOverlap) CalculateOverlap(times1 []uint64, times2 []uint64) uint64 {
+func (fmo *FixedMarginOverlap) CalculateOverlap(times1, times2 []uint64) uint64 {
 	// define a fimex margin Event type for the sweep line algorithm
 	type fmEvent struct {
 		eTime   uint64
@@ -141,9 +155,84 @@ func (fmo *FixedMarginOverlap) CalculateOverlap(times1 []uint64, times2 []uint64
 	return totalOverlap
 }
 
-func (fmo *FixedMarginOverlap) NoPossibleOverlap(times1 []uint64, times2 []uint64) bool {
+func (fmo *FixedMarginOverlap) NoPossibleOverlap(times1, times2 []uint64) bool {
 	if len(times1) == 0 || len(times2) == 0 {
 		return true
 	}
-	return times1[len(times1)-1]+fmo.margin < times2[0]-fmo.margin
+	time1 := times1[len(times1)-1]
+	time2 := times2[0]
+	return time1+fmo.margin < time2-fmo.margin
+}
+
+type GaussianOverlap struct {
+	stdDev uint64 // standard deviation in nanoseconds
+	cutoff uint64 // cutoff in times of standard deviation
+}
+
+func (gausso *GaussianOverlap) gaussianOverlap(g1, g2 *distuv.Normal) float64 {
+	cutoff := TimestampInSeconds(gausso.stdDev) * float64(gausso.cutoff)
+	upperLimit := min(g1.Mu, g2.Mu) + cutoff
+	lowerLimit := max(g1.Mu, g2.Mu) - cutoff
+	if lowerLimit >= upperLimit {
+		return 0.0 // no overlap
+	}
+
+	middle := (g1.Mu + g2.Mu) / 2
+	//      1  :  2  (dotted lines[.] are means of distributions 1 and 2;
+	//     /.\ : /.\              double-dotted[:] line is the mid point)
+	//    / . \:/ . \
+	//   /  . /:\ .  \
+	//  /   ./ : \.   \
+	// overlap area is (twice because of symmetry)
+	//the 2nd distribution's (the one with bigger mean) CDF until the mid point (v line),
+	// i.e., small triangle formed by 2nd distribution and mid point
+	biggerMeanGaussian := 0.0
+	if g1.Mu > g2.Mu {
+		biggerMeanGaussian = g1.CDF(middle)
+	} else {
+		biggerMeanGaussian = g2.CDF(middle)
+	}
+	return 2.0 * biggerMeanGaussian
+}
+
+func (gausso *GaussianOverlap) CalculateOverlap(times1, times2 []uint64) uint64 {
+	if gausso.cutoff == 0 {
+		fmt.Println("Cutoff is 0, no overlap possible")
+	}
+
+	totalOverlap := 0.0 // in seconds
+
+	makeGaussian := func(times []uint64) []*distuv.Normal {
+		gaussians := make([]*distuv.Normal, len(times))
+		for i, t := range times {
+			// fmt.Printf("times[%v] = %v\n", i, t)
+			gaussians[i] = &distuv.Normal{Mu: TimestampInSeconds(t), Sigma: TimestampInSeconds(gausso.stdDev)}
+		}
+		return gaussians
+	}
+
+	gaussian1 := makeGaussian(times1)
+	gaussian2 := makeGaussian(times2)
+
+	// Check overlap for each time in times1 with all times in times2
+	for _, g1 := range gaussian1 {
+		for _, g2 := range gaussian2 {
+			overlap := gausso.gaussianOverlap(g1, g2)
+			// fmt.Printf("[%v] overlap b/w %.6f and %.6f = %v\n", g1.Sigma, g1.Mu, g2.Mu, overlap)
+			totalOverlap += overlap
+		}
+	}
+
+	return TimestampInNano(totalOverlap) // convert to nanoseconds
+}
+
+func (gausso *GaussianOverlap) NoPossibleOverlap(times1, times2 []uint64) bool {
+	if len(times1) == 0 || len(times2) == 0 {
+		return true
+	}
+	// If the distance between means is greater than the sum of their cutoffs, no overlap is possible
+	mean1 := TimestampInSeconds(times1[len(times1)-1])
+	mean2 := TimestampInSeconds(times2[0])
+	sCutoff := TimestampInSeconds(gausso.cutoff)
+	return mean1+sCutoff < mean2-sCutoff
 }

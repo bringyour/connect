@@ -15,15 +15,11 @@ import (
 	"gonum.org/v1/gonum/stat"
 )
 
-func makeTimestamps(records map[ulid.ULID]*data.TransportRecord) *map[sessionID]*timestamps {
+func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*data.TransportRecord) *map[sessionID]*timestamps {
 	// extract for each session the timestamps of the open, write, read, and close records
 	sessionTimestamps := make(map[sessionID]*timestamps, 0)
 
-	// use fixed margin overlap to calculate overlap
-	overlapFunctions := FixedMarginOverlap{
-		margin: 1 * NS_IN_SEC, // 1 second fixed margin
-	}
-	for _, record := range records {
+	for _, record := range *records {
 		times := []uint64{record.Open.OpenTime}
 		for _, write := range record.Writes {
 			times = append(times, write.WriteToBufferEndTime)
@@ -43,7 +39,7 @@ func makeTimestamps(records map[ulid.ULID]*data.TransportRecord) *map[sessionID]
 			ts := &timestamps{
 				sid:           sid,
 				times:         times,
-				overlapFuncts: &overlapFunctions,
+				overlapFuncts: overlapFunctions,
 			}
 			sessionTimestamps[sid] = ts
 		}
@@ -172,6 +168,9 @@ func (o *generalClusterMethod) Args() string {
 
 func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, error) {
 	args := []string{"main.py"}
+	if printPython {
+		fmt.Printf("[cmd] python3 main.py %s\n", strings.Join(clusterOps.GetFormatted(), " "))
+	}
 	args = append(args, clusterOps.GetFormatted()...)
 	// cmd: python3 main.py clusterArgs...
 	cmd := exec.Command("python3", args...)

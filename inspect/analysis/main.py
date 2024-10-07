@@ -86,17 +86,17 @@ def graph_data(sids, data, clusters, print_stats):
         (len(sids), len(sids))
     )  # fill with ones as max distance values
 
-    for i, sid_1 in enumerate(sids):
-        if sid_1 not in data:
+    for i, sid_i in enumerate(sids):
+        if sid_i not in data:
             continue
         for j, sid_j in enumerate(sids):
-            if sid_j in data[sid_1]:
+            if sid_j in data[sid_i]:
                 if heatmap_data[i, j] + heatmap_data[j, i] < 2:
                     # non-zero value exists for data[sid_j][sid_j] and data[sid_j][sid_j]
-                    print(f"Duplicate entry found for {sid_1} and {sid_j}")
+                    print(f"Duplicate entry found for {sid_i} and {sid_j}")
                     return
                 final_val = overlap_to_distance(
-                    data[sid_1][sid_j], max_overlap
+                    data[sid_i][sid_j], max_overlap
                 )  # values are from 0 to 1
                 large = max(i, j)
                 small = min(i, j)
@@ -178,9 +178,9 @@ def graph_data(sids, data, clusters, print_stats):
 
 
 # converts overlap to a distance where distance is from [0, 1]
-# Exponential decay transformation function f=e^[-alpha*(overlap/max_overlap)]
+# exponential decay transformation function f=e^[-alpha*(overlap/max_overlap)]
 def overlap_to_distance(overlap, max_overlap):
-    alpha = 3  # adjust alpha to control the rate of decay
+    alpha = 20  # adjust alpha to control the rate of decay
 
     # no overlap means max distance
     if overlap <= 0:

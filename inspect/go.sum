@@ -10,6 +10,8 @@ github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyR
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b/go.mod h1:1KcenG0jGWcpt8ov532z81sp/kMMUG485J2InIOyADM=
 github.com/campoy/embedmd v1.0.0 h1:V4kI2qTJJLf4J29RzI/MAt2c3Bl4dQSYPuflzwFH2hY=
 github.com/campoy/embedmd v1.0.0/go.mod h1:oxyr9RCiSXg0M3VJ3ks0UGfp98BpSSGr0kpiX3MzVl8=
+github.com/chobie/go-gaussian v0.0.0-20150107165016-53c09d90eeaf h1:joIg05jbCevMTHYELK+iU5xNS6FoOEhp9IpFQ5e2B+8=
+github.com/chobie/go-gaussian v0.0.0-20150107165016-53c09d90eeaf/go.mod h1:cTHhhPCN9aDCOgkFM4Pty90DILaV/TrfCRhMtOFCUUI=
 github.com/fogleman/gg v1.2.1-0.20190220221249-0403632d5b90/go.mod h1:R/bRT+9gY/C5z7JzPU0zXsXHKM4/ayA+zqcVNZzPa1k=
 github.com/go-fonts/liberation v0.3.2 h1:XuwG0vGHFBPRRI8Qwbi5tIvR3cku9LUfZGq/Ar16wlQ=
 github.com/go-fonts/liberation v0.3.2/go.mod h1:N0QsDLVUQPy3UYg9XAc3Uh3UDMp2Z7M1o4+X98dXkmI=
