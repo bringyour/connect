@@ -129,6 +129,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		// this includes transport reconnections
 		WriteTimeout:             15 * time.Second,
 		ReceiveQueueMaxByteCount: mib(2),
+		AllowLegacyNack:          true,
 	}
 }
 
@@ -2198,6 +2199,9 @@ type ReceiveBufferSettings struct {
 	WriteTimeout time.Duration
 
 	ReceiveQueueMaxByteCount ByteCount
+
+	// whether to allow nacks without a contract_id
+	AllowLegacyNack bool
 }
 
 type receiveSequenceId struct {
@@ -2862,6 +2866,11 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 		contractId = &contractId_
 	}
 
+	if contractId == nil && !self.receiveBufferSettings.AllowLegacyNack {
+		glog.Infof("[r]drop nack required contract id %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
+		return false, nil
+	}
+
 	item := &receiveItem{
 		transferItem: transferItem{
 			messageId:        messageId,
@@ -2882,11 +2891,6 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 		glog.Errorf("[r]%s<-%s s(%s) nack could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, err)
 		return false, err
 	}
-
-	// FIXME
-	// if contractId == nil && !AllowLegacyNack {
-	// 	// FIXME error
-	// }
 
 	if contractId != nil && (self.receiveContract == nil || self.receiveContract.contractId != *contractId) {
 		glog.Infof("[r]drop nack contract mismatch %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
