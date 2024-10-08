@@ -221,15 +221,19 @@ func (self Id) Bytes() []byte {
 }
 
 func (self Id) LessThan(b Id) bool {
+	return self.Cmp(b) < 0
+}
+
+func (self Id) Cmp(b Id) int {
 	for i, v := range self {
 		if v < b[i] {
-			return true
+			return -1
 		}
 		if b[i] < v {
-			return false
+			return 1
 		}
 	}
-	return false
+	return 0
 }
 
 func (self Id) String() string {

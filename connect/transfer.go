@@ -11,6 +11,7 @@ import (
 	// "runtime"
 	// "reflect"
 	mathrand "math/rand"
+	"slices"
 	"strings"
 
 	"golang.org/x/exp/maps"
@@ -130,6 +131,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		WriteTimeout:             15 * time.Second,
 		ReceiveQueueMaxByteCount: mib(2) + kib(512),
 		AllowLegacyNack:          true,
+		MaxOpenReceiveContract:   4,
 	}
 }
 
@@ -1591,12 +1593,21 @@ func (self *SendSequence) Run() {
 			case <-ackSnapshot.ackNotify:
 			case <-time.After(timeout):
 				if 0 == self.resendQueue.Len() {
-					// idle timeout
-					if self.idleCondition.Close(checkpointId) {
+					done := false
+					func() {
+						self.packMutex.Lock()
+						defer self.packMutex.Unlock()
+						// idle timeout
+						if self.idleCondition.Close(checkpointId) {
+							done = true
+						}
+						// else there are pending updates
+					}()
+					if done {
 						// close the sequence
+						glog.Infof("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 						return
 					}
-					// else there are pending updates
 				}
 			}
 		} else {
@@ -1622,13 +1633,21 @@ func (self *SendSequence) Run() {
 				}
 			case <-time.After(timeout):
 				if 0 == self.resendQueue.Len() {
-					// idle timeout
-					if self.idleCondition.Close(checkpointId) {
+					done := false
+					func() {
+						self.packMutex.Lock()
+						defer self.packMutex.Unlock()
+						// idle timeout
+						if self.idleCondition.Close(checkpointId) {
+							done = true
+						}
+						// else there are pending updates
+					}()
+					if done {
 						// close the sequence
-						glog.Errorf("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+						glog.Infof("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 						return
 					}
-					// else there are pending updates
 				}
 			}
 		}
@@ -1816,8 +1835,10 @@ func (self *SendSequence) sendWithSetContract(
 		contractId = &self.sendContract.contractId
 
 		if !self.sendContractAcked {
+			// (see note above about contracts and nack)
 			// send nack messages as ack until the send contract is acked
-			ack = false
+			// this avoid racing the messages with the contract
+			ack = true
 		}
 	}
 
@@ -2202,6 +2223,8 @@ type ReceiveBufferSettings struct {
 
 	// whether to allow nacks without a contract_id
 	AllowLegacyNack bool
+
+	MaxOpenReceiveContract int
 }
 
 type receiveSequenceId struct {
@@ -2385,7 +2408,8 @@ type ReceiveSequence struct {
 
 	receiveBufferSettings *ReceiveBufferSettings
 
-	receiveContract *sequenceContract
+	openReceiveContracts map[Id]*sequenceContract
+	receiveContract      *sequenceContract
 
 	packMutex sync.Mutex
 	packs     chan *ReceivePack
@@ -2416,6 +2440,7 @@ func NewReceiveSequence(
 		source:                source,
 		sequenceId:            sequenceId,
 		receiveBufferSettings: receiveBufferSettings,
+		openReceiveContracts:  map[Id]*sequenceContract{},
 		receiveContract:       nil,
 		packs:                 make(chan *ReceivePack, receiveBufferSettings.SequenceBufferSize),
 		receiveQueue:          newReceiveQueue(),
@@ -2484,7 +2509,16 @@ func (self *ReceiveSequence) Run() {
 	defer func() {
 		self.cancel()
 
-		// close contract
+		// close previous contracts and checkpoint the current contract
+		for _, receiveContract := range self.openReceiveContracts {
+			if self.receiveContract != receiveContract {
+				self.client.ContractManager().CloseContract(
+					receiveContract.contractId,
+					receiveContract.ackedByteCount,
+					receiveContract.unackedByteCount,
+				)
+			}
+		}
 		if self.receiveContract != nil {
 			// the sender may send again with this contract (set as head)
 			// checkpoint the contract but do not close it
@@ -2710,12 +2744,21 @@ func (self *ReceiveSequence) Run() {
 			}
 		case <-time.After(timeout):
 			if 0 == self.receiveQueue.Len() {
-				// idle timeout
-				if self.idleCondition.Close(checkpointId) {
+				done := false
+				func() {
+					self.packMutex.Lock()
+					defer self.packMutex.Unlock()
+					// idle timeout
+					if self.idleCondition.Close(checkpointId) {
+						done = true
+					}
+					// else there are pending updates
+				}()
+				if done {
 					// close the sequence
+					glog.Errorf("[r]%s<-%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
 					return
 				}
-				// else there are pending updates
 			}
 		}
 	}
@@ -2892,9 +2935,11 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 		return false, err
 	}
 
-	if contractId != nil && (self.receiveContract == nil || self.receiveContract.contractId != *contractId) {
-		glog.Infof("[r]drop nack contract mismatch %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
-		return false, nil
+	if contractId != nil {
+		if _, ok := self.openReceiveContracts[*contractId]; !ok {
+			glog.Infof("[r]drop nack contract mismatch %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
+			return false, nil
+		}
 	}
 
 	if self.updateContract(item) {
@@ -2923,9 +2968,11 @@ func (self *ReceiveSequence) receiveHead(item *receiveItem) {
 		a.received(item.messageByteCount)
 	})
 	var provideMode protocol.ProvideMode
-	if self.receiveContract != nil {
-		self.receiveContract.ack(item.messageByteCount)
-		provideMode = self.receiveContract.provideMode
+
+	if item.contractId != nil {
+		receiveContract := self.openReceiveContracts[*item.contractId]
+		receiveContract.ack(item.messageByteCount)
+		provideMode = receiveContract.provideMode
 	} else {
 		// no contract peers are considered in network
 		provideMode = protocol.ProvideMode_Network
@@ -3004,22 +3051,44 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 		return nil
 	}
 
-	// close out the previous contract
-	if self.receiveContract != nil {
-		self.client.ContractManager().CloseContract(
-			self.receiveContract.contractId,
-			self.receiveContract.ackedByteCount,
-			self.receiveContract.unackedByteCount,
-		)
+	if receiveContract, ok := self.openReceiveContracts[nextReceiveContract.contractId]; ok {
+		// switch to the current contract
+		self.receiveContract = receiveContract
+		return nil
 	}
+
+	self.openReceiveContracts[nextReceiveContract.contractId] = nextReceiveContract
 	self.receiveContract = nextReceiveContract
+
+	if d := len(self.openReceiveContracts) - self.receiveBufferSettings.MaxOpenReceiveContract; 0 < d {
+		// remove the least recently added
+		orderedReceiveContracts := maps.Values(self.openReceiveContracts)
+		slices.SortFunc(orderedReceiveContracts, func(a *sequenceContract, b *sequenceContract) int {
+			return a.localId.Cmp(b.localId)
+		})
+		for _, receiveContract := range orderedReceiveContracts[:len(orderedReceiveContracts)-d] {
+			if receiveContract != self.receiveContract {
+				self.client.ContractManager().CloseContract(
+					receiveContract.contractId,
+					receiveContract.ackedByteCount,
+					receiveContract.unackedByteCount,
+				)
+				delete(self.openReceiveContracts, receiveContract.contractId)
+			}
+		}
+	}
+
 	return nil
 }
 
 func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 	// always use a contract if present
 	// the sender may send contracts even if `receiveNoContract` is set locally
-	if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
+	if item.contractId != nil {
+		if receiveContract, ok := self.openReceiveContracts[*item.contractId]; ok && receiveContract.update(item.messageByteCount) {
+			return true
+		}
+	} else if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
 		// item.contractId = &self.receiveContract.contractId
 		return true
 	}
@@ -3165,6 +3234,7 @@ func (self *sequenceAckWindow) Snapshot(reset bool) *sequenceAckWindowSnapshot {
 }
 
 type sequenceContract struct {
+	localId                    Id
 	tag                        string
 	contract                   *protocol.Contract
 	contractId                 Id
@@ -3202,6 +3272,7 @@ func newSequenceContract(tag string, contract *protocol.Contract, minUpdateByteC
 	}
 
 	return &sequenceContract{
+		localId:                    NewId(),
 		tag:                        tag,
 		contract:                   contract,
 		contractId:                 contractId,
@@ -3496,11 +3567,21 @@ func (self *ForwardSequence) Run() {
 				}
 			}
 		case <-time.After(self.forwardBufferSettings.IdleTimeout):
-			if self.idleCondition.Close(checkpointId) {
+			done := false
+			func() {
+				self.packMutex.Lock()
+				defer self.packMutex.Unlock()
+				// idle timeout
+				if self.idleCondition.Close(checkpointId) {
+					done = true
+				}
+				// else there are pending updates
+			}()
+			if done {
 				// close the sequence
+				glog.Infof("[f]exit idle timeout %s->%s s(%s)", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 				return
 			}
-			// else there are pending updates
 		}
 	}
 }
