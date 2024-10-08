@@ -74,12 +74,13 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 		ConnectTimeout:     60 * time.Second,
 		ReadTimeout:        30 * time.Second,
 		WriteTimeout:       15 * time.Second,
+		AckCompressTimeout: time.Duration(0),
 		IdleTimeout:        60 * time.Second,
 		SequenceBufferSize: DefaultIpBufferSize,
 		Mtu:                DefaultMtu,
 		// avoid fragmentation
 		ReadBufferByteCount: DefaultMtu - max(Ipv4HeaderSizeWithoutExtensions, Ipv6HeaderSize) - max(UdpHeaderSize, TcpHeaderSizeWithoutExtensions),
-		WindowSize:          uint32(mib(1)),
+		WindowSize:          uint32(kib(128)),
 		UserLimit:           128,
 	}
 	return tcpBufferSettings
@@ -910,9 +911,10 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 }
 
 type TcpBufferSettings struct {
-	ConnectTimeout time.Duration
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
+	ConnectTimeout     time.Duration
+	ReadTimeout        time.Duration
+	WriteTimeout       time.Duration
+	AckCompressTimeout time.Duration
 	// ReadPollTimeout time.Duration
 	// WritePollTimeout time.Duration
 	IdleTimeout         time.Duration
@@ -1211,6 +1213,8 @@ func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (boo
 func (self *TcpSequence) Run() {
 	defer self.cancel()
 
+	// note receive is called from multiple go routines
+	// tcp packets with ack may be reordered due to being written in parallel
 	receive := func(packet []byte) {
 		self.receiveCallback(self.source, IpProtocolTcp, packet)
 	}
@@ -1325,22 +1329,36 @@ func (self *TcpSequence) Run() {
 	}
 	defer socket.Close()
 
-	// EXPORT audit record for start
-	// EVERY 5 MINUTES, EXPORT audit record
-	// AT CLOSE, EXPORT audit recordp89
-
-	// tcpSocket := socket.(*net.TCPConn)
-	// tcpSocket.SetNoDelay(false)
+	/*
+		if v, ok := socket.(*net.TCPConn); ok {
+			if err := v.SetWriteBuffer(int(self.windowSize)); err != nil {
+				glog.Infof("[init]could not set write buffer = %d\n", self.windowSize)
+			}
+			// if err := v.SetReadBuffer(int(self.receiveWindowSize)); err != nil {
+			// 	glog.Infof("[init]could not set read buffer = %d\n", self.receiveWindowSize)
+			// }
+		}
+	*/
 
 	self.UpdateLastActivityTime()
 	glog.V(2).Infof("[init]connect success\n")
 
 	receiveAckCond := sync.NewCond(&self.mutex)
+	ackCond := sync.NewCond(&self.mutex)
 	defer func() {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
 		receiveAckCond.Broadcast()
+		ackCond.Broadcast()
+	}()
+
+	var ackedSendSeq uint32
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		ackedSendSeq = self.sendSeq
 	}()
 
 	go func() {
@@ -1375,16 +1393,11 @@ func (self *TcpSequence) Run() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
 
-					packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
-					if packetsErr != nil {
-						glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
+					select {
+					case <-self.ctx.Done():
 						return
+					default:
 					}
-
-					if 1 < len(packets) {
-						glog.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
-					}
-					glog.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
 
 					for uint32(self.receiveWindowSize) < self.receiveSeq-self.receiveSeqAck+uint32(n) {
 						glog.V(2).Infof("[f%d]tcp receive window wait\n", forwardIter)
@@ -1396,9 +1409,22 @@ func (self *TcpSequence) Run() {
 						}
 					}
 
+					packets, packetsErr = self.DataPackets(buffer, n, self.tcpBufferSettings.Mtu)
+					if packetsErr != nil {
+						glog.Infof("[f%d]tcp receive packets error = %s\n", forwardIter, packetsErr)
+						return
+					}
+
+					if 1 < len(packets) {
+						glog.V(2).Infof("[f%d]tcp receive segmented packets %d\n", forwardIter, len(packets))
+					}
+					glog.V(2).Infof("[f%d]tcp receive %d %d %d\n", forwardIter, n, len(packets), self.receiveSeq)
+
 					self.receiveSeq += uint32(n)
+
+					ackedSendSeq = self.sendSeq
 				}()
-				if packetsErr != nil {
+				if packets == nil {
 					return
 				}
 
@@ -1493,6 +1519,66 @@ func (self *TcpSequence) Run() {
 						}
 					}
 				}
+
+			}
+		}
+	}()
+
+	go func() {
+		defer self.cancel()
+
+		for {
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
+
+			var packet []byte
+			func() {
+				self.mutex.Lock()
+				defer self.mutex.Unlock()
+
+				select {
+				case <-self.ctx.Done():
+					return
+				default:
+				}
+
+				for self.sendSeq == ackedSendSeq {
+					ackCond.Wait()
+					select {
+					case <-self.ctx.Done():
+						return
+					default:
+					}
+				}
+
+				var err error
+				packet, err = self.PureAck()
+				if err != nil {
+					glog.Infof("[r]ack err = %s\n", err)
+				}
+				ackedSendSeq = self.sendSeq
+			}()
+			if packet == nil {
+				return
+			}
+
+			select {
+			case <-self.ctx.Done():
+				return
+			default:
+			}
+
+			receive(packet)
+
+			if 0 < self.tcpBufferSettings.AckCompressTimeout {
+				select {
+				case <-time.After(self.tcpBufferSettings.AckCompressTimeout):
+				case <-self.ctx.Done():
+					return
+				}
 			}
 		}
 	}()
@@ -1510,7 +1596,7 @@ func (self *TcpSequence) Run() {
 			}
 
 			drop := false
-			seq := 0
+			seq := uint32(0)
 
 			func() {
 				self.mutex.Lock()
@@ -1544,30 +1630,27 @@ func (self *TcpSequence) Run() {
 			}
 
 			payload := sendItem.tcp.Payload
-			seq += len(payload)
-
-			select {
-			case <-self.ctx.Done():
-				return
-			case writePayloads <- writePayload{
-				payload:  payload,
-				sendIter: sendIter,
-			}:
+			if 0 < len(payload) {
+				seq += uint32(len(payload))
+				writePayload := writePayload{
+					payload:  payload,
+					sendIter: sendIter,
+				}
+				select {
+				case <-self.ctx.Done():
+					return
+				case writePayloads <- writePayload:
+				}
 			}
 
 			if 0 < seq {
-				var packet []byte
-				var err error
 				func() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
 
-					self.sendSeq += uint32(seq)
-					packet, err = self.PureAck()
+					self.sendSeq += seq
+					ackCond.Broadcast()
 				}()
-				if err == nil {
-					receive(packet)
-				}
 			}
 
 			if sendItem.tcp.FIN {
