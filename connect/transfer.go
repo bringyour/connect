@@ -2512,6 +2512,9 @@ func (self *ReceiveSequence) Run() {
 		// close previous contracts and checkpoint the current contract
 		for _, receiveContract := range self.openReceiveContracts {
 			if self.receiveContract != receiveContract {
+				if receiveContract.unackedByteCount != 0 {
+					glog.Infof("[r]%s<-%s s(%s) close contract with unacked =  %d\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, receiveContract.unackedByteCount)
+				}
 				self.client.ContractManager().CloseContract(
 					receiveContract.contractId,
 					receiveContract.ackedByteCount,
@@ -2522,6 +2525,9 @@ func (self *ReceiveSequence) Run() {
 		if self.receiveContract != nil {
 			// the sender may send again with this contract (set as head)
 			// checkpoint the contract but do not close it
+			if self.receiveContract.unackedByteCount != 0 {
+				glog.Infof("[r]%s<-%s s(%s) checkpoint contract with unacked =  %d\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, self.receiveContract.unackedByteCount)
+			}
 			self.client.ContractManager().CheckpointContract(
 				self.receiveContract.contractId,
 				self.receiveContract.ackedByteCount,
