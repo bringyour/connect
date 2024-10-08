@@ -2778,15 +2778,16 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 	receiveTime := time.Now()
 
 	sequenceNumber := receivePack.Pack.SequenceNumber
-	var contractId *Id
-	if self.receiveContract != nil {
-		contractId = &self.receiveContract.contractId
-	}
+	// var contractId *Id
+	// if self.receiveContract != nil {
+	// 	contractId = &self.receiveContract.contractId
+	// }
 	messageId, err := IdFromBytes(receivePack.Pack.MessageId)
 	if err != nil {
 		return false, errors.New("Bad message_id")
 	}
 
+	// note the receive contract is the contract active when this is at the head of the queue
 	item := &receiveItem{
 		transferItem: transferItem{
 			messageId:        messageId,
@@ -2794,7 +2795,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			messageByteCount: receivePack.MessageByteCount,
 		},
 
-		contractId:      contractId,
+		// contractId:      contractId,
 		receiveTime:     receiveTime,
 		frames:          receivePack.Pack.Frames,
 		contractFrame:   receivePack.Pack.ContractFrame,
@@ -3063,10 +3064,11 @@ func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) 
 	if d := len(self.openReceiveContracts) - self.receiveBufferSettings.MaxOpenReceiveContract; 0 < d {
 		// remove the least recently added
 		orderedReceiveContracts := maps.Values(self.openReceiveContracts)
+		// ascending where earliest created are first
 		slices.SortFunc(orderedReceiveContracts, func(a *sequenceContract, b *sequenceContract) int {
 			return a.localId.Cmp(b.localId)
 		})
-		for _, receiveContract := range orderedReceiveContracts[:len(orderedReceiveContracts)-d] {
+		for _, receiveContract := range orderedReceiveContracts[:d] {
 			if receiveContract != self.receiveContract {
 				self.client.ContractManager().CloseContract(
 					receiveContract.contractId,
@@ -3089,7 +3091,7 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 			return true
 		}
 	} else if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
-		// item.contractId = &self.receiveContract.contractId
+		item.contractId = &self.receiveContract.contractId
 		return true
 	}
 	// `receiveNoContract` is a mutual configuration
