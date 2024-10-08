@@ -68,6 +68,11 @@ message Pack {
     // this is threaded back by the `Ack`
     // so that the client can compute a single message rtt
     optional Tag tag = 8;
+
+    // contract_id lock
+    // this is required for nack messages. There is no need to set this for ack messages.
+    // ulid
+    optional bytes contract_id = 9;
 }
 
 

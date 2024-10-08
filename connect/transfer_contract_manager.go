@@ -881,13 +881,13 @@ func (self *ContractManager) closeContractQueueWithForceRemove(contractKey Contr
 	defer self.mutex.Unlock()
 
 	contractQueue, ok := self.destinationContracts[contractKey]
-	if !ok {
-		panic("Open and close must be equally paired")
+	if ok {
+		contractQueue.Close()
+		if contractQueue.IsDone() || forceRemove {
+			delete(self.destinationContracts, contractKey)
+		}
 	}
-	contractQueue.Close()
-	if contractQueue.IsDone() || forceRemove {
-		delete(self.destinationContracts, contractKey)
-	}
+	// else the contract was already force removed
 }
 
 type contractQueue struct {
