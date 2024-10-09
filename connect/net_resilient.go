@@ -70,7 +70,9 @@ func NewResilientDialTlsContext(
 		// fmt.Printf("Extender client 1\n")
 
 		netDialer := &net.Dialer{
-			Timeout: connectSettings.ConnectTimeout,
+			Timeout:         connectSettings.ConnectTimeout,
+			KeepAlive:       connectSettings.KeepAliveTimeout,
+			KeepAliveConfig: connectSettings.KeepAliveConfig,
 		}
 		conn, err := netDialer.Dial("tcp", address)
 		if err != nil {
