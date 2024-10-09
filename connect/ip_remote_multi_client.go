@@ -829,71 +829,68 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 	visitedDestinations := map[MultiHopId]bool{}
 	for {
 		destinationEstimatedBytesPerSecond := map[MultiHopId]ByteCount{}
-		for {
+		for len(destinationEstimatedBytesPerSecond) == 0 {
+			// exclude destinations that are already in the window
+			func() {
+				self.stateLock.Lock()
+				defer self.stateLock.Unlock()
+				for destination, _ := range self.destinationClients {
+					visitedDestinations[destination] = true
+				}
+			}()
 			nextDestinationEstimatedBytesPerSecond, err := self.generator.NextDestinations(
 				1,
 				maps.Keys(visitedDestinations),
 			)
 			if err != nil {
-				glog.V(2).Infof("[multi]window enumerate error timeout.\n")
+				glog.Infof("[multi]window enumerate error timeout = %s\n", err)
 				select {
 				case <-self.ctx.Done():
 					return
 				case <-time.After(self.settings.WindowEnumerateErrorTimeout):
 				}
-			} else if 0 < len(nextDestinationEstimatedBytesPerSecond) {
+			} else {
 				for destination, estimatedBytesPerSecond := range nextDestinationEstimatedBytesPerSecond {
 					destinationEstimatedBytesPerSecond[destination] = estimatedBytesPerSecond
 					visitedDestinations[destination] = true
 				}
-				break
-			} else {
-				// reset
-				visitedDestinations = map[MultiHopId]bool{}
-				glog.V(2).Infof("[multi]window enumerate empty timeout.\n")
-				select {
-				case <-self.ctx.Done():
-					return
-				case <-time.After(self.settings.WindowEnumerateEmptyTimeout):
+				// remove destinations that are already in the window
+				func() {
+					self.stateLock.Lock()
+					defer self.stateLock.Unlock()
+					for destination, _ := range self.destinationClients {
+						delete(destinationEstimatedBytesPerSecond, destination)
+					}
+				}()
+
+				if len(destinationEstimatedBytesPerSecond) == 0 {
+					// reset
+					visitedDestinations = map[MultiHopId]bool{}
+					glog.Infof("[multi]window enumerate empty timeout.\n")
+					select {
+					case <-self.ctx.Done():
+						return
+					case <-time.After(self.settings.WindowEnumerateEmptyTimeout):
+					}
 				}
 			}
 		}
 
-		// remove destinations that are already in the window
-		func() {
-			self.stateLock.Lock()
-			defer self.stateLock.Unlock()
-			for destination, _ := range self.destinationClients {
-				delete(destinationEstimatedBytesPerSecond, destination)
-			}
-		}()
-
-		if 0 < len(destinationEstimatedBytesPerSecond) {
-			for destination, estimatedBytesPerSecond := range destinationEstimatedBytesPerSecond {
-				if clientArgs, err := self.generator.NewClientArgs(); err == nil {
-					args := &multiClientChannelArgs{
-						Destination:                    destination,
-						EstimatedBytesPerSecond:        estimatedBytesPerSecond,
-						MultiClientGeneratorClientArgs: *clientArgs,
-					}
-					select {
-					case <-self.ctx.Done():
-						self.generator.RemoveClientArgs(clientArgs)
-						return
-					case self.clientChannelArgs <- args:
-					}
-				} else {
-					glog.Infof("[multi]create client args error = %s\n", err)
+		for destination, estimatedBytesPerSecond := range destinationEstimatedBytesPerSecond {
+			if clientArgs, err := self.generator.NewClientArgs(); err == nil {
+				args := &multiClientChannelArgs{
+					Destination:                    destination,
+					EstimatedBytesPerSecond:        estimatedBytesPerSecond,
+					MultiClientGeneratorClientArgs: *clientArgs,
 				}
-
-			}
-		} else {
-			// this case happens when find providers is not correctly excluding clients
-			glog.V(2).Infof("[multi]window enumerate empty timeout (api mismatch).\n")
-			select {
-			case <-self.ctx.Done():
-				return
-			case <-time.After(self.settings.WindowEnumerateEmptyTimeout):
+				select {
+				case <-self.ctx.Done():
+					self.generator.RemoveClientArgs(clientArgs)
+					return
+				case self.clientChannelArgs <- args:
+				}
+			} else {
+				glog.Infof("[multi]create client args error = %s\n", err)
 			}
 		}
 	}
