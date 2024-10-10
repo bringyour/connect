@@ -8,3 +8,5 @@ api/redoc-static.html
 client2-sim/client2-sim
 connect/connect.test
 connect/profile
+.direnv/
+
