@@ -1,6 +1,6 @@
 module bringyour.com/connect
 
-go 1.22.0
+go 1.23.1
 
 require (
 	bringyour.com/protocol v0.0.0
@@ -18,7 +18,7 @@ require (
 	golang.org/x/net v0.25.0
 	golang.org/x/sync v0.8.0
 	google.golang.org/protobuf v1.33.0
-	gvisor.dev/gvisor v0.0.0-20240912184249-d4480ca03532
+	gvisor.dev/gvisor v0.0.0-20241009022347-94b16c128c1c
 	src.agwa.name/tlshacks v0.0.0-20231008131857-90d701ba3225
 )
 
