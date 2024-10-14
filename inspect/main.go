@@ -26,7 +26,7 @@ func main() {
 	// CLUSTERING OPTIONS
 	// opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 2, 0.2)
 	// clusterMethod := NewOptics(opticsOpts)
-	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 7, 0.20000)
+	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 6, 0.41224)
 	clusterMethod := NewHDBSCAN(hdbscanOpts)
 
 	// OVERLAP FUNCTIONS
@@ -34,8 +34,8 @@ func main() {
 	// 	margin: TimestampInNano(5), // x seconds fixed margin
 	// }
 	overlapFunctions := GaussianOverlap{
-		stdDev: TimestampInNano(0.0311724), // x seconds
-		cutoff: 4,                          // x standard deviations
+		stdDev: TimestampInNano(0.01098), // x seconds
+		cutoff: 4,                        // x standard deviations
 	}
 
 	if fname == "parse_pcap" || fname == "p" {
@@ -56,8 +56,6 @@ func main() {
 			testEvaluate(&overlapFunctions, clusterMethod, records, coOccurrencePath)
 		} else if fname == "genetic_hill_climbing" || fname == "ghc" {
 			GeneticHillClimbing(records, coOccurrencePath)
-		} else if fname == "genetic_oes" || fname == "goes" {
-			GeneticOES(records, coOccurrencePath)
 		} else {
 			log.Fatalf("Unknown mode: %s", fname)
 		}

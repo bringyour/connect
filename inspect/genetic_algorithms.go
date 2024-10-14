@@ -117,9 +117,9 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 		return -1 * score, nil
 	}
 
-	// Hill climbing is implemented as a GA using the ModMutationOnly model with the Strict option
+	// hill climbing is implemented as a GA using the ModMutationOnly model
 	cfg := eaopt.NewDefaultGAConfig()
-	cfg.Model = eaopt.ModMutationOnly{Strict: true}
+	cfg.Model = eaopt.ModMutationOnly{Strict: false}
 	cfg.PopSize = 2
 	cfg.ParallelEval = true
 	cfg.NGenerations = 20
@@ -138,7 +138,7 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 		minFit = fit
 	}
 
-	// Run the hill-climbing algorithm
+	// run the hill-climbing algorithm
 	ga, err := cfg.NewGA()
 	ga.ParallelEval = true
 	if err != nil {
@@ -173,58 +173,4 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 	best := ga.HallOfFame[0].Genome.(*Coord3D)
 	bestScore := ga.HallOfFame[0].Fitness
 	fmt.Printf("Found a minimum at (%d, %.5f, %.5f) with score %v.\n", best.X, best.Y, best.Z, bestScore)
-}
-
-func GeneticOES(records *map[ulid.ULID]*data.TransportRecord, coOccurrencePath string) {
-	// use fixed margin overlap to calculate overlap
-	overlapFunctions := FixedMarginOverlap{
-		margin: 5 * NS_IN_SEC, // 1 second fixed margin
-	}
-
-	// build cooccurrence map
-	sessionTimestamps := makeTimestamps(&overlapFunctions, records)
-	cooc, earliestTimestamp := makeCoOccurrence(sessionTimestamps)
-	cooc.SaveData(coOccurrencePath)
-
-	regionLeeway := uint64(3)
-	regions := ConstructTestSession1Regions(earliestTimestamp, regionLeeway)
-
-	customScoreFunc := func(x []float64) float64 {
-		X := int64(10 * x[0])
-		Y := x[1]
-		if X < 2 || Y > 1 || Y < 0.1 {
-			fmt.Println("Invalid values ", X, Y)
-			return 0.0 + math.Abs(0.5-Y) + math.Abs(2-float64(X))
-		}
-		fmt.Println(X, Y)
-		opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", X, Y)
-		clusterMethod := NewOptics(opticsOpts)
-		clusterOps := &ClusterOpts{
-			ClusterMethod:    clusterMethod,
-			CoOccurrencePath: coOccurrencePath,
-		}
-		clusters, err := cluster(clusterOps, false)
-		if err != nil {
-			return 1000
-		}
-		score := Evaluate(*sessionTimestamps, *regions, clusters)
-		return -1.0 * score
-	}
-
-	randomness := rand.New(rand.NewSource(42))
-
-	oes, err := eaopt.NewOES(uint(4), uint(20), float64(1), float64(0.2), true, randomness)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	// first float is mult by 10
-	res, y, err := oes.Minimize(customScoreFunc, []float64{0.4, 0.9})
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	fmt.Printf("Found minimum of %v at %.5f\n", res, y)
 }

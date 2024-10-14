@@ -133,8 +133,12 @@ def graph_data(sids, data, clusters, print_stats):
     projection = TSNE().fit_transform(reordered_matrix)
     plt.figure(figsize=(8, 6))
     colors = cm.rainbow(np.linspace(0, 1, len(clusters)))
+
+    idx = 0
     for cluster_id in sorted(clusters.keys()):
-        indices = clusters[cluster_id]
+        start = idx
+        idx += len(clusters[cluster_id])
+        indices = range(start, idx)
         plt.scatter(
             projection[indices, 0],
             projection[indices, 1],
