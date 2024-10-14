@@ -89,7 +89,7 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 		})
 	}
 
-	// remove "" from map
+	// remove "placeholder" (for non-tls session names) and "" from map
 	delete(sessionTimestamps, "")
 	delete(sessionTimestamps, "placeholder")
 
@@ -109,11 +109,9 @@ func makeCoOccurrence(sessionTimestamps *map[sessionID]*timestamps) (*coOccurren
 	// populate co-occurrence map
 	cooc := NewCoOccurrence(nil)
 	for _, ts := range allTimestamps {
-		// populate outer map to have all needed keys
-		cooc.SetOuterKey(ts.sid)
+		cooc.SetOuterKey(ts.sid) // populate outer map to have all needed keys
 	}
 	for _, ts1 := range allTimestamps {
-		// fmt.Println(ts1.sid, i)
 		for _, ts2 := range allTimestamps {
 			if ts1.NoFutureOverlap(ts2) {
 				break // no overlap further ahead since intervals are sorted by open time

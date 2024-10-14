@@ -11,48 +11,27 @@ import (
 )
 
 func main() {
-	// pcapFile := "data/1tls.pcapng"
-	// pcapFile := "data/capture.pcap"
-	// pcapFile := "data/client hellos.pcapng"
-
 	if len(os.Args) != 2 {
 		log.Fatalf("Usage: %s INSPECT_MODE\n", os.Args[0])
 	}
 	fname := os.Args[1]
 
-	sourceIP := "145.94.160.91"
+	sourceIP := "145.94.160.91" // needs to be changed based on the pcap
 
-	// dataPath := "data/capture.pcap"
-	// savePath := "data/test_transports.pb"
-	// coOccurrencePath := "data/cooccurrence_data_small.pb"
-
-	// dataPath := "data/100k_tcp.pcap"
-	// savePath := "data/test_2k_records.pb"
-	// coOccurrencePath := "data/cooccurrence_data_2k.pb"
-
+	// File paths for original data, transport records and cooccurence matrix
 	dataPath := "data/test_session_1.pcapng"
 	savePath := "data/ts1_transports.pb"
 	coOccurrencePath := "data/ts1_cooccurrence.pb"
 
+	// CLUSTERING OPTIONS
 	// opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 2, 0.2)
 	// clusterMethod := NewOptics(opticsOpts)
 	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 7, 0.20000)
 	clusterMethod := NewHDBSCAN(hdbscanOpts)
 
-	// avg metric HDBSCAN
-	// !! (2, 0.40032, 0.44944)
-	//
-	// (7, 0.20000, 0.05000)
-	// (2, 0.76745, 0.61240)
-
-	// avg metric (no size) HDBSCAN
-	// !!!! 7, 0.2, 0.0311724
-	//
-	// 9, 0.20000, 0.00201
-
-	// use fixed margin overlap to calculate overlap
+	// OVERLAP FUNCTIONS
 	// overlapFunctions := FixedMarginOverlap{
-	// 	margin: 5 * NS_IN_SEC, // 1 second fixed margin
+	// 	margin: TimestampInNano(5), // x seconds fixed margin
 	// }
 	overlapFunctions := GaussianOverlap{
 		stdDev: TimestampInNano(0.0311724), // x seconds
@@ -145,7 +124,7 @@ func testEvaluate(overlapFunctions OverlapFunctions, clusterMethod ClusterMethod
 	// evaluate
 	regions := ConstructTestSession1Regions(earliestTimestamp, 3)
 	// for i, r := range regions {
-	// 	fmt.Printf("Region %d: %s - %s\n", i+1, readableTime(r.minT), readableTime(r.maxT))
+	// 	fmt.Printf("Region %d: %s - %s\n", i+1, ReadableTime(r.minT), ReadableTime(r.maxT))
 	// }
 	score := Evaluate(*sessionTimestamps, *regions, clusters)
 	time3end := time.Since(time3)

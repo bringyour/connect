@@ -117,22 +117,20 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 		return -1 * score, nil
 	}
 
-	// Hill climbing is implemented as a GA using the ModMutationOnly model
-	// with the Strict option.
+	// Hill climbing is implemented as a GA using the ModMutationOnly model with the Strict option
 	cfg := eaopt.NewDefaultGAConfig()
 	cfg.Model = eaopt.ModMutationOnly{Strict: true}
 	cfg.PopSize = 2
 	cfg.ParallelEval = true
 	cfg.NGenerations = 20
 
-	// Add a custom callback function to track progress.
+	// add a custom callback function to track progress
 	minFit := math.MaxFloat64
 	cfg.Callback = func(ga *eaopt.GA) {
 		hof := ga.HallOfFame[0]
 		fit := hof.Fitness
 		if fit == minFit {
-			// Output only when we make an improvement.
-			return
+			return // output only when we make an improvement
 		}
 		best := hof.Genome.(*Coord3D)
 		fmt.Printf("Best fitness at generation %4d: %10.5f at (%d, %9.5f, %.5f)\n",
@@ -140,7 +138,7 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 		minFit = fit
 	}
 
-	// Run the hill-climbing algorithm.
+	// Run the hill-climbing algorithm
 	ga, err := cfg.NewGA()
 	ga.ParallelEval = true
 	if err != nil {
@@ -161,7 +159,7 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 			}
 		}
 		return &Coord3D{
-			X:         uint64(rng.Intn(8) + 2), // 2-10
+			X:         uint64(rng.Intn(8) + 2), // range: 2-10
 			Y:         rng.Float64(),
 			Z:         rng.Float64(),
 			scoreFunc: customScoreFunc,
@@ -171,7 +169,7 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 		panic(err)
 	}
 
-	// Output the best encountered solution.
+	// output the best encountered solution.
 	best := ga.HallOfFame[0].Genome.(*Coord3D)
 	bestScore := ga.HallOfFame[0].Fitness
 	fmt.Printf("Found a minimum at (%d, %.5f, %.5f) with score %v.\n", best.X, best.Y, best.Z, bestScore)

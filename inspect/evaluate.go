@@ -18,7 +18,7 @@ type clusteredSession struct {
 	region       float64
 }
 
-func readableTime(timestamp uint64) string {
+func ReadableTime(timestamp uint64) string {
 	return time.Unix(0, int64(timestamp)).Format("2006-01-02 15:04:05.000000")
 }
 
@@ -42,8 +42,8 @@ func getSessionRegion(earliestTime uint64, regions []region) float64 {
 }
 
 // constructRegions transforms the regions from relative times in seconds to absolute times (from the earliest time) in nanoseconds with added leeway
-// firstRegions is the regions with minT and maxT in seconds
-// earliestTime is the earliest time when data starts in seconds
+// firstRegions is the regions (with minT and maxT in seconds)
+// earliestTime is the earliest time when data starts (in seconds)
 // leeway is the added time in nanoseconds to the regions (if 0, then no leeway is added)
 // returns the regions with minT and maxT in nanoseconds and added leeway
 func constructRegions(firstRegions []region, earliestTime uint64, leeway uint64) *[]region {
@@ -111,7 +111,7 @@ func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clu
 			if timestamps, exists := sessionTimestamps[sid]; exists {
 				sessionEarliestTime := timestamps.times[0]
 				region := getSessionRegion(sessionEarliestTime, regions)
-				// fmt.Printf("  [%s](%v)%v\n", sid, readableTime(timestamps.times[0]), region)
+				// fmt.Printf("  [%s](%v)%v\n", sid, ReadableTime(timestamps.times[0]), region)
 				// if expected region is int, then session is not unclustered (count towards purity)
 				if isInt := region == math.Round(region); isInt {
 					if _, exists := regionCounts[int(region)]; !exists {
@@ -154,8 +154,6 @@ func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clu
 		purities = append(purities, purity) // save purity for later metrics
 		// fmt.Println()
 	}
-	// FIXME: do we consider the -1 cluster for purities
-	// how do we weigh in on number of clusters
 
 	// calculate average purity of clusters (excluding unclustered)
 	averagePurity := 0.0

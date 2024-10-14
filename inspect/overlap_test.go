@@ -7,7 +7,6 @@ import (
 )
 
 func TestFixedMarginOverlap(t *testing.T) {
-	// Define test cases
 	tests := []struct {
 		name        string
 		fixedMargin uint64
@@ -27,7 +26,7 @@ func TestFixedMarginOverlap(t *testing.T) {
 			fixedMargin: 10,
 			times1:      []uint64{100, 200},
 			times2:      []uint64{110, 210},
-			expected:    20, // Overlap at the margin
+			expected:    20,
 		},
 		{
 			name:        "Overlapping (intervals overlap multiple others)",
@@ -78,7 +77,6 @@ func TestFixedMarginOverlap(t *testing.T) {
 }
 
 func TestGaussianOverlap(t *testing.T) {
-	// Define test cases
 	tests := []struct {
 		name     string
 		stdDev   uint64
