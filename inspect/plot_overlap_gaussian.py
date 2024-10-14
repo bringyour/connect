@@ -146,14 +146,14 @@ def plot_gaussian_overlap(times1, times2, std_dev, cutoff):
     plt.close()
 
 
-times1 = [1727265107213928000]
-times2 = [1727265107157590000]
-std_dev = 0.05 * 1_000_000_000
+# times1 = [1727265107213928000]
+# times2 = [1727265107157590000]
+# std_dev = 0.05 * 1_000_000_000
 
 
-# times1 = [100, 180, 300]
-# times2 = [150, 250, 330]
-# std_dev = 30
+times1 = [180]
+times2 = [150, 250]
+std_dev = 30
 cutoff = 4 * std_dev
 
 # 1 stdev contains 68% of the distribution

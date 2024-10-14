@@ -34,18 +34,29 @@ func main() {
 	savePath := "data/ts1_transports.pb"
 	coOccurrencePath := "data/ts1_cooccurrence.pb"
 
-	opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 2, 0.2)
-	clusterMethod := NewOptics(opticsOpts)
-	// hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 9, 0.2)
-	// clusterMethod := NewHDBSCAN(hdbscanOpts)
+	// opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 2, 0.2)
+	// clusterMethod := NewOptics(opticsOpts)
+	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 7, 0.20000)
+	clusterMethod := NewHDBSCAN(hdbscanOpts)
+
+	// avg metric HDBSCAN
+	// !! (2, 0.40032, 0.44944)
+	//
+	// (7, 0.20000, 0.05000)
+	// (2, 0.76745, 0.61240)
+
+	// avg metric (no size) HDBSCAN
+	// !!!! 7, 0.2, 0.0311724
+	//
+	// 9, 0.20000, 0.00201
 
 	// use fixed margin overlap to calculate overlap
 	// overlapFunctions := FixedMarginOverlap{
 	// 	margin: 5 * NS_IN_SEC, // 1 second fixed margin
 	// }
 	overlapFunctions := GaussianOverlap{
-		stdDev: TimestampInNano(5), // x seconds
-		cutoff: 4,                  // x standard deviations
+		stdDev: TimestampInNano(0.0311724), // x seconds
+		cutoff: 4,                          // x standard deviations
 	}
 
 	if fname == "parse_pcap" || fname == "p" {

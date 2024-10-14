@@ -32,24 +32,66 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 		}
 
 		sid := sessionID(*record.Open.TlsServerName)
+		var ts *timestamps
 
-		if ts, exists := sessionTimestamps[sid]; exists {
-			ts.times = append(ts.times, times...)
+		if ts1, exists := sessionTimestamps[sid]; exists {
+			ts1.times = append(ts1.times, times...)
+			ts = ts1
 		} else {
-			ts := &timestamps{
+			ts = &timestamps{
 				sid:           sid,
 				times:         times,
 				overlapFuncts: overlapFunctions,
 			}
 			sessionTimestamps[sid] = ts
 		}
+
+		_, thirdLevelDomain, secondLevelDomain, _ := splitDomain(string(sid))
+
+		// if existingTimestamps, ok := sessionTimestamps[sessionID(topLevelDomain)]; ok {
+		// 	mergeTimestamps(existingTimestamps, ts)
+		// } else {
+		// 	sessionTimestamps[sessionID(topLevelDomain)] = &timestamps{
+		// 		sid:           sessionID(topLevelDomain),
+		// 		times:         times,
+		// 		overlapFuncts: overlapFunctions,
+		// 	}
+		// }
+
+		if thirdLevelDomain != "www."+secondLevelDomain {
+			if existingTimestamps, ok := sessionTimestamps[sessionID(secondLevelDomain)]; ok {
+				mergeTimestamps(existingTimestamps, ts)
+			} else {
+				sessionTimestamps[sessionID(secondLevelDomain)] = &timestamps{
+					sid:           sessionID(secondLevelDomain),
+					times:         times,
+					overlapFuncts: overlapFunctions,
+				}
+			}
+		}
+
+		// if existingTimestamps, ok := sessionTimestamps[sessionID(thirdLevelDomain)]; ok {
+		// 	mergeTimestamps(existingTimestamps, ts)
+		// } else {
+		// 	sessionTimestamps[sessionID(thirdLevelDomain)] = &timestamps{
+		// 		sid:           sessionID(thirdLevelDomain),
+		// 		times:         times,
+		// 		overlapFuncts: overlapFunctions,
+		// 	}
+		// }
 	}
+
 	// sort the timestamps in each session (sorted by earliest open time)
 	for _, ts := range sessionTimestamps {
+		fmt.Println(ts.sid, len(ts.times))
 		sort.Slice(ts.times, func(i, j int) bool {
 			return ts.times[i] < ts.times[j]
 		})
 	}
+
+	// remove "" from map
+	delete(sessionTimestamps, "")
+	delete(sessionTimestamps, "placeholder")
 
 	return &sessionTimestamps
 }
@@ -71,6 +113,7 @@ func makeCoOccurrence(sessionTimestamps *map[sessionID]*timestamps) (*coOccurren
 		cooc.SetOuterKey(ts.sid)
 	}
 	for _, ts1 := range allTimestamps {
+		// fmt.Println(ts1.sid, i)
 		for _, ts2 := range allTimestamps {
 			if ts1.NoFutureOverlap(ts2) {
 				break // no overlap further ahead since intervals are sorted by open time

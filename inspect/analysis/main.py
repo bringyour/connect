@@ -165,7 +165,16 @@ def graph_data(sids, data, clusters, print_stats):
     plt.close()
 
 
-# # converts overlap to a distance where distance is from [0, 1] and reciprocal of overlap (max_overlap corresponds to 0 distance)
+# converts overlap to a distance where distance is from [0, 1]
+# def overlap_to_distance(overlap, max_overlap):
+#     if overlap == 0:
+#         return 1
+#     return 0
+
+# what is significant overlap?
+
+
+# converts overlap to a distance where distance is from [0, 1] and reciprocal of overlap (max_overlap corresponds to 0 distance)
 # def overlap_to_distance(overlap, max_overlap):
 #     # no overlap means max distance
 #     if overlap == 0:
@@ -174,14 +183,13 @@ def graph_data(sids, data, clusters, print_stats):
 #     if overlap == max_overlap:
 #         return 0
 #     # normalize to [0, 1]
-#     return 1 - (overlap / max_overlap)
+#     return 1 - (math.log(overlap) / math.log(max_overlap))
 
 
 # converts overlap to a distance where distance is from [0, 1]
 # exponential decay transformation function f=e^[-alpha*(overlap/max_overlap)]
 def overlap_to_distance(overlap, max_overlap):
-    alpha = 20  # adjust alpha to control the rate of decay
-
+    alpha = 13  # adjust alpha to control the rate of decay
     # no overlap means max distance
     if overlap <= 0:
         return 1
@@ -191,18 +199,19 @@ def overlap_to_distance(overlap, max_overlap):
     # exponential decay
     return math.exp(-alpha * (overlap / max_overlap))
 
-    # example for alpha=3 and max_overlap=10
-    # overlap = 0, distance = 1.00
-    # overlap = 1, distance = 0.74
-    # overlap = 2, distance = 0.54
-    # overlap = 3, distance = 0.40
-    # overlap = 4, distance = 0.30
-    # overlap = 5, distance = 0.22
-    # overlap = 6, distance = 0.16
-    # overlap = 7, distance = 0.12
-    # overlap = 8, distance = 0.09
-    # overlap = 9, distance = 0.06
-    # overlap =10, distance = 0.00
+
+# example for alpha=3 and max_overlap=10
+# overlap = 0, distance = 1.00
+# overlap = 1, distance = 0.74
+# overlap = 2, distance = 0.54
+# overlap = 3, distance = 0.40
+# overlap = 4, distance = 0.30
+# overlap = 5, distance = 0.22
+# overlap = 6, distance = 0.16
+# overlap = 7, distance = 0.12
+# overlap = 8, distance = 0.09
+# overlap = 9, distance = 0.06
+# overlap =10, distance = 0.00
 
 
 def cluster_data(samples, distance_func, processed_args):

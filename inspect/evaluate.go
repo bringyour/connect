@@ -179,6 +179,8 @@ func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clu
 
 	// final score is average of size metric, average purity, and unclustered purity
 	score := (sizeMetric + averagePurity + unclusteredPurity) / 3
+	// score := (averagePurity + unclusteredPurity) / 2
+
 	fmt.Printf("[%.5f] Clusters: %d, Size: %v, Purity: %v, Unclustered Purity: %v\n", score, len(clusters), sizeMetric, averagePurity, unclusteredPurity)
 	return score
 }
