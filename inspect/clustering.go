@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"bringyour.com/inspect/data"
@@ -83,15 +84,13 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 
 	// sort the timestamps in each session (sorted by earliest open time)
 	for _, ts := range sessionTimestamps {
-		fmt.Println(ts.sid, len(ts.times))
+		// fmt.Println(ts.sid, len(ts.times))
 		sort.Slice(ts.times, func(i, j int) bool {
 			return ts.times[i] < ts.times[j]
 		})
 	}
 
-	// remove "placeholder" (for non-tls session names) and "" from map
 	delete(sessionTimestamps, "")
-	delete(sessionTimestamps, "placeholder")
 
 	return &sessionTimestamps
 }
@@ -207,7 +206,7 @@ func (o *generalClusterMethod) Args() string {
 	return o.args
 }
 
-func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, error) {
+func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, map[string][]float64, error) {
 	args := []string{"main.py"}
 	if printPython {
 		fmt.Printf("[cmd] python3 main.py %s\n", strings.Join(clusterOps.GetFormatted(), " "))
@@ -222,10 +221,11 @@ func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID,
 	cmd.Stdout = &stdout
 	err := cmd.Run()
 	if err != nil {
-		return nil, fmt.Errorf("python script: %v %v", err, stderr.String())
+		return nil, nil, fmt.Errorf("python script: %v %v", err, stderr.String())
 	}
 
 	clusters := make(map[string][]sessionID)
+	probabilities := make(map[string][]float64)
 	lines := strings.Split(stdout.String(), "\n")
 	for _, line := range lines {
 		if line == "" {
@@ -233,10 +233,10 @@ func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID,
 		}
 		if strings.HasPrefix(line, "[cluster]") {
 			// extract cluster ID and session IDs
-			re := regexp.MustCompile(`\[cluster\](-?\d+):\s*\[(.*?)\]`) // match [cluster]123: [sid1, sid2, sid3]
+			re := regexp.MustCompile(`\[cluster\](-?\d+):\s*\[(.*?)\]\s*\[(.*?)]`) // match [cluster]123: [sid1, sid2, sid3] [prob1, prob2, prob3]
 			matches := re.FindStringSubmatch(line)
 
-			if len(matches) == 3 {
+			if len(matches) == 4 {
 				clusterID := matches[1]
 				sessionIDs := strings.Split(matches[2], ",")
 				finalSids := make([]sessionID, len(sessionIDs))
@@ -245,8 +245,23 @@ func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID,
 					finalSids[i] = sessionID(strings.Trim(sessionIDs[i], " '"))
 				}
 				clusters[clusterID] = finalSids
+
+				// get probabilities as floats
+				probs := strings.Split(matches[3], ",")
+				clusterProbs := make([]float64, len(probs))
+				for i, p := range probs {
+					stringP := strings.Trim(p, " ")
+					floatP, err := strconv.ParseFloat(stringP, 64)
+					if err != nil {
+						log.Fatalln("Error parsing probability:", err)
+					} else {
+						clusterProbs[i] = floatP
+					}
+				}
+				probabilities[clusterID] = clusterProbs
 			} else {
 				log.Printf("Error parsing cluster line: %s", line)
+				log.Println(matches)
 			}
 			continue // skip to the next line
 		}
@@ -255,5 +270,5 @@ func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID,
 		}
 	}
 
-	return clusters, nil
+	return clusters, probabilities, nil
 }

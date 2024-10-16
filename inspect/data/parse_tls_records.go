@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"os"
-	"sort"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -79,28 +77,33 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	transportMap := make(map[string]*TransportRecord)
 
-	packets := make([]*gopacket.Packet, 0)
+	ignoredTCP := 0
+	totalTCP := 0
 
+	lastTimeTCP := int64(-1)
+	i := 0
 	for packet := range packetSource.Packets() {
-		packets = append(packets, &packet)
-	}
 
-	// sort packets by timestamp (earliest to latest)
-	sort.Slice(packets, func(i, j int) bool {
-		return (*packets[i]).Metadata().Timestamp.UnixNano() < (*packets[j]).Metadata().Timestamp.UnixNano()
-	})
-
-	for i, packet := range packets {
-		if i%1000 == 0 && i > 0 {
+		i++
+		if i%1000 == 0 {
 			fmt.Print(".")
 		}
-		if i%10_000 == 0 && i > 0 {
+		if i%10_000 == 0 {
 			fmt.Println(i)
 		}
-		ipLayer := (*packet).Layer(layers.LayerTypeIPv4)
-		tcpLayer := (*packet).Layer(layers.LayerTypeTCP)
+		ipLayer := (packet).Layer(layers.LayerTypeIPv4)
+		tcpLayer := (packet).Layer(layers.LayerTypeTCP)
 
 		if ipLayer != nil && tcpLayer != nil {
+			currTimeTCP := packet.Metadata().Timestamp.UnixNano()
+			totalTCP++
+			if lastTimeTCP > 0 && currTimeTCP < lastTimeTCP {
+				lastTimeTCP = currTimeTCP
+				ignoredTCP++
+				continue
+			}
+			lastTimeTCP = currTimeTCP
+
 			ipv4, _ := ipLayer.(*layers.IPv4)
 			tcp, _ := tcpLayer.(*layers.TCP)
 
@@ -124,15 +127,13 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 					continue
 				}
 
-				randomInt := rand.Intn(1_000_000)
-				var tlsServerName = fmt.Sprintf("%d.placeholder", randomInt) // TODO: decide what to do with this
-				// var tlsServerName = key.
+				var tlsServerName = ipv4.DstIP.String()
 
 				transportOpen := &protocol.TransportOpen{
 					Key:           &key,
 					EgressId:      generateULID(),
 					TransportId:   generateULID(),
-					OpenTime:      uint64((*packet).Metadata().Timestamp.UnixNano()),
+					OpenTime:      uint64(currTimeTCP),
 					TlsServerName: &tlsServerName,
 				}
 				tr := NewTransportRecord(transportOpen)
@@ -151,7 +152,7 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 					}
 					transportClose := &protocol.TransportClose{
 						TransportId: record.Open.TransportId,
-						CloseTime:   uint64((*packet).Metadata().Timestamp.UnixNano()),
+						CloseTime:   uint64(currTimeTCP),
 					}
 					record.Close = transportClose
 				} else {
@@ -164,8 +165,8 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 							TransportId: record.Open.TransportId,
 							ByteCount:   uint64(len(tcp.Payload)),
 							// for now the two times are the same
-							WriteToBufferStartTime: uint64((*packet).Metadata().Timestamp.UnixNano()),
-							WriteToBufferEndTime:   uint64((*packet).Metadata().Timestamp.UnixNano()),
+							WriteToBufferStartTime: uint64(currTimeTCP),
+							WriteToBufferEndTime:   uint64(currTimeTCP),
 						}
 						record.Writes = append(record.Writes, writeDataChunk)
 
@@ -190,8 +191,8 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 							TransportId: record.Open.TransportId,
 							ByteCount:   uint64(len(tcp.Payload)),
 							// for now the two times are the same
-							ReadFromBufferStartTime: uint64((*packet).Metadata().Timestamp.UnixNano()),
-							ReadFromBufferEndTime:   uint64((*packet).Metadata().Timestamp.UnixNano()),
+							ReadFromBufferStartTime: uint64(currTimeTCP),
+							ReadFromBufferEndTime:   uint64(currTimeTCP),
 						}
 						record.Reads = append(record.Reads, readDataChunk)
 					} else {
@@ -202,9 +203,9 @@ func parsePcapFile(pcapFile string, sourceIP string) (map[string]*TransportRecor
 			// technically currently SYN+ACK from server is ignored and we assume that we are the client in the exchange
 		}
 	}
-	fmt.Println()
+	fmt.Println(i)
 
-	packets = nil
+	log.Printf("Ignored %d out of order TCP packets (total TCP = %d)\n", ignoredTCP, totalTCP)
 
 	return transportMap, nil
 }

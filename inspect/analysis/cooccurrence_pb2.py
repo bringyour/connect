@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x63ooccurrence.proto\x12\tbringyour\")\n\tCoocInner\x12\x0b\n\x03sid\x18\x01 \x01(\t\x12\x0f\n\x07overlap\x18\x02 \x01(\x04\"B\n\tCoocOuter\x12\x0b\n\x03sid\x18\x01 \x01(\t\x12(\n\ncooc_inner\x18\x02 \x03(\x0b\x32\x14.bringyour.CoocInner\"<\n\x10\x43ooccurrenceData\x12(\n\ncooc_outer\x18\x01 \x03(\x0b\x32\x14.bringyour.CoocOuterB\x18Z\x16\x62ringyour.com/protocolb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x63ooccurrence.proto\x12\tbringyour\")\n\tCoocInner\x12\x0b\n\x03sid\x18\x01 \x01(\t\x12\x0f\n\x07overlap\x18\x02 \x01(\x04\"B\n\tCoocOuter\x12\x0b\n\x03sid\x18\x01 \x01(\t\x12(\n\ncooc_inner\x18\x02 \x03(\x0b\x32\x14.bringyour.CoocInner\"<\n\x10\x43ooccurrenceData\x12(\n\ncooc_outer\x18\x01 \x03(\x0b\x32\x14.bringyour.CoocOuter\",\n\tTimesData\x12\x1f\n\x05times\x18\x01 \x03(\x0b\x32\x10.bringyour.Times\"\"\n\x05Times\x12\x0b\n\x03sid\x18\x01 \x01(\t\x12\x0c\n\x04time\x18\x02 \x03(\x04\x42\x18Z\x16\x62ringyour.com/protocolb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -38,4 +38,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_COOCOUTER']._serialized_end=142
   _globals['_COOCCURRENCEDATA']._serialized_start=144
   _globals['_COOCCURRENCEDATA']._serialized_end=204
+  _globals['_TIMESDATA']._serialized_start=206
+  _globals['_TIMESDATA']._serialized_end=250
+  _globals['_TIMES']._serialized_start=252
+  _globals['_TIMES']._serialized_end=286
 # @@protoc_insertion_point(module_scope)

@@ -12,6 +12,7 @@ from sklearn.cluster import OPTICS, HDBSCAN
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import pdist, squareform
 import seaborn as sns
+import hdbscan
 
 
 def load_map(filename1):
@@ -103,6 +104,11 @@ def graph_data(sids, data, clusters, print_stats):
                 heatmap_data[large, small] = final_val
                 heatmap_data[small, large] = final_val
 
+                if sid_i.endswith("1.oca.nflxvideo.net") and sid_j.endswith(
+                    "1.oca.nflxvideo.net"
+                ):
+                    print(f"Overlap between {sid_i} and {sid_j} is {final_val}")
+
     if print_stats:
         stats(heatmap_data)
 
@@ -175,6 +181,7 @@ def graph_data(sids, data, clusters, print_stats):
 #         return 1
 #     return 0
 
+
 # what is significant overlap?
 
 
@@ -204,21 +211,7 @@ def overlap_to_distance(overlap, max_overlap):
     return math.exp(-alpha * (overlap / max_overlap))
 
 
-# example for alpha=3 and max_overlap=10
-# overlap = 0, distance = 1.00
-# overlap = 1, distance = 0.74
-# overlap = 2, distance = 0.54
-# overlap = 3, distance = 0.40
-# overlap = 4, distance = 0.30
-# overlap = 5, distance = 0.22
-# overlap = 6, distance = 0.16
-# overlap = 7, distance = 0.12
-# overlap = 8, distance = 0.09
-# overlap = 9, distance = 0.06
-# overlap =10, distance = 0.00
-
-
-def cluster_data(samples, distance_func, processed_args):
+def cluster_data(samples, distance_func, processed_args, show_graph):
     if cluster_method := processed_args.get("cluster_method"):
         # get args for clustering (expected a comma separated list of key->value pairs, e.g. min_samples->5,eps->0.5)
         cluster_args = processed_args.get("cluster_args")
@@ -241,12 +234,52 @@ def cluster_data(samples, distance_func, processed_args):
 
         if cluster_method == "OPTICS":
             clusterer = OPTICS(metric=distance_func, **args_dict)
+            labels = clusterer.fit_predict(samples)
+            # get how dense clustering is
+            # reachability = clusterer.reachability_[clusterer.ordering_]
+            core_dist = clusterer.core_distances_[clusterer.ordering_]
+            probabilities = [
+                1 - (core_dist[i] / max(core_dist)) for i in range(len(core_dist))
+            ]
+
+            if show_graph:
+                # plotting the reachability distances
+                reachability = clusterer.reachability_[clusterer.ordering_]
+                labels1 = clusterer.labels_[clusterer.ordering_]
+                plt.figure(figsize=(10, 8))
+                space = np.arange(len(samples))
+                for cluster_id in np.unique(labels1):
+                    plt.bar(
+                        space[labels1 == cluster_id],
+                        reachability[labels1 == cluster_id],
+                        label=f"Cluster {cluster_id}",
+                    )
+                plt.xlabel("Points (ordered)")
+                plt.ylabel("Reachability Distance")
+                plt.title("Reachability Plot")
+                plt.legend(loc="lower right")
+                plt.savefig("../images/visualize.png", dpi=300)
+                plt.close()
+
         elif cluster_method == "HDBSCAN":
-            clusterer = HDBSCAN(metric=distance_func, **args_dict)
+            clusterer = hdbscan.HDBSCAN(metric=distance_func, **args_dict)
+            labels = clusterer.fit_predict(samples)
+            probabilities = clusterer.probabilities_
+
+            if show_graph:
+                plt.figure(figsize=(10, 8))
+                # clusterer.single_linkage_tree_.plot()
+                clusterer.condensed_tree_.plot(
+                    select_clusters=True, selection_palette=sns.color_palette("deep", 8)
+                )
+                plt.savefig("../images/visualize.png", dpi=300)
+                plt.close()
+
         else:
             sys.exit(f"Unknown cluster method {cluster_method}")
         print(f"Clustering data using {cluster_method} with args {args_dict}")
-        return clusterer.fit_predict(samples)
+        # print(f"Numbers of features seen during fit: {clusterer.n_features_in_}")
+        return labels, probabilities
     else:
         sys.exit("argument 'cluster_method' not provided (needed to cluster data)")
 
@@ -262,8 +295,11 @@ def main(data, max_overlap, processed_args):
         # print(f"Distance between {sid1} and {sid2} is {dist}")
         return dist
 
+    show_graph = processed_args.get("show_graph")
     samples = [[i] for i in range(len(sids))]
-    labels = cluster_data(samples, distance_func, processed_args)
+    labels, probabilities = cluster_data(
+        samples, distance_func, processed_args, show_graph
+    )
 
     # save which indexes are in which cluster
     clusters = {}
@@ -275,10 +311,14 @@ def main(data, max_overlap, processed_args):
     print(f"Found {len(clusters)} clusters")
     for cluster_id, cluster in clusters.items():
         print(
-            f"[cluster]{cluster_id}:{[sids[index] for index in cluster]}"
+            f"[cluster]{cluster_id}:{[sids[index] for index in cluster]} {[probabilities[index] for index in cluster]}"
         )  # list of transport IDs in each cluster
 
-    if show_graph := processed_args.get("show_graph"):
+        # print(f"Cluster {cluster_id} has {len(cluster)} elements")
+        # for index in cluster:
+        #     print(f"{index}  {sids[index]} ({probabilities[index]})")
+
+    if show_graph:
         print_stats = show_graph.lower() == "print_stats"
         graph_data(sids, data, clusters, print_stats)
 

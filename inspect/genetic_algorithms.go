@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"time"
 
 	"bringyour.com/inspect/data"
@@ -26,7 +27,7 @@ func (c *Coord3D) Evaluate() (float64, error) {
 
 // Mutate replaces one of the current coordinates with a random value in [-100, -100].
 func (c *Coord3D) Mutate(rng *rand.Rand) {
-	method := rng.Intn(3)
+	method := rng.Intn(2)
 	if method == 0 {
 		// change X
 		change := uint64(rng.Intn(2) + 1) // 1 or 2
@@ -81,21 +82,35 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 	fmt.Printf("Cooccurrence took %v\n", time.Since(time1))
 
 	regionLeeway := uint64(3)
-	regions := ConstructTestSession1Regions(earliestTimestamp, regionLeeway)
+	regions := ConstructTestSessionRegions(earliestTimestamp, regionLeeway)
 
 	customScoreFunc := func(X uint64, Y float64, Z float64) (float64, error) {
+		path := fmt.Sprintf("data/ghc/ts2_cooc_%f.pb", Z)
+		var cooc *coOccurrence
 		time2 := time.Now()
-		ovF := GaussianOverlap{
-			stdDev: TimestampInNano(Z), // x seconds
-			cutoff: 4,                  // x standard deviations
-		}
-		for _, ts := range *sessionTimestamps {
-			ts.overlapFuncts = &ovF
-		}
-		cooc, _ := makeCoOccurrence(sessionTimestamps)
-		path := fmt.Sprintf("data/ghc/ts1_cooc_%d_%f_%f.pb", X, Y, Z)
-		if err := cooc.SaveData(path); err != nil {
-			fmt.Println(err)
+
+		// check if there is a file already by the name in path
+		if _, err := os.Stat(path); err == nil {
+			fmt.Printf("File already exists: %s\n", path)
+			cooc = NewCoOccurrence(nil)
+			if err := cooc.LoadData(path); err != nil {
+				panic(err)
+			}
+		} else if os.IsNotExist(err) {
+			ovF := GaussianOverlap{
+				stdDev: TimestampInNano(Z), // x seconds
+				cutoff: 4,                  // x standard deviations
+			}
+			for _, ts := range *sessionTimestamps {
+				ts.overlapFuncts = &ovF
+			}
+			cooc, _ = makeCoOccurrence(sessionTimestamps)
+			if err := cooc.SaveData(path); err != nil {
+				fmt.Println(err)
+			}
+		} else {
+			// Some other error occurred
+			panic(err)
 		}
 
 		// opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", X, Y)
@@ -107,13 +122,13 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 			ClusterMethod:    clusterMethod,
 			CoOccurrencePath: path,
 		}
-		clusters, err := cluster(clusterOps, false)
+		clusters, probabilities, err := cluster(clusterOps, false)
 		if err != nil {
 			return 0, fmt.Errorf("error clustering: %v", err)
 		}
 		fmt.Printf("ScoreFunc took %v\n", time.Since(time2))
 		fmt.Printf("%v:%v,%v ", clusterMethod.Name(), clusterMethod.Args(), Z)
-		score := Evaluate(*sessionTimestamps, *regions, clusters)
+		score := Evaluate(*sessionTimestamps, *regions, clusters, probabilities)
 		return -1 * score, nil
 	}
 

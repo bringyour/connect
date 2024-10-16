@@ -12,12 +12,6 @@ type region struct {
 	maxT uint64
 }
 
-type clusteredSession struct {
-	earliestTime uint64
-	sessionID    string
-	region       float64
-}
-
 func ReadableTime(timestamp uint64) string {
 	return time.Unix(0, int64(timestamp)).Format("2006-01-02 15:04:05.000000")
 }
@@ -85,6 +79,10 @@ func constructRegions(firstRegions []region, earliestTime uint64, leeway uint64)
 	return &finalRegions
 }
 
+func ConstructTestSessionRegions(earliestTime uint64, leeway uint64) *[]region {
+	return ConstructTestSession2Regions(earliestTime, leeway)
+}
+
 func ConstructTestSession1Regions(earliestTime uint64, leeway uint64) *[]region {
 	firstRegions := []region{
 		{minT: 11, maxT: 69},
@@ -96,7 +94,25 @@ func ConstructTestSession1Regions(earliestTime uint64, leeway uint64) *[]region 
 	return finalRegions
 }
 
-func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clusters map[string][]sessionID) float64 {
+func ConstructTestSession2Regions(earliestTime uint64, leeway uint64) *[]region {
+	firstRegions := []region{
+		{minT: 19, maxT: 50},
+		{minT: 58, maxT: 115},
+		{minT: 125, maxT: 170},
+		{minT: 170, maxT: 230},
+		{minT: 238, maxT: 294},
+		{minT: 302, maxT: 360},
+		{minT: 364, maxT: 410},
+		{minT: 415, maxT: 472},
+		{minT: 478, maxT: 528},
+		{minT: 534, maxT: 570},
+		{minT: 579, maxT: 600},
+	}
+	finalRegions := constructRegions(firstRegions, earliestTime, leeway)
+	return finalRegions
+}
+
+func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clusters map[string][]sessionID, probabilities map[string][]float64) float64 {
 	purities := make([]float64, 0)
 	unclusteredPurity := 0.0
 
@@ -107,6 +123,7 @@ func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clu
 		// and then extracting the biggest matching regions in the cluster as ratio of total sessions
 		regionCounts := make(map[int]int)
 		regionCounts[-1] = 0
+
 		for _, sid := range sessionIDs {
 			if timestamps, exists := sessionTimestamps[sid]; exists {
 				sessionEarliestTime := timestamps.times[0]
