@@ -82,7 +82,7 @@ func GeneticHillClimbing(records *map[ulid.ULID]*data.TransportRecord, coOccurre
 	fmt.Printf("Cooccurrence took %v\n", time.Since(time1))
 
 	regionLeeway := uint64(3)
-	regions := ConstructTestSessionRegions(earliestTimestamp, regionLeeway)
+	regions := constructTestSessionRegions(earliestTimestamp, regionLeeway)
 
 	customScoreFunc := func(X uint64, Y float64, Z float64) (float64, error) {
 		path := fmt.Sprintf("data/ghc/ts2_cooc_%f.pb", Z)

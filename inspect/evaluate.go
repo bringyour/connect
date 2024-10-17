@@ -79,10 +79,6 @@ func constructRegions(firstRegions []region, earliestTime uint64, leeway uint64)
 	return &finalRegions
 }
 
-func ConstructTestSessionRegions(earliestTime uint64, leeway uint64) *[]region {
-	return ConstructTestSession2Regions(earliestTime, leeway)
-}
-
 func ConstructTestSession1Regions(earliestTime uint64, leeway uint64) *[]region {
 	firstRegions := []region{
 		{minT: 11, maxT: 69},

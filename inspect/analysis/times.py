@@ -24,7 +24,7 @@ def load_times(filename1):
 
     result = {}
     for times in times_data.times:
-        times_sid = times.sid  # .hex()
+        times_sid = times.sid
         result[times_sid] = times.time
 
     return result
@@ -33,27 +33,52 @@ def load_times(filename1):
 def main(sid_times):
     sids = list(sid_times.keys())
     sids.sort()  # order sids for consistent results
-    y_values = range(len(sids))  # Assign a numeric value for each SID
+    # sids = [sid for sid in sids if "nyt" in sid] # filter for ceratin sids
+    y_values = range(len(sids))  # assign a numeric value for each SID
 
-    # Create the plot
+    print("List of sids in the data:")
+    for sid in reversed(sids):
+        print(sid, len(sid_times[sid]))
+    print()
+
+    # create the plot
     plt.figure(figsize=(10, 10))
     colors = [plt.cm.tab10(i % 10) for i in range(len(sids))]
+    all_times = []
 
-    # Iterate through each sid and its times, plotting the points
+    # iterate through each sid and its times, plotting the points
     for i, (sid, color) in enumerate(zip(sids, colors)):
         times = sid_times[sid]
+        all_times.extend(times)
         plt.scatter(
-            times, [i] * len(times), s=5, label=sid, marker=".", color=color
+            np.array(times) / 1e9,  # convert nanoseconds to seconds
+            [i] * len(times),
+            s=5,
+            label=sid,
+            marker=".",
+            color=color,
         )  # plot times at y = i for each sid
 
     # Customize the plot
-    plt.yticks(y_values, sids, fontsize=3)  # Show sids on y-axis
+    plt.yticks(y_values, sids, fontsize=3)  # show sids on y-axis
     for i, color in enumerate(colors):
         plt.gca().get_yticklabels()[i].set_color(color)
-    plt.xlabel("Time")
-    # plt.ylabel("SID")
+
+    plt.xlabel("Time (seconds)")
+    min_time = min(all_times) / 1e9
+    max_time = max(all_times) / 1e9
+    label_step = 25
+    total_secs = int(max_time - min_time)
+    labels = np.arange(0, total_secs + 1, label_step)
+    ticks = [label + min_time for label in labels]
+    if (total_secs % label_step) / label_step > 0.5:
+        labels = np.append(labels, total_secs)
+        ticks = np.append(ticks, total_secs + min_time)
+    plt.xticks(ticks, labels, rotation=45)
+    plt.xlim(min_time - 5, max_time + 5)
+    
     plt.title("Times per SID")
-    # plt.grid(True)
+    plt.grid(axis="x", alpha=0.15)
     plt.savefig("../images/times.png", dpi=300)
     plt.close()
 

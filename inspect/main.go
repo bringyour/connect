@@ -12,6 +12,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func constructTestSessionRegions(earliestTime uint64, leeway uint64) *[]region {
+	return ConstructTestSession2Regions(earliestTime, leeway)
+}
+
 func main() {
 	if len(os.Args) != 2 {
 		log.Fatalf("Usage: %s INSPECT_MODE\n", os.Args[0])
@@ -19,10 +23,14 @@ func main() {
 	fname := os.Args[1]
 
 	// sourceIP := "145.94.160.91"
-	sourceIP := "145.94.190.27" // needs to be changed based on the pcap
+	// dataPath := "data/ts1.pcapng"
+	// savePath := "data/ts1_transports.pb"
+	// coOccurrencePath := "data/ts1_cooccurrence.pb"
+	// timesPath := "data/ts1_times.pb"
 
 	// File paths for original data, transport records and cooccurence matrix
-	dataPath := "test_data/test_session_2.pcapng"
+	sourceIP := "145.94.190.27"
+	dataPath := "test_data/ts2.pcapng"
 	savePath := "test_data/ts2_transports.pb"
 	coOccurrencePath := "test_data/ts2_cooccurrence.pb"
 	timesPath := "test_data/ts2_times.pb"
@@ -138,7 +146,7 @@ func testEvaluate(overlapFunctions OverlapFunctions, clusterMethod ClusterMethod
 
 	time3 := time.Now()
 	// evaluate
-	regions := ConstructTestSessionRegions(earliestTimestamp, 3)
+	regions := constructTestSessionRegions(earliestTimestamp, 3)
 	// for i, r := range regions {
 	// 	fmt.Printf("Region %d: %s - %s\n", i+1, ReadableTime(r.minT), ReadableTime(r.maxT))
 	// }

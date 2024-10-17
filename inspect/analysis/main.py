@@ -104,11 +104,6 @@ def graph_data(sids, data, clusters, print_stats):
                 heatmap_data[large, small] = final_val
                 heatmap_data[small, large] = final_val
 
-                if sid_i.endswith("1.oca.nflxvideo.net") and sid_j.endswith(
-                    "1.oca.nflxvideo.net"
-                ):
-                    print(f"Overlap between {sid_i} and {sid_j} is {final_val}")
-
     if print_stats:
         stats(heatmap_data)
 
