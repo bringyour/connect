@@ -33,7 +33,7 @@ def load_times(filename1):
 def main(sid_times):
     sids = list(sid_times.keys())
     sids.sort()  # order sids for consistent results
-    # sids = [sid for sid in sids if "nyt" in sid] # filter for ceratin sids
+    # sids = [sid for sid in sids if "nyt" in sid]  # filter for ceratin sids
     y_values = range(len(sids))  # assign a numeric value for each SID
 
     print("List of sids in the data:")
@@ -53,13 +53,15 @@ def main(sid_times):
         plt.scatter(
             np.array(times) / 1e9,  # convert nanoseconds to seconds
             [i] * len(times),
-            s=5,
+            s=12,
             label=sid,
             marker=".",
             color=color,
+            alpha=0.2,
+            edgecolors="none",
         )  # plot times at y = i for each sid
 
-    # Customize the plot
+    # customize the plot
     plt.yticks(y_values, sids, fontsize=3)  # show sids on y-axis
     for i, color in enumerate(colors):
         plt.gca().get_yticklabels()[i].set_color(color)
@@ -76,7 +78,7 @@ def main(sid_times):
         ticks = np.append(ticks, total_secs + min_time)
     plt.xticks(ticks, labels, rotation=45)
     plt.xlim(min_time - 5, max_time + 5)
-    
+
     plt.title("Times per SID")
     plt.grid(axis="x", alpha=0.15)
     plt.savefig("../images/times.png", dpi=300)
@@ -97,6 +99,7 @@ if __name__ == "__main__":
     # filename=../data/ts1_cooccurrence.pb
     if filename := processed_args.get("filename"):
         loaded_data = load_times(filename)
+        # print(loaded_data["wikipedia.org"])
         main(loaded_data)
     else:
         sys.exit("argument 'filename' not provided (needed to load cooccurrence data)")

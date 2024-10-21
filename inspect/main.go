@@ -38,17 +38,17 @@ func main() {
 	// CLUSTERING OPTIONS
 	// opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 3, 0.20227)
 	// clusterMethod := NewOptics(opticsOpts)
-	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 2, 0.04774)
+	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 3, 0.68083)
 	clusterMethod := NewHDBSCAN(hdbscanOpts)
 
 	// OVERLAP FUNCTIONS
-	overlapFunctions := FixedMarginOverlap{
-		margin: TimestampInNano(0.010000000), // x seconds fixed margin
-	}
-	// overlapFunctions := GaussianOverlap{
-	// 	stdDev: TimestampInNano(0.010000000), // x seconds
-	// 	cutoff: 4,                            // x standard deviations
+	// overlapFunctions := FixedMarginOverlap{
+	// 	margin: TimestampInNano(0.010_000_000), // x seconds fixed margin
 	// }
+	overlapFunctions := GaussianOverlap{
+		stdDev: TimestampInNano(0.010_000_000), // x seconds
+		cutoff: 4,                              // x standard deviations
+	}
 
 	if fname == "parse_pcap" || fname == "p" {
 		data.PcapToTransportFiles(dataPath, savePath, sourceIP)

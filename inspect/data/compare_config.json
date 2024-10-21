@@ -1,0 +1,39 @@
+{
+    "filename": "../data/ts1_times.pb",
+    "selected_sids": [
+        "www.nytimes.com",
+        "static01.nytimes.com",
+        "purr.nytimes.com",
+        "nytimes.com",
+        "nyt.com",
+        "g1.nyt.com",
+        "a.nytimes.com",
+        "wikipedia.org",
+        "wikimedia.org",
+        "upload.wikimedia.org",
+        "en.wikipedia.org",
+        "mmg.whatsapp.net",
+        "media-lhr8-2.cdn.whatsapp.net",
+        "media-lhr8-1.cdn.whatsapp.net",
+        "media-lhr6-2.cdn.whatsapp.net",
+        "media-lhr6-1.cdn.whatsapp.net",
+        "media-ams4-1.cdn.whatsapp.net",
+        "media-ams2-1.cdn.whatsapp.net",
+        "www.cat.com",
+        "scene7.com",
+        "s7d2.scene7.com",
+        "www.netflix.com",
+        "web.prod.cloud.netflix.com",
+        "occ-0-768-769.1.nflxso.net",
+        "nflxvideo.net",
+        "nflxso.net",
+        "netflix.com"
+    ],
+    "std_devs": [
+        0.0001,
+        0.001,
+        0.01,
+        0.1,
+        1
+    ]
+}

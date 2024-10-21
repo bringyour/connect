@@ -91,7 +91,7 @@ func TestClustering(t *testing.T) {
 		},
 		{
 			name:     "Test Session 2",
-			pcapPath: "test_data/test_session_2.pcapng",
+			pcapPath: "test_data/ts2.pcapng",
 			sourceIP: "145.94.190.27",
 			clusters: []clusterTest{
 				{
@@ -187,8 +187,9 @@ func TestClustering(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Error loading transports: %v", err)
 				}
-				overlapFunctions := FixedMarginOverlap{
-					margin: TimestampInNano(0.010000000), // x seconds fixed margin
+				overlapFunctions := GaussianOverlap{
+					stdDev: TimestampInNano(0.010_000_000), // x seconds
+					cutoff: 4,                              // x standard deviations
 				}
 				sessionTimestamps := makeTimestamps(&overlapFunctions, records)
 
@@ -198,12 +199,12 @@ func TestClustering(t *testing.T) {
 			}
 
 			// cluster
-			hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 2, 0.04774)
+			hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 3, 0.04774)
 			clusterMethod := NewHDBSCAN(hdbscanOpts)
 			clusterOps := &ClusterOpts{
 				ClusterMethod:    clusterMethod,
 				CoOccurrencePath: cooccurrencePath,
-				SaveGraphs:       true,
+				// SaveGraphs:       true,
 			}
 			clusters, _, err := cluster(clusterOps, true)
 			if err != nil {
