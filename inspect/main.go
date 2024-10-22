@@ -22,23 +22,26 @@ func main() {
 	}
 	fname := os.Args[1]
 
-	// sourceIP := "145.94.160.91"
-	// dataPath := "data/ts1.pcapng"
-	// savePath := "data/ts1_transports.pb"
-	// coOccurrencePath := "data/ts1_cooccurrence.pb"
-	// timesPath := "data/ts1_times.pb"
-
 	// File paths for original data, transport records and cooccurence matrix
+
+	// TEST SESSION 1
+	// sourceIP := "145.94.160.91"
+	// dataPath := "data/ts1/ts1.pcapng"
+	// savePath := "data/ts1/ts1_transports.pb"
+	// coOccurrencePath := "data/ts1/ts1_cooccurrence.pb"
+	// timesPath := "data/ts1/ts1_times.pb"
+
+	// TEST SESSION 2
 	sourceIP := "145.94.190.27"
-	dataPath := "test_data/ts2.pcapng"
-	savePath := "test_data/ts2_transports.pb"
-	coOccurrencePath := "test_data/ts2_cooccurrence.pb"
-	timesPath := "test_data/ts2_times.pb"
+	dataPath := "data/ts2/ts2.pcapng"
+	savePath := "data/ts2/ts2_transports.pb"
+	coOccurrencePath := "data/ts2/ts2_cooccurrence.pb"
+	timesPath := "data/ts2/ts2_times.pb"
 
 	// CLUSTERING OPTIONS
 	// opticsOpts := fmt.Sprintf("min_samples=%d,max_eps=%f", 3, 0.20227)
 	// clusterMethod := NewOptics(opticsOpts)
-	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 3, 0.68083)
+	hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,min_samples=%d,cluster_selection_epsilon=%.12f,alpha=%.12f", 4, 1, 0.001, 0.001)
 	clusterMethod := NewHDBSCAN(hdbscanOpts)
 
 	// OVERLAP FUNCTIONS

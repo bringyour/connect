@@ -329,11 +329,11 @@ def get_args(args):
 
 if __name__ == "__main__":
     processed_args = get_args(sys.argv[1:])
-    # filename=../data/ts1_cooccurrence.pb
+    # filename=../data/ts1/ts1_cooccurrence.pb
     if filename := processed_args.get("filename"):
         loaded_data, max_overlap = load_map(filename)
         main(loaded_data, max_overlap, processed_args)
     else:
         sys.exit("argument 'filename' not provided (needed to load cooccurrence data)")
 
-# python3 main.py filename=../data/ts1_cooccurrence.pb cluster_method=OPTICS cluster_args=min_samples=3,max_eps=1.040047 show_graph=no_stats
+# python3 main.py filename=../data/ts1/ts1_cooccurrence.pb cluster_method=OPTICS cluster_args=min_samples=3,max_eps=1.040047 show_graph=no_stats

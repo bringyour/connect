@@ -35,6 +35,7 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 		sid := sessionID(*record.Open.TlsServerName)
 		var ts *timestamps
 
+		// add full domain to sessionTimestamps
 		if ts1, exists := sessionTimestamps[sid]; exists {
 			ts1.times = append(ts1.times, times...)
 			ts = ts1
@@ -47,19 +48,25 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 			sessionTimestamps[sid] = ts
 		}
 
+		// splits ipv4-abc.1.api.bringyour.com into ipv4-abc.1, api.bringyour.com, bringyour.com, .net
 		_, thirdLevelDomain, secondLevelDomain, _ := splitDomain(string(sid))
+		// for now we ignore top level domains (like .com)
 
-		// if existingTimestamps, ok := sessionTimestamps[sessionID(topLevelDomain)]; ok {
-		// 	mergeTimestamps(existingTimestamps, ts)
-		// } else {
-		// 	sessionTimestamps[sessionID(topLevelDomain)] = &timestamps{
-		// 		sid:           sessionID(topLevelDomain),
-		// 		times:         times,
-		// 		overlapFuncts: overlapFunctions,
-		// 	}
-		// }
+		// third level domain should not be "" or full domain
+		if thirdLevelDomain != "" && thirdLevelDomain != string(sid) {
+			if existingTimestamps, ok := sessionTimestamps[sessionID(thirdLevelDomain)]; ok {
+				mergeTimestamps(existingTimestamps, ts)
+			} else {
+				sessionTimestamps[sessionID(thirdLevelDomain)] = &timestamps{
+					sid:           sessionID(thirdLevelDomain),
+					times:         times,
+					overlapFuncts: overlapFunctions,
+				}
+			}
+		}
 
-		if thirdLevelDomain != "www."+secondLevelDomain {
+		// second level domain should not be "" or full domain
+		if secondLevelDomain != "" && secondLevelDomain != string(sid) {
 			if existingTimestamps, ok := sessionTimestamps[sessionID(secondLevelDomain)]; ok {
 				mergeTimestamps(existingTimestamps, ts)
 			} else {

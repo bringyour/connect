@@ -1,5 +1,5 @@
 {
-    "filename": "../data/ts1_times.pb",
+    "filename": "../data/ts1/ts1_times.pb",
     "selected_sids": [
         "www.nytimes.com",
         "static01.nytimes.com",

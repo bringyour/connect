@@ -96,7 +96,6 @@ def get_args(args):
 
 if __name__ == "__main__":
     processed_args = get_args(sys.argv[1:])
-    # filename=../data/ts1_cooccurrence.pb
     if filename := processed_args.get("filename"):
         loaded_data = load_times(filename)
         # print(loaded_data["wikipedia.org"])
@@ -104,4 +103,4 @@ if __name__ == "__main__":
     else:
         sys.exit("argument 'filename' not provided (needed to load cooccurrence data)")
 
-# python3 times.py filename=../test_data/ts2_times.pb
+# python3 times.py filename=../data/ts2/ts2_times.pb

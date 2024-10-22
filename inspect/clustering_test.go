@@ -22,7 +22,7 @@ type clusterTest struct {
 }
 
 func TestClustering(t *testing.T) {
-	testFolder := "test_cluster/"
+	testFolder := "data/test_cluster/"
 
 	tests := []struct {
 		name     string
@@ -32,7 +32,7 @@ func TestClustering(t *testing.T) {
 	}{
 		{
 			name:     "Test Session 1",
-			pcapPath: "data/ts1.pcapng",
+			pcapPath: "data/ts1/ts1.pcapng",
 			sourceIP: "145.94.160.91",
 			clusters: []clusterTest{
 				{
@@ -91,7 +91,7 @@ func TestClustering(t *testing.T) {
 		},
 		{
 			name:     "Test Session 2",
-			pcapPath: "test_data/ts2.pcapng",
+			pcapPath: "data/ts2/ts2.pcapng",
 			sourceIP: "145.94.190.27",
 			clusters: []clusterTest{
 				{
@@ -199,7 +199,7 @@ func TestClustering(t *testing.T) {
 			}
 
 			// cluster
-			hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,cluster_selection_epsilon=%f", 3, 0.04774)
+			hdbscanOpts := fmt.Sprintf("min_cluster_size=%d,min_samples=%d,cluster_selection_epsilon=%.12f,alpha=%.12f", 4, 1, 0.001, 0.001)
 			clusterMethod := NewHDBSCAN(hdbscanOpts)
 			clusterOps := &ClusterOpts{
 				ClusterMethod:    clusterMethod,
