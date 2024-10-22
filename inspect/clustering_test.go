@@ -231,7 +231,7 @@ func TestClustering(t *testing.T) {
 							}
 						}
 					}
-					if expectedId == "" {
+					if expectedId == "" || expectedId == "-1" {
 						t.Fatalf("Cluster %q not formed correctly (%v)", correctCluster.name, clusterIds)
 					}
 					t.Logf("Cluster %q formed correctly (all sids are in cluster %s)\n", correctCluster.name, expectedId)
