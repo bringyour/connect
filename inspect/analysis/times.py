@@ -1,33 +1,9 @@
 import sys
-import cooccurrence_pb2
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import statistics
 import matplotlib.cm as cm
-import math
 
-import numpy as np
-from sklearn.cluster import OPTICS, HDBSCAN
-from sklearn.manifold import TSNE
-from scipy.spatial.distance import pdist, squareform
-import seaborn as sns
-import hdbscan
-
-
-def load_times(filename1):
-    with open(filename1, "rb") as f:
-        data = f.read()
-
-    times_data = cooccurrence_pb2.TimesData()
-    times_data.ParseFromString(data)
-
-    result = {}
-    for times in times_data.times:
-        times_sid = times.sid
-        result[times_sid] = times.time
-
-    return result
+from load_protos import load_times, get_args
 
 
 def main(sid_times):
@@ -83,15 +59,6 @@ def main(sid_times):
     plt.grid(axis="x", alpha=0.15)
     plt.savefig("../images/times.png", dpi=300)
     plt.close()
-
-
-def get_args(args):
-    processed_args = {}
-    for arg in args:
-        if "=" in arg:
-            key, value = arg.split("=", maxsplit=1)
-            processed_args[key] = value
-    return processed_args
 
 
 if __name__ == "__main__":

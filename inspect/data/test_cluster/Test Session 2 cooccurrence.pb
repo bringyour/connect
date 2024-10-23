@@ -1,817 +1,95 @@
 
-¨
-	99.44.193
-beacons.gcp.gvt2.com““ï)
-cmp.cdn.thesun.co.uk´ëÀâW
-
-bbci.co.ukÆÙ¥É™!
-gn-web-assets.api.bbc.com¢™Š
-gcp.gvt2.com÷ÌÌ¼§
-gvt2.com÷ÌÌ¼§
-api.maxai.meËƒ¶ñ>
-api.betterttv.netñøÀú
-thesun.co.uk¦ÙŒìÍ
-ichef.bbci.co.uküŸŒÏİ
-fonts.googleapis.comôÔ´Ã
-betterttv.netñøÀú
-www.thesun.co.uk“‹„•E
-ptr.thesun.co.ukƒ´»¶k
-bbc.com–‹È¸
-api.bbc.com–ÉÇ‹
-googleapis.comôÔ´Ã
-maxai.meËƒ¶ñ>
-co.ukì²²µç
-www.bbc.comõ§şğ 
-static.bbci.co.ukˆÁƒš 
-static.files.bbci.co.ukÜ×íÒ¿
-*
-time.akamai.com
-vod.foxnews.comö¹¨±
-¹
-44.193
-api.maxai.meËƒ¶ñ>
-maxai.meËƒ¶ñ>
-bbc.com–‹È¸
-api.bbc.com–ÉÇ‹ 
-static.files.bbci.co.ukÜ×íÒ¿
-googleapis.comôÔ´Ã
-betterttv.netñøÀú
-thesun.co.uk¦ÙŒìÍ
-cmp.cdn.thesun.co.uk´ëÀâW!
-gn-web-assets.api.bbc.com¢™Š
-beacons.gcp.gvt2.com““ï)
-fonts.googleapis.comôÔ´Ã
-	99.44.193ï¼„ô
-api.betterttv.netñøÀú
-www.thesun.co.uk“‹„•E
-ptr.thesun.co.ukƒ´»¶k
-www.bbc.comõ§şğ 
-ichef.bbci.co.uküŸŒÏİ
-static.bbci.co.ukˆÁƒš
-gcp.gvt2.com÷ÌÌ¼§
-gvt2.com÷ÌÌ¼§
-co.ukì²²µç
-
-bbci.co.ukÆÙ¥É™
-œ
-edge.api.brightcove.com
-nflxext.comÑ¨İ	
-
-zencdn.net±ò¢¸
-ovp.iris.tv£ËÅåõ
-oca.nflxvideo.net€›ƒ
-players.brightcove.net¨ûì¾„.
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¦Ş
-vjs.zencdn.net±ò¢¸
-iris.tv£ËÅåõ
-prod.boltdns.net“®â¶
-nflxvideo.net€›ƒ
-
-static.foxnews.com
-www.foxnews.com»ãº÷í
-uri.shÁììª
-time.akamai.coméºú°;
-vod.foxnews.com·Î©¢
-x.comÚ½?
-–
-api.foxnews.com
-cdn.segment.com­Ÿ™n
-foxweather.com¥ºØĞ$
-foxnewsplayer-a.akamaihd.net¶¶˜V 
-manifest.prod.boltdns.net¢ƒñ=
-	twimg.comËá {
-video.twimg.comËá {"
-entitlement.auth.adobe.com˜÷ÇŞ,
-foxnews.com¬ÅËÎ÷
-segment.com­Ÿ™n
-static.foxnews.com£ÓÈë$
-auth.adobe.comª¢Æ¿Y
-prod.boltdns.net¢ƒñ=
-boltdns.net¢ƒñ=
-time.akamai.com¤üı†3
-vod.foxnews.comÕß¶ƒ
-
-friendship.nbc.co
-googleapis.com¼ÆÏúN
-nbc.comÆËœ¬Ö
-img.nbc.comî‰šÇ:
-sp.auth.adobe.com‘··Ê%
-	ss.nbc.co‰½½
-nbc.co˜Ïæì…
-Æ
-flow.logitech.io
-www.netflix.comÃ°¾
-netflix.comÃ°¾
-
-google.com­ÂÕæ@.
-&geolocation.digitalsvc.apps.nbcuni.com¡ô¶ã
-
-nbcuni.comÂèíÆ
-logitech.ioñ–ŞÔA
-sb-ssl.google.com­ÂÕæ@
-M
-lh5.googleusercontent.com
-nflxvideo.net¨€ıíE
-oca.nflxvideo.net¨€ıíE
-|
-e2c20.gcp.gvt2.com
-gcp.gvt2.comœö™¡š
-gvt2.com„Ñ¼©š
-googleusercontent.com«æ,
-lh5.googleusercontent.com«æ,
-©
-applytics.nordvpn.com-
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.netñî-
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.netŒ
-co.ukí 
-dailymail.co.ukí 
-oca.nflxvideo.netôµs-
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.netáÚ-
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¾¢
-nflxvideo.netôµs
-www.dailymail.co.ukàÄ½
-i.dailymail.co.ukïåå
-auth.adobe.com§Ñ¡ä
-sp.auth.adobe.comáÔ»×
-nordvpn.com×‘ÎÜĞ
-“
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.net
-www.netflix.comÕ„íù8
-netflix.comËÔ«ş8!
-web.prod.cloud.netflix.comû§Ÿ
-nflxvideo.netìœÃô•
-ptr.thesun.co.ukÏš`"
-occ-0-768-769.1.nflxso.netßâã“
-
-nflxso.netÂ½®”\
-oca.nflxvideo.netìœÃô•
-thesun.co.ukµÀ
-Z
-global.ketchcdn.com
-i.forbesimg.comÏÔò
-ketchcdn.comü’ƒ¬å
-ketchjs.comŸ»ÚÍ
-,
-purr.nytimes.com
-www.nytimes.comÚáƒ®ó
-ò
-cookielaw.org
-googleusercontent.comëü×“ü$
-www.nbc.comá¿Œåç
-www.netflix.com§á¸º¢
-maxai.meøñÈ
-map.mp.nbc.com†‡‰­
-nbc.co¤ÁÌ‘q$
-safebrowsing.googleapis.comíÃĞƒ
-prod.netflix.comÀé
-ichnaea-web.netflix.comÔÌÏg
-fonts.googleapis.com­Ñ¯Öç
-img.nbc.com™ÌÑ·ƒ
-sp.auth.adobe.comÁìë‹
-	ss.nbc.coèñé½h
-usanetwork.com–Œø‘¦
-push.prod.netflix.comÀé"
-web.prod.cloud.netflix.comûÎšúZ
-
-google.comó²ãÚÑ
-netflix.com™œ¤ˆ#
-occ-0-768-769.1.nflxso.netŠÇÎÃå
-googleapis.com÷£™•"
-lh3.googleusercontent.com”ĞáÓ‚
-
-mp.nbc.com†‡‰­
-friendship.nbc.co¼ÏâÓ
-
-nflxso.netúÇÀ¦ç$
-nbc.com–ƒâÇ±8#
-entitlement.auth.adobe.comù¤É€ö
-www.usanetwork.com–Œø‘¦
-nflxext.comÑº™ù®Z
-¹
-login.live.com
-www.puppyplaats.nlèëŠâ
-puppyplaats.nlĞ×•Ä
-update.microsoft.comÊÄı1
-microsoft.com–·âÅ%
-v10.events.data.microsoft.comÓœù„
-privacy-mgmt.comßæ¸¢B
-
-wdcp.microsoft.com
-Å
-#geover.prod.do.dsp.mp.microsoft.com"
-lh3.googleusercontent.com£³‚Ÿ‰
-googleusercontent.comµ¶ë”æA
-oca.nflxvideo.net²ñU/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net•¤Ÿ¯/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netÕòÈ€
-
-google.comğÉ·ûË
-microsoft.comËóËÚì
-mp.microsoft.comËóËÚì
-nflxvideo.net²ñU
-6
-web.prod.cloud.netflix.com
-www.netflix.com«â¦Ù»
-È
-co.uk/
-'ipv4-c172-ams001-ix.1.oca.nflxvideo.netäçï²
-nid.thesun.co.ukû¤¦—&
-config.extension.grammarly.com¨î¶ä
-joinhoney.comŠÕ•¼
-optimizely.com¸Ù·ïÿ.
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.netµÀ.
-'ipv4-c180-ams001-ix.1.oca.nflxvideo.net¶Áî
-www.bbc.com«ŸşÔ™"
-gn-web-assets.api.bbc.comÜ¨ÂËÊ
-
-snopes.com¸ü¶?
-login.live.comÀõ‰§/
-'ipv4-c174-ams001-ix.1.oca.nflxvideo.netñÍÏµ
-live.comë“Î
+f
+f-log-extension.grammarly.io
+foxnews.comÀªãß
 
-tags.thesun.co.ukÎ ®Ş¸/
-'ipv4-c194-ams001-ix.1.oca.nflxvideo.net¼æ†ñ.
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.netúÇ¾
-e2c16.gcp.gvt2.comè 
-ichef.bbci.co.uk¡Ç„ô°Ô
-grammarly.com¨î¶ä
-nflxext.comÁ³‰îÓ/
-'ipv4-c205-ams001-ix.1.oca.nflxvideo.netğæşœ/
-'ipv4-c210-ams001-ix.1.oca.nflxvideo.netûÅÃÓ
+static.foxnews.comÀãËÊ
+grammarly.ioĞ®ô¾
+
 
-tiqcdn.com­ñıœ©±
-www.dailymail.co.ukÎË«Ôíû
-mp.microsoft.com×î©s/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net¶×Ûû
-googleapis.com½Íİ—µ’
-nflxvideo.net¸ŞÇ…™
-oca.nflxvideo.net¸ŞÇ…™/
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.netĞ—«‘
-thesun.co.ukµ§¶éÃ 
-ptr.thesun.co.ukÄçï¼º7(
-federated-id.live.api.bbc.co.uk†»«¡°&
-fe3cr.delivery.mp.microsoft.com×î©s(
-content-autofill.googleapis.comÖåÿ‰Â,
-fonts.googleapis.com•¶¡¶ú!
-nsi.activity.api.bbc.com‡ğ¹»’
+forbes.com
+joinhoney.com§±ÉÖ
+forbesimg.comÿúõ—´$
+maxai.meøò£”º
+open-api.spot.im™º«q
+storage.googleapis.comœ©ÀïÇ
+googleapis.com²‡¥×®	!
+gn-web-assets.api.bbc.com¼Ñ¢
+thesun.co.ukê´¿ì
+spot.im™º«q
 
-forbes.comÕéşØ'
-x.comÊ×
-nordvpn.com°ÇÙà
-www.reddit.com…ÔîÈ!
-static.files.bbci.co.uk—¤‡Í¼©
-dmgmediaprivacy.co.ukØ£ÖÚöB
-d.joinhoney.comˆÖñ
+google.com†¥­»
+tags.thesun.co.ukê´¿ì
+www.forbes.com¬ìò
+i.forbesimg.com¡ŞæÖ½%
+promote-subscribe.forbes.com¹Éü‚Ù
+privacy-mgmt.comŠ†ƒ
+Z
+global.ketchcdn.com
+ketchjs.comôÆÃé¤
+i.forbesimg.comÏÔò
+ketchcdn.com•úâ‰·
+u
+update.microsoft.com
+www.puppyplaats.nlÉ™ò²
+wdcp.microsoft.com£²×%
+v10.events.data.microsoft.com“Ûïí
+6
+safebrowsing.googleapis.com
+www.netflix.com¢‰·¡
+Ã
+nflxext.com
+tags.thesun.co.uk™Ğûšc
+vjs.zencdn.net§ôØœÈ
+ovp.iris.tvµ¿Œ#
+occ-0-768-769.1.nflxso.netéŞ„×Ô)
+nflxvideo.netæµÜê#
+thesun.co.ukÁµõíÜ
+ptr.thesun.co.uk™—£X
+www.netflix.comÂÓªÉÑ
 
-nflxso.netİí¾'
-www.forbes.comê´¿ì
+nflxso.netÚÕÃÛï’
+oca.nflxvideo.netæµÜê#
+players.brightcove.netšñ¬-$
+safebrowsing.googleapis.comÍèš–µ
+prod.netflix.comïä`#
+web.prod.cloud.netflix.com˜Ìééè
+push.prod.netflix.comïä`
 
-google.com¸ê‡…
-gcp.gvt2.com±Ä©Æ(.
-'ipv4-c171-ams001-ix.1.oca.nflxvideo.net†ßğ
-
-reddit.com…ÔîÈ
-dailymail.co.ukÿúîŞ’È.!
-occ-0-768-769.1.nflxso.netÌò³	.
-'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÑè¶
-static.bbci.co.ukÚƒ¡Å5
-maxai.meôë¼s
-www.thesun.co.uk”µáğ­§
-privacy-mgmt.comëÙÂØ
-mediaproxy.snopes.com¸ü¶?
-gvt2.com±Ä©Æ(
-extension.grammarly.com¨î¶ä.
-'ipv4-c176-ams001-ix.1.oca.nflxvideo.netşŠµ
-tags.tiqcdn.comºÊ ¸üX%
-nf.smartscreen.microsoft.comÇÒîÛ¶
-	twimg.com­¦Óİˆ
-hulkprod.anm.co.uk¡åÅˆA
-i.dailymail.co.ukùéôÒé
-microsoft.comæ“‡«î"
-smartscreen.microsoft.com¥İ·í
-ç
-
-reddit.com$
-w3-reporting-nel.reddit.comªíß“æ$
-sp.auth.adobe.comö¨½
-
-	ss.nbc.co‚à¿œ
-static.bbci.co.uk…ÔîÈ
-www.redditstatic.com‚Œâ¸
-redditstatic.coméªĞÊù
-redditmedia.comÉĞ„¼
-www.reddit.com‡»ñ˜¥
-styles.redditmedia.comû˜Óõå
-www.google.comüØ¾¢
-thumbs.redditmedia.comÎ·®V
-x.com×àÂÜp
-	twimg.comá†“é›“
-Ë
-puppyplaats.nl
-www.puppyplaats.nl‰øÒ¸§¿ 
-safebrowsing.google.com×†Ó™
-sdk.privacy-center.orgÒûúÖı\
-
-stripe.com¼Ú˜Ÿú
-update.microsoft.comóšº½%
-v10.events.data.microsoft.comÂƒİ\
-²
-sdk.privacy-center.org
-www.puppyplaats.nlüˆ¹áô!
-translate.googleapis.com–²‘öŒ
-
-stripe.comÍ¬ì‘Ş
-update.microsoft.com¯ğÛï%
-v10.events.data.microsoft.com¿Óøå+
-×
-'ipv4-c180-ams001-ix.1.oca.nflxvideo.net/
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.netÉ±ğ¯
-ptr.thesun.co.ukÛ ·
-
-nflxso.netöó†´¶/
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.net¢Ÿıé
-oca.nflxvideo.netÍˆâ†Ä$/
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.net–€ê±
-thesun.co.uk¶Áî"
-occ-0-768-769.1.nflxso.netÔ†ìì+
-nflxvideo.netÍˆâ†Ä$
-‘
-cmp.cdn.thesun.co.uk
-grammarly.comâ¤’Ì.
-'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÅÍç
-co.ukì¶å©ÏS
-ptr.thesun.co.ukíÜÑæÙ
-tags.tiqcdn.com£ÀÊ
-nid.thesun.co.ukñ”´ã
-extension.grammarly.comâ¤’Ì
-fonts.googleapis.com®ç³¡
-
-thesun.co.ukì¶å©ÏS
-tags.thesun.co.uk¥ÜÛ\
-googleapis.comöº‹R&
-config.extension.grammarly.comâ¤’Ì
-nflxvideo.netÔåÃ	
-x.com‡åë
-
-google.com¶—ğ
-nflxext.comÌø¿
-oca.nflxvideo.netÔåÃ	
-www.thesun.co.ukôı«ów
-
-tiqcdn.com£ÀÊ
-	twimg.com ¸ÓœD
-—
-brightcove.net/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netÙàšË/
-'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÚ¹ÒÅ/
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.netÃôşÃ
-
-zencdn.netèã¨"
-occ-0-768-769.1.nflxso.net…¡©.
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÎí¨	
-iris.tv—Ã¹§h
-nflxext.com‹Ğ“- 
-edge.api.brightcove.com¨ûì¾„
-players.brightcove.netÍŒÒÅı
-ovp.iris.tv—Ã¹§h
-
-nflxso.net°ãû
-nflxvideo.netÑè¹à
-vjs.zencdn.netèã¨
-oca.nflxvideo.netÑè¹à/
-'ipv4-c183-ams001-ix.1.oca.nflxvideo.net€‚ÉØ
-ó
-38.172
-eu-west-1.amazonaws.comï‡ç
-puppyplaats.nl¥óÉĞ»
-js.stripe.comŠˆ¡Œû
-data.microsoft.comúî”¿­
-graphassets.comÌ®®
-mp.microsoft.comßûõ¸"
-fe2cr.update.microsoft.comƒÓ’ù
-update.microsoft.comƒÓ’ù
-
-stripe.com˜ã¤ñ
-media.graphassets.comÌ°œ»A
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comï‡ç
-privacy-center.orgáîÄòû
-sdk.privacy-center.org°·¢ù½
-accounts.google.com–®üŒ
-microsoft.comİ½ñÈ%
-v10.events.data.microsoft.com½·ÊßV
-amazonaws.comï‡ç*
-"cp801.prod.do.dsp.mp.microsoft.comßûõ¸
-
-google.com©Şé¿ø§
-www.puppyplaats.nl…µÁ‹-
-Å
-nflxext.com
-push.prod.netflix.comµÀ‡
-prod.netflix.comµÀ‡
-
-zencdn.net¢Œ·ôÇ
-vjs.zencdn.net¢Œ·ôÇ$
-safebrowsing.googleapis.com–Ó…äé
-www.netflix.com®ˆÈÅê#
-occ-0-768-769.1.nflxso.net˜õç«‡%#
-web.prod.cloud.netflix.com¿Íˆ¥
-ptr.thesun.co.uk•øıÇI
-oca.nflxvideo.netóà€”4
-thesun.co.ukÁ³‰îÓ
-
-nflxso.net¨ìì‡Ñ°
-nflxvideo.netóà€”4
-tags.thesun.co.uk¿­¼ÖR
-players.brightcove.net‹Ğ“-
-ovp.iris.tv—ÊŠ
-Ì
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.net
-netflix.com¶ù­Šı"
-occ-0-768-769.1.nflxso.netÛÇ¤Ä
-
-nflxso.net‰„Çˆs#
-web.prod.cloud.netflix.comñÑÆåº
-oca.nflxvideo.net²èƒışM
-nordvpn.comÂµ
-www.netflix.comí¶°«¡
-prod.netflix.comì»°›
-nflxvideo.net²èƒışM
-nflxext.comµ“¢³ç
-push.prod.netflix.comì»°›
-D
-w3-reporting-nel.reddit.com
-www.reddit.comÍäâÓ`
-x.com×àÂÜp
-'
-scribbr.com
-www.scribbr.com°óÎò
-
-privacyportal.onetrust.com
-Œ
-151.101.38.172
-puppyplaats.nl¥óÉĞ»
-sdk.privacy-center.org°·¢ù½
-js.stripe.comŠˆ¡Œû
-data.microsoft.comúî”¿­
-graphassets.comÌ®®A
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comï‡ç
-
-stripe.com˜ã¤ñ
-38.172‡™½µ6*
-"cp801.prod.do.dsp.mp.microsoft.comïıºœ	
-www.puppyplaats.nl…µÁ‹-
-privacy-center.orgáîÄòû"
-fe2cr.update.microsoft.comƒÓ’ù%
-v10.events.data.microsoft.com½·ÊßV
-media.graphassets.comÌ°œ»
-eu-west-1.amazonaws.comï‡ç
-amazonaws.comï‡ç
-
-google.comâ”¥ïÀ§
-accounts.google.comå›ı‡ÿ
-update.microsoft.comƒÓ’ù
-microsoft.comî¿âÔ¿
-mp.microsoft.comïıºœ	
-è
-femetrics.grammarly.io
-joinhoney.comµ£á=
-grammarly.ioô±„˜û
-netflix.comÿ­„Á
-
-snopes.comòØ
-nbc.comËéøÂ2
-img.nbc.com²šŞĞ"
-web.prod.cloud.netflix.comÿ­„Á
-www.snopes.comòØ
-s.joinhoney.comµ£á=
-²
-cloud.netflix.com
-prod.netflix.comÙ‹ÿ£0
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.netñÑÆåº/
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.net¼÷á¯/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netİßˆİ'
-content-autofill.googleapis.com•³Ö¥'/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netéÆÍá/
-'ipv4-c176-ams001-ix.1.oca.nflxvideo.net–ª¯­0
-'ipv4-c210-ams001-ix.1.oca.nflxvideo.netê‰ºÀÁ
-nflxext.comïéˆûÊ
-
-nflxso.netÿ¥±Æİ¶#
-web.prod.cloud.netflix.comÊ”èöí0.
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.netöÏ¾
-oca.nflxvideo.netóÕ¡ÈÎ/
-'ipv4-c183-ams001-ix.1.oca.nflxvideo.net×©§¦
-femetrics.grammarly.ioÿ­„Á
-cookielaw.orgÔŞÃ‘¡
-www.netflix.com·Ü¤³Í
-push.prod.netflix.comÙ‹ÿ£
-nflxvideo.netóÕ¡ÈÎ/
-'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÇÖ¯‹1
-grammarly.ioÿ­„Á
-netflix.com¦Ò¤”µ9
-ichnaea-web.netflix.comÆï‰å /
-'ipv4-c205-ams001-ix.1.oca.nflxvideo.netëä¬›#
-googleapis.com×ÿßøˆ(
- extension.femetrics.grammarly.ioÿ­„Á#
-occ-0-768-769.1.nflxso.netÓÊÎë,
-nflximg.netç™ÁÈ/
-'ipv4-c193-ams001-ix.1.oca.nflxvideo.netÕ±î<
-%
-vjs.zencdn.net
-
-zencdn.netˆ–£åâ
-í
-privacy-mgmt.com%
-v10.events.data.microsoft.comô˜¼Ø
-static.files.bbci.co.uk•™ÖŠ
-"
-smartscreen.microsoft.com­Ê½ğó$
-promote-subscribe.forbes.comŠ®×«
-spot.imîÍš£
-secure.gravatar.com„âÿT
-wdcp.microsoft.com¿‡Ÿ¥o
-W
-pub-admin-elections.foxnews.com
-www.foxnews.com¨Éİ
-static.foxnews.comĞ¯ˆÆ
-­
-gcp.gvt2.com
-ichef.bbci.co.ukàƒó™ 
-gn-web-assets.api.bbc.comœã
-x.comö±Ë#
-nyt.com£Ş÷â‚
-nbc.comÓ·ŠÏ›$
-launchpad.privacymanager.ioöìø™¦	
-purr.nytimes.comŞÜú‹İ
-img.nbc.com•Ù¢é"
-w3-reporting-nel.reddit.comÕ¼«D
-gvt2.comà«¡¶‚´
-maxai.me¥Å¤ÿK 
-lh3.googleusercontent.comÈÔì4/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÑ¸ÍÒ
-googleapis.comÔƒ ŒÅ
-
-www.nytimes.comÙúÇŸ–
-privacymanager.io¾¯¢ö½
-static.bbci.co.uk³Ø•Ÿ
-
-google.com±éÚ†ò
-joinhoney.com’Ô„Ú7
-lh5.googleusercontent.com«æ,
-www.bbc.comœüûÏ±
-googleusercontent.comŒİÄú
-www.nbc.comÄçÛ•Q
-nflxvideo.net¨¥ÍÑ/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net«›Êëj
-
-reddit.comÕ¼«D
-nytimes.comå’¬å•,
-#launchpad-wrapper.privacymanager.ioéª˜á¸
-oca.nflxvideo.net¨¥ÍÑ
-†
-content-autofill.googleapis.com
-d.joinhoney.comÌÑ£°%"
-occ-0-768-769.1.nflxso.netê°Ÿş
-www.thesun.co.uk©ù•ı	
-
-tiqcdn.com…Æîå¨
-update.microsoft.comíİ—Ğ'
-netflix.com˜‘ûğA
-privacy-mgmt.com˜ĞH
-prod.pyxis.atp.fox¹è
-js.stripe.com³€á"
-fe2cr.update.microsoft.comíİ—Ğ'
-nbc.com’ö†¦ø
-idgraph.dt.foxƒ„”à
-thesun.co.uk°ÃáÁ,
-foxnews.com¼†ÎËæ
-www.nytimes.comœÑ‚ÜP
-prod.idgraph.dt.foxƒ„”à!
-translate.googleapis.com…¨‚Üó
-www.foxnews.com™ÿÆŞ9
-	twimg.comä¯Áâ­
-forbesimg.comÍÈ
-nflxext.com±Ø… 
-googleapis.comÌœİ‚á¦
-geolocation.onetrust.comŸÑÓo"
-web.prod.cloud.netflix.com•³Ö¥'
-nflxvideo.net‰ÿê‘
-pbs.twimg.comµÄI
-i.forbesimg.comÍÈ
-gvt2.com£æ­Û
-www.netflix.com‚Ş¤Ë
-oca.nflxvideo.net‰ÿê‘
-e2c16.gcp.gvt2.comÙÅ¢Û$
-promote-subscribe.forbes.comº¡å
-privacy-center.orgÃæÈŠü
-
-stripe.comæš€ºÂ
-live.comËÉïì§
-nytimes.comÕó‡”ò
-sp.auth.adobe.comÌÓÎÔ/
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.net‰ÿê‘
-joinhoney.com˜£ÇàJ
-tags.tiqcdn.com‚£÷²”
-
-forbes.comº¡å
-onetrust.com¿¢§ß
-e2c51.gcp.gvt2.comÉ &
-federated-id.live.api.bbc.co.uk¥¢á(
-static.foxnews.com¼«ä¶!
-gcp.gvt2.com£æ­Û
-img.nbc.comœ£¶s
-
-nflxso.netı¤¼õ
-x.comİåÏ¥
-sdk.privacy-center.orgÃæÈŠü
-login.live.com²ò›û)
-microsoft.comíİ—Ğ'
-dt.foxƒ„”à
-pyxis.atp.fox¹è
-
-www.forbes.com
+zencdn.net§ôØœÈ
+]
+ptr.thesun.co.uk
+www.thesun.co.ukœïÛ
+tags.thesun.co.uköˆ‚Û9
+thesun.co.uk¸åÔêà6
+’
+cdn-media.brightline.tv
+redd.itÀïûœ
+nbc.com˜¿¸Ì»
+redditstatic.com§·Ï#
+entitlement.auth.adobe.comÇ¸Éëî
+cdn.cookielaw.orgÇÖÿ¶Ä
+cookielaw.orgÉ°Çƒ¿
+www.redditstatic.com§·Ï
+preview.redd.itÀïûœ
+www.nbc.com›ü·ŸÓ
+img.nbc.comŠ½“¸
 N
 
 mp.nbc.com
 nbc.com¬¥Àîè
 sp.auth.adobe.comÌ¡ÅÑ!
 onetrust.comã„¨
-&
-
-nbcuni.com
-sb-ssl.google.com„¿ö
-ê
-'ipv4-c183-ams001-ix.1.oca.nflxvideo.net
-netflix.com˜ŸäÎM"
-web.prod.cloud.netflix.com×©§¦/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net„éú€
-players.brightcove.net€‚ÉØ
-oca.nflxvideo.netØêüàÆ*0
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.netÃµ±±ê
-www.netflix.comÀõ¼¨1"
-occ-0-768-769.1.nflxso.net—°êö
-
-
-nflxso.netÆ¿ä 
-nflxvideo.netØêüàÆ*
-•
-'ipv4-c205-ams001-ix.1.oca.nflxvideo.net0
-'ipv4-c210-ams001-ix.1.oca.nflxvideo.net£•óÖŸ*
-thesun.co.ukğæşœ
-tags.thesun.co.ukğæşœ
-www.netflix.comÂÈÇŒg
-netflix.com­­ô§Š"
-web.prod.cloud.netflix.comëä¬›#
-nflxvideo.netÏşµ¸Š
-oca.nflxvideo.netÏşµ¸Š
-l
-flipboard.com
-foxnews.comğ˜ä¾Í
-static.foxnews.com±¨¥Ä£(
-pub-admin-elections.foxnews.com¬œÚ­û
-…
-akamaihd.net
-prod.boltdns.netñƒ‰â6
-foxnews.comì»“Õñ%
-auth.adobe.com…ñŒ×İ
-sp.auth.adobe.com’êæÕI
-vod.foxnews.comåİäÒ 
-	api.x.comää·ß	
-static.foxnews.com•ëÙÕÈ
-time.akamai.com™¹†À…
-cdn.segment.comˆİä”S
-segment.com‘ºÉ©¦%
-foxnewsplayer-a.akamaihd.netĞÀµ©ÑS
-x.comää·ß	
-	twimg.comƒÌşƒ
-video.twimg.comªæœ
-fncstatic.com”ù£óÄ
-global.fncstatic.com”ù£óÄ!
-manifest.prod.boltdns.netñƒ‰â6
-pbs.twimg.comÙåá
-boltdns.netñƒ‰â6
-api.foxnews.com¶¶˜V
-O
-m.stripe.com
-
-stripe.comñÏîÂ’
-nytimes.comòÆ÷
-www.nytimes.comûì§
-Ù
-adobedtm.com
-auth.adobe.comîòÁ#
-entitlement.auth.adobe.comÂş–‡¥
-brightline.tvãÜÔŸÛ 
-cdn-media.brightline.tvœüôÍ¿
-
-mp.nbc.comóü‘
-map.mp.nbc.comóü‘
-www.nbc.comÓ‚÷Ùò
-assets.adobedtm.comëú«Êı
-cookielaw.orgˆƒ÷Ë„
-cdn.cookielaw.org¾Ø‹Ã¡
-sp.auth.adobe.comƒ‰
-nbc.com™‡³æä
-img.nbc.com‘éşŠ·
-
-www.redditstatic.com
--
-downloads.nordcdn.com
-nordcdn.comÚÑªÏ·
-¥
-&geolocation.digitalsvc.apps.nbcuni.com
-img.nbc.com ¾Òˆ
-
-nbcuni.com¼Õ•¦å=
-logitech.io¡ô¶ã
-sb-ssl.google.comÂŸ»
-
-google.comÂŸ»
-nbc.comşı¤	
-Ÿ
-abs.twimg.com
-
-reddit.comùšêá¸$
-w3-reporting-nel.reddit.comùšêá¸
-twitter.comÉÔ¥²¦
-x.comÂûåóğ
-ton.twitter.comİ¦Îv
-thesun.co.uk¢¡ª¬
-video.twimg.comöëÏÑ©!
-co.uk¢¡ª¬
-www.thesun.co.uk²Œº
-cmp.cdn.thesun.co.ukÓñÃÒ
-	twimg.comİÁ¬¡¸
-
-	api.x.comãˆÙ×
-pbs.twimg.com«ÚèÈØ
-fonts.googleapis.comœö¸í'
-content-autofill.googleapis.comàË²“
-googleapis.comú²á¥³
-
-www.foxnews.com
-9
-video.twimg.com
-www.foxnews.com’®à
-x.comÿ¢î»í
-ô
-
-nflxso.net$
-occ-0-768-769.1.nflxso.net”¤¬”·$
-web.prod.cloud.netflix.com õ®†¨´
-nflxvideo.netÀ™Çî‰"
-oca.nflxvideo.netÀ™Çî‰"
-thesun.co.ukİí¾'
-ptr.thesun.co.ukî¶ß
-players.brightcove.net°ãû
-www.netflix.com«©¾Ü 
-
-H
-www.google.com
-www.reddit.comüØ¾¢
-www.redditstatic.comÿƒË×Ò
-
-nordcdn.com
-‘
-api.maxai.me$
-ogads-pa.clients6.google.com€ğÿáo
-i.forbesimg.com¤¸ÍË¨
-secure.gravatar.comì¸ÊÖ
-gcp.gvt2.com¥Å¤ÿK
-co.ukôë¼s
-
-bbci.co.ukÉÄ¬¾h!
-gn-web-assets.api.bbc.comò…
-googleapis.com‚ÈÙ
-clients6.google.com€ğÿáo
-betterttv.netÅÓğ¯N
-tags.thesun.co.uk«§Ï
-
-www.bbc.com±ÏáØa
-privacy-mgmt.comñœÁ÷?
-cdn.privacy-mgmt.comœ§ğı
-gvt2.com¥Å¤ÿK
-joinhoney.com»ÃÈÓ
-
-static.bbci.co.ukì ÌÑ2
-forbesimg.com¶‡Èš
-gravatar.comì¸ÊÖ
-maxai.me˜¤Ã©öb
-fonts.googleapis.com‚ÈÙ
-
-forbes.comñåÇ¨ô
-beacons.gcp.gvt2.com©‘éÿ
-cookielaw.orgøñÈ
-cdn.cookielaw.org¾œR"
-cdn-checkout.joinhoney.com»ÃÈÓ
-
-www.forbes.comøò£”º
-
-google.com€ğÿáo
-thesun.co.uk«§Ï
-
-bbc.com™í¨¾¦
-ichef.bbci.co.ukÁÕî¤
+e
+betterttv.net
+maxai.meÅÓğ¯N
+e2c51.gcp.gvt2.comı‘ÇØ
+gvt2.comŠ»Á·]
+gcp.gvt2.comŠ»Á·]
+D
+pyxis.atp.fox
+www.foxnews.com½ñ‘ÍS
+static.foxnews.com¹×‰Ÿ=
 ®
 lh3.googleusercontent.com
 nbc.co¶Ã¶±Õ
@@ -820,2409 +98,1658 @@ google.com€ğÿáo
 mp.microsoft.com£³‚Ÿ‰
 sp.auth.adobe.com·ûØìw
 	ss.nbc.co¶Ã¶±Õ
-
-beacons.gvt2.com
-e2c16.gcp.gvt2.com¥ÉÄ‡8
-e2c31.gcp.gvt2.com†Í ’C
-gcp.gvt2.comàÃö{
-gvt2.comÍÀÌ™‡
-e2c20.gcp.gvt2.com³­‘
-É
-cdn.segment.com
-foxweather.comı›
-sp.auth.adobe.com‹Ê²°
-foxnews.comÙ„¥úø
-static.foxnews.comØÓ®œÿ
-segment.comİíå‡Ê$
-foxnewsplayer-a.akamaihd.net‰ …á/
-time.akamai.com¯˜÷:
-×
-cdn-checkout.joinhoney.com
-maxai.me»ÃÈÓ
-
-joinhoney.comûà‚Ô;
-www.forbes.com§±ÉÖ
-nbc.com í´â^
-img.nbc.com†ÉŠú
-co.ukù¨’Ú
-thesun.co.ukù¨’Ú
-tags.thesun.co.ukù¨’Ú
+ê
+'ipv4-c183-ams001-ix.1.oca.nflxvideo.net/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net„éú€"
+occ-0-768-769.1.nflxso.net—°êö
+"
+web.prod.cloud.netflix.com×©§¦
+nflxvideo.netÀ˜›ï*
+oca.nflxvideo.netÀ˜›ï*0
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.netÃµ±±ê
+players.brightcove.net€‚ÉØ
+netflix.comØ”¡÷~
+www.netflix.comÀõ¼¨1
 
-forbes.comÏâ’­'
-ƒ
-launchpad.privacymanager.io
-www.nytimes.com±ø´´ÿ
-privacymanager.ioŒ‹š—É
-purr.nytimes.com¿ÇÖÒg
-nytimes.com¤Ì¾Áî
-Ç
-netflix.com#
-safebrowsing.googleapis.com¢‰·¡
+nflxso.netŒ¡şÈA
+x
+thesun.co.uk
+x.com‡åë
+	twimg.com¨Ÿ¨€)
+www.forbes.comê´¿ì
+www.thesun.co.ukà õä¨¢
 
-nflxso.netƒÄ©áÑÁ
-prod.netflix.com›€¹Ş„#
-web.prod.cloud.netflix.comú•©¢å4
-nflxvideo.net‘×Ä¸š9
-oca.nflxvideo.net‘×Ä¸š9
-www.netflix.com­°ÇÇ³
-nflxext.com‚ß·¼#
-occ-0-768-769.1.nflxso.net„ÏüÖ.
-push.prod.netflix.com›€¹Ş„
-nflximg.net°ìÈ£(
-
-clients6.google.com
-
-google.com—Ë“Äk
-maxai.me€ğÿáo$
-ogads-pa.clients6.google.com—Ë“Äk
-nytimes.comü±š¢`
-www.nytimes.com©»³‹ 
-ƒ
-'ipv4-c172-ams001-ix.1.oca.nflxvideo.net/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÌŞ¼¬y0
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netñÁŒ™0
-'ipv4-c174-ams001-ix.1.oca.nflxvideo.netÅİßäœ
-oca.nflxvideo.net¬Š»0
-'ipv4-c194-ams001-ix.1.oca.nflxvideo.net­©ï
-thesun.co.ukäçï²
-tags.thesun.co.ukäçï²
-www.netflix.comÇĞŠ™
-netflix.comÇĞŠ™
-nflxvideo.net¬Š»
-c
-96.16.53.151!
-config.teams.microsoft.com¼–
-microsoft.com¼–
-teams.microsoft.com¼–
-A
-
-snopes.com
-www.snopes.com²êÉ¥Ö
-www.dailymail.co.uk½©’
-ˆ
-cdn.flipboard.com(
-pub-admin-elections.foxnews.com¬œÚ­û
-flipboard.comïË–­¼
-foxnews.comğ˜ä¾Í
-static.foxnews.com±¨¥Ä£
-„
-manifest.prod.boltdns.net
-vod.foxnews.comíÀ¤­ÿ
-prod.boltdns.net±Ä¶²
-static.foxnews.com•Æ¬g
-time.akamai.com»á®ò
-â
-247wlive.foxweather.com
-nytimes.com¥È×Â
-a.nytimes.com¥È×Â
-api.foxnews.com¥ºØĞ
-foxweather.comáæ–”1
-
-office.comú×Û
-foxnews.com¥ºØĞ
-cdn.segment.comı›
-segment.comı›
-ecs.office.comú×Û
-6
-twitter.com
-x.com–—…Îf
-video.twimg.comíË­Ä°	
-á
-maxai.me
-static.bbci.co.ukì ÌÑ2
-privacy-mgmt.comñœÁ÷?
-www.forbes.comøò£”º
-secure.gravatar.comì¸ÊÖ$
-ogads-pa.clients6.google.com€ğÿáo
-thesun.co.uk«§Ï
-
-tags.thesun.co.uk«§Ï
-
-www.bbc.com±ÏáØa
-†
-joinhoney.com
-login.live.com´ŸùÀ
-www.nbc.comä‘Œú0
-nbc.comÄíÒß
-thesun.co.ukù¨’Ú
-s.joinhoney.comÌÄêõì
-maxai.me»ÃÈÓ
-
-live.comœŞëÂL
-nflxext.coméÃæº°
-tags.thesun.co.ukù¨’Ú
-privacy-mgmt.comœ©ŠÊ
-www.forbes.com§±ÉÖ
-
-x.com
-	
-spot.im
-o
-tags.thesun.co.uk
-thesun.co.ukÎ ®Ş¸
-tags.tiqcdn.comëŠ‘è
-
-tiqcdn.comëŠ‘è
-www.forbes.comê´¿ì
-’
-cdn-media.brightline.tv
-www.redditstatic.com§·Ï
-redd.itÀïûœ
-preview.redd.itÀïûœ
-www.nbc.com›ü·ŸÓ
-img.nbc.comŠ½“¸#
-entitlement.auth.adobe.comÇ¸Éëî
-cookielaw.orgËë©¼	
-cdn.cookielaw.orgÇÖÿ¶Ä
-nbc.comÛ±ÕÔğ
-redditstatic.com§·Ï
-
-nbc.co
-nbc.comˆ÷êã€
-sp.auth.adobe.comñ¸ªív
-	ss.nbc.coÜâéï‘
-
-reddit.com‚à¿œ
-www.reddit.com‚à¿œ
-wdcp.microsoft.comÂÈï
-
-“	
-1.nflxso.net
-netflix.comƒÄ©áÑÁ/
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.net‰„Çˆs/
-'ipv4-c161-ams001-ix.1.oca.nflxvideo.netúùÈ¯ 0
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.net´¡©·
-brightcove.net°ãû'
-content-autofill.googleapis.comı¤¼õ
-www.netflix.com«©¾Ü 
-/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¢§ªª[
-co.ukİí¾'
-thesun.co.ukİí¾'
-googleapis.comçñÚ–³$
-occ-0-768-769.1.nflxso.net”¤¬”·
-
-nflxso.netİ¥ÌŒĞ¦5
-players.brightcove.net°ãû
-nflxext.com¨ìì‡Ñ°/
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.netÃö“ü[0
-'ipv4-c171-ams001-ix.1.oca.nflxvideo.netú¾ğÕ‹
-cookielaw.orgúÇÀ¦ç$
-cdn.cookielaw.orgâ§ÿ¨
-assets.nflxext.com¼õü­©)
-nflxvideo.netÀ™Çî‰"0
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netæ¢Ä…â0
-'ipv4-c180-ams001-ix.1.oca.nflxvideo.netöó†´¶
-cloud.netflix.comÿ¥±Æİ¶/
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.net”…ª†/
-'ipv4-c183-ams001-ix.1.oca.nflxvideo.netÆ¿ä 0
-'ipv4-c176-ams001-ix.1.oca.nflxvideo.netÚ‘ê$
-web.prod.cloud.netflix.com õ®†¨´0
-'ipv4-c193-ams001-ix.1.oca.nflxvideo.net¹¥¶Š
-ptr.thesun.co.ukî¶ß
-oca.nflxvideo.netÀ™Çî‰"/
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.netÂ½®”\
-]
-ptr.thesun.co.uk
-thesun.co.ukÄçï¼º7
-www.thesun.co.ukœïÛ
-tags.thesun.co.uköˆ‚Û9
-
-nf.smartscreen.microsoft.com 
-static.files.bbci.co.ukªÉÅ¤
-privacy-mgmt.comÅÔ‚îÕ"
-smartscreen.microsoft.comÖÇ¬æz
-
-www.puppyplaats.nl
-
-192.229.221.95
-puppyplaats.nlçËõ*
-live.comÏùûé4
-login.live.comö±²È
-
-
-229.221.95µ¼Ú 
-221.95µ¼Ú 
-www.puppyplaats.nlóåº
-‘
-abs-0.twimg.com
-x.com§²¥Áî
-abs.twimg.com¤û¤Å³
-
-	twimg.comƒ‹µÆÖC
-	api.x.comú¾ù®T
-pbs.twimg.comİ°‡ã
-video.twimg.comàŒä—
-n
-prod.netflix.com
-www.netflix.comöœµ«
-push.prod.netflix.comŞ´ôd"
-web.prod.cloud.netflix.comêí…Ò
-¾
-redditmedia.com
-redditstatic.com´¥€ª¼
-styles.redditmedia.comëÈˆ˜Ğ%
-www.google.coméùÜãF
-thumbs.redditmedia.com’ú¯®‰
-www.reddit.comÉĞ„¼
-www.redditstatic.comè¯¾ÌÇ
-c
-open-api.spot.im
-spot.imÈÑ…±£
-privacy-mgmt.comîÍš£#
-promote-subscribe.forbes.com™º«q
-É
-eu-west-1.amazonaws.com"
-fe2cr.update.microsoft.com±æâ‰
-update.microsoft.com±æâ‰
-microsoft.comŠıæ$
-v10.events.data.microsoft.com¬‹Â
-media.graphassets.comŞ¡š'
-googleapis.comĞÃ†óú
-fonts.googleapis.comæÒîë#B
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com±­·òû
-graphassets.com½Ã´N
-1
-optimizely.com
-static.files.bbci.co.ukã¾„Í*
-©
-occ-0-768-769.1.nflxso.net#
-web.prod.cloud.netflix.com˜Š¡£Ê+
-thesun.co.ukÌò³	
-ptr.thesun.co.uk¦ùÙ
-players.brightcove.net…¡©
-www.netflix.comÉ’í¦¬
-Ì
-foxnewsplayer-a.akamaihd.net
-prod.boltdns.netñƒ‰â6
-global.fncstatic.comõ»Ä¸
-vod.foxnews.comåİäÒ 
-x.com²òÛï
-	twimg.com¦ÿÁ
-pbs.twimg.comìò°
-video.twimg.com•³ÎÀ
-sp.auth.adobe.comÖÅØ:
-static.foxnews.comÿº’Ó™
-segment.com“ÀŠÂ_
-time.akamai.com™¹†À…!
-manifest.prod.boltdns.netñƒ‰â6
-h
-logitech.io
-netflix.comÃ°¾
-
-nbcuni.comÂèíÆ
-sb-ssl.google.com­ÂÕæ@
-www.netflix.comÃ°¾
-Ï
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net
-www.netflix.comë÷Ì®
-netflix.comÄä¿ş
-oca.nflxvideo.netÒÅÂ·øˆ
-tags.thesun.co.uk¶×Ûû
-microsoft.comĞÃ÷Ÿ&
-mp.microsoft.comĞÃ÷Ÿ&
-
-nflxso.netæ¢Ä…â/
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.net–¤Ïï
-thesun.co.uk¶×Ûû
-players.brightcove.netÙàšË
-nflxext.comìÍ¯ø4"
-web.prod.cloud.netflix.comİßˆİ
-nflxvideo.netÒÅÂ·øˆ
-sp.auth.adobe.comµĞ‰¢"
-occ-0-768-769.1.nflxso.net¢š¶¥G
-
-
-zencdn.net
-å
-cdn.privacy-mgmt.com%
-content-autofill.googleapis.comİš
-data.microsoft.comĞãğá
-ichef.bbci.co.uk˜Ì	$
-nf.smartscreen.microsoft.com‘ÕÀ»5$
-promote-subscribe.forbes.comŠ®×«
-secure.gravatar.com‚ñ¿*
-live.com­Ğàäb%
-v10.events.data.microsoft.comô˜¼Ø
-privacy-mgmt.com—®ññÆ\
-open-api.spot.imîÍš£
-gravatar.com‚ñ¿*
-googleapis.comÜ‘ù#
-maxai.meœ§ğı
-fonts.googleapis.comá Ø"
-gn-web-assets.api.bbc.comÌÃä¹‰
-
-forbes.comŠ®×«
-static.files.bbci.co.uk¥ÆÕÂ(
-federated-id.live.api.bbc.co.uk¢”ÎÍ
-login.live.comÒƒáş
-microsoft.comŒø§Ç—
-wdcp.microsoft.comïá§é
-joinhoney.comç—è¼d
-d.joinhoney.comüëõH
-co.ukäÍÉ›Ú!
-smartscreen.microsoft.comË²ü\
-spot.imîÍš£
-R
-nsi.activity.api.bbc.com
-static.files.bbci.co.ukÊ Ø
-optimizely.comóå³·
-
-s.joinhoney.com
-¦
-gvt2.com/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net«›Êëj
-www.bbc.comœüûÏ±,
-#launchpad-wrapper.privacymanager.ioéª˜á¸$
-launchpad.privacymanager.ioöìø™¦	
-img.nbc.com•Ù¢é
-nbc.comÓ·ŠÏ›
-nflxvideo.net¨¥ÍÑ
-oca.nflxvideo.net¨¥ÍÑ
-lh5.googleusercontent.com«æ,
-ichef.bbci.co.ukàƒó™
-www.nytimes.comÙúÇŸ–
-nyt.com£Ş÷â‚
-www.nbc.comÄçÛ•Q
-
-reddit.comÕ¼«D
-static.bbci.co.uk³Ø•Ÿ"
-w3-reporting-nel.reddit.comÕ¼«D
-maxai.me¥Å¤ÿK
-nytimes.comå’¬å•
-purr.nytimes.comŞÜú‹İ/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÑ¸ÍÒ
-x.comö±Ë# 
-lh3.googleusercontent.comÈÔì4
-privacymanager.io¾¯¢ö½
-joinhoney.com’Ô„Ú7
-h
-mp.microsoft.com
-nflxvideo.netÎ«ƒå¬
-oca.nflxvideo.netÎ«ƒå¬ 
-nsi.activity.api.bbc.comöşÛ™
-
-
-forbes.com
-tags.thesun.co.ukÕéşØ'
-maxai.meñåÇ¨ô!
-gn-web-assets.api.bbc.com¼Ñ¢
-privacy-mgmt.comŠ®×«
-joinhoney.comÏâ’­'
-forbesimg.comá´ôÁ 
-i.forbesimg.comÂ¼Í­û
-googleapis.comúã¤Ì¹	
-storage.googleapis.comÎ”à÷£
-thesun.co.ukÕéşØ'
-www.forbes.com¦Úç%
-promote-subscribe.forbes.com¹Éü‚Ù
-spot.im™º«q
-open-api.spot.im™º«q
-
-google.comÃÒ–Ï
-2
-hulkprod.anm.co.uk
-www.dailymail.co.uk­”™€
-Ë
-googleusercontent.com
-microsoft.comµ¶ë”æA
-	ss.nbc.coŒÔ¥ÌŞ"
-nbc.coŒÔ¥ÌŞ"
-nflxvideo.net¨€ıíE/
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.netòÃÑù/
-'ipv4-c194-ams001-ix.1.oca.nflxvideo.net³Ê
-public.flourish.studioŸªÌœğ
-mp.microsoft.comµ¶ë”æA
-sp.auth.adobe.comß¯´÷Ú
-gvt2.comŒİÄú!
-lh5.googleusercontent.comˆ‰Í§j#
-lh3.googleusercontent.comşö°£İÖ
-
-oca.nflxvideo.net¨€ıíE/
-'ipv4-c174-ams001-ix.1.oca.nflxvideo.net™İüğ
-¡
-
-101.38.172
-www.puppyplaats.nl…µÁ‹-%
-v10.events.data.microsoft.com½·ÊßV
-sdk.privacy-center.org°·¢ù½
-update.microsoft.comƒÓ’ù
-38.172Á¹©ÜéG
-amazonaws.comï‡ç
-mp.microsoft.comßûõ¸
-
-stripe.com˜ã¤ñ"
-fe2cr.update.microsoft.comƒÓ’ù
-graphassets.comÌ®®
-media.graphassets.comÌ°œ»A
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comï‡ç
-data.microsoft.comúî”¿­
-151.101.38.172‡™½µ6
-
-google.com©Şé¿ø§
-puppyplaats.nl¥óÉĞ»
-privacy-center.orgáîÄòû
-js.stripe.comŠˆ¡Œû
-accounts.google.com–®üŒ
-microsoft.comİ½ñÈ
-eu-west-1.amazonaws.comï‡ç*
-"cp801.prod.do.dsp.mp.microsoft.comßûõ¸
-Õ
-iris.tv
-prod.boltdns.netîåÀÿÄ
-oca.nflxvideo.netÕäz
-players.brightcove.net—Ã¹§h
-ovp.iris.tv©‰ ´
-vjs.zencdn.net¹º¸Y
-nflxvideo.netÕäz
-nflxext.com—ÊŠ
-
-zencdn.net¹º¸Y
-x.com¾Ìê…
-
-ketchjs.com
-T
-safebrowsing.google.com
-www.puppyplaats.nlÇ«ÃéŒ
-sdk.privacy-center.orgÚ„u
-Á
-
-stripe.com
-stripe.network ¬Åõ
-www.nytimes.comûì§
-www.puppyplaats.nlÑúŞ–!
-translate.googleapis.comËÜÅÊ
-update.microsoft.comÛú&
-v10.events.data.microsoft.comß¡«ÄŠ
-©
-e2c51.gcp.gvt2.com
-googleusercontent.comáö—ú
-
-google.comÎ£ûŞ
-gcp.gvt2.comã†ğÙá
-gvt2.comã†ğÙá
-googleapis.comÜá! 
-lh3.googleusercontent.comÈÔì4
-ú
-bbc.com
-open-api.spot.imâ÷ûŒ
-maxai.me™í¨¾¦
-ichef.bbci.co.ukÇ”ë‹
-secure.gravatar.comÓ’‹Ã1
-beacons.gcp.gvt2.com‘Š
-
-forbes.comÔ¥ºò9!
-nsi.activity.api.bbc.comÑŠ”Š­
-gvt2.comºÀÄ¨ø8
-www.bbc.comÅ¡‹éV
-privacy-mgmt.com‚ÿÇÁÜ
-optimizely.com£¾Ç·
-i.forbesimg.comª ç¯o
-gcp.gvt2.comºÀÄ¨ø8 
-static.files.bbci.co.ukÇ•¶–º
-fonts.googleapis.com×àŒ
-mp.microsoft.comœ¥å²
-
-bbci.co.uk”ş®n
-static.bbci.co.uk‰ÚÀ²×+"
-gn-web-assets.api.bbc.comöú¡Ò~'
-fe3cr.delivery.mp.microsoft.comœ¥å²
-googleapis.com×àŒ
-live.com¬ëš
-spot.imâ÷ûŒ"
-smartscreen.microsoft.comÙ®‚áƒ($
-promote-subscribe.forbes.comÔ¥ºò9
-login.live.comëÚÆ
-co.uk”ş®n
-microsoft.comöÓç“(
-cdn.optimizely.com£¾Ç·
-forbesimg.comª ç¯o
-gravatar.comÓ’‹Ã1
-cdn.privacy-mgmt.com˜ş¹ó%
-nf.smartscreen.microsoft.com¬—Áğ
-.
-promote-subscribe.forbes.com
-spot.im™º«q
-p
-gravatar.com
-privacy-mgmt.com„âÿT
-i.forbesimg.com±İ¯¡
-secure.gravatar.comĞåáı¹
-maxai.meì¸ÊÖ
-
-www.thesun.co.uk
-J
-
-tiqcdn.com
-www.thesun.co.ukù—è³‰'
-twitter.com¤æ’1
-x.com«ÏÌø
-?
-services.microsoft.com%
-v10.events.data.microsoft.com³×íú5
-
-www.nbc.com
-
-www.usanetwork.com
-Ò
-ae.nflximg.net"
-web.prod.cloud.netflix.comóÌ ¤
-googleapis.com‰šÑ£Ô
-www.netflix.comÅ½…»
-netflix.com°ìÈ£(
-push.prod.netflix.comææÎÆ
-prod.netflix.comææÎÆ
-assets.netflix.com€Š¾B
-cloud.netflix.comç™ÁÈ
-nflximg.net¯Š¬™¶
-
-google.com€âÏÕ
-fonts.googleapis.comï¢Û8
-ichnaea-web.netflix.comÒº
-¶
-boltdns.net
-brightcove.com“®â¶-
-$cf-images.us-east-1.prod.boltdns.net£²ıÃ·
-iris.tvîåÀÿÄ
-prod.boltdns.netÿì ÏÈ
-foxnews.com’ÉÇê×
-
-idgraph.dt.fox…¢äå(
-pyxis.atp.fox¾şØ-$
-foxnewsplayer-a.akamaihd.netñƒ‰â6
-ovp.iris.tvîåÀÿÄ
-edge.api.brightcove.com“®â¶-
-$cf-images.eu-west-1.prod.boltdns.netª­ßÔŞ
-prod.idgraph.dt.fox…¢äå("
-manifest.prod.boltdns.net±Ä¶²
-x.com¥ÈËö
-www.foxnews.comËàğ´
-static.foxnews.comïå§£3
-dt.fox…¢äå(
-prod.pyxis.atp.fox¾şØ-
-time.akamai.com»á®ò
-vod.foxnews.comíÀ¤­ÿ
- 
-api.bbc.com
-gcp.gvt2.com¬ÓØ
-fonts.googleapis.comÈáù’
-optimizely.com£¾Ç·
-
-forbes.comÔ¥ºò9
-i.forbesimg.comª ç¯o
-open-api.spot.imâ÷ûŒ
-mp.microsoft.comœ¥å²
-static.bbci.co.ukûø–Â—"
-smartscreen.microsoft.comÙ®‚áƒ(
-spot.imâ÷ûŒ
-gravatar.comÓ’‹Ã1
-api.maxai.meíëŞø2
-cdn.optimizely.com£¾Ç·
-gvt2.com¬ÓØ
-co.ukæˆøàß7
-beacons.gcp.gvt2.comë”–
-googleapis.comÈáù’
-microsoft.comöÓç“(
-www.bbc.comèÉÙŞİ$
-promote-subscribe.forbes.comÔ¥ºò9
-secure.gravatar.comÓ’‹Ã1
-
-bbci.co.ukæˆøàß7 
-static.files.bbci.co.ukÇ•¶–º
-cdn.privacy-mgmt.com˜ş¹ó'
-fe3cr.delivery.mp.microsoft.comœ¥å²%
-nf.smartscreen.microsoft.com¬—Áğ
-forbesimg.comª ç¯o
-login.live.comëÚÆ
-bbc.comË§ÂşşÚ
-ichef.bbci.co.ukåÜ¦’ó
-privacy-mgmt.com‚ÿÇÁÜ!
-nsi.activity.api.bbc.comÑŠ”Š­
-maxai.meíëŞø2
-live.com¬ëš"
-gn-web-assets.api.bbc.comå£ÂŠ¦p
-
-www.dailymail.co.uk
-ß
-graphassets.com
-
-stripe.com”ï¶Ä
-js.stripe.com‡Ê·›â
-microsoft.comº¶±%
-v10.events.data.microsoft.com›ÇÇX
-media.graphassets.com›‹÷Ùb@
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com½Ã´N
+tiqcdn.comÈ¾´ò¥<
+
+privacyportal.onetrust.com
 ƒ
 nflximg.net
 www.netflix.comÅ½…»
 push.prod.netflix.comææÎÆ
 prod.netflix.comææÎÆ"
 web.prod.cloud.netflix.comóÌ ¤
-T
-push.prod.netflix.com"
-web.prod.cloud.netflix.comêí…Ò
-www.netflix.comöœµ«
 {
-tags.tiqcdn.com
+tags.tiqcdn.com
+thesun.co.uk¤Û»½Ù;
+www.thesun.co.ukü‹ôÙÄ
 
-tiqcdn.com¹œø“º&
+tiqcdn.comªÃ®>
 twitter.com’³É
-x.com‘¹·Ä
-thesun.co.ukºÊ ¸üX
-www.thesun.co.ukü‹ôÙÄ
-H
-cs.dds.microsoft.com
-microsoft.comÙˆü€R
-dds.microsoft.comÙˆü€R
-h
-
-229.221.95
-www.puppyplaats.nlóåº
-puppyplaats.nlçËõ*
-live.comÏùûé4
-login.live.comö±²È
-
-­
-"cp801.prod.do.dsp.mp.microsoft.com/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net½Î±º/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netúĞ®Ÿ
-
-google.com¹¥¡—­
-microsoft.com„÷ÌÜ
-mp.microsoft.com„÷ÌÜ+
-#geover.prod.do.dsp.mp.microsoft.comı´£Ë
-nflxvideo.netÀ›ÑóV
-oca.nflxvideo.netÀ›ÑóV
-“
-oca.nflxvideo.net
-teams.microsoft.com¥ÿ›
-tags.thesun.co.uk¡ßÍÀ˜
-www.netflix.comã£İü&
-push.prod.netflix.com”ÔªÉ*
-ptr.thesun.co.ukŒ§—
-ovp.iris.tvÕäz
-sp.auth.adobe.com¢‚ú´t
-thesun.co.uk¸ŞÇ…™#
-occ-0-768-769.1.nflxso.netÓíğ˜ó
-prod.netflix.com”ÔªÉ*#
-web.prod.cloud.netflix.comòƒ«÷„
-players.brightcove.netÑè¹à
-
-zencdn.net€Ñó×<
-vjs.zencdn.net€Ñó×<
-°
-fe3cr.delivery.mp.microsoft.com
-microsoft.com‚ñì«
-mp.microsoft.com‚ñì«
-ichef.bbci.co.uk×î©s
-gn-web-assets.api.bbc.comÄ  
-nsi.activity.api.bbc.comöşÛ™
-ª
-brightline.tv
-nbc.comœ»îöÙ:
-img.nbc.comãœ®¿
-cookielaw.org‡Çºƒ
-redditstatic.comÉøñ-
-www.nbc.comşë½¿é
-cdn.cookielaw.orgŒÀÛÇ‹ 
-cdn-media.brightline.tv†³¸ò
-www.redditstatic.comÉøñ-
-redd.itµ‡”¾ë
-preview.redd.itµ‡”¾ë#
-entitlement.auth.adobe.comıÎ¶€
+x.com‘¹·Ä
 6
-safebrowsing.googleapis.com
-www.netflix.com¢‰·¡
-†
-	16.53.151
-microsoft.com¼–
-teams.microsoft.com¼–!
-config.teams.microsoft.com¼–
-53.151åÙš†
-96.16.53.151åÙš†
-%
-grammarly.com
-thesun.co.uk¨î¶ä
-Õ
-assets.netflix.com
-www.netflix.com¥Ô‘Ó
-push.prod.netflix.com¬ÅÕ´
-prod.netflix.com¬ÅÕ´
-cloud.netflix.comœ¸ÀŞµ"
-web.prod.cloud.netflix.comÍÿÍér
-cookielaw.orgÃ†àÄT
-cdn.cookielaw.org¡ƒ°¢*
-nflxext.comÓÏ°Ü€
-nflximg.net€Š¾B
-ichnaea-web.netflix.com¸úêÀ
-netflix.comÇßşÛ‡
-assets.nflxext.comËƒù÷$
-„
-$cf-images.us-east-1.prod.boltdns.net
-prod.boltdns.net£²ıÃ·
-www.foxnews.comËàğ´
-foxnews.comöıÅĞÉ
-static.foxnews.comÚŸû»2
-idgraph.dt.fox…¢äå(
-dt.fox…¢äå(
-prod.idgraph.dt.fox…¢äå(
-prod.pyxis.atp.fox¾şØ-
-pyxis.atp.fox¾şØ-
-
-forbesimg.com
-www.forbes.com°šˆú 
-ketchcdn.com›Îú
-spot.imÄ–
-secure.gravatar.com±İ¯¡
-maxai.me¶‡Èš!
-gn-web-assets.api.bbc.comáÍÅô
-i.forbesimg.com†Ä”©¶
-global.ketchcdn.com§½	
-open-api.spot.imÄ–
-gravatar.com±İ¯¡
-googleapis.com„ë9
-x
-221.95
-live.comÏùûé4
-login.live.comö±²È
-
+honey.io
+www.reddit.comÁøŞ
 
-229.221.95µ¼Ú 
-www.puppyplaats.nlóåº
-puppyplaats.nlçËõ*
->
-	ss.nbc.co
-wdcp.microsoft.comÂÈï
-
-www.reddit.com‚à¿œ
-_
-public.flourish.studio
-uri.sh„¿Ü ¥
-www.foxnews.comŒ¿Ù¾4
-static.foxnews.comôšÀ±ê
- 
-flourish.studio
-foxnews.comö£‘¤¦¸
-public.flourish.studioÚ¸ÈÇ.
-
-google.com¸¾ı…®
-googleusercontent.com¿Ô˜¹à"
-lh3.googleusercontent.comß¸™´¥
-www.foxnews.com±üåúÑ
-static.foxnews.com«Æ¨Öõ
-uri.sh‘üñ‚•
-googleapis.comµ‹Å”
-fonts.googleapis.com’Á µ
-	
-auth.adobe.com
-googleapis.comÒ¬ÌÇõ
-cookielaw.orgÇúá›‹"
-sp.auth.adobe.comÁå ø¹+/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netşŠÂ±b
-redditstatic.com¹¯š
-static.foxnews.com´ÈÀ…ü	
-segment.comİ­Òüô
-redd.it¿ıÔËN"
-lh3.googleusercontent.com–é¼Ÿ×
-cdn.cookielaw.org­¸±ô
-brightline.tv¯…é	
-onetrust.comæç·Ò
-friendship.nbc.co­ùÕµ 
-cdn-media.brightline.tv×˜˜Ôğ
-nordvpn.com§Ñ¡ä
-fncstatic.comÜ¥
-www.nbc.com±ßîº¢
-foxnews.comú–öºT%
-foxnewsplayer-a.akamaihd.netÜçåÆø
-googleusercontent.comÜî…ÕÆ
-img.nbc.comÍş˜¥–
-#
-entitlement.auth.adobe.com³Å®ßé
-map.mp.nbc.comü¾ñ†@
-usanetwork.comšÊİê$
-global.fncstatic.comÜ¥
-www.reddit.comÒ ª;
-preview.redd.it¿ıÔËN
-
-google.comú¹ÀÍã'
-content-autofill.googleapis.com÷ôäÍ
-	ss.nbc.coòø‡ˆ
-launchdarkly.com ¼ºë8/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net–Ş‚
-cdn.segment.comî–©¾z
-nbc.com„°Òí1
-
-mp.nbc.comü¾ñ†@ 
-geolocation.onetrust.com£À÷|
-nbc.co ò‰İÒ
-nflxvideo.netÕŸÁ
-fonts.googleapis.com®¬ÄÈ¹
-www.usanetwork.comšÊİê$
-oca.nflxvideo.netÕŸÁ
-
-reddit.comÒ ª;
-www.redditstatic.com¹¯š
-ë
-'ipv4-c193-ams001-ix.1.oca.nflxvideo.net
-nflxext.com ­¨"
-occ-0-768-769.1.nflxso.net—Æ…$
-prod.netflix.com‹Çÿ¤
-oca.nflxvideo.netù½ØŸR
-nflxvideo.netù½ØŸR0
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.net“´‚Êñ
-www.netflix.com°šêô–
-netflix.comÌÿ¥…
-
-nflxso.net¹¥¶Š
-push.prod.netflix.com‹Çÿ¤"
-web.prod.cloud.netflix.comÕ±î<
-æ
-config.teams.microsoft.com
-nflxvideo.net¥ÿ›
-oca.nflxvideo.net¥ÿ›/
-'ipv4-c194-ams001-ix.1.oca.nflxvideo.net¢Öô¸/
-'ipv4-c174-ams001-ix.1.oca.nflxvideo.net½ü½ã
-
-teams.microsoft.comêË©Îš
-microsoft.comêË©Îš
- 
-cmp.dmgmediaprivacy.co.uk
-dailymail.co.uk“€ºë	
-hulkprod.anm.co.uk®³—®ƒ
-dmgmediaprivacy.co.uk«üìı
-co.uk´ñÄĞ€(
-www.dailymail.co.ukÉ‡€İõ
-Â
-assets.adobedtm.com
-map.mp.nbc.comáâú
-sp.auth.adobe.comƒ‰
-www.nbc.comˆßıÃÃ
-nbc.comş‹½¡C
-auth.adobe.comÕ±õß•#
-entitlement.auth.adobe.comªŸšÉù
-cookielaw.orgâ“…ÒË 
-cdn-media.brightline.tvø‹…åñ
-img.nbc.comŞ‡ï—Î
-cdn.cookielaw.org˜é™Éè
-brightline.tvœüôÍ¿
-
-mp.nbc.comáâú
-ü
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.net
-oca.nflxvideo.netÒö¶Î5/
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.netúçÛ
-www.netflix.com°ùÇ¿>"
-occ-0-768-769.1.nflxso.net±¬ã¬
-
-nflxso.net”…ª†
-nflxvideo.netÒö¶Î5/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net·²ÆÔ
-players.brightcove.netÃôşÃ
-nordvpn.comãİ
-netflix.comìğ©ï?"
-web.prod.cloud.netflix.com¼÷á¯
-Ù
-apps.nbcuni.com
-logitech.ioÂèíÆ
-flow.logitech.ioÂèíÆ
-sb-ssl.google.com„¿ö
-
-google.com„¿ö
-nbc.comü¡úÉ
-img.nbc.comÁü¤‘/
-&geolocation.digitalsvc.apps.nbcuni.com¼Õ•¦å=
-
-nbcuni.comå¡ÜÉ{
-!
-uri.sh
-www.foxnews.com’”ß•?
-˜
-i.forbesimg.com
-open-api.spot.imƒô‚
-secure.gravatar.com±İ¯¡
-maxai.me¤¸ÍË¨
-www.forbes.com¡ŞæÖ½
-ketchcdn.comŸ©å
-spot.imƒô‚
-…
-dailymail.co.uk
-googleapis.com¯íß÷U
-nordvpn.com°ÇÙà
-
-snopes.com¸ü¶?
-mediaproxy.snopes.com¸ü¶?
-hulkprod.anm.co.uk¹–º¼í
-
-dmgmediaprivacy.co.uk¦€ôÖ
-fonts.googleapis.comÏÊÒ
-www.dailymail.co.uká‚í¿îŞ
-i.dailymail.co.ukùéôÒé
-õ
-microsoft.com#
-smartscreen.microsoft.comÕá¤”ó
-oca.nflxvideo.netôªŸóÁ0
-'prod.client.wosc.services.microsoft.comÛÜÁ”Ç
-www.puppyplaats.nl¥¬…ò
-privacy-center.orgÜ®š÷À
-wdcp.microsoft.com—È…ÍäA
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comŠıæ
-
-stripe.comÌÑ˜¨)
- mobile.events.data.microsoft.comÚÔÌ¸
-privacy-mgmt.com½µÍ÷
-mp.microsoft.comîÊûï„ 
-static.files.bbci.co.ukœÔ’‹É
-puppyplaats.nl÷À÷Ğ
-weather.microsoft.com†®Œæ
-teams.microsoft.comêË©Îš
-	ss.nbc.co…‘ß 
-nsi.activity.api.bbc.comöşÛ™%
-nf.smartscreen.microsoft.comÖÇ¬æz
-sdk.privacy-center.org®—Í»`
-nbc.com§µ¿í+
-"tile-service.weather.microsoft.comÄìœöÄ
-nflxvideo.netôªŸóÁ
-services.microsoft.comÛÜÁ”Ç 
-translate.googleapis.com€õ­'
-update.microsoft.comÈË“¤û&
-v10.events.data.microsoft.comïËÓÌ
-nbc.co…‘ß
-’
-nbc.com
-	ss.nbc.coÁ«Î·*
-
-nbcuni.comü¡úÉ
-s.joinhoney.com¿î‘
-www.nbc.comõëó™òà
-sp.auth.adobe.comØÉÿ
-onetrust.comÇ”‰–Á
-V
-nid.thesun.co.uk
-thesun.co.ukû¤¦—
-tags.tiqcdn.com•˜®G
-
-tiqcdn.com•˜®G
-T
-beacons2.gvt2.com
-gcp.gvt2.comÍ(
-gvt2.com¸ÙêÕÇ
-e2c16.gcp.gvt2.comÍ(
-N
-onetrust.com
-sp.auth.adobe.comïó¶ÑY#
-privacyportal.onetrust.com÷íç­¾
-
-assets.nflxext.com
-vjs.zencdn.net‡´¯€('
-content-autofill.googleapis.com€ìŒ 
-
-nflxso.net¼õü­©)
-cloud.netflix.comÙãí«I
-ichnaea-web.netflix.com¾¨Š›
-thesun.co.uk×Î¯*
-ptr.thesun.co.uk„˜™Û
-brightcove.netúÍ…	
-joinhoney.comúÎ¼©#
-prod.netflix.comã­0
-'ipv4-c193-ams001-ix.1.oca.nflxvideo.netĞèØ¹€
-nflxvideo.netäÉšùİ/
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.netí•„œo
-cmp.cdn.thesun.co.ukÜ±&
-d.joinhoney.com½§ŞÔ
-push.prod.netflix.comã­/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netìÍ¯ø4
-tags.thesun.co.ukÙ¢¿Ä
-
-zencdn.net‡´¯€(
-cookielaw.org¯ÛÛ³¸#
-safebrowsing.googleapis.comà£‹Ê<"
-web.prod.cloud.netflix.comñ€êÒ1
-oca.nflxvideo.netäÉšùİ
-players.brightcove.netúÍ…	
-netflix.comÑÚ§#
-occ-0-768-769.1.nflxso.netÛøˆÁÔ
-edge.api.brightcove.comĞºù
-www.netflix.com©ÅàÜ¬
-nflxext.com“ë²Ô²P
-iris.tvÊ…O
-googleapis.comß»—æ½/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netŒü”
-co.uk×Î¯*
-ovp.iris.tvÊ…O
-cdn.cookielaw.org›Æã¦
-brightcove.comĞºù
-ˆ
-privacy-center.org
-
-stripe.comäºñö
-update.microsoft.comßà·ß%
-v10.events.data.microsoft.comş¦ñËW
-www.puppyplaats.nl œ¯²¨
-puppyplaats.nlş½ØÖå¡
-safebrowsing.google.comÚ„u
-sdk.privacy-center.org¯È´€‚!
-translate.googleapis.com–²‘öŒ
-û
-	api.x.com
-storage.googleapis.comü“°d
-ovp.iris.tv¾Ìê…,
-$cf-images.eu-west-1.prod.boltdns.net¥ÈËö
-foxnews.com±«ù·
-pbs.twimg.comô…ÆÊ¡
-tags.tiqcdn.com÷¢¢
-
-tiqcdn.com÷¢¢
-prod.boltdns.net¥ÈËö
-fncstatic.com…ÁïV
-global.fncstatic.com…ÁïV
-twitter.com›œô²
-ton.twitter.comŠàœ±
-gvt2.comú‰òé
-googleapis.comü“°d
-static.foxnews.comÚ½?
-
-reddit.comÌŒ—–4
-x.comÍ¬°–
-	twimg.comßÒêÂ¡
-iris.tv¾Ìê…
-boltdns.net¥ÈËö#
-w3-reporting-nel.reddit.comÌŒ—–4
-e2c31.gcp.gvt2.comú‰òé
-video.twimg.comÿ¢î»í
-gcp.gvt2.comú‰òé$
-foxnewsplayer-a.akamaihd.net²òÛï
-
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net/
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.net‘ş¤Œ	
-microsoft.comÓòĞé 
-sp.auth.adobe.com§à©Ö#
-netflix.comªüŒ‡ê"
-occ-0-768-769.1.nflxso.netİ«¹â
-vjs.zencdn.netºĞö·(
-nordvpn.comüÄ("
-web.prod.cloud.netflix.com„½ğ€
-
-nflxvideo.netª×–¢‡X
-
-zencdn.netºĞö·(/
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.netö««‰	/
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.net¹¢ú„	
-players.brightcove.netÎí¨	
-ovp.iris.tvøÜQ
-mp.microsoft.comÓòĞé 
-www.netflix.comÆ„ö’‹
-nflxext.com‘»İ¢V
-
-nflxso.net¢§ªª[
-oca.nflxvideo.netª×–¢‡X0
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netäöÎÌË
-iris.tvøÜQ
-¾
-gn-web-assets.api.bbc.com 
-nsi.activity.api.bbc.com¿Ã—
-i.forbesimg.comáÍÅô$
-promote-subscribe.forbes.com¼Ñ¢
-gvt2.comœã
-login.live.comØú@
-mp.microsoft.comÄ 
-ichef.bbci.co.ukŒÕ·÷Ï
-privacy-mgmt.comí³Ä®©
-gravatar.com‹ŞÊ‰
-www.bbc.comÄíö·ë
-static.bbci.co.ukÀËÖ¹Ø%
-nf.smartscreen.microsoft.com«±Ú÷ø
-secure.gravatar.com‹ŞÊ‰"
-smartscreen.microsoft.comÖâ´ïñ
-spot.im Ú‘
-open-api.spot.im Ú‘
-googleapis.comù‚¢
-maxai.meò…
-live.comáêƒ
-microsoft.comšğÔïñ
-static.files.bbci.co.uk‰„ù
-Ù
-idgraph.dt.fox
-prod.boltdns.net…¢äå(
-www.foxnews.comä²ˆˆN
-static.foxnews.comıâÍÑ:
-prod.idgraph.dt.foxåşÚÅæ
-prod.pyxis.atp.fox‹õ¨²
-pyxis.atp.fox‹õ¨²%
-pub-admin-elections.foxnews.comÂùq
-‰
-styles.redditmedia.com
-www.reddit.comû˜Óõå
-www.redditstatic.comÄŒ¯êÆ
-www.google.coméùÜãF
-thumbs.redditmedia.comí©ş¨¢
-¥
-	twimg.com
-twitter.com¹Íı­Û
-x.comÀ¬¬¸Û,
-video.twimg.com‚ŸÃÒè¶
-www.thesun.co.ukü½¢
-www.foxnews.com§œÇã%
-w3-reporting-nel.reddit.comá†“é›“
-ü
-amazonaws.com
-microsoft.comŠıæ
-data.microsoft.comØ–„
-googleapis.comĞÃ†óú
-update.microsoft.com±æâ‰$
-v10.events.data.microsoft.com¬‹Â
-graphassets.com½Ã´N
-media.graphassets.comŞ¡š'
-fonts.googleapis.comæÒîë#B
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com±­·òû 
-eu-west-1.amazonaws.com±­·òû"
-fe2cr.update.microsoft.com±æâ‰
-
-stripe.network
-®
-e2c16.gcp.gvt2.com&
-federated-id.live.api.bbc.co.ukè 
-gcp.gvt2.comÃ÷ù¹ú
-gvt2.com·ÂæÁ²
-googleapis.comÑç‘#
-joinhoney.comù°
-e2c51.gcp.gvt2.comÒ‰
-d
-ton.twitter.com
-twitter.comºè¿ÁÉ
-x.comŠàœ±
-	twimg.comùŞâÕÅ	
-video.twimg.comíË­Ä°	
-©
-cdn.cookielaw.org
-googleapis.comªçÄ†Ø	
-www.nbc.comï©—Ÿ
-fonts.googleapis.comÀ£ğÖ‰
-cookielaw.orgü¢„é‰¤
-map.mp.nbc.comíë¸İ
-usanetwork.comÃò‹ Æ
-nflxext.comÈ¯Ç±
-push.prod.netflix.com Ïô
-googleusercontent.comëü×“ü$#
-entitlement.auth.adobe.comÅ¹Şç#
-occ-0-768-769.1.nflxso.netÆÏ³Àğ
-
-nflxso.netâ§ÿ¨
-
-google.comØäÚ£ı"
-lh3.googleusercontent.com”ĞáÓ‚
-www.usanetwork.comÃò‹ Æ$
-safebrowsing.googleapis.comÁì¸ê™
-netflix.com¹˜áä
-cloud.netflix.comªïáÈP
-	ss.nbc.coèñé½h
-www.netflix.comÿ±¦ì±
-prod.netflix.com Ïô
-maxai.me¾œR
-
-mp.nbc.comíë¸İ
-sp.auth.adobe.comíü±´Ú
-friendship.nbc.coÔö±ƒ
-img.nbc.comƒô»Åæ	"
-web.prod.cloud.netflix.com½§½-
-nbc.com¡èÙÆ.
-nbc.co½è›Ál
-ichnaea-web.netflix.com‡ªæç3
-s
-53.151
-microsoft.com¼–
-teams.microsoft.com¼–!
-config.teams.microsoft.com¼–
-96.16.53.151åÙš†
-É
-api.brightcove.com
-oca.nflxvideo.net€›ƒ
-brightcove.comàè„Àä
-vjs.zencdn.net±ò¢¸
-ovp.iris.tv£ËÅåõ,
-$cf-images.eu-west-1.prod.boltdns.net“®â¶
-players.brightcove.net¨ûì¾„ 
-edge.api.brightcove.comàè„Àä
-nflxvideo.net€›ƒ
-brightcove.net¨ûì¾„
-nflxext.comÑ¨İ	
-
-zencdn.net±ò¢¸
-iris.tv£ËÅåõ
-assets.nflxext.comĞºù.
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¦Ş
-prod.boltdns.net“®â¶
-boltdns.net“®â¶
-p
-config.extension.grammarly.com
-grammarly.comŞÑ—Ü´	 
-extension.grammarly.comŞÑ—Ü´	
-thesun.co.uk¨î¶ä
-â
-ichnaea-web.netflix.com
-push.prod.netflix.comà®³
-prod.netflix.comà®³"
-web.prod.cloud.netflix.com¹ŠñÌ/
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.netûÍ¼
-www.netflix.com€ëÍ
-nflxext.com¶›È½+
-nflximg.netÒº/
-'ipv4-c193-ams001-ix.1.oca.nflxvideo.netš…‡ª
-nflxvideo.netˆá·°m
-oca.nflxvideo.netˆá·°m
-netflix.com™ëË«
-Ê
-geolocation.onetrust.com
-sp.auth.adobe.com’€—­+
-onetrust.com‹Èûéü
-
-google.com†ÁÈµ­
-googleapis.comûÎë»
-
-nbc.com’ôıÈ 
-img.nbc.com¸¡4
-
-mp.nbc.com¡¬
-map.mp.nbc.com¡¬
-š
-cdn.optimizely.com
-optimizely.comŞ¡½§ 
-nsi.activity.api.bbc.comóå³·
-co.uk¸Ù·ïÿ
-ichef.bbci.co.ukÈŸ¡î*
-static.files.bbci.co.ukã¾„Í*
-‰
-dt.fox
-prod.boltdns.net…¢äå(
-static.foxnews.comıâÍÑ:
-idgraph.dt.foxåşÚÅæ
-prod.pyxis.atp.fox‹õ¨²
-fonts.googleapis.com©¸ú‡(
-prod.idgraph.dt.foxåşÚÅæ
-pyxis.atp.fox‹õ¨²%
-pub-admin-elections.foxnews.comÂùq
-feeds-meta.foxnews.comÔ§Á
-googleapis.com«ÁŒËÃ
-foxnews.comÄÎØà
-fncstatic.comœîº
-www.foxnews.comä²ˆˆN
-global.fncstatic.comœîº
+reddit.comÁøŞ
 ª
 e2c31.gcp.gvt2.com
 
 reddit.comÕ¼«D"
 w3-reporting-nel.reddit.comÕ¼«D
-x.comòº’Ì
-gcp.gvt2.com‹‹Ú¸¡
-gvt2.com˜¥›İ§
-nbc.comĞ®¹J
+x.comòº’Ì
+gvt2.com‘ØúÊä
+gcp.gvt2.com‹‹Ú¸¡
+nbc.comÃÍ§c
 img.nbc.com•Ù¢é
-;
-v10.events.data.microsoft.com
-www.puppyplaats.nl®ÉÉŸ
-Â
-d.joinhoney.com
-gcp.gvt2.comš¤ØÈ
-login.live.com´ŸùÀ
-nbc.comÌ°Ù¨
-e2c16.gcp.gvt2.com¼˜
-joinhoney.comôÃıù
-www.nbc.comÌ°Ù¨
-nflxext.comô¡³X'
-federated-id.live.api.bbc.co.ukˆÖñ
+%
+grammarly.com
+thesun.co.ukÑÜíÈ!
+è
+js.stripe.com
+update.microsoft.com¯ş¯
+microsoft.com£ñ¡í%
+v10.events.data.microsoft.comÊàã–.
+stripe.networkæ¯ï¨	
 
-google.com‰ù‡„
-gvt2.comš¤ØÈ
-googleapis.com®í™«
-live.comœŞëÂL
-privacy-mgmt.comÛ¥•³÷
-q
-'prod.client.wosc.services.microsoft.com%
-v10.events.data.microsoft.com³×íú5
-services.microsoft.comÜ§®¹
-Æ
-
-akamai.com%
-foxnewsplayer-a.akamaihd.net™¹†À…
-vod.foxnews.comö¹¨±
-prod.boltdns.net»á®ò
-boltdns.net»á®ò
-segment.com¯˜÷:
-akamaihd.net™¹†À…
-time.akamai.comœ¿ò¦Á!
-manifest.prod.boltdns.net»á®ò
-foxnews.comÊãçı
-static.foxnews.coméºú°;
-api.foxnews.com¤üı†3
-cdn.segment.com¯˜÷:
-§
-beacons.gcp.gvt2.com
-nbc.comÀáø
-e2c51.gcp.gvt2.com¦ö‚ 
-gn-web-assets.api.bbc.comçØƒ
-x.comë“¿ê,
-#launchpad-wrapper.privacymanager.ioûî„­‹
-www.nbc.comÀáø
-www.bbc.com‡ÿş³ì
-d.joinhoney.comÅµªÛ/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net«›Êëj
-joinhoney.comÑ ÿ‘
-nflxvideo.net¨¥ÍÑ/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÑ¸ÍÒ
-betterttv.net£ÊŞ·
-ichef.bbci.co.ukøà¼¦
-maxai.me©‘éÿ$
-launchpad.privacymanager.ioä•˜…î
-nytimes.comÚŠœ•Ÿ
-privacymanager.io¿‰ºäò
-
-google.comÈŸ©×
-gcp.gvt2.com­ÊÀóÓ]
-static.bbci.co.ukŒ¶åç
-fonts.googleapis.comçâƒÿÚ
-
-g1.nyt.com°ú“»@
-oca.nflxvideo.net¨¥ÍÑ
-googleapis.comçâƒÿÚ
-nyt.com°ú“»@
-co.uk„—¢
-
-gvt2.com­ÊÀóÓ]
-www.nytimes.comÅ…†´j
-purr.nytimes.com¼£È±,
-ú
-ichef.bbci.co.uk 
-static.files.bbci.co.ukôøœÓì.
-privacy-mgmt.comà°&!
-nsi.activity.api.bbc.comÍ€®’
-maxai.meÁÕî¤
-mp.microsoft.com×î©s
-static.bbci.co.ukÑñåöä
-optimizely.comÈŸ¡î*
-microsoft.com×î©s
-www.bbc.comÒ¯¸‡
-e
-betterttv.net
-gcp.gvt2.comçğâÿF
-gvt2.comçğâÿF
-maxai.meÅÓğ¯N
-e2c51.gcp.gvt2.comı‘ÇØ
-L
-foxweather.com
-nytimes.com¥È×Â
-segment.comı›
-
-office.comú×Û
-š
-global.fncstatic.com
-x.com…ÁïV
-	twimg.com›äÕ
-video.twimg.comç‚ºğ
-idgraph.dt.foxœîº
-prod.pyxis.atp.foxÈä1
-static.foxnews.comÒ»àÚô
-prod.idgraph.dt.foxœîº
-pyxis.atp.foxÈä1
-pbs.twimg.com´ş©e
-sp.auth.adobe.comú¸N
-www.foxnews.comØ’‘œÎ
-R
-dmgmediaprivacy.co.uk
-www.dailymail.co.uk“€ºë	
-hulkprod.anm.co.ukúò«Ì‰
-Ç
-googleapis.com
-privacy-center.orgÉÃ•Çí$
-w3-reporting-nel.reddit.comâ±ƒ˜“
-gvt2.comÔƒ ŒÅ
-"
-translate.googleapis.comöÑ¾Á
-pyxis.atp.foxƒç‡‰
-login.live.comş»‹èÑ
-oca.nflxvideo.net‰ÿê‘
-www.thesun.co.ukÏÊ÷©éO
-privacy-mgmt.comÑóºH
-open-api.spot.imØˆŠ
-prod.pyxis.atp.foxƒç‡‰
-sdk.privacy-center.orgÉÃ•Çí
-sp.auth.adobe.comçŒƒ¨ğ
-nflxext.comô×¦¨í"
-occ-0-768-769.1.nflxso.net¦è¹î
-nflxvideo.net‰ÿê‘
-microsoft.comˆªäö‹
-img.nbc.comºÑ¦‹é
-$
-safebrowsing.googleapis.comş›…•¥
-nid.thesun.co.ukãíÁà§,
-public.flourish.studio¼®ì†
-live.comúï­ Ç
-
-tiqcdn.com‘â¦Ã#
-ichef.bbci.co.ukÄğ
-prod.idgraph.dt.fox«ÁŒËÃ
-idgraph.dt.fox«ÁŒËÃ
-js.stripe.comô¬“ªÁ$
-nbc.comÛ‰ÓÈ£/
-www.snopes.comÊı–Àæ
-i.forbesimg.com„ë9
-www.dailymail.co.ukÏÊÒ
-
-nflxso.netçñÚ–³
-
-snopes.com”û­€Í
-update.microsoft.comÔµ°Ùà%
-v10.events.data.microsoft.com™úÙÎ
-onetrust.comö×÷
-thesun.co.ukĞşò€Ú‘
-www.nytimes.com‹şÔšò
-www.netflix.com“û¹«ƒ
-static.foxnews.comÅ·Úšï
-maxai.me‚ÈÙ
-joinhoney.comÜÚ³‚Ö
-www.bbc.comÈ¡úõ
-www.foxnews.comÇ¶ï°”
-	twimg.comã‚¢Ğõ
-storage.googleapis.com‚÷ş‹ğS
-www.forbes.comí¶¤¾ó
-spot.imØˆŠB
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comĞÃ†óú
-	ss.nbc.coÅåŠ¹†
-netflix.comêú™¤Œ#
-web.prod.cloud.netflix.com×ÿßøˆ/
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.net‰ÿê‘
-nflximg.net‰šÑ£Ô
-tags.tiqcdn.comı„¨ 
-nyt.comşùĞ„|
-pbs.twimg.comÿƒ»“õ
-www.reddit.com†é³À/
-x.comÖ£Îô$
-promote-subscribe.forbes.com­€F
-
-stripe.comèÙ¦Ô‚I
-nytimes.com£úşÏÖ
-nbc.co¬Ú³Õ
-static.bbci.co.ukƒ…¯’
-
-reddit.coméš·ØÂ
-?
-storage.googleapis.com
-x.comÚÿ’|
-www.forbes.comÎ”à÷£
-D
-"tile-service.weather.microsoft.com
-weather.microsoft.comÄìœöÄ
-M
-thumbs.redditmedia.com
-www.reddit.comÎ·®V
-www.redditstatic.com¤£b
+stripe.comø‘†ƒ
+puppyplaats.nl‹§¿äT
+sdk.privacy-center.org¢©µÍÑ
+privacy-center.org¾øè£è!
+translate.googleapis.com¥îâ†å
+media.graphassets.comƒåÛ±
+m.stripe.networkæ¯ï¨	
+www.puppyplaats.nlÅÓŸ²*
 H
-privacymanager.io
-purr.nytimes.comí‚Øÿ
-www.nytimes.com´ëõí	
-„
-entitlement.auth.adobe.com
-www.nbc.com…°°ğè
-www.redditstatic.com¹¯š
-redditstatic.com¹¯š
-redd.it¿ıÔËN
-preview.redd.it¿ıÔËN
-nbc.com¢éÇ³Ù)
-img.nbc.com¸‰‡²Ë
-sp.auth.adobe.comèÒõ½
-foxnews.comû†ß,
-static.foxnews.comÇ€	
-¤
+privacymanager.io
+www.nytimes.com£çïÎ†
+purr.nytimes.com‡ş×¾§
+â
+ichnaea-web.netflix.com
+prod.netflix.comà®³"
+web.prod.cloud.netflix.com¹ŠñÌ
+nflximg.netÒº
+oca.nflxvideo.netê‹Û™f
+nflxvideo.netê‹Û™f/
+'ipv4-c193-ams001-ix.1.oca.nflxvideo.netš…‡ª
+netflix.com©ë¶ù˜
+www.netflix.com€ëÍ
+nflxext.com¸Ê³‡
+push.prod.netflix.comà®³/
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.netûÍ¼
+
+friendship.nbc.co
+sp.auth.adobe.com‘··Ê%
+	ss.nbc.co‰½½
+nbc.co˜Ïæì…
+googleapis.com¼ÆÏúN
+nbc.comêò°È
+img.nbc.comî‰šÇ:
+/
+sb-ssl.google.com
+static.foxnews.com…•Òï
+Ì
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.net
+www.netflix.comí¶°«¡
+nflxext.comËÍ¶ôå
+push.prod.netflix.comì»°›
+oca.nflxvideo.netÉëš¸ìC#
+web.prod.cloud.netflix.comñÑÆåº
+nflxvideo.netÉëš¸ìC
+nordvpn.comáÚ
+netflix.com¤°Şµ"
+occ-0-768-769.1.nflxso.netÛÇ¤Ä
 
-flo.uri.sh
-www.foxnews.com’”ß•?
-foxnews.comÜ¦­éÀ
-static.foxnews.comÁììª
-public.flourish.studio„¿Ü ¥
-flourish.studio‘üñ‚•
-uri.shçŠè·Ÿ
+nflxso.net®Šæ¹r
+prod.netflix.comì»°›
 ¦
-prod.idgraph.dt.fox
+prod.idgraph.dt.fox
+www.foxnews.comä²ˆˆN
+static.foxnews.comıâÍÑ:
 prod.pyxis.atp.fox‹õ¨²
 pyxis.atp.fox‹õ¨²%
-pub-admin-elections.foxnews.comÂùq
-www.foxnews.comä²ˆˆN
-static.foxnews.comıâÍÑ:
-t
-my.foxnews.com
-video.twimg.com¤ƒ˜à#
-sb-ssl.google.comŠğ»í
-static.foxnews.comàÌ™ºä
-	twimg.com¤ƒ˜à#
+pub-admin-elections.foxnews.comÂùq
+b
+static.bbci.co.uk
+www.bbc.comÕ•¦ƒ«
+static.files.bbci.co.ukù´ã!
+www.reddit.com…ÔîÈ
+p
+config.extension.grammarly.com
+grammarly.comÔ²­±ı 
+extension.grammarly.comÔ²­±ı
+thesun.co.uk¨î¶ä
+ˆ
+privacy-center.org%
+v10.events.data.microsoft.com¿Óøå+
+www.puppyplaats.nlÖşûñµ
+puppyplaats.nlğ‚ûµØH
+safebrowsing.google.com´‰ê
+sdk.privacy-center.orgÊ‚„û!
+translate.googleapis.com­ä¢ì™
+
+stripe.comÍ¬ì‘Ş
+update.microsoft.com¯ğÛï
+
+www.usanetwork.com
+´
+api.betterttv.net
+betterttv.netà¶šãG
+e2c51.gcp.gvt2.comı‘ÇØ
+gvt2.comŠ»Á·]
+gcp.gvt2.comŠ»Á·]
+beacons.gcp.gvt2.com£ÊŞ·
+maxai.meÅÓğ¯N
+api.maxai.meÅÓğ¯N
+„
+data.microsoft.com
+fonts.googleapis.comßèºÃ@
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comŠÄŒ
+nbc.comõë¨/
+'prod.client.wosc.services.microsoft.comæ®Ûõk
+googleapis.com›İ›Ø
+puppyplaats.nl¨ğòú
+privacy-center.orgûôÓã†
+graphassets.comÓ¡½Ú
+
+stripe.comºÊƒš¿
+login.live.comÓœù„
+privacy-mgmt.comÜÊ´‰
+microsoft.com¤îûÓ|
+media.graphassets.comÄ§Ä£Ï)
+ mobile.events.data.microsoft.com»”¸Óô
+img.nbc.comŒŸï	
+
+google.comá”ª©
+www.puppyplaats.nl”¸¹½O
+update.microsoft.comó¢“M"
+fe2cr.update.microsoft.comó¢“M
+eu-west-1.amazonaws.comŠÄŒ
+services.microsoft.comæ®Ûõk
+sdk.privacy-center.orgûôÓã†
+js.stripe.com¾ÃÖˆ•
+live.comÌòä“&
+v10.events.data.microsoft.comæÄÙ¿ğ
+Ù
+adobedtm.com
+auth.adobe.com¬æìçº
+cdn.cookielaw.orgŒãÁ˜˜
+cookielaw.orgî›¦¤œ
+brightline.tvöŞÄÙİ
+
+mp.nbc.com±«Ş
+img.nbc.com‰®Î¼³
+assets.adobedtm.com“Ë¯à¬#
+entitlement.auth.adobe.com¼ß·ÔÇ
+
+map.mp.nbc.com±«Ş
+sp.auth.adobe.com†’ 
+nbc.com¹×ªB
+www.nbc.comÆš‚ò× 
+cdn-media.brightline.tvÍ§šá•
+İ
+foxnews.com
+my.foxnews.comˆï±0
+global.fncstatic.com²ô¸¼¤%
+foxnewsplayer-a.akamaihd.netŸ—¹ 
+foxweather.com¥ºØĞ
+	twimg.com—¾Àä«
+grammarly.ioÀªãß
+
+uri.shÕï£Ü¿
+pbs.twimg.com”îæÊ
+video.twimg.com‚ĞÙ™Ÿ
+idgraph.dt.foxÔ†óñ€"
+manifest.prod.boltdns.netïÇäÁú
+
+google.comšÂË¡
+public.flourish.studio›‡ë‹ïR
+sb-ssl.google.comšÂË¡
+prod.boltdns.netÉ‡Çª•
+www.foxnews.com™œ‡çÖ%
+prod.idgraph.dt.foxÔ†óñ€
+pyxis.atp.foxèæÃñ
+googleapis.comğşˆ¿çƒ
+sp.auth.adobe.comËÜ»êÚ
+prod.pyxis.atp.foxèæÃñ(
+pub-admin-elections.foxnews.comË˜õûÀ
+static.foxnews.com¨¾Æ›ç»	
+x.com¹¨½
+vod.foxnews.comæï¶ä¤ö
+segment.com¯¡É‹ı
+time.akamai.com¬±¥İ˜
+Ì
+foxnewsplayer-a.akamaihd.net
+prod.boltdns.netñƒ‰â6
+segment.com“ÀŠÂ_
+time.akamai.com™¹†À…
+x.com²òÛï
+	twimg.com¦ÿÁ
+pbs.twimg.comìò°
+video.twimg.com•³ÎÀ
+sp.auth.adobe.comÖÅØ:
+static.foxnews.comÿº’Ó™
+global.fncstatic.comõ»Ä¸
+vod.foxnews.comåİäÒ !
+manifest.prod.boltdns.netñƒ‰â6
+Ö
+assets.netflix.com"
+web.prod.cloud.netflix.comÍÿÍér
+nflximg.net€Š¾B
+nflxext.com¡ƒ×¨¸
+push.prod.netflix.com¬ÅÕ´
+netflix.comí³¯
+www.netflix.com¥Ô‘Ó
+assets.nflxext.comËƒù÷$
+prod.netflix.com¬ÅÕ´
+cloud.netflix.comœ¸ÀŞµ
+ichnaea-web.netflix.com¸úêÀ
+cdn.cookielaw.org¡ƒ°¢*
+cookielaw.org©ğ«Ó
+“
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.net"
+occ-0-768-769.1.nflxso.netßâã“!
+web.prod.cloud.netflix.comû§Ÿ
+thesun.co.ukîÏ 
+netflix.com¡Ù˜øq
+
+nflxso.net¥Û—«Q
+oca.nflxvideo.net§‚Àö‡
+nflxvideo.net§‚Àö‡
+ptr.thesun.co.ukÏš`
+www.netflix.comÕ„íù8
+â
+247wlive.foxweather.com
+foxnews.com¥ºØĞ
+cdn.segment.comı›
+foxweather.comáæ–”1
+nytimes.com¥È×Â
+a.nytimes.com¥È×Â
+
+office.comú×Û
+ecs.office.comú×Û
+api.foxnews.com¥ºØĞ
+segment.comı›
+2
+hulkprod.anm.co.uk
+www.dailymail.co.uk­”™€
+9
+video.twimg.com
+www.foxnews.com’®à
+x.comÿ¢î»í
+
+nordcdn.com
+N
+onetrust.com
+sp.auth.adobe.com¾ÔéO#
+privacyportal.onetrust.com÷íç­¾
 —
-'ipv4-c194-ams001-ix.1.oca.nflxvideo.net
-teams.microsoft.com¢Öô¸!
-lh5.googleusercontent.com³Ê
+'ipv4-c194-ams001-ix.1.oca.nflxvideo.net
 thesun.co.uk¼æ†ñ
 tags.thesun.co.uk¼æ†ñ
-microsoft.com¢Öô¸
-nflxvideo.net¶ÎøóÂ
-oca.nflxvideo.net¶ÎøóÂ0
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netöÿ²í
-M
-cdn.honey.io
-honey.io®Ôä½†
-
-reddit.comÁøŞ
-www.reddit.comÁøŞ
+microsoft.com¢Öô¸
+oca.nflxvideo.netñóº°ï
+nflxvideo.netñóº°ï0
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netöÿ²í
+teams.microsoft.com¢Öô¸!
+lh5.googleusercontent.com³Ê
 Ù
-prod.boltdns.net
+prod.boltdns.net
+time.akamai.com»á®ò
 vod.foxnews.comíÀ¤­ÿ
 x.com¥ÈËö
 www.foxnews.comËàğ´
 static.foxnews.comïå§£3
 prod.idgraph.dt.fox…¢äå(
 prod.pyxis.atp.fox¾şØ-
-pyxis.atp.fox¾şØ-
-time.akamai.com»á®ò
-%
-
-office.com
-purr.nytimes.com¾¿Ó
-[
-cdn.ketchjs.com
-ketchjs.comÅ‘şïë¤
-ketchcdn.comüƒši
-global.ketchcdn.comüƒši
-m
-nyt.com
-nytimes.com³€öéÿm
-www.nytimes.comê½¸ŒŞ/
-privacymanager.io©æš8
-purr.nytimes.com´³ô§G
-D
-players.brightcove.net
-
-zencdn.netèã¨
-vjs.zencdn.netèã¨
-ü
-brightcove.com
-ovp.iris.tv£ËÅåõ
-prod.boltdns.net“®â¶
-oca.nflxvideo.net€›ƒ
-brightcove.net¨ûì¾„ 
-edge.api.brightcove.comàè„Àä
-nflxext.comÑ¨İ	.
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¦Ş
-
-zencdn.net±ò¢¸
-nflxvideo.net€›ƒ
-players.brightcove.net¨ûì¾„
-vjs.zencdn.net±ò¢¸
-iris.tv£ËÅåõ,
-$cf-images.eu-west-1.prod.boltdns.net“®â¶
-8
-login.microsoftonline.com
-microsoftonline.com‚ˆıE
-ï
-fncstatic.com
-global.fncstatic.com¶ÒòÛé%
-foxnewsplayer-a.akamaihd.netõ»Ä¸
-pbs.twimg.com´ş©e
-www.foxnews.comØ’‘œÎ
-foxnews.com °‚¼Û*
-pyxis.atp.foxÈä1
-x.com…ÁïV
-sp.auth.adobe.comú¸N
-static.foxnews.comÒ»àÚô
-prod.idgraph.dt.foxœîº
-idgraph.dt.foxœîº
-prod.pyxis.atp.foxÈä1
-	twimg.com›äÕ
-video.twimg.comç‚ºğ
-]
-segment.com
-sp.auth.adobe.com—”åà$
-static.foxnews.com¸¡‘ÿ½
-time.akamai.com¯˜÷:
-g
-map.mp.nbc.com
-
-mp.nbc.com¬¥Àîè
-sp.auth.adobe.comÌ¡ÅÑ!
-onetrust.comã„¨
-nbc.com¬¥Àîè
-Ñ
-192.99.44.193
-ichef.bbci.co.uküŸŒÏİ
-googleapis.comôÔ´Ã
-fonts.googleapis.comôÔ´Ã
-api.betterttv.net¸¼ ı
-co.uk™†¬¿€
-
-ptr.thesun.co.ukÚÛ5
-gcp.gvt2.com÷ÌÌ¼§
-gvt2.com÷ÌÌ¼§
-www.thesun.co.ukÉ…ÂÊ"
-bbc.com–‹È¸!
-gn-web-assets.api.bbc.com¢™Š
-cmp.cdn.thesun.co.ukÚµ ñ+
-www.bbc.comõ§şğ 
-static.bbci.co.ukˆÁƒš
-beacons.gcp.gvt2.com““ï)
-44.193¡ÑšÇ
-	99.44.193¡ÑšÇ
-betterttv.net¸¼ ı
-thesun.co.ukÓ¬†öæ 
-static.files.bbci.co.ukÜ×íÒ¿
-api.maxai.meÕ´¼í
-maxai.meÕ´¼í
-
-bbci.co.ukÆÙ¥É™
-api.bbc.com–ÉÇ‹
-
-weather.microsoft.com
-º
-'ipv4-c171-ams001-ix.1.oca.nflxvideo.net0
-'ipv4-c180-ams001-ix.1.oca.nflxvideo.net™èĞ‡
-
-ptr.thesun.co.ukÃ¯ø"
-occ-0-768-769.1.nflxso.netïíå¬@
-
-nflxso.netú¾ğÕ‹
-oca.nflxvideo.net·¿¬Ï./
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.net‚Ÿ¨ì
-/
-'ipv4-c176-ams001-ix.1.oca.nflxvideo.netá¡â£,
-nflxvideo.net·¿¬Ï./
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.net—²â/
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.netğç³é
-
-thesun.co.uk†ßğ
+pyxis.atp.fox¾şØ-
 ¡
 
-bbci.co.uk
-optimizely.com¸Ù·ïÿ
-gcp.gvt2.com“Üˆ¹(
-googleapis.comËúæ¤
-fonts.googleapis.comËúæ¤
-mp.microsoft.com×î©s
-www.bbc.com«ŸşÔ™
-cdn.privacy-mgmt.comÓ«µÍ
+bbci.co.uk
 beacons.gcp.gvt2.com„—¢
-
-gvt2.com“Üˆ¹(
-maxai.meÉÄ¬¾h"
-smartscreen.microsoft.com¥İ·í
-
-reddit.com…ÔîÈ!
-nsi.activity.api.bbc.com‡ğ¹»’%
-nf.smartscreen.microsoft.comÇÒîÛ¶
-microsoft.comæ“‡«î
-co.ukµáˆ¥—)
-ichef.bbci.co.uk¡Ç„ô°Ô
-static.bbci.co.ukÚƒ¡Å5&
-fe3cr.delivery.mp.microsoft.com×î©s
-cdn.optimizely.com¸Ù·ïÿ
-www.reddit.com…ÔîÈ"
-gn-web-assets.api.bbc.comÜ¨ÂËÊ!
-static.files.bbci.co.uk—¤‡Í¼©
-privacy-mgmt.comÍ®Õµ2
--
-usanetwork.com
-www.usanetwork.comÛ‹Ù°«
-à
-app.launchdarkly.com
-microsoft.comıì•±
-	ss.nbc.coÁ«Í¤
-img.nbc.comİ€ÜÂ
-auth.adobe.comãœ­ª*
-sp.auth.adobe.comË‰
-nbc.coÁ«Í¤
-launchdarkly.comÑõèÎ
-wdcp.microsoft.com¾öÊØ
-nbc.com÷‚ğŠN
-
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com
-update.microsoft.com±æâ‰$
-v10.events.data.microsoft.com¬‹Â
-
-teams.microsoft.com
-
-ovp.iris.tv
-x.com¾Ìê…
-players.brightcove.net—Ã¹§h
-
-zencdn.net¹º¸Y
-vjs.zencdn.net¹º¸Y
-prod.boltdns.netîåÀÿÄ
-b
-static.bbci.co.uk
-www.bbc.comÕ•¦ƒ«
-static.files.bbci.co.ukù´ã!
-www.reddit.com…ÔîÈ
-î
-	bbc.co.uk
-gcp.gvt2.comè 
-gvt2.comè 
-live.comë“Î
-
-joinhoney.com‘¬ƒâ
-d.joinhoney.comˆÖñ
-googleapis.comñæ£z&
-content-autofill.googleapis.com¥¢á(
-login.live.comÀõ‰§
-co.uk†»«¡°
-privacy-mgmt.com¿¼„¦
-
-google.com”È™É„
-e2c16.gcp.gvt2.comè (
-federated-id.live.api.bbc.co.uk†»«¡°
-cdn.privacy-mgmt.com¢”ÎÍ
-‹
-
-
-google.com
-microsoft.com‚ëîù
-sb-ssl.google.comÿâã£Ë
-netflix.comÜÄù®-
-thesun.co.uk£ÆĞ>
-update.microsoft.comÖ«°–=
-www.puppyplaats.nl‹…¼ôÙ
-nflximg.net€âÏÕ
-redd.it¤ğÈµ’
-preview.redd.it¤ğÈµ’
-gvt2.com±éÚ†ò 
-safebrowsing.google.com÷‘ı«º
-privacy-center.orgğÔ¿¦ø
-	ss.nbc.coÎ÷Ê†
-nbc.coÎ÷Ê†
-storage.googleapis.com¼ÌôÈ
-googleapis.comƒ’×”»
-googleusercontent.com§ôóö¤á
-logitech.io­ÂÕæ@
-static.foxnews.com…•Òï
-
-reddit.com¾„¿ÍÎ
-puppyplaats.nlíÉÓŸµ
-
-stripe.comƒğÅÕæ…
-usanetwork.comÏ½ÔåP
-
-nbcuni.com„¿ö
-my.foxnews.comŠğ»í
-www.reddit.com¾„¿ÍÎ
-www.redditstatic.comş‹á†ø
-maxai.me€ğÿáo"
-lh3.googleusercontent.comÃË†ó
-www.usanetwork.comÏ½ÔåP
-ichnaea-web.netflix.comÜÄù®-
-js.stripe.comĞìñÌ,
-sdk.privacy-center.orgå¬Ú“¼&
-v10.events.data.microsoft.comÁñâá
-nytimes.comÒØœ¶à
-public.flourish.studioœßş‚×
-redditmedia.com¼í–«Ô
-www.google.com—»¸ÉÒE$
-ogads-pa.clients6.google.com—Ë“Äk
-www.nytimes.com¬²Û½
-nyt.com‘Øì
-purr.nytimes.com³ŸôL
-joinhoney.com›ë—Œª
-sp.auth.adobe.com’¦üá«
-onetrust.com†ÁÈµ­
-redditstatic.comƒí¼ 
-mp.microsoft.comªïØ’ù
-
-www.forbes.comÃÒ–Ï
-styles.redditmedia.com¼í–«Ô
-ş	
-accounts.google.com
-d.joinhoney.comûç…ù
-usanetwork.comÏ½ÔåP
-www.usanetwork.comÏ½ÔåP
-	ss.nbc.coÍş×á+
-cmp.cdn.thesun.co.uk’İú
-fonts.googleapis.comâ”+
-#geover.prod.do.dsp.mp.microsoft.comúíçÓn
-googleusercontent.comì’ÌÏ­B
-www.nytimes.comæÎ8
-e2c51.gcp.gvt2.comçÑ½¯
-beacons.gcp.gvt2.com£œ»÷"
-fe2cr.update.microsoft.comèéÖğ
 
-microsoft.comÁ¡ƒ£½
-data.microsoft.com° Ü¸8
-co.uk‡ÙÛÖ
-	bbc.co.ukĞÁëÁ
-puppyplaats.nl«ÎÉ¹³
-sdk.privacy-center.orgÕ¬Âw
-mp.microsoft.com©—Ğùù"
-lh3.googleusercontent.comë…Øˆç
+microsoft.com­ëá”Ü
+www.bbc.com«ŸşÔ™
+ichef.bbci.co.uk¯È¶ØƒŸ"
+gn-web-assets.api.bbc.comÊì¹ÙŒ
+privacy-mgmt.comˆŸŠÈ
+cdn.privacy-mgmt.comˆŸŠÈ&
+fe3cr.delivery.mp.microsoft.com×î©s
+optimizely.comñÛ®Õª%
+nf.smartscreen.microsoft.comªşÛĞí
+www.reddit.com…ÔîÈ
 
-g1.nyt.com«¯
-	adobe.comèÀÓñÂ
+reddit.com…ÔîÈ
+gvt2.comŠÍÕ<
+gcp.gvt2.comŠÍÕ<
+co.uk¡´Ã¡üõ!
+static.files.bbci.co.ukùŞ«ğ®ü!
+nsi.activity.api.bbc.comñ®‰¶’"
+smartscreen.microsoft.comÕü·¡Û
+googleapis.comñÉ…ğ*
+maxai.meÉÄ¬¾h
+fonts.googleapis.comËúæ¤
+mp.microsoft.com×î©s
+static.bbci.co.ukè™óÚ5
+cdn.optimizely.comñÛ®Õª
+h
 
-google.comöÌ³ÊÚ“
+229.221.95
+live.comâ•—Ù
+www.puppyplaats.nlóåº
+puppyplaats.nlÛ±°@
+login.live.comö±²È
 
-stripe.com€ŞØêÜ
-cdn.cookielaw.orgÅ¯İ»§
-flourish.studioŞŸªÖG
-googleapis.comâ”
-auth.adobe.comèÀÓñÂ
-thesun.co.uk¶—ğ
-public.flourish.studioï•ë#
-js.stripe.com€ÊÎÉ
-nbc.coÍş×á+
-www.puppyplaats.nl˜‹¯Ñ
-privacy-center.org‚ªÙ„ï
-update.microsoft.comèéÖğ
-%
-v10.events.data.microsoft.com˜®œ
-cookielaw.orgÌñ³Ä‰'
-federated-id.live.api.bbc.co.ukĞÁëÁ
-gcp.gvt2.com¼û ü
-gvt2.com¼û ü
-nyt.com«¯
-joinhoney.comñ·…ë
-sp.auth.adobe.comœÓåµØ
-onetrust.comñï÷å×!
-geolocation.onetrust.comñï÷å×+
-"cp801.prod.do.dsp.mp.microsoft.com®©è¥‹
-nytimes.comÙ²…ê©
-T
-displaycatalog.mp.microsoft.com
-mp.microsoft.comœïõæ
-microsoft.comœïõæ
-¿
-atp.fox
-fncstatic.comÈä1%
-content-autofill.googleapis.com¹è
-foxnews.com÷³¢©ş
-prod.idgraph.dt.fox‹õ¨²
-dt.fox‹õ¨²
-pyxis.atp.foxÜ¦å·Õ
-fonts.googleapis.com„…ûõ'
-prod.pyxis.atp.foxÜ¦å·Õ
-googleapis.comƒç‡‰
-prod.boltdns.net¾şØ-
-boltdns.net¾şØ-
-static.foxnews.com¹×‰Ÿ=
-global.fncstatic.comÈä1
-www.foxnews.com½ñ‘ÍS
-idgraph.dt.fox‹õ¨²,
-$cf-images.us-east-1.prod.boltdns.net¾şØ-
-½
-preview.redd.it
-thumbs.redditmedia.comŒê¸×¡
-scribbr.comÑ»G
-www.scribbr.comÑ»G
-www.reddit.com›¶ııê
-styles.redditmedia.com«»³²”
-www.google.com¹òµÀÛ
-redd.it‰ÓÌØ3
+Å
+#geover.prod.do.dsp.mp.microsoft.com
 
-reddit.com›¶ııê
-www.redditstatic.comº‡Å¼¨
-redditstatic.com®´ƒä¤
-redditmedia.com·¥ì‰¶
-	v.redd.it…åØÃ
-ã
-grammarly.io"
-web.prod.cloud.netflix.comÿ­„Á
-www.snopes.comòØ
-s.joinhoney.comµ£á=
-nbc.comËéøÂ2
-img.nbc.com²šŞĞ
+google.comÖï¾õ
+microsoft.comËóËÚì
+nflxvideo.netş˜­Œ0/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net•¤Ÿ¯
+mp.microsoft.comËóËÚì"
+lh3.googleusercontent.com£³‚Ÿ‰
+googleusercontent.comİè­ºÒ,
+oca.nflxvideo.netş˜­Œ0/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netÕòÈ€
+Â
+assets.adobedtm.com
+brightline.tvÍ§šá• 
+cdn-media.brightline.tvø‹…åñ
 
-snopes.comòØ
-static.foxnews.comÀãËÊ
-joinhoney.comµ£á=
-netflix.comÿ­„Á
-
-static.files.bbci.co.uk
-^
-nordvpn.com
-sp.auth.adobe.comáÔ»×
-oca.nflxvideo.netèëæ
-www.dailymail.co.uk Î¸:
-Ñ
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.net/
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.netŠã¥Û/
-'ipv4-c210-ams001-ix.1.oca.nflxvideo.net·Â»“!
-lh5.googleusercontent.comòÃÑù
-ptr.thesun.co.uk©Ë»
-tags.thesun.co.ukş€´
-nordvpn.com˜š
-netflix.com®³Šò/
-'ipv4-c197-ams001-ix.1.oca.nflxvideo.net”Ş£Ú/
-'ipv4-c205-ams001-ix.1.oca.nflxvideo.net·ÒŒİ/
-'ipv4-c194-ams001-ix.1.oca.nflxvideo.netĞœ°Û0
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.net·Å†®Õ
-www.netflix.com®³Šò"
-occ-0-768-769.1.nflxso.net‹øˆ,
+mp.nbc.comáâú
+map.mp.nbc.comáâú
+cdn.cookielaw.org˜é™Éè
+cookielaw.orgÊ…ŒÏª
+img.nbc.comŞ‡ï—Î#
+entitlement.auth.adobe.comªŸšÉù
+auth.adobe.comúÁñĞ
+sp.auth.adobe.comƒ‰
+nbc.comÄâ¢¯”=
+www.nbc.comˆßıÃÃ
+É
+api.brightcove.com
 
-nflxso.net´¡©·
-nflxvideo.netÀÊö·Ïİ
-oca.nflxvideo.netÀÊö·Ïİ
-thesun.co.ukĞ—«‘/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.netŞÛûë/
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.net€ÑÈ´
-¡
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.net
-ptr.thesun.co.ukı£_
-www.netflix.com‘ÛÚ"
-occ-0-768-769.1.nflxso.netùßü
+zencdn.net±ò¢¸
+oca.nflxvideo.net€›ƒ
+brightcove.net¨ûì¾„
+nflxext.com•ã	
+assets.nflxext.comĞºù
+brightcove.comàè„Àä
+boltdns.net“®â¶
+nflxvideo.net€›ƒ
+vjs.zencdn.net±ò¢¸
+iris.tv£ËÅåõ
+ovp.iris.tv£ËÅåõ,
+$cf-images.eu-west-1.prod.boltdns.net“®â¶
+players.brightcove.net¨ûì¾„.
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¦Ş 
+edge.api.brightcove.comàè„Àä
+prod.boltdns.net“®â¶
+§
+beacons.gcp.gvt2.com
+maxai.me©‘éÿ
+co.uk„—¢
+
+nyt.com°ú“»@
+purr.nytimes.com¼£È±,
+oca.nflxvideo.netÊü“õÖ
+static.bbci.co.ukŒ¶åç
+nytimes.comŸ±ø­‡,
+#launchpad-wrapper.privacymanager.ioûî„­‹
 
-nflxso.netÃö“ü[/
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.net÷õîÛ
-netflix.com‘ÛÚ
-nflxvideo.netô§Î¨ı
-oca.nflxvideo.netô§Î¨ı
-thesun.co.ukúÇ¾
-f
-f-log-extension.grammarly.io
-grammarly.ioĞ®ô¾
-foxnews.comÁÿ©Ÿ 
-static.foxnews.comÀãËÊ
-*
-dds.microsoft.com
-microsoft.comÙˆü€R
-¤
-redd.it
-www.scribbr.comÑ»G
+google.com£óíÂÎ
+gcp.gvt2.com›áş°ÅY
+www.nytimes.comÅ…†´j
+www.nbc.comÀáø
+e2c51.gcp.gvt2.com¦ö‚
+www.bbc.com‡ÿş³ì
+ichef.bbci.co.ukøà¼¦
+fonts.googleapis.comçâƒÿÚ
+nflxvideo.netÊü“õÖ/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÑ¸ÍÒ
+gvt2.com›áş°ÅY
+nbc.comÀáø 
+gn-web-assets.api.bbc.comçØƒ
 
-reddit.com›¶ııê
-www.reddit.com›¶ııê
-redditstatic.comáùóê
-styles.redditmedia.com«»³²”
-www.google.com¹òµÀÛ
-thumbs.redditmedia.comŒê¸×¡
-	v.redd.it—’ÌïÅR
-scribbr.comÑ»G
-www.redditstatic.comîÌµéí
-redditmedia.com·¥ì‰¶
-G
-extension.grammarly.com
-grammarly.comøœîàü
-thesun.co.uk¨î¶ä
-“
- extension.femetrics.grammarly.io
-femetrics.grammarly.io›ïÇ
-grammarly.io›ïÇ
-netflix.comÿ­„Á
+g1.nyt.com°ú“»@
+privacymanager.ioÄšµ·ç$
+launchpad.privacymanager.ioä•˜…î
+betterttv.net£ÊŞ·
+googleapis.com†Ü¥ö
+d.joinhoney.comÅµªÛ
+joinhoney.com‹ëÔ¶/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net«›Êëj
+x.comë“¿ê
+O
+m.stripe.com
+nytimes.comòÆ÷
 
-snopes.comòØ
-www.snopes.comòØ
-joinhoney.comšÏÑğ
-nbc.comå´¼¡
-img.nbc.com™¯¨"
-web.prod.cloud.netflix.comÿ­„Á
-s.joinhoney.comšÏÑğ
-„
-a.thumbs.redditmedia.com
-thumbs.redditmedia.com¥Ğ±…ç
+stripe.comñÏîÂ’
+www.nytimes.comûì§
+Ÿ
+abs.twimg.com
+ton.twitter.comİ¦Îv
+co.uk¸Š¸Õ
+x.comÂûåóğ
+	api.x.comãˆÙ×
+twitter.comÉÔ¥²¦
+	twimg.com¶¢£›öˆ
+
+googleapis.comÇµ¥êÚ
+www.thesun.co.uk²Œº
+cmp.cdn.thesun.co.ukÓñÃÒ'
+content-autofill.googleapis.comàË²“
+fonts.googleapis.comœö¸í
 
-reddit.comÎ·®V
-www.reddit.comÎ·®V
-www.redditstatic.com¤£b
-redditstatic.com¤£b
-redditmedia.com’ú¯®‰
-styles.redditmedia.comí©ş¨¢
-preview.redd.itŒê¸×¡
-redd.itŒê¸×¡
-$
-ketchcdn.com
-ketchjs.comŸ»ÚÍ
-§
-img.nbc.com
-onetrust.com¡ºğÂh
-	ss.nbc.coÕÒóĞ
-nbc.coÄÜ˜F
-launchdarkly.comİ€ÜÂ
-microsoft.com…¤İÍ(
- mobile.events.data.microsoft.comŒŸï	
-www.nbc.com¯…ù‘#
-nbc.comôÚ©§¸ä
+reddit.comùšêá¸
+video.twimg.comöëÏÑ©!
+thesun.co.uk¸Š¸Õ$
+w3-reporting-nel.reddit.comùšêá¸
+pbs.twimg.com«ÚèÈØ
+¡	
+auth.adobe.com%
+foxnewsplayer-a.akamaihd.netèÅöîÕ
 
-nbcuni.comÁü¤‘
-s.joinhoney.comÏ»d
-joinhoney.comÖ„ïú
-sp.auth.adobe.com¹¨¨¨#
-Õ
+reddit.com‰Ä‚Í
+img.nbc.com¶ÇĞè¸
+nbc.coˆÑ‰íÕ
+launchdarkly.comˆšÍ“F
+preview.redd.it¿øşâë
+googleusercontent.coméĞÃã-
+nbc.com‡ˆÂ¥ãu
+segment.comúñ­b
+nordvpn.comÂ©÷®
+oca.nflxvideo.netØÑ¿Êˆ0
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net‹€ªÂ©/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netÀÑëÅ5
+cdn.segment.comıøÎ–1
+googleapis.com–í†ĞÂ
+fonts.googleapis.comÃŸÊìˆ
+cdn.cookielaw.org¡úª¸®
+www.redditstatic.com­Ï-
+	ss.nbc.coãƒ¬¢Û
+nflxvideo.netØÑ¿Êˆ
+www.reddit.com‰Ä‚Í
+static.foxnews.comËıÇ ÷
+global.fncstatic.comú¸N
+map.mp.nbc.comÌŠ®â‰
+usanetwork.com´”»ÕI
+onetrust.com“‚Èå 
+cdn-media.brightline.tvÎù´Î‹
+
+sp.auth.adobe.comÆµĞŞ'
+www.usanetwork.com´”»ÕI!
+geolocation.onetrust.comºÕê‹Å
+foxnews.comñÒúŒí"
+lh3.googleusercontent.com†àîøÆ#
+entitlement.auth.adobe.comôòâ¬º
+brightline.tvü¯¢Ş¶
+redd.it¿øşâë'
+content-autofill.googleapis.comˆïİ
 
-	adobe.com
-fonts.googleapis.com®¬ÄÈ¹"
-lh3.googleusercontent.com–é¼Ÿ×
-nflxvideo.netÕŸÁ
-cdn.segment.comî–©¾z
-akamaihd.net…ñŒ×İ
-www.reddit.comÒ ª;
-www.redditstatic.com¹¯š
-googleusercontent.comÜî…ÕÆ
-brightline.tv¯…é	 
-cdn-media.brightline.tv×˜˜Ôğ
-static.foxnews.com´ÈÀ…ü	
-applytics.nordvpn.com§Ñ¡ä/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net–Ş‚%
-foxnewsplayer-a.akamaihd.netÜçåÆø
+mp.nbc.comÌŠ®â‰
+fncstatic.comú¸N
+friendship.nbc.co¤ÍİÊú
+redditstatic.com­Ï-
 
-reddit.comÒ ª;
-googleapis.comÒ¬ÌÇõ
-www.usanetwork.comšÊİê$
-	ss.nbc.coòø‡ˆ
-nbc.co ò‰İÒ
-redd.it¿ıÔËN
-map.mp.nbc.comü¾ñ†@
-friendship.nbc.co­ùÕµ
-nordvpn.com§Ñ¡ä
-www.nbc.com±ßîº¢
-nbc.com„°Òí1
-auth.adobe.comŠ¦¥¾Ğ
-cdn.cookielaw.org­¸±ô
-launchdarkly.com ¼ºë8/
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.netşŠÂ±b
-img.nbc.comÍş˜¥–
-
-assets.adobedtm.comÕ±õß•#
-entitlement.auth.adobe.com³Å®ßé
-usanetwork.comšÊİê$
-segment.comİ­Òüô
-sp.auth.adobe.comÁå ø¹+
-onetrust.comæç·Ò 
-geolocation.onetrust.com£À÷|
-app.launchdarkly.comãœ­ª*
-redditstatic.com¹¯š
-preview.redd.it¿ıÔËN'
-content-autofill.googleapis.com÷ôäÍ
-adobedtm.comîòÁ
-cookielaw.orgÇúá›‹"
+google.comÅ¨Ï‰ƒ
+www.nbc.com¹øñë
+cookielaw.orgú«Ç´¦+
+ô
 
-mp.nbc.comü¾ñ†@
-global.fncstatic.comÜ¥
-api.foxnews.comª¢Æ¿Y
+nflxso.net$
+web.prod.cloud.netflix.com±–Ğî£
+oca.nflxvideo.netõî©Ïİ$
+nflxvideo.netõî©Ïİ$
+thesun.co.uk–Öµ3
+ptr.thesun.co.uk‡ò‘
+players.brightcove.netàÆ÷
+www.netflix.comâ¦É“…$
+occ-0-768-769.1.nflxso.netÇˆÿİÅ×
 
-google.comú¹ÀÍã
-oca.nflxvideo.netÕŸÁ
-foxnews.comú–öºT
-fncstatic.comÜ¥
-Û
-'ipv4-c176-ams001-ix.1.oca.nflxvideo.net
-www.netflix.comİ­±
-
-netflix.comóºÜŞ
-nflxvideo.netÃİ¦â(/
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.netÓÙÿ¦/
-'ipv4-c190-ams001-ix.1.oca.nflxvideo.net‹œ–Í0
-'ipv4-c199-ams001-ix.1.oca.nflxvideo.netŠ¦†¬±/
-'ipv4-c180-ams001-ix.1.oca.nflxvideo.netúˆŞ¹
-thesun.co.ukşŠµ
-ptr.thesun.co.uk¿ÅÚ"
-occ-0-768-769.1.nflxso.net¾ÈÃ…W
-
-nflxso.netÚ‘ê"
-web.prod.cloud.netflix.comşîóš
-oca.nflxvideo.netÃİ¦â(
-
-www.bbc.com
-
-secure.gravatar.com
-Š
-fe2cr.update.microsoft.com
-
-google.comÖ«°–=
-www.puppyplaats.nlÉ™ò²
-privacy-center.orgßà·ß
-update.microsoft.comÚ°…§»
-wdcp.microsoft.com£²×
-googleapis.comÔµ°Ùà
-puppyplaats.nlóšº½
-
-stripe.comÛú
-js.stripe.com¯ş¯%
-v10.events.data.microsoft.com“ÛïíA
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com±æâ‰
-sdk.privacy-center.org¯ğÛï
-live.comöÖóù
-login.live.comÊÄı1
-fonts.googleapis.com÷¤šÍ` 
-translate.googleapis.com€õ­'
-microsoft.comÈË“¤û
-u
-update.microsoft.com
-www.puppyplaats.nlÉ™ò²
-wdcp.microsoft.com£²×%
-v10.events.data.microsoft.com“Ûïí
-”
-launchdarkly.com
-nbc.coÁ«Í¤
-microsoft.comıì•±
-wdcp.microsoft.com¾öÊØ
-nbc.com÷‚ğŠN
-sp.auth.adobe.comà¾“ù
-	ss.nbc.coÁ«Í¤
-/
-sb-ssl.google.com
-static.foxnews.com…•Òï
-z
-thesun.co.uk
-www.thesun.co.uk”µáğ­§
-
-tiqcdn.com­ñıœ©±
-x.comÊ×
-	twimg.com­¦Óİˆ
-www.forbes.comê´¿ì
-`
-mediaproxy.snopes.com
-
-snopes.comãÖñ’
-www.snopes.comßÖ’¿
-www.dailymail.co.uk½©’
-±	
-fonts.googleapis.com
-public.flourish.studio†ëŠg
-idgraph.dt.fox©¸ú‡(
-nbc.co€Ëö¬5
-ichef.bbci.co.ukÄğ
-nflximg.netï¢Û8
-	twimg.comŞö—ïP
-spot.im¬„…
-
-g1.nyt.comşùĞ„|
-netflix.comªôƒ…”
-www.foxnews.comãÅ»Å
-prod.pyxis.atp.fox„…ûõ'
-pyxis.atp.fox„…ûõ'#
-w3-reporting-nel.reddit.comàÖ€¸
-www.dailymail.co.ukÚï˜Æ	A
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comæÒîë#
-friendship.nbc.coÏñÓŞ
-nytimes.com¡Ÿç
-
-tiqcdn.comÍİıÎ
-static.foxnews.comä¦ìÂ
-gcp.gvt2.comêĞ–ú¡
-
-microsoft.comìÇØãf
-www.reddit.comÎ®ŠÀ	
-open-api.spot.im¬„…
-nid.thesun.co.ukÜˆüÄ
-www.bbc.comÈ¡úõ
-thesun.co.ukºìï¾Ù
-foxnews.comÉ°íñH
-pbs.twimg.comÒ§ûË
-
-google.comñõòÿ
-gvt2.comêĞ–ú¡
-
-	ss.nbc.co±Ù¢Î!
-www.netflix.comªôƒ…”
-tags.tiqcdn.comÍİıÎ
-static.bbci.co.ukƒ…¯’!
-gn-web-assets.api.bbc.comù‚¢
-privacy-mgmt.comÃÁ°#%
-v10.events.data.microsoft.comº‘Ÿ‹
-sp.auth.adobe.com³è”ŒN
-
-snopes.comöóìÅµ
-
-reddit.com®…‹ø&
-update.microsoft.com÷¤šÍ`
-www.nytimes.comµŠÍ
-nyt.comşùĞ„|
-www.snopes.comû¹öâZ
-prod.idgraph.dt.fox©¸ú‡(
-googleapis.comì­ŒÌÌ
-maxai.me‚ÈÙ
-¬
-nytimes.com$
-ogads-pa.clients6.google.comü±š¢`
-
-stripe.comòÆ÷
-www.nytimes.comÔƒÈÕıã
-privacymanager.io˜¿Â·
-purr.nytimes.comÏ¯µ”
-
-office.comÂ¤ëß
-Á
-#launchpad-wrapper.privacymanager.io
-purr.nytimes.comˆïª™X
-nytimes.comÏ„ÜâÄ
-www.nytimes.comÂ“ª
-nyt.com©æš8
-privacymanager.ioƒçõ¯„$
-launchpad.privacymanager.ioä½ïÑ
-
-www.netflix.com
-å
-'ipv4-c210-ams001-ix.1.oca.nflxvideo.net
-www.netflix.com÷ŸŒ¤
-netflix.comá©ÉÌå#
-web.prod.cloud.netflix.comê‰ºÀÁ
-nflxvideo.netíƒÔ¼ÎÙ
-oca.nflxvideo.netíƒÔ¼ÎÙ
-thesun.co.ukûÅÃÓ
-tags.thesun.co.ukûÅÃÓ
-D
-pyxis.atp.fox
-www.foxnews.com½ñ‘ÍS
-static.foxnews.com¹×‰Ÿ=
-¬
-media.graphassets.com
-
-stripe.com‡Ê·›â
-microsoft.comÁâ–áo%
-v10.events.data.microsoft.com ±Ëğ7@
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comŞ¡š'
-?
-m.stripe.network
-
-stripe.com ¬Åõ
-stripe.network±©¨ÊÍ
-À
-feeds-meta.foxnews.com
-idgraph.dt.foxÔ§Á'
-pub-admin-elections.foxnews.com¤²òÂ(
-www.foxnews.com¯ëª
-foxnews.com««”Ü
-static.foxnews.com™—î†‰
-prod.idgraph.dt.foxÔ§Á
-5
-cloudsearch.googleapis.com
-googleapis.com¡õÌî’
-=
-smartscreen.microsoft.com 
-static.files.bbci.co.ukœÔ’‹É
-İ
-foxnews.com
-foxweather.com¥ºØĞ
-public.flourish.studio¯¤õ‡ÌS
-idgraph.dt.foxÄÎØà
-prod.pyxis.atp.fox÷³¢©ş
-static.foxnews.comÙñæõ¸Ê
-segment.com½Àœó­%
-foxnewsplayer-a.akamaihd.net«Ğñåê"
-googleapis.com¾ İ‰Çò
-sb-ssl.google.comÓÉ¸±
-www.foxnews.comÏª…İ×B
-uri.shÜ¦­éÀ
-time.akamai.comÊãçı
-pbs.twimg.com”îæÊ
-grammarly.ioÁÿ©Ÿ 
-prod.boltdns.net’ÉÇê×
-
-	twimg.com»ÁØÄÏ"
-manifest.prod.boltdns.net›Ëš
-
-google.comÓÉ¸±
-global.fncstatic.com °‚¼Û*
-my.foxnews.comĞ³°¸4
-sp.auth.adobe.com¹ô›†ë
-vod.foxnews.com–¸â¶Ğ
-video.twimg.com¦ÓñùÂ
-x.com±«ù·
-prod.idgraph.dt.foxÄÎØà
-pyxis.atp.fox÷³¢©ş(
-pub-admin-elections.foxnews.comèë²ä
-”
-pbs.twimg.com
-	twimg.comÇ³¾¾Z
-ton.twitter.com¹Ñ­À
-video.twimg.comó¥¼ßˆ
-www.foxnews.com”îæÊ
-twitter.com€îÛî9
-x.comßÀÔ¥
-
-www.scribbr.com
-´
-api.betterttv.net
-gvt2.comçğâÿF
-api.maxai.meÅÓğ¯N
-maxai.meÅÓğ¯N
-betterttv.netà¶šãG
-e2c51.gcp.gvt2.comı‘ÇØ
-beacons.gcp.gvt2.com£ÊŞ·
-gcp.gvt2.comçğâÿF
-›
-a.nytimes.com
-gcp.gvt2.comı€ª
-nytimes.comÄŞ©´«
-nyt.com†Ø¤œ
-ecs.office.comÆ¥Äª
-
-google.comƒš‚Û
-gvt2.comı€ª
-www.nytimes.com´Àˆ‹P
-
-g1.nyt.com†Ø¤œ
-purr.nytimes.comá í
-foxweather.com¥È×Â
-
-office.comÆ¥Äª
-beacons.gcp.gvt2.com¾‡€Õ
+q
+'prod.client.wosc.services.microsoft.com%
+v10.events.data.microsoft.com³×íú5
+services.microsoft.comÜ§®¹
 )
 	v.redd.it
 www.redditstatic.com³Åğ¬E
-
-www.nytimes.com
-ƒ
+Ø
 
-g1.nyt.com
+	adobe.com
+cdn.segment.comıøÎ–1
+akamaihd.netó·µİ‡
+googleapis.com–í†ĞÂ!
+geolocation.onetrust.comºÕê‹Å
+onetrust.com“‚Èå
+nbc.coˆÑ‰íÕ
+applytics.nordvpn.comáÔ»×
+nflxvideo.netØÑ¿Êˆ
+www.redditstatic.com­Ï-"
+lh3.googleusercontent.com†àîøÆ/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netÀÑëÅ5
+redditstatic.com­Ï-
+redd.it¿øşâë
+img.nbc.com¶ÇĞè¸
+auth.adobe.comëœ¼³í
+brightline.tvü¯¢Ş¶
+map.mp.nbc.comÌŠ®â‰
+sp.auth.adobe.comÆµĞŞ'
+api.foxnews.com‘«şà,
+nbc.com‡ˆÂ¥ãu#
+entitlement.auth.adobe.comôòâ¬º
+oca.nflxvideo.netØÑ¿Êˆ
+static.foxnews.comËıÇ ÷
+preview.redd.it¿øşâë
+www.usanetwork.com´”»ÕI
+	ss.nbc.coãƒ¬¢Û
 
-google.com‘Øì
-googleapis.comşùĞ„|
-nytimes.com³€öéÿm*
-#launchpad-wrapper.privacymanager.io©æš8
-purr.nytimes.com´³ô§G
-gcp.gvt2.com£Ş÷â‚
-gvt2.com£Ş÷â‚
-www.nytimes.comê½¸ŒŞ/
-nyt.comê¿àŠò5
-privacymanager.io©æš8
-
-microsoftonline.com
-a
-prod.pyxis.atp.fox
-static.foxnews.com¹×‰Ÿ=
-pyxis.atp.foxÜ¦å·Õ
-www.foxnews.com½ñ‘ÍS
+google.comÅ¨Ï‰ƒ'
+content-autofill.googleapis.comˆïİ
+googleusercontent.coméĞÃã-
+cdn.cookielaw.org¡úª¸®
+cookielaw.orgú«Ç´¦+
+
+mp.nbc.comÌŠ®â‰0
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net‹€ªÂ©
+
+reddit.com‰Ä‚Í
+fonts.googleapis.comÃŸÊìˆ
+assets.adobedtm.comúÁñĞ 
+cdn-media.brightline.tvÎù´Î‹
+
+nordvpn.comÂ©÷®
+foxnews.comñÒúŒí
+www.reddit.com‰Ä‚Í
+adobedtm.com¬æìçº
+usanetwork.com´”»ÕI
+launchdarkly.comˆšÍ“F
+fncstatic.comú¸N
+global.fncstatic.comú¸N
+segment.comúñ­b
+www.nbc.com¹øñë
+friendship.nbc.co¤ÍİÊú
+app.launchdarkly.comãœ­ª*%
+foxnewsplayer-a.akamaihd.netèÅöîÕ
+™
+$cf-images.eu-west-1.prod.boltdns.net
+iris.tvîåÀÿÄ
+ovp.iris.tvîåÀÿÄ
+prod.boltdns.netª­ßÔŞ
+edge.api.brightcove.com“®â¶
+x.com¥ÈËö
 /
 www.reddit.com
 www.redditstatic.com‚Œâ¸
-„
-data.microsoft.com
-img.nbc.com…¤İÍ
+
+x.com
+A
 
-stripe.com¾ÃÖˆ•)
- mobile.events.data.microsoft.comÚÔÌ¸
-privacy-center.orgıÍâ—¯
-js.stripe.com”ÁÇ­\
-live.com°Ê“Ï`"
-fe2cr.update.microsoft.com¦¶ßÛ
-update.microsoft.com¦¶ßÛ
-microsoft.com­ÉüïÓ‹
-googleapis.com³ô³+
-www.puppyplaats.nlÜ’“¿@
-9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comØ–„&
-v10.events.data.microsoft.com©™öã¾
-graphassets.comº¶±
+snopes.com
+www.snopes.com²êÉ¥Ö
+www.dailymail.co.uk½©’
+
+s.joinhoney.com
+¤
 
-google.com‚ƒâÅÃ
-services.microsoft.comÿ´¤æ
-login.live.comÌòä“
-media.graphassets.comÁâ–áo
-fonts.googleapis.comõ¢¾–
-eu-west-1.amazonaws.comØ–„
-nbc.com§µ¿í
-privacy-mgmt.comĞãğá
-puppyplaats.nl„ƒ†º¹
-sdk.privacy-center.orgş¦ñËW0
-'prod.client.wosc.services.microsoft.comÿ´¤æ
-Ï
-federated-id.live.api.bbc.co.uk
-gcp.gvt2.comè 
-gvt2.comè 
-googleapis.comñæ£z
-live.comë“Î
+flo.uri.sh
+public.flourish.studio„¿Ü ¥
+uri.shçŠè·Ÿ
+foxnews.comÕï£Ü¿
+www.foxnews.com’”ß•?
+static.foxnews.comÁììª
+flourish.studioŒ½•âï
+
+forbesimg.com
+googleapis.comÁéå
+i.forbesimg.com•¿æÏ¾Ä
+open-api.spot.im‰ÜˆZ
+spot.im‰ÜˆZ
+gravatar.com§°ÈC
+maxai.meÙàÖ³!
+gn-web-assets.api.bbc.comÈÒ¡»_
+www.forbes.comÿúõ—´$
+global.ketchcdn.comîı×
+ketchcdn.comîı×
+secure.gravatar.com§°ÈC
+­
+gcp.gvt2.com$
+launchpad.privacymanager.ioöìø™¦	
+purr.nytimes.comŞÜú‹İ
+www.nbc.comÄçÛ•Q
+
+reddit.comÕ¼«D
+gvt2.comËª³ö‹
+googleusercontent.com”Ìˆ
+nytimes.comÅüëŠ
+
+joinhoney.com÷¯¬‘%
+ichef.bbci.co.ukÑÅìæ 
+gn-web-assets.api.bbc.comë”–"
+w3-reporting-nel.reddit.comÕ¼«D 
+lh3.googleusercontent.comÈÔì4
+nyt.com‘ï»±Á
+oca.nflxvideo.netÊü“õÖ
+nflxvideo.netÊü“õÖ/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÑ¸ÍÒ
+maxai.meøçöşq
+nbc.comÓª©½´
+www.bbc.comªúù·Š
+
+google.comáÛÁÁ
+googleapis.comºß–«¶4
+www.nytimes.comÚİÊÍ,
+#launchpad-wrapper.privacymanager.ioéª˜á¸
+lh5.googleusercontent.com«æ,
+static.bbci.co.ukÌÄàî
+privacymanager.ioÕ„Š•…
+img.nbc.com•Ù¢é
+x.com´öÏ‹/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net«›Êëj
+±	
+fonts.googleapis.com
+nyt.comşùĞ„|
+static.bbci.co.ukƒ…¯’
+public.flourish.studio†ëŠg
+idgraph.dt.fox©¸ú‡(
+www.reddit.comÎ®ŠÀ	
+spot.im¬„…
+maxai.me‚ÈÙ
+nytimes.com¡Ÿç
+sp.auth.adobe.com³è”ŒN
+netflix.comÕè‡Š¨!
+gn-web-assets.api.bbc.comù‚¢
+open-api.spot.im¬„…
+nflximg.netï¢Û8
+
+tiqcdn.comš»û
+foxnews.comÊíúå¿:
+friendship.nbc.coÏñÓŞ
+www.netflix.comªôƒ…”
+www.bbc.comÈ¡úõ
+pyxis.atp.fox„…ûõ'
+pbs.twimg.comÒ§ûË
+
+reddit.com®…‹ø&
+www.dailymail.co.ukÚï˜Æ	
+googleapis.comòÜ¾·»×%
+v10.events.data.microsoft.comº‘Ÿ‹A
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comæÒîë#
+nbc.co€Ëö¬5
+ichef.bbci.co.ukÄğ
+www.snopes.comû¹öâZ
+
+google.comÉ™¶ğ
+privacy-mgmt.comÃÁ°#
+prod.idgraph.dt.fox©¸ú‡(#
+w3-reporting-nel.reddit.comàÖ€¸
+	twimg.com¦Š¦”1
+gcp.gvt2.comµ¨‹ı
+update.microsoft.com÷¤šÍ`
+www.nytimes.comµŠÍ
+
+snopes.comöóìÅµ
+static.foxnews.comä¦ìÂ
+prod.pyxis.atp.fox„…ûõ'
+nid.thesun.co.ukÜˆüÄ
+www.foxnews.comãÅ»Å
+gvt2.comµ¨‹ı
+microsoft.com´ë ñq
+
+g1.nyt.comşùĞ„|
+	ss.nbc.co±Ù¢Î!
+thesun.co.uk‹…¼Ï
+tags.tiqcdn.comÍİıÎ
+¥
+&geolocation.digitalsvc.apps.nbcuni.com
+
+google.comÂŸ»
+nbc.comú¨°§
+img.nbc.com ¾Òˆ
+
+nbcuni.com›éßÑßF
+logitech.io¡ô¶ã
+sb-ssl.google.comÂŸ»
+ı
+bbc.com
+beacons.gcp.gvt2.com¼‰Š·ì
+static.files.bbci.co.uk¡º °\
+forbesimg.com‘¥Ãö¾
+microsoft.comüÅİ»–
+mp.microsoft.comÏü„²#
+gn-web-assets.api.bbc.comÖ°‚£í‹!
+nsi.activity.api.bbc.com’ÀÍ¯š"
+smartscreen.microsoft.com¬ÉØ‰ı
+i.forbesimg.comÂ›‹é
+gvt2.comì¸¼ÊŠ
+www.bbc.comÔ·åëå¡
+static.bbci.co.uk¢ÿ†‘•A
+privacy-mgmt.com©¡¢ô–'
+fe3cr.delivery.mp.microsoft.comÏü„²
+googleapis.com›‹í½Ø
+maxai.meÒ®“¨
+ichef.bbci.co.ukøå”Ö±
+
+bbci.co.ukØ§¥ô±
+spot.imÀ´£(
+login.live.com°õ
+co.ukØ§¥ô±
+cdn.optimizely.com£¾Ç·%
+nf.smartscreen.microsoft.comÖ¤ìÄ¾$
+promote-subscribe.forbes.com¼ø¢Å
+gcp.gvt2.comì¸¼ÊŠ
+optimizely.com£¾Ç·
+secure.gravatar.com—¼•“
+
+forbes.com¼ø¢Å
+live.comÃÕ‡
+fonts.googleapis.com©ôÊìH
+cdn.privacy-mgmt.com¶†©Æ
+open-api.spot.imÀ´£(
+gravatar.com—¼•“
+“
+oca.nflxvideo.net
+prod.netflix.comÉı Ñ&
+
+zencdn.net€Ñó×<
+www.netflix.com–ÖóÇÕ"#
+occ-0-768-769.1.nflxso.netÌˆí¢Ë
+players.brightcove.netòöÕ—
+teams.microsoft.com¥ÿ›
+thesun.co.ukÒ¸¶Îƒ
+vjs.zencdn.net€Ñó×<
+ptr.thesun.co.uk¯½®
+tags.thesun.co.uk¨’ãú‚
+ovp.iris.tvÕäz
+sp.auth.adobe.comƒ‘İÎR
+push.prod.netflix.comÉı Ñ&#
+web.prod.cloud.netflix.comüË€èÆ	
+o
+tags.thesun.co.uk
+thesun.co.uk»Ãë¤
+
+tiqcdn.com×•¢Ğ
+tags.tiqcdn.comëŠ‘è
+www.forbes.comê´¿ì
+a
+prod.pyxis.atp.fox
+www.foxnews.com½ñ‘ÍS
+static.foxnews.com¹×‰Ÿ=
+pyxis.atp.foxÜ¦å·Õ
+
+secure.gravatar.com
+Õ
+iris.tv
+players.brightcove.net—Ã¹§h
+vjs.zencdn.net¹º¸Y
+ovp.iris.tv©‰ ´
+prod.boltdns.netîåÀÿÄ
+x.com¾Ìê…
+oca.nflxvideo.netÕäz
+nflxext.comµ¿Œ
+
+zencdn.net¹º¸Y
+nflxvideo.netÕäz
+î
+	bbc.co.uk
+googleapis.comÆ›é
+e2c16.gcp.gvt2.comè 
+privacy-mgmt.comİ´àı°
+
+google.com¡ƒ×ƒ5
+gvt2.comè &
+content-autofill.googleapis.com¥¢á(
+login.live.comÀõ‰§
+gcp.gvt2.comè 
+live.comÄË±Ã
+cdn.privacy-mgmt.com¢”ÎÍ
+d.joinhoney.comˆÖñ
+joinhoney.comˆÖñ
+co.uk†»«¡°(
+federated-id.live.api.bbc.co.uk†»«¡°
+d
+ton.twitter.com
+twitter.comºè¿ÁÉ
+x.comŠàœ±
+	twimg.com¾‘ÆèÃ	
+video.twimg.comíË­Ä°	
+É
+eu-west-1.amazonaws.com$
+v10.events.data.microsoft.com¬‹Â
+fonts.googleapis.comæÒîë#
+googleapis.comĞÃ†óú
+microsoft.comó²Ÿ
+graphassets.comŞ¡š'
+media.graphassets.comŞ¡š'B
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com±­·òû
+update.microsoft.com±æâ‰"
+fe2cr.update.microsoft.com±æâ‰
+>
+	ss.nbc.co
+wdcp.microsoft.comÂÈï
 
-login.live.comÀõ‰§
-joinhoney.com‘¬ƒâ
-privacy-mgmt.com¿¼„¦
+www.reddit.com‚à¿œ
+æ
+config.teams.microsoft.com/
+'ipv4-c194-ams001-ix.1.oca.nflxvideo.net¢Öô¸/
+'ipv4-c174-ams001-ix.1.oca.nflxvideo.net½ü½ã
+
+teams.microsoft.comêË©Îš
+microsoft.comêË©Îš
+oca.nflxvideo.net¥ÿ›
+nflxvideo.net¥ÿ›
+W
+nid.thesun.co.uk
+thesun.co.ukŠíïÂ“
 
-google.com”È™É„
+tiqcdn.comª°ºÜ
+tags.tiqcdn.com•˜®G
+
+microsoftonline.com
+]
+segment.com
+time.akamai.com¯˜÷:
+sp.auth.adobe.com—”åà$
+static.foxnews.com¸¡‘ÿ½
+6
+twitter.com
+x.com–—…Îf
+video.twimg.comíË­Ä°	
+
+www.dailymail.co.uk
+ª
+brightline.tv
+cdn.cookielaw.orgÈÃ£İÁ
+cookielaw.orgÎ÷²ö¶
+www.redditstatic.com®­ü-
+preview.redd.itÇ›³ë#
+entitlement.auth.adobe.comÙÚ¥Â½
+www.nbc.comÔˆê
+img.nbc.comª»šŒé 
+cdn-media.brightline.tv©Èÿ‘´
+redditstatic.com®­ü-
+redd.itÇ›³ë
+nbc.com–î¤É
+œ
+edge.api.brightcove.com
+prod.boltdns.net“®â¶
+oca.nflxvideo.net€›ƒ
+nflxvideo.net€›ƒ
+players.brightcove.net¨ûì¾„
+nflxext.com•ã	.
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¦Ş
+vjs.zencdn.net±ò¢¸
+ovp.iris.tv£ËÅåõ
+
+zencdn.net±ò¢¸
+iris.tv£ËÅåõ
+„
+$cf-images.us-east-1.prod.boltdns.net
+pyxis.atp.fox¾şØ-
+prod.boltdns.net£²ıÃ·
+www.foxnews.comËàğ´
+static.foxnews.comÚŸû»2
+dt.fox…¢äå(
+prod.pyxis.atp.fox¾şØ-
+foxnews.comÙ¿âèš
+prod.idgraph.dt.fox…¢äå(
+idgraph.dt.fox…¢äå(
+
+wdcp.microsoft.com
+“	
+1.nflxso.net
+
+nflxso.netÜÃ‰ÃÔ¸'$
+web.prod.cloud.netflix.com±–Ğî£0
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netºªÖÑ´/
+'ipv4-c161-ams001-ix.1.oca.nflxvideo.netæãŸŞ@0
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netÎñæõ·/
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.netñ¯ï•Q
+cookielaw.org¿øÇ¸E
+netflix.comÆéÚº0
+'ipv4-c193-ams001-ix.1.oca.nflxvideo.net‹‰åĞ†/
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.net¥Û—«Q
+thesun.co.uk–Öµ30
+'ipv4-c171-ams001-ix.1.oca.nflxvideo.netæŸ¾¡ì
+co.uk–Öµ3
+brightcove.netàÆ÷
+googleapis.comö“ñÕG'
+content-autofill.googleapis.com¾’Şú
+assets.nflxext.com»Ş›¸°
+cloud.netflix.comú¸§¿÷¥
+nflxvideo.netõî©Ïİ$0
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.netİ±ˆæ¡
+oca.nflxvideo.netõî©Ïİ$/
+'ipv4-c183-ams001-ix.1.oca.nflxvideo.netŒ¡şÈA
+www.netflix.comâ¦É“…$
+occ-0-768-769.1.nflxso.netÇˆÿİÅ×
+0
+'ipv4-c176-ams001-ix.1.oca.nflxvideo.netÎªŸ®¿
+ptr.thesun.co.uk‡ò‘
+players.brightcove.netàÆ÷
+cdn.cookielaw.org©İšúô
+nflxext.comÚÕÃÛï’/
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.net®Šæ¹r/
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.net¨ŠÔŒ,0
+'ipv4-c180-ams001-ix.1.oca.nflxvideo.net®ï‚ÿ 
+½
+preview.redd.it
+scribbr.comÑ»G
+redditstatic.com®´ƒä¤
+styles.redditmedia.com«»³²”
+redditmedia.com·¥ì‰¶
+www.google.com¹òµÀÛ
+	v.redd.it…åØÃ
+www.scribbr.comÑ»G
+www.reddit.com›¶ııê
+
+reddit.com›¶ııê
+www.redditstatic.comº‡Å¼¨
+redd.it‰ÓÌØ3
+thumbs.redditmedia.comŒê¸×¡
+
+www.puppyplaats.nl
+„
+content-autofill.googleapis.com
+oca.nflxvideo.net‰ÿê‘
+static.foxnews.com¼«ä¶!$
+promote-subscribe.forbes.comº¡å
+js.stripe.com³€á
+nbc.comŒë„‹Ö
+live.comËÉïì§
+prod.pyxis.atp.fox¹è
+gcp.gvt2.com£æ­Û
+privacy-center.org†Í‘•ø
+x.comİåÏ¥
+pbs.twimg.comµÄI!
+translate.googleapis.com…¨‚Üó"
+web.prod.cloud.netflix.com•³Ö¥'
+nflxext.com°Çìªp
+
+tiqcdn.com‚£÷²”
+dt.foxƒ„”à"
+fe2cr.update.microsoft.comíİ—Ğ'
+microsoft.comíİ—Ğ'
+privacy-mgmt.comöê`
+
+forbes.comº¡å
+update.microsoft.comíİ—Ğ'
+e2c16.gcp.gvt2.comÙÅ¢Û
+thesun.co.uk…îòıÒ
+geolocation.onetrust.comŸÑÓo
+www.thesun.co.uk©ù•ı	
+www.foxnews.com™ÿÆŞ9
+www.nytimes.comœÑ‚ÜP
+joinhoney.comÌÑ£°%
+e2c51.gcp.gvt2.comÉ "
+occ-0-768-769.1.nflxso.netê°Ÿş
+nflxvideo.net‰ÿê‘
+www.netflix.com‚Ş¤Ë
+prod.idgraph.dt.foxƒ„”à
+pyxis.atp.fox¹è
+googleapis.comù˜ö¼–
+sp.auth.adobe.comÌÓÎÔ/
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.net‰ÿê‘
+tags.tiqcdn.com‚£÷²”
+
+stripe.com³€á
+img.nbc.comœ£¶s
+	twimg.com£˜Ü»…
+sdk.privacy-center.orgÃæÈŠü
+netflix.comšïŸ¼\
+foxnews.comĞô‚
+forbesimg.comÒ³E
+login.live.com²ò›û)
+nytimes.comÕó‡”ò
+i.forbesimg.comÍÈ
+gvt2.com£æ­Û&
+federated-id.live.api.bbc.co.uk¥¢á(
+
+nflxso.net¾’Şú
+idgraph.dt.foxƒ„”à
+d.joinhoney.comÌÑ£°%
+onetrust.comŸÑÓo
+æ
+
+reddit.com
+	ss.nbc.co‚à¿œ
+static.bbci.co.uk…ÔîÈ
+www.reddit.com‡»ñ˜¥
+www.redditstatic.com‚Œâ¸
+styles.redditmedia.comû˜Óõå
+redditmedia.comÉĞ„¼$
+w3-reporting-nel.reddit.comªíß“æ$
+sp.auth.adobe.comö¨½
+
+www.google.comüØ¾¢
+thumbs.redditmedia.comÎ·®V
+x.com×àÂÜp
+	twimg.comíĞ¾¥ªX
+redditstatic.coméªĞÊù
+
+www.redditstatic.com
+^
+nordvpn.com
+www.dailymail.co.uk Î¸:
+sp.auth.adobe.comÂ©÷®
+oca.nflxvideo.netŸÔ
+¾
+gn-web-assets.api.bbc.com
+login.live.comØú@
+secure.gravatar.com‹ŞÊ‰
+gvt2.comë”–
+live.comáêƒ
+microsoft.comšğÔïñ
+mp.microsoft.comÄ 
+static.files.bbci.co.uk‰„ù
+gravatar.com‹ŞÊ‰
+maxai.meò…
+www.bbc.comÄíö·ë%
+nf.smartscreen.microsoft.com«±Ú÷ø"
+smartscreen.microsoft.comÖâ´ïñ
+i.forbesimg.comáÍÅô$
+promote-subscribe.forbes.com¼Ñ¢
+open-api.spot.im Ú‘
+spot.im Ú‘
+googleapis.comÀÔ¢)
+ichef.bbci.co.ukŒÕ·÷Ï
+static.bbci.co.ukÀËÖ¹Ø
+privacy-mgmt.com ¹²ß± 
+nsi.activity.api.bbc.com¿Ã—
+Ÿ
+flourish.studio
+
+google.comúş¨Ù
+googleapis.comÂ™÷í"
+lh3.googleusercontent.comß¸™´¥
+foxnews.comäØşÙÇ
+www.foxnews.com¥½Œ¼
+public.flourish.studioçÁÚË§9
+fonts.googleapis.com†ëŠg
+googleusercontent.com¿Ô˜¹à
+static.foxnews.com³¡Ñ´
+uri.shŒ½•âï
+Å
+co.uk
+ichef.bbci.co.uk®È¶ØƒŸ
+static.bbci.co.ukè™óÚ5!
+static.files.bbci.co.ukùŞ«ğ®ü
+
+snopes.com³ÏÛi
+mediaproxy.snopes.com³ÏÛi
+optimizely.comñÛ®Õª
+
+reddit.com…ÔîÈ
+mp.microsoft.com×î©s
+joinhoney.comÿ“Ë
+nflxvideo.netÒ¸¶Îƒ.
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.netøë
+www.thesun.co.ukà õä¨¢
+e2c16.gcp.gvt2.comè 
+gvt2.com»òíâ<
+gcp.gvt2.com»òíâ<
+login.live.comÀõ‰§/
+'ipv4-c174-ams001-ix.1.oca.nflxvideo.netñÍÏµ
+privacy-mgmt.comåÓêÅ¸
+hulkprod.anm.co.ukéÒŒ¿©?.
+'ipv4-c171-ams001-ix.1.oca.nflxvideo.netÊé
+grammarly.comÑÜíÈ!.
+'ipv4-c180-ams001-ix.1.oca.nflxvideo.net‘â¥
+www.reddit.com…ÔîÈ
+x.com‡åë
+
+forbes.comê´¿ì
+
+google.com×¾Øª6(
+content-autofill.googleapis.comªÔ¦Ó
+
+nflxso.net–Öµ3/
+'ipv4-c172-ams001-ix.1.oca.nflxvideo.netäçï²
+
+tiqcdn.comÈ¾´ò¥<(
+federated-id.live.api.bbc.co.uk†»«¡°
+maxai.meôë¼s
+www.forbes.comê´¿ì
+d.joinhoney.comˆÖñ
+thesun.co.ukÃ¦Õâ	
+www.dailymail.co.uk÷¯…úªÀ
+extension.grammarly.comÑÜíÈ!
+nflxext.comÁµõíÜ"
+smartscreen.microsoft.comÕü·¡Û
+dailymail.co.ukê¥í³’»s
+i.dailymail.co.ukè’Œ‰¢%
+dmgmediaprivacy.co.ukÊ¡ªÔ1
+live.comÄË±Ã
+fonts.googleapis.com›®Ÿ¡ƒ.
+'ipv4-c176-ams001-ix.1.oca.nflxvideo.net½Ğ
+tags.tiqcdn.com¤Û»½Ù;
+	twimg.com¨Ÿ¨€)
+tags.thesun.co.uk»Ãë¤%
+nf.smartscreen.microsoft.comªşÛĞí
+googleapis.com°™âÙ×½!
+occ-0-768-769.1.nflxso.netòë/
+'ipv4-c205-ams001-ix.1.oca.nflxvideo.netğæşœ/
+'ipv4-c210-ams001-ix.1.oca.nflxvideo.netûÅÃÓ/
+'ipv4-c194-ams001-ix.1.oca.nflxvideo.net¼æ†ñ
+ptr.thesun.co.uk¸åÔêà6
+oca.nflxvideo.netÒ¸¶Îƒ.
+'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÑè¶
+nid.thesun.co.ukŠíïÂ“&
+config.extension.grammarly.com¨î¶ä/
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.netúâæ’/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net¶×Ûû"
+gn-web-assets.api.bbc.comÊì¹ÙŒ
+nordvpn.comñãÊÕ.
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.netîÏ &
+fe3cr.delivery.mp.microsoft.com×î©s!
+nsi.activity.api.bbc.comñ®‰¶’
+microsoft.com­ëá”Ü
+www.bbc.com«ŸşÔ™
+=
+smartscreen.microsoft.com 
+static.files.bbci.co.ukœÔ’‹É
+–
+api.foxnews.com$
+foxnewsplayer-a.akamaihd.net¶¶˜V 
+manifest.prod.boltdns.net¢ƒñ=
+auth.adobe.com‘«şà,
+prod.boltdns.net¢ƒñ=
+foxnews.com¨½âÙ¾
+
+static.foxnews.com£ÓÈë$
+vod.foxnews.comÕß¶ƒ
+foxweather.com¥ºØĞ
+cdn.segment.com­Ÿ™n
+segment.com­Ÿ™n
+time.akamai.com¤üı†3"
+entitlement.auth.adobe.com˜÷ÇŞ,
+boltdns.net¢ƒñ=
+	twimg.comËá {
+video.twimg.comËá {
+m
+nyt.com
+www.nytimes.comê½¸ŒŞ/
+nytimes.coméŸ‰åÓ~
+privacymanager.ioÒÌµp
+purr.nytimes.com´³ô§G
+ô
+cookielaw.org
+googleapis.com¾ÈİÖ–"
+lh3.googleusercontent.com”ĞáÓ‚
+nbc.comØ´ùó¤0#
+web.prod.cloud.netflix.com´ÅÂ±ã 
+ichnaea-web.netflix.com¤Òÿ†ƒ
+
+google.comûÁ“ß
+nflxext.comé½µÊÏG#
+occ-0-768-769.1.nflxso.netàåšÿ­
+friendship.nbc.coğûúû
+$
+safebrowsing.googleapis.comÜ³½å³
+www.netflix.com×üÓ»º
+push.prod.netflix.com ŒÇ
+googleusercontent.com’ŒĞ™Ô,#
+entitlement.auth.adobe.com“™™õ›
+nbc.coØíä¹s
+map.mp.nbc.com©ÓÃ’
+sp.auth.adobe.com¬Ü‡š·
+usanetwork.com¾•ÛÎÅ	
+www.usanetwork.com¾•ÛÎÅ	
+	ss.nbc.coèñé½h
+fonts.googleapis.comØ•§š¡
+www.nbc.comÅÏëõ¤
+
+mp.nbc.com©ÓÃ’
+prod.netflix.com ŒÇ
+maxai.meºÕö
+netflix.comÍÑà¿ó
+img.nbc.com·áŸÛİ
+
+
+nflxso.net¿øÇ¸E
+
+nbc.co
+www.reddit.com‚à¿œ
+
+reddit.com‚à¿œ
+wdcp.microsoft.comÂÈï
+
+nbc.com£ƒœıï
+sp.auth.adobe.comñ¸ªív
+	ss.nbc.coÜâéï‘
+Í
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net"
+web.prod.cloud.netflix.comİßˆİ
+tags.thesun.co.uk¶×Ûû
+mp.microsoft.comĞÃ÷Ÿ&
+sp.auth.adobe.comµĞ‰¢
+nflxext.comìÍ¯ø4
+thesun.co.uk¶×Ûû"
+occ-0-768-769.1.nflxso.net¢š¶¥G
+
+nflxso.netÎñæõ·
+oca.nflxvideo.net“· êòx
+nflxvideo.net“· êòx
+microsoft.comĞÃ÷Ÿ&
+netflix.com¹™ÚŞÀ
+www.netflix.comë÷Ì®/
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.net–¤Ïï
+players.brightcove.netÙàšË
+H
+www.google.com
+www.reddit.comüØ¾¢
+www.redditstatic.comÿƒË×Ò
+©
+cdn.cookielaw.org
+ichnaea-web.netflix.com‡ªæç3
+nflxext.comœ“ïİá
+googleusercontent.com’ŒĞ™Ô,
+www.nbc.comï©—Ÿ
+	ss.nbc.coèñé½h
+www.netflix.comÿ±¦ì±
+prod.netflix.com Ïô
+maxai.me¾œR
+usanetwork.comÃò‹ Æ
+push.prod.netflix.com Ïô
+googleapis.com’ÔÇï	
+nbc.comÙ†Á­‚+
+img.nbc.comƒô»Åæ	
+www.usanetwork.comÃò‹ Æ$
+safebrowsing.googleapis.comÁì¸ê™
+fonts.googleapis.comÀ£ğÖ‰
+friendship.nbc.coÔö±ƒ"
+web.prod.cloud.netflix.com½§½-
+map.mp.nbc.comíë¸İ
+sp.auth.adobe.comíü±´Ú
+netflix.com¸Â¾Í–#
+occ-0-768-769.1.nflxso.netÆÏ³Àğ
+cloud.netflix.comªïáÈP
+cookielaw.org® ‚ì–¡"
+lh3.googleusercontent.com”ĞáÓ‚#
+entitlement.auth.adobe.comÅ¹Şç
+
+mp.nbc.comíë¸İ
+nbc.co½è›Ál
+
+nflxso.net©İšúô
+
+google.com°‰¦ –
+†
+	16.53.151!
+config.teams.microsoft.com¼–
+53.151åÙš†
+96.16.53.151åÙš†
+microsoft.com¼–
+teams.microsoft.com¼–
+R
+nsi.activity.api.bbc.com
+static.files.bbci.co.ukÊ Ø
+optimizely.comóå³·
+*
+dds.microsoft.com
+microsoft.comÙˆü€R
+M
+cdn.honey.io
+honey.io®Ôä½†
+www.reddit.comÁøŞ
+
+reddit.comÁøŞ
+Ë
+googleusercontent.com
+mp.microsoft.comİè­ºÒ,
+	ss.nbc.coÆƒÏÙ´)/
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.netòÃÑù/
+'ipv4-c194-ams001-ix.1.oca.nflxvideo.net³Ê
+public.flourish.studioŸªÌœğ
+microsoft.comİè­ºÒ,
+oca.nflxvideo.net›ÄÎçS
+nflxvideo.net›ÄÎçS!
+lh5.googleusercontent.comˆ‰Í§j
+gvt2.com”Ìˆ#
+lh3.googleusercontent.com¹æ˜·‘
+sp.auth.adobe.com”ØÔ‰Å
+nbc.coÆƒÏÙ´)/
+'ipv4-c174-ams001-ix.1.oca.nflxvideo.net™İüğ
+'
+scribbr.com
+www.scribbr.com°óÎò
+“
+ extension.femetrics.grammarly.io
+grammarly.ioÙ‚¬•·
+femetrics.grammarly.ioÙ‚¬•·
+nbc.comå´¼¡
+netflix.comÿ­„Á"
+web.prod.cloud.netflix.comÿ­„Á
+s.joinhoney.comšÏÑğ
+joinhoney.comšÏÑğ
+
+snopes.comòØ
+www.snopes.comòØ
+img.nbc.com™¯¨
+•
+'ipv4-c205-ams001-ix.1.oca.nflxvideo.net0
+'ipv4-c210-ams001-ix.1.oca.nflxvideo.net£•óÖŸ*
+thesun.co.ukğæşœ
+tags.thesun.co.ukğæşœ
+netflix.comïõ»´ñ
+www.netflix.comÂÈÇŒg"
+web.prod.cloud.netflix.comëä¬›#
+oca.nflxvideo.net¯Å¼ÓÄ‰
+nflxvideo.net¯Å¼ÓÄ‰
+Š
+151.101.38.172
+
+google.comİ÷ÒÌÄ
+puppyplaats.nlŠê‚—Z
+sdk.privacy-center.org°·¢ù½
+privacy-center.org°·¢ù½
+microsoft.com÷ˆ‹Ä
+js.stripe.comŠˆ¡Œû
+38.172‡™½µ6A
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comï‡ç
+eu-west-1.amazonaws.comï‡ç*
+"cp801.prod.do.dsp.mp.microsoft.comïıºœ	
+mp.microsoft.comïıºœ	
+www.puppyplaats.nl…µÁ‹-
+accounts.google.comå›ı‡ÿ
+update.microsoft.comƒÓ’ù"
+fe2cr.update.microsoft.comƒÓ’ù
+graphassets.comšó¦ƒ
+amazonaws.comï‡ç
+
+stripe.com˜ã¤ñ
+data.microsoft.comîÌ¾½ˆ%
+v10.events.data.microsoft.com½·ÊßV
+media.graphassets.comÌ°œ»
+À
+nflxvideo.net
+www.netflix.com–ÖóÇÕ"
+tags.thesun.co.uk¨’ãú‚
+vjs.zencdn.net€Ñó×<#
+web.prod.cloud.netflix.comüË€èÆ	
+thesun.co.ukÒ¸¶Îƒ
+players.brightcove.netòöÕ—
+ovp.iris.tvÕäz
+sp.auth.adobe.comƒ‘İÎR
+teams.microsoft.com¥ÿ›
+ptr.thesun.co.uk¯½®
+
+zencdn.net€Ñó×<
+oca.nflxvideo.netëÆ»À¿•
+nordvpn.comŸÔ#
+occ-0-768-769.1.nflxso.netÌˆí¢Ë
+push.prod.netflix.comÉı Ñ&
+prod.netflix.comÉı Ñ&
+.
+promote-subscribe.forbes.com
+spot.im™º«q
+Æ
+flow.logitech.io
+netflix.com‡áü0
+www.netflix.comÃ°¾
+
+google.com­ÂÕæ@
+
+nbcuni.comãÜ¤ª#.
+&geolocation.digitalsvc.apps.nbcuni.com¡ô¶ã
+logitech.ioñ–ŞÔA
+sb-ssl.google.com­ÂÕæ@
+H
+cs.dds.microsoft.com
+dds.microsoft.comÙˆü€R
+microsoft.comÙˆü€R
+R
+dmgmediaprivacy.co.uk
+www.dailymail.co.uk“€ºë	
+hulkprod.anm.co.ukúò«Ì‰
+Æ
+
+akamai.com
+boltdns.net»á®ò
+static.foxnews.coméºú°;%
+foxnewsplayer-a.akamaihd.net™¹†À…
+time.akamai.comœ¿ò¦Á
+vod.foxnews.comö¹¨±
+prod.boltdns.net»á®ò
+api.foxnews.com¤üı†3
+cdn.segment.com¯˜÷:
+segment.com¯˜÷:
+akamaihd.net™¹†À…!
+manifest.prod.boltdns.net»á®ò
+foxnews.com¬±¥İ˜
+
+ketchjs.com
+á
+maxai.me$
+ogads-pa.clients6.google.com€ğÿáo
+thesun.co.uk«§Ï
+
+tags.thesun.co.uk«§Ï
+
+www.bbc.com±ÏáØa
+static.bbci.co.ukì ÌÑ2
+privacy-mgmt.comœ§ğı
+www.forbes.comøò£”º
+secure.gravatar.comì¸ÊÖ
+G
+extension.grammarly.com
+grammarly.comÜ¿¯àÖ
+thesun.co.ukÑÜíÈ!
+k
+ecs.office.com
+nytimes.comÂ¤ëß
+purr.nytimes.com¾¿Ó
+foxweather.comú×Û
+
+office.comåßÃ§ô
+„
+a.thumbs.redditmedia.com
+www.reddit.comÎ·®V
+www.redditstatic.com¤£b
+redditstatic.com¤£b
+styles.redditmedia.comí©ş¨¢
+redditmedia.com’ú¯®‰
+redd.itŒê¸×¡
+
+reddit.comÎ·®V
+preview.redd.itŒê¸×¡
+thumbs.redditmedia.com¥Ğ±…ç
+¦
+gvt2.com
+www.nbc.comÄçÛ•Q
+lh5.googleusercontent.com«æ,
+x.com´öÏ‹ 
+lh3.googleusercontent.comÈÔì4,
+#launchpad-wrapper.privacymanager.ioéª˜á¸
+oca.nflxvideo.netÊü“õÖ/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net«›Êëj
+static.bbci.co.ukÌÄàî
+
+reddit.comÕ¼«D"
+w3-reporting-nel.reddit.comÕ¼«D
+joinhoney.com÷¯¬‘%
+img.nbc.com•Ù¢é
+nbc.comÓª©½´
+nflxvideo.netÊü“õÖ/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÑ¸ÍÒ
+www.bbc.comªúù·Š
+nyt.com‘ï»±Á
+purr.nytimes.comŞÜú‹İ
+nytimes.comÅüëŠ
+
+privacymanager.ioÕ„Š•…$
+launchpad.privacymanager.ioöìø™¦	
+ichef.bbci.co.ukÑÅìæ
+maxai.meøçöşq
+www.nytimes.comÚİÊÍ
+
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net
+microsoft.comÓòĞé 
+mp.microsoft.comÓòĞé 
+netflix.comığôÒ
+nflxext.com’ö¸¬V
+nflxvideo.netğ’ß½±N/
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.netö««‰	
+vjs.zencdn.netºĞö·(
+ovp.iris.tvøÜQ
+www.netflix.comÆ„ö’‹"
+web.prod.cloud.netflix.com„½ğ€
+
+oca.nflxvideo.netğ’ß½±N/
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.net‘ş¤Œ	
+players.brightcove.netÎí¨	0
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netäöÎÌË
+
+zencdn.netºĞö·(
+sp.auth.adobe.com§à©Ö#
+nordvpn.com¾¢"
+occ-0-768-769.1.nflxso.netİ«¹â
+
+nflxso.netºªÖÑ´/
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.net¹¢ú„	
+iris.tvøÜQ
+ú
+'ipv4-c174-ams001-ix.1.oca.nflxvideo.net0
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net¢±êî0
+'ipv4-c194-ams001-ix.1.oca.nflxvideo.net“Êâàâ!
+lh5.googleusercontent.com™İüğ
+thesun.co.ukñÍÏµ
+tags.thesun.co.ukñÍÏµ
+microsoft.com½ü½ã
+
+oca.nflxvideo.netìµğùò
+nflxvideo.netìµğùò/
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.netÍ„’Û
+teams.microsoft.com½ü½ã
+
+°
+fe3cr.delivery.mp.microsoft.com 
+nsi.activity.api.bbc.comöşÛ™
+microsoft.com‚ñì«
+mp.microsoft.com‚ñì«
+ichef.bbci.co.uk×î©s
+gn-web-assets.api.bbc.comÄ 
+Ò
+ae.nflximg.net
+
+google.com€âÏÕ
+fonts.googleapis.comï¢Û8
+cloud.netflix.comç™ÁÈ
+push.prod.netflix.comææÎÆ
+prod.netflix.comææÎÆ
+assets.netflix.com€Š¾B"
+web.prod.cloud.netflix.comóÌ ¤
+nflximg.net¯Š¬™¶
+googleapis.comç¹µş
+netflix.comö©ÎŞ+
+www.netflix.comÅ½…»
+ichnaea-web.netflix.comÒº
+L
+foxweather.com
+nytimes.com¥È×Â
+segment.comı›
+
+office.comú×Û
+¾
+redditmedia.com
+www.reddit.comÉĞ„¼
+www.redditstatic.comè¯¾ÌÇ
+redditstatic.com´¥€ª¼
+styles.redditmedia.comëÈˆ˜Ğ%
+www.google.coméùÜãF
+thumbs.redditmedia.com’ú¯®‰
+˜
+i.forbesimg.com
+maxai.me¤¸ÍË¨
+www.forbes.com¡ŞæÖ½
+ketchcdn.comÏÔò
+open-api.spot.imƒô‚
+spot.imƒô‚
+secure.gravatar.com±İ¯¡
+Ç
+googleapis.com
+static.foxnews.comÌééû·‰
+spot.imØˆŠ
+www.nytimes.comò¶¢’É
+onetrust.comŸÑÓo"
+occ-0-768-769.1.nflxso.netÒ†ûñ
+privacy-center.org‘¢ÑÃ>
+x.com†èÁ™ô
+nyt.comóÃ©®Ø	$
+safebrowsing.googleapis.comş›…•¥
+open-api.spot.imØˆŠ
+live.com‘ƒú–	
+update.microsoft.comŠ­„È¦	
+nflxvideo.net¹úë~/
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.net¹úë~
+nid.thesun.co.ukÎ”©ìØ
+prod.pyxis.atp.fox¥€ºø¯$
+w3-reporting-nel.reddit.comÃˆ„Ğ°
+maxai.me›Ğÿ.
+joinhoney.com÷éòº
+www.netflix.com¸³ô™â
+	twimg.com¼­©‘Æ
+B
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comĞÃ†óú
+img.nbc.comœ£¶s
+prod.idgraph.dt.foxşœ£°¶
+www.snopes.comñ­ã¨
+idgraph.dt.foxşœ£°¶
+nytimes.comÖ¤ç¶Û
+tags.tiqcdn.comƒÉ‰´
+www.bbc.comÙÏÆ›
+static.bbci.co.uk£²Ö·
+nflxext.comÏÂ“‹é
+oca.nflxvideo.net¹úë~
+
+tiqcdn.com×½”‚
+www.reddit.comÔ—¾€9
+microsoft.com¹š²ÄŸ
+
+nflximg.netç¹µş
+www.foxnews.comıã—ß
+ichef.bbci.co.uk«åX
+privacy-mgmt.com”†ëO
+
+reddit.com— ÂĞé
+js.stripe.com²ë»ãû"
+sp.auth.adobe.com™õ¡…½
+
+nflxso.netö“ñÕG
+netflix.com€œáş+
+storage.googleapis.comÈºåĞÆA
+pyxis.atp.fox¥€ºø¯
+
+stripe.com²ë»ãû"
+www.thesun.co.ukÑŞšêñ1
+www.forbes.comŸ¢ÄÆÏ
+
+snopes.comâÛÆÑ 
+i.forbesimg.com üP
+www.dailymail.co.ukÔıÆ±L%
+v10.events.data.microsoft.com™úÙÎ
+	ss.nbc.coÅåŠ¹†
+nbc.co¬Ú³Õ
+login.live.comä ÃŞ¥
+public.flourish.studioÂ™÷í$
+promote-subscribe.forbes.comôÂœÊ
+nbc.comŒë„‹Ö#
+web.prod.cloud.netflix.com¬™³­º
+pbs.twimg.comçŒ¹Òµ
+thesun.co.ukÑ¿êˆ«º
+gvt2.comºß–«¶4
+sdk.privacy-center.orgÆˆÑè¡"
+translate.googleapis.comıÅ”ª…¯
 
 sp.auth.adobe.com
 usanetwork.comå®µ
@@ -3231,150 +1758,1623 @@ google.com”È™É„
 static.foxnews.com÷ğÒáÂ
 www.reddit.comö¨½
 
-í
-a57.foxnews.com
-public.flourish.studioæÕúò×
-prod.idgraph.dt.foxÂÂğ
-prod.pyxis.atp.foxñÓœÅ'
-pub-admin-elections.foxnews.comØûÙú
-www.foxnews.comÙ…¿ßÿ
-static.foxnews.comìÆÉüß'
-global.fncstatic.com÷Ù¯¯ô
-flipboard.com‚‘ºª
-foxnews.com€Ì‚ê
-idgraph.dt.foxÂÂğ
-dt.foxÂÂğ
-pyxis.atp.foxñÓœÅ
-googleapis.comØÙ¹ß9
-fonts.googleapis.comÈâÅÉÜ
-flourish.studio´ğØ‡
-atp.foxñÓœÅ
-fncstatic.com÷Ù¯¯ô
-cdn.flipboard.com‚‘ºª
-k
-ecs.office.com
-nytimes.comÂ¤ëß
-purr.nytimes.com¾¿Ó
-foxweather.comú×Û
+à
+app.launchdarkly.com
+microsoft.com¾öÊØ
+auth.adobe.comãœ­ª*
+sp.auth.adobe.comË‰
+	ss.nbc.coÁ«Í¤
+wdcp.microsoft.com¾öÊØ
+nbc.com÷‚ğŠN
+img.nbc.comİ€ÜÂ
+nbc.coÁ«Í¤
+launchdarkly.com¯‰ìÎª
+•
+launchdarkly.com
+microsoft.comıì•±
+wdcp.microsoft.comıì•±
+nbc.comï…à•œ
+sp.auth.adobe.com‚Ş™±
+	ss.nbc.coƒ×šÉ 
+nbc.coƒ×šÉ 
+`
+mediaproxy.snopes.com
 
-office.comåßÃ§ô
+snopes.comãÖñ’
+www.snopes.comßÖ’¿
+www.dailymail.co.uk½©’
+*
+time.akamai.com
+vod.foxnews.comö¹¨±
+ó
+microsoft.com
+sdk.privacy-center.orgì‘·íã
+	ss.nbc.coÂÈï
+
+update.microsoft.comÕúÕˆ
+nflxvideo.net›°˜Øu
+privacy-mgmt.com‡Á“Ø«%
+nf.smartscreen.microsoft.comÖÇ¬æz
+services.microsoft.comÂÖø£¥ 
+translate.googleapis.com€õ­'
+wdcp.microsoft.com¡‰µ¤Ï)
+ mobile.events.data.microsoft.com»”¸Óô
+nbc.coÂÈï
+
+www.puppyplaats.nl¯ˆâĞE
+nbc.comõë¨
+teams.microsoft.comêË©Îš 
+static.files.bbci.co.ukœÔ’‹É
+puppyplaats.nlÈ•¥©‹
+privacy-center.orgì‘·íã
+
+stripe.coméƒÓåÇ&
+v10.events.data.microsoft.com—¯ ¡”
+mp.microsoft.com‹ºñÖ•
+oca.nflxvideo.net›°˜Øu0
+'prod.client.wosc.services.microsoft.comÂÖø£¥A
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comó²Ÿ
+weather.microsoft.com¡Ó©¦ë+
+"tile-service.weather.microsoft.com¢Î¦ÎÆ 
+nsi.activity.api.bbc.comöşÛ™#
+smartscreen.microsoft.comÕá¤”ó
+?
+m.stripe.network
+
+stripe.coméİ‰ø
+stripe.network±©¨ÊÍ
+D
+players.brightcove.net
+
+zencdn.netèã¨
+vjs.zencdn.netèã¨
+|
+e2c20.gcp.gvt2.com
+gvt2.comĞ£«¥š
+gcp.gvt2.comœö™¡š
+googleusercontent.com«æ,
+lh5.googleusercontent.com«æ,
+­
+"cp801.prod.do.dsp.mp.microsoft.com/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net½Î±º/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netúĞ®Ÿ
+
+google.com–øñâÃ
+microsoft.com„÷ÌÜ
+mp.microsoft.com„÷ÌÜ+
+#geover.prod.do.dsp.mp.microsoft.comı´£Ë
+oca.nflxvideo.net÷—Ï½0
+nflxvideo.net÷—Ï½0
+h
+logitech.io
+
+nbcuni.comãÜ¤ª#
+sb-ssl.google.com­ÂÕæ@
+netflix.com‡áü0
+www.netflix.comÃ°¾
+Š
+
+
+google.com
+purr.nytimes.com³ŸôL
+joinhoney.comÒûŠÚ–
+ichnaea-web.netflix.comÜÄù®-
+storage.googleapis.com¼ÌôÈ
+redditmedia.comÒó¹Ç
+preview.redd.itëı’õ¶
+maxai.me€ğÿáo
+onetrust.com•¦¼ƒ±%
+v10.events.data.microsoft.com˜®œ
+puppyplaats.nl†™¨ßÙ
+
+stripe.com€ŞØêÜ
+update.microsoft.comŸãó¤6
+nyt.comºÖŞ
+netflix.comÜÄù®-
+nflximg.net€âÏÕ
+redditstatic.com‚Ó“À
+gvt2.comáÛÁÁ
+public.flourish.studio½¿Ô¬
+www.reddit.comÁ«€«¿
+www.nytimes.comÒê¬ñ“
+microsoft.com…œ‹´ü
+sb-ssl.google.comÿâã£Ë
+my.foxnews.comŠğ»í
+js.stripe.com€ÊÎÉ
+mp.microsoft.comíç°¹
+nytimes.comÆÀŒøâ
+www.usanetwork.comí¸ı°ò
+nbc.co´úß†¯
+www.redditstatic.comş‡–¯¥
+redd.itëı’õ¶
+www.forbes.comÃÒ–Ï
+googleapis.comšåãŸ½"
+lh3.googleusercontent.comÚÁ¥Çõ7
+googleusercontent.comŠè–€ó¼
+sp.auth.adobe.com‡×èÃ³
+usanetwork.comí¸ı°ò
+	ss.nbc.co´úß†¯
+
+nbcuni.comÆŞ±
+logitech.io­ÂÕæ@
+privacy-center.orgµŞ–Äw
+static.foxnews.com…•Òï
+styles.redditmedia.comÒó¹Ç
+thesun.co.ukµ»§
+www.puppyplaats.nlß¶òº¦ 
+safebrowsing.google.com÷‘ı«º
+sdk.privacy-center.orgÛÙ¡Ãw
+
+reddit.comÁ«€«¿
+www.google.com¦¸àƒÆ0$
+ogads-pa.clients6.google.com—Ë“Äk
+«
+applytics.nordvpn.com
+sp.auth.adobe.comáÔ»×
+nflxvideo.netŸÔ-
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.netñî
+co.ukĞö˜Ç
+dailymail.co.ukĞö˜Ç
+i.dailymail.co.ukïåå
+auth.adobe.comáÔ»×
+oca.nflxvideo.netŸÔ-
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.netáÚ-
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¾¢-
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.netŒ
+www.dailymail.co.ukàÄ½
+nordvpn.comÑÅÛ‰Ö
+
+beacons.gvt2.com
+e2c16.gcp.gvt2.com¥ÉÄ‡8
+e2c31.gcp.gvt2.com†Í ’C
+gvt2.com—¿ÏŠ•
+gcp.gvt2.comàÃö{
+e2c20.gcp.gvt2.com³­‘
+ì
+privacy-mgmt.com
+static.files.bbci.co.uk¥ÆÕÂ!
+smartscreen.microsoft.comË²ü\$
+promote-subscribe.forbes.comŠ†ƒ
+spot.imÊéÏé$
+secure.gravatar.com„âÿT
+wdcp.microsoft.comïá§é%
+v10.events.data.microsoft.comÜÊ´‰
+×
+cdn-checkout.joinhoney.com
+maxai.me»ÃÈÓ
+
+joinhoney.comûà‚Ô;
+nbc.com†ÉŠú
+tags.thesun.co.ukù¨’Ú
+www.forbes.com§±ÉÖ
+img.nbc.com†ÉŠú
+thesun.co.ukù¨’Ú
+co.ukù¨’Ú
+
+forbes.com§±ÉÖ
+¤
+	twimg.com
+x.comøÌóªŠ-
+video.twimg.comÑÆ”şí™
+www.thesun.co.uk—¥®
+www.foxnews.com§œÇã$
+w3-reporting-nel.reddit.comíĞ¾¥ªX
+twitter.com±š»ÊÜ
+©
+occ-0-768-769.1.nflxso.net
+www.netflix.comÉ’í¦¬#
+web.prod.cloud.netflix.com˜Š¡£Ê+
+thesun.co.ukòë
+ptr.thesun.co.uk¦ùÙ
+players.brightcove.net…¡©
+ë
+'ipv4-c193-ams001-ix.1.oca.nflxvideo.net"
+occ-0-768-769.1.nflxso.net—Æ…$
+push.prod.netflix.com‹Çÿ¤"
+web.prod.cloud.netflix.comÕ±î<
+nflxvideo.netÃ±«¡£K0
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.net“´‚Êñ
+netflix.comü™‚œ
+www.netflix.com°šêô–
+nflxext.com¿–¹İÌ
+
+nflxso.net‹‰åĞ†
+prod.netflix.com‹Çÿ¤
+oca.nflxvideo.netÃ±«¡£K
+Û
+'ipv4-c176-ams001-ix.1.oca.nflxvideo.net"
+occ-0-768-769.1.nflxso.net¾ÈÃ…W
+
+nflxso.netÎªŸ®¿/
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.net‹œ–Í
+thesun.co.uk½Ğ
+netflix.comÑË‰
+www.netflix.comİ­±
+
+nflxvideo.netÌÍ»•¿4/
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.netÓÙÿ¦0
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.netŠ¦†¬±/
+'ipv4-c180-ams001-ix.1.oca.nflxvideo.netúˆŞ¹
+ptr.thesun.co.uk¿ÅÚ"
+web.prod.cloud.netflix.comşîóš
+oca.nflxvideo.netÌÍ»•¿4
+?
+storage.googleapis.com
+www.forbes.comÎ”à÷£
+x.comÚÿ’|
+5
+cloudsearch.googleapis.com
+googleapis.com¡õÌî’
+ƒ
+launchpad.privacymanager.io
+nytimes.com»şÙ˜ª
+privacymanager.io§ÍªÅª
+purr.nytimes.com¿ÇÖÒg
+www.nytimes.com±ø´´ÿ
+1
+optimizely.com
+static.files.bbci.co.ukã¾„Í*
+š
+global.fncstatic.com
+www.foxnews.comØ’‘œÎ
+static.foxnews.comÒ»àÚô
+idgraph.dt.foxœîº
+prod.pyxis.atp.foxÈä1
+x.com…ÁïV
+video.twimg.comç‚ºğ
+sp.auth.adobe.comú¸N
+prod.idgraph.dt.foxœîº
+pyxis.atp.foxÈä1
+	twimg.com›äÕ
+pbs.twimg.com´ş©e
+ü
+	api.x.com
+prod.boltdns.net¥ÈËö
+boltdns.net¥ÈËö,
+$cf-images.eu-west-1.prod.boltdns.net¥ÈËö$
+foxnewsplayer-a.akamaihd.net²òÛï
+twitter.com›œô²
+pbs.twimg.comô…ÆÊ¡
+
+tiqcdn.comïÅÄ 
+tags.tiqcdn.com÷¢¢
+
+reddit.comÌŒ—–4
+googleapis.comõ»­
+x.comÍ¬°–
+ton.twitter.comŠàœ±
+global.fncstatic.com…ÁïV
+gcp.gvt2.comú‰òé
+storage.googleapis.comü“°d
+iris.tv¾Ìê…
+ovp.iris.tv¾Ìê…
+foxnews.com¹¨½
+static.foxnews.comÚ½?
+fncstatic.com…ÁïV
+gvt2.comú‰òé
+e2c31.gcp.gvt2.comú‰òé
+	twimg.comùØ¿—
+video.twimg.comÿ¢î»í#
+w3-reporting-nel.reddit.comÌŒ—–4
+;
+v10.events.data.microsoft.com
+www.puppyplaats.nl®ÉÉŸ
+ª
+e2c51.gcp.gvt2.com
+
+google.comÒ¼¯Ì
+gvt2.comŠıòæ÷
+gcp.gvt2.comŠıòæ÷
+googleapis.comó†‡ 
+lh3.googleusercontent.comÈÔì4
+googleusercontent.comè¦Ÿˆ
 ¶
-redditstatic.com
+redditstatic.com
+www.redditstatic.comÅƒı¨•+
+styles.redditmedia.com‚ñÇ»
 www.google.comÏé‰à
 thumbs.redditmedia.com¤£b
 	v.redd.it³Åğ¬E
-www.reddit.coméªĞÊù
-www.redditstatic.comÅƒı¨•+
-styles.redditmedia.com‚ñÇ»
+www.reddit.coméªĞÊù
+¤
+redd.it
+	v.redd.it—’ÌïÅR
+scribbr.comÑ»G
+
+reddit.com›¶ııê
+www.redditstatic.comîÌµéí
+redditstatic.comáùóê
+redditmedia.com·¥ì‰¶
+thumbs.redditmedia.comŒê¸×¡
+www.scribbr.comÑ»G
+www.reddit.com›¶ııê
+styles.redditmedia.com«»³²”
+www.google.com¹òµÀÛ
+È
+geolocation.onetrust.com
+nbc.com¹»Úşo
+img.nbc.com¸¡4
+
+mp.nbc.com¡¬
+map.mp.nbc.com¡¬
+sp.auth.adobe.com’€—­+
+onetrust.comÒ“â´ğ
+
+google.comŠ“ŞÁ˜
+googleapis.comŸÑÓo
+&
+
+nbcuni.com
+sb-ssl.google.comÆŞ±
+Ç
+netflix.com
+nflxext.comÊ€šÎø#
+push.prod.netflix.com‘î‰ˆ
+prod.netflix.com‘î‰ˆ
+oca.nflxvideo.net–ÁóõğL
+nflxvideo.net–ÁóõğL#
+safebrowsing.googleapis.comÅ’îÂ*
+www.netflix.com§¥ËÚÜ#
+occ-0-768-769.1.nflxso.netôÈ•ÏË0
+
+nflxso.netÆéÚº#
+web.prod.cloud.netflix.comìã¨­ì6
+nflximg.netö©ÎŞ+
+
+www.thesun.co.uk
+ı	
+accounts.google.com
+gvt2.comÑ¦ï•
+js.stripe.com€ÊÎÉ
+
+stripe.com€ŞØêÜ"
+fe2cr.update.microsoft.comèéÖğ
+
+	adobe.com³½Çİó
+usanetwork.comÏ½ÔåP
+
+google.comÆşğ£ÌÔ
+sdk.privacy-center.orgÕ¬Âw
+d.joinhoney.comûç…ù
+co.uk‡ÙÛÖ
+e2c51.gcp.gvt2.comçÑ½¯
+gcp.gvt2.comÑ¦ï•
+fonts.googleapis.comâ”+
+#geover.prod.do.dsp.mp.microsoft.comúíçÓn+
+"cp801.prod.do.dsp.mp.microsoft.com®©è¥‹
+onetrust.comâßïË¯
+beacons.gcp.gvt2.com£œ»÷
+update.microsoft.comèéÖğ
+
+data.microsoft.comá”ª©
+googleusercontent.comŞÔŠÓ¯4
+nytimes.comÙ²…ê©
+cdn.cookielaw.orgÅ¯İ»§'
+federated-id.live.api.bbc.co.ukĞÁëÁ
+	bbc.co.ukĞÁëÁ
+mp.microsoft.com©—Ğùù
+joinhoney.comöÏƒŠò
+cookielaw.org™²¤§
+	ss.nbc.coÍş×á+
+nbc.coÍş×á+
+thesun.co.uk¶—ğ
+puppyplaats.nl±–Ş¢3
+privacy-center.orgÕ¬Âw%
+v10.events.data.microsoft.com˜®œ
+nyt.com«¯!
+geolocation.onetrust.comñï÷å×
+cmp.cdn.thesun.co.uk’İú
+flourish.studioŞŸªÖG
+googleapis.comÙ³Ê3
+www.puppyplaats.nl˜‹¯Ñ
+microsoft.comŠÒø‘"
+lh3.googleusercontent.comë…Øˆç
+
+g1.nyt.com«¯
+auth.adobe.com³½Çİó
+www.nytimes.comæÎ8
+sp.auth.adobe.comœÓåµØ
+www.usanetwork.comÏ½ÔåP
+public.flourish.studioï•ë#
+¹
+login.live.com
+puppyplaats.nl¸Ã ¦
+update.microsoft.comÊÄı1
+microsoft.comáö¶%
+v10.events.data.microsoft.comÓœù„
+privacy-mgmt.com”¬÷Å:
+www.puppyplaats.nlèëŠâ
+‘
+nbc.com
+
+nbcuni.comïúö
+s.joinhoney.com¿î‘
+www.nbc.com£Ôî ¼Û
+sp.auth.adobe.com—¬ÏÅ
+onetrust.comü“õ†p
+	ss.nbc.co¸ô©Ì'
+„
+entitlement.auth.adobe.com
+sp.auth.adobe.comèÒõ½
+www.redditstatic.com¹¯š
+preview.redd.it¿ıÔËN
+redd.it¿ıÔËN
+redditstatic.com¹¯š
+nbc.comêİÃ„›&
+www.nbc.com…°°ğè
+img.nbc.com¸‰‡²Ë
+foxnews.comÖûß,
+static.foxnews.comÇ€	
+¶
+boltdns.net
+iris.tvîåÀÿÄ
+pyxis.atp.fox¾şØ-
+time.akamai.com»á®ò
+vod.foxnews.comíÀ¤­ÿ
+ovp.iris.tvîåÀÿÄ
+edge.api.brightcove.com“®â¶
+foxnews.comÉ‡Çª•
+www.foxnews.comËàğ´
+x.com¥ÈËö-
+$cf-images.us-east-1.prod.boltdns.net£²ıÃ·"
+manifest.prod.boltdns.net±Ä¶²
+brightcove.com“®â¶-
+$cf-images.eu-west-1.prod.boltdns.netª­ßÔŞ
+static.foxnews.comïå§£3
+prod.idgraph.dt.fox…¢äå(
+dt.fox…¢äå(
+prod.pyxis.atp.fox¾şØ-
+prod.boltdns.netÿì ÏÈ
+idgraph.dt.fox…¢äå($
+foxnewsplayer-a.akamaihd.netñƒ‰â6
+T
+beacons2.gvt2.com
+gvt2.com¸ÙêÕÇ
+gcp.gvt2.comÍ(
+e2c16.gcp.gvt2.comÍ(
+$
+ketchcdn.com
+ketchjs.comé‡ÓÉ
+ 
+cmp.dmgmediaprivacy.co.uk
+dailymail.co.ukÉ‡€İõ
+hulkprod.anm.co.uk®³—®ƒ
+dmgmediaprivacy.co.uk«üìı
+co.uk¼¶­Å‡
+www.dailymail.co.ukÉ‡€İõ
+Ë
+puppyplaats.nl
+sdk.privacy-center.org§˜ĞÉŠ4
+
+stripe.com£õ½­ş
+update.microsoft.comü·Åí%
+v10.events.data.microsoft.comÜ’“¿
+www.puppyplaats.nl¹å§Á 
+safebrowsing.google.comÕ‚Ê¼¦
+
+www.foxnews.com
+‰
+dt.fox
+googleapis.comşœ£°¶
+www.foxnews.comä²ˆˆN
+fncstatic.comœîº
+prod.boltdns.net…¢äå(
+foxnews.comÔ†óñ€
+static.foxnews.comıâÍÑ:
+prod.pyxis.atp.fox‹õ¨²
+pyxis.atp.fox‹õ¨²
+fonts.googleapis.com©¸ú‡(
+idgraph.dt.foxåşÚÅæ
+prod.idgraph.dt.foxåşÚÅæ
+global.fncstatic.comœîº%
+pub-admin-elections.foxnews.comÂùq
+feeds-meta.foxnews.comÔ§Á
+É
+cdn.segment.com
+sp.auth.adobe.com‹Ê²°
+foxnews.com¸¡ãÀ
+static.foxnews.comØÓ®œÿ
+segment.comİíå‡Ê$
+foxnewsplayer-a.akamaihd.net‰ …á/
+time.akamai.com¯˜÷:
+foxweather.comı›
+Â
+d.joinhoney.com
+gvt2.comš¤ØÈ
+gcp.gvt2.comš¤ØÈ
+googleapis.com÷éòº
+login.live.com´ŸùÀ
+joinhoney.comÄººÕ
+www.nbc.comÌ°Ù¨
+e2c16.gcp.gvt2.com¼˜
+
+google.comé½…­Ë
+privacy-mgmt.comÁŒÅ÷©
+nbc.comÌ°Ù¨
+nflxext.comÈïîà='
+federated-id.live.api.bbc.co.ukˆÖñ
+live.comè¾ò3
+è
+femetrics.grammarly.io
+nbc.com±µäK
+netflix.comÿÛˆ‚
+
+snopes.comå±¡
+s.joinhoney.comÏíôÑ\
+joinhoney.comÏíôÑ\
+grammarly.ioÙŞ°‡Ñ
+img.nbc.comÌ§ù"
+web.prod.cloud.netflix.comÿÛˆ‚
+www.snopes.comå±¡
+D
+"tile-service.weather.microsoft.com
+weather.microsoft.com¢Î¦ÎÆ
+ˆ
+cdn.flipboard.com
+foxnews.comÅ¦„¥ø	
+static.foxnews.com±¨¥Ä£(
+pub-admin-elections.foxnews.com¬œÚ­û
+flipboard.comïË–­¼
+T
+displaycatalog.mp.microsoft.com
+microsoft.com¸ŞëÍ¡
+mp.microsoft.comœïõæ
+†
+dailymail.co.uk
+mediaproxy.snopes.com³ÏÛi
+www.dailymail.co.uküü¶êÑ¦
+i.dailymail.co.ukè’Œ‰¢%
+googleapis.com¦ôâ÷ı
+fonts.googleapis.comÄ®üŞ/
+nordvpn.comñãÊÕ
+
+snopes.com³ÏÛi
+hulkprod.anm.co.uk¤üÛÁ´
+dmgmediaprivacy.co.uk“€ºë	
+c
+open-api.spot.im
+privacy-mgmt.comÊéÏé$#
+promote-subscribe.forbes.com™º«q
+spot.imÈÑ…±£
+‘
+api.maxai.me
+gcp.gvt2.comøçöşq
+maxai.me˜¤Ã©öb
+
+bbci.co.ukÉÄ¬¾h
+cdn.privacy-mgmt.comœ§ğı
+gravatar.comì¸ÊÖ$
+ogads-pa.clients6.google.com€ğÿáo
+thesun.co.uk«§Ï
+
+bbc.comÒ®“¨
+ichef.bbci.co.ukÁÕî¤
+privacy-mgmt.comœ§ğı
+gvt2.comøçöşq
+fonts.googleapis.com‚ÈÙ
+betterttv.netÅÓğ¯N
+www.bbc.com±ÏáØa
+static.bbci.co.ukì ÌÑ2
+i.forbesimg.com¤¸ÍË¨
+googleapis.com›Ğÿ.
+joinhoney.com»ÃÈÓ
+
+cdn.cookielaw.org¾œR
+co.ukôë¼s"
+cdn-checkout.joinhoney.com»ÃÈÓ
+
+secure.gravatar.comì¸ÊÖ
+beacons.gcp.gvt2.com©‘éÿ
+cookielaw.orgºÕö
+tags.thesun.co.uk«§Ï
+
+clients6.google.com€ğÿáo
+forbesimg.comÙàÖ³
+
+google.com€ğÿáo!
+gn-web-assets.api.bbc.comò…
+
+forbes.comøò£”º
+www.forbes.comøò£”º
+Z
+ mobile.events.data.microsoft.com%
+v10.events.data.microsoft.com™·Å
+nbc.comõë¨
+š
+cdn.optimizely.com 
+nsi.activity.api.bbc.comóå³·
+co.ukñÛ®Õª
+ichef.bbci.co.ukÈŸ¡î*
+static.files.bbci.co.ukã¾„Í*
+optimizely.comŞ¡½§
+À
+feeds-meta.foxnews.com
+foxnews.comìóåé¦
+www.foxnews.com¯ëª
+static.foxnews.com™—î†‰
+prod.idgraph.dt.foxÔ§Á
+idgraph.dt.foxÔ§Á'
+pub-admin-elections.foxnews.com¤²òÂ(
+c
+96.16.53.151
+microsoft.com¼–
+teams.microsoft.com¼–!
+config.teams.microsoft.com¼–
+	
+spot.im
+
+clients6.google.com
+
+google.com—Ë“Äk
+maxai.me€ğÿáo$
+ogads-pa.clients6.google.com—Ë“Äk
+www.nytimes.com©»³‹ 
+nytimes.comü±š¢`
+ü
+amazonaws.com
+graphassets.comŞ¡š'
+media.graphassets.comŞ¡š' 
+eu-west-1.amazonaws.com±­·òû
+googleapis.comĞÃ†óú
+microsoft.comó²Ÿ$
+v10.events.data.microsoft.com¬‹Â
+fonts.googleapis.comæÒîë#B
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com±­·òû
+update.microsoft.com±æâ‰"
+fe2cr.update.microsoft.com±æâ‰
+data.microsoft.comŠÄŒ
+Ú
+apps.nbcuni.com
+img.nbc.comáº÷™	
+
+nbcuni.comèŞ †¥/
+&geolocation.digitalsvc.apps.nbcuni.com›éßÑßF
+logitech.ioãÜ¤ª#
+flow.logitech.ioãÜ¤ª#
+sb-ssl.google.comÆŞ±
+
+google.comÆŞ±
+nbc.comïúö
+â
+'ipv4-c161-ams001-ix.1.oca.nflxvideo.net
+oca.nflxvideo.netó¹üõ‰"0
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¯¥†è/
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.netÃÁÊğ/
+'ipv4-c183-ams001-ix.1.oca.nflxvideo.net§†ê!/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net•×”İ
+players.brightcove.netÚ¹ÒÅ
+netflix.com¤Ñ²„"
+occ-0-768-769.1.nflxso.net¾Ò‰å
+"
+web.prod.cloud.netflix.com£ë×Å
+nflxvideo.netó¹üõ‰"
+thesun.co.ukÑè¶
+www.netflix.com®½Áü'
+
+nflxso.netæãŸŞ@
+%
+
+office.com
+purr.nytimes.com¾¿Ó
+
+www.scribbr.com
+…
+joinhoney.com
+s.joinhoney.comÌÄêõì
+www.forbes.com§±ÉÖ
+login.live.comœŞëÂL
+live.com¹¼×…™
+privacy-mgmt.comíÆŒ©¡
+nflxext.comÈïîà=
+thesun.co.ukù¨’Ú
+tags.thesun.co.ukù¨’Ú
+maxai.me»ÃÈÓ
+
+nbc.comŞ˜ÏÎ3
+www.nbc.com˜á²Ñ 
+J
+
+tiqcdn.com
+www.thesun.co.ukü‹ôÙÄ
+twitter.com’³É
+x.com‰ÜÙÔ
+—
+brightcove.net/
+'ipv4-c183-ams001-ix.1.oca.nflxvideo.net€‚ÉØ
+iris.tv—Ã¹§h"
+occ-0-768-769.1.nflxso.net…¡©
+
+nflxso.netàÆ÷
+oca.nflxvideo.netòöÕ—/
+'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÚ¹ÒÅ
+
+zencdn.netèã¨
+vjs.zencdn.netèã¨ 
+edge.api.brightcove.com¨ûì¾„
+nflxext.comšñ¬-
+nflxvideo.netòöÕ—.
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÎí¨	/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netÙàšË
+players.brightcove.netÍŒÒÅı
+ovp.iris.tv—Ã¹§h/
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.netÃôşÃ
+…
+akamaihd.net
+foxnews.comèÖÀ‰ş
+x.comää·ß	
+auth.adobe.comó·µİ‡
+sp.auth.adobe.com’êæÕI
+api.foxnews.com¶¶˜V
+vod.foxnews.comåİäÒ 
+	twimg.comƒÌşƒ
+boltdns.netñƒ‰â6
+fncstatic.com”ù£óÄ
+global.fncstatic.com”ù£óÄ
+segment.com‘ºÉ©¦%
+foxnewsplayer-a.akamaihd.netĞÀµ©ÑS!
+manifest.prod.boltdns.netñƒ‰â6
+	api.x.comää·ß	
+pbs.twimg.comÙåá
+prod.boltdns.netñƒ‰â6
+static.foxnews.com•ëÙÕÈ
+cdn.segment.comˆİä”S
+time.akamai.com™¹†À…
+video.twimg.comªæœ
+p
+gravatar.com
+maxai.meì¸ÊÖ
+privacy-mgmt.com„âÿT
+i.forbesimg.com±İ¯¡
+secure.gravatar.comĞåáı¹
+
+192.229.221.95
+live.comâ•—Ù
+221.95µ¼Ú 
+
+229.221.95µ¼Ú 
+www.puppyplaats.nlóåº
+puppyplaats.nlÛ±°@
+login.live.comö±²È
+
+ƒ
+'ipv4-c172-ams001-ix.1.oca.nflxvideo.net
+www.netflix.comÇĞŠ™/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netÌŞ¼¬y0
+'ipv4-c174-ams001-ix.1.oca.nflxvideo.netÅİßäœ
+thesun.co.ukäçï²
+tags.thesun.co.ukäçï²
+netflix.com¡•²
+nflxvideo.netßçãí0
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netñÁŒ™0
+'ipv4-c194-ams001-ix.1.oca.nflxvideo.net­©ï
+oca.nflxvideo.netßçãí
+M
+lh5.googleusercontent.com
+nflxvideo.net›ÄÎçS
+oca.nflxvideo.net›ÄÎçS
+8
+login.microsoftonline.com
+microsoftonline.com‚ˆıE
+å
+'ipv4-c210-ams001-ix.1.oca.nflxvideo.net
+netflix.comØÉØØ‰
+www.netflix.com÷ŸŒ¤#
+web.prod.cloud.netflix.comê‰ºÀÁ
+oca.nflxvideo.netÊ––ŸÖñ
+nflxvideo.netÊ––ŸÖñ
+thesun.co.ukûÅÃÓ
+tags.thesun.co.ukûÅÃÓ
+×
+'ipv4-c180-ams001-ix.1.oca.nflxvideo.net/
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.net¢Ÿıé/
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.net–€ê±/
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.netÉ±ğ¯
+thesun.co.uk‘â¥"
+occ-0-768-769.1.nflxso.netÔ†ìì+
+nflxvideo.netÔëÑ‚§(
+ptr.thesun.co.ukÛ ·
+
+nflxso.net®ï‚ÿ 
+oca.nflxvideo.netÔëÑ‚§(
+Ÿ
+
+101.38.172A
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comï‡ç
+mp.microsoft.comßûõ¸
+update.microsoft.comƒÓ’ù
+data.microsoft.comîÌ¾½ˆ
+38.172Á¹©ÜéG
+microsoft.comç†¼§Í
+151.101.38.172‡™½µ6
+graphassets.comšó¦ƒ
+media.graphassets.comÌ°œ»
+amazonaws.comï‡ç
+www.puppyplaats.nl…µÁ‹-
+sdk.privacy-center.org°·¢ù½
+privacy-center.org°·¢ù½
+eu-west-1.amazonaws.comï‡ç*
+"cp801.prod.do.dsp.mp.microsoft.comßûõ¸
+puppyplaats.nlŠê‚—Z
+accounts.google.com–®üŒ%
+v10.events.data.microsoft.com½·ÊßV"
+fe2cr.update.microsoft.comƒÓ’ù
+
+google.comˆæ¹…˜
+js.stripe.comŠˆ¡Œû
+
+stripe.com˜ã¤ñ
+f
+mp.microsoft.com
+oca.nflxvideo.netö°üÉ`
+nflxvideo.netö°üÉ` 
+nsi.activity.api.bbc.comöşÛ™
+›
+a.nytimes.com
+nyt.com†Ø¤œ
+purr.nytimes.comá í
+
+google.comƒš‚Û
+gcp.gvt2.comı€ª
+beacons.gcp.gvt2.com¾‡€Õ
+www.nytimes.com´Àˆ‹P
+nytimes.comÛå–˜¾
+
+g1.nyt.com†Ø¤œ
+foxweather.com¥È×Â
+
+office.comÆ¥Äª
+gvt2.comı€ª
+ecs.office.comÆ¥Äª
+-
+usanetwork.com
+www.usanetwork.comÛ‹Ù°«
+s
+53.151
+microsoft.com¼–
+teams.microsoft.com¼–!
+config.teams.microsoft.com¼–
+96.16.53.151åÙš†
+
+ovp.iris.tv
+players.brightcove.net—Ã¹§h
+
+zencdn.net¹º¸Y
+vjs.zencdn.net¹º¸Y
+prod.boltdns.netîåÀÿÄ
+x.com¾Ìê…
+
+www.bbc.com
+”
+pbs.twimg.com
+www.foxnews.com”îæÊ
+twitter.com€îÛî9
+x.comßÀÔ¥
+	twimg.comÅˆ³‚g
+ton.twitter.com¹Ñ­À
+video.twimg.comó¥¼ßˆ
+T
+safebrowsing.google.com
+www.puppyplaats.nlÇ«ÃéŒ
+sdk.privacy-center.orgÚ„u
+²
+sdk.privacy-center.org
+www.puppyplaats.nlüˆ¹áô!
+translate.googleapis.com–²‘öŒ
+
+stripe.com²İ¸»Ç
+update.microsoft.com¯ğÛï%
+v10.events.data.microsoft.com¿Óøå+
+Á
+
+stripe.com
+www.puppyplaats.nlÑúŞ–!
+translate.googleapis.com¥îâ†å
+update.microsoft.comÛú&
+v10.events.data.microsoft.comß¡«ÄŠ
+stripe.networkéİ‰ø
+www.nytimes.comûì§
+Á
+#launchpad-wrapper.privacymanager.io
+privacymanager.ioÏ‡ÃùÆ$
+launchpad.privacymanager.ioä½ïÑ
+purr.nytimes.comˆïª™X
+www.nytimes.comÂ“ª
+nytimes.com„İàÔÍ
+nyt.com©æš8
+D
+w3-reporting-nel.reddit.com
+www.reddit.comÍäâÓ`
+x.com×àÂÜp
+Ğ
+192.99.44.193
+api.bbc.comôê›Ğ
+googleapis.comŒÑ¢K
+fonts.googleapis.comôÔ´Ã
+api.betterttv.net¸¼ ı
+bbc.comšİŠ?
+cmp.cdn.thesun.co.ukÚµ ñ+
+ichef.bbci.co.uküŸŒÏİ
+beacons.gcp.gvt2.com““ï)
+api.maxai.meÕ´¼í
+44.193Œƒƒ£‹
+betterttv.net¸¼ ı
+static.bbci.co.ukˆÁƒš
+gcp.gvt2.com³óòšû
+maxai.meÕ´¼í
+thesun.co.ukëßÚ÷
+
+bbci.co.ukÉÊ’…÷
+ptr.thesun.co.ukÚÛ5
+www.bbc.comõ§şğ !
+gn-web-assets.api.bbc.com¢™Š 
+static.files.bbci.co.ukÜ×íÒ¿
+gvt2.com³óòšû
+	99.44.193Œƒƒ£‹
+co.ukµªíüø
+www.thesun.co.ukÉ…ÂÊ"
+‘
+cmp.cdn.thesun.co.uk
+co.uk«“¦İıI
+ptr.thesun.co.ukíÜÑæÙ
+x.com‡åë
+googleapis.comê„ƒ§3
+extension.grammarly.comÅÉ¤˜
+nflxext.com©ªæ
+
+tiqcdn.comÆ€•½
+fonts.googleapis.com®ç³¡
+.
+'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÅÍç
+thesun.co.uk«“¦İıI
+
+google.com‘éÕ7
+www.thesun.co.ukôı«ów
+	twimg.comùÔË÷(
+nflxvideo.net³ÏÂ
+tags.tiqcdn.com£ÀÊ
+tags.thesun.co.uk¥ÜÛ\
+nid.thesun.co.ukñ”´ã
+grammarly.comÅÉ¤˜&
+config.extension.grammarly.comâ¤’Ì
+oca.nflxvideo.net³ÏÂ
+
+
+zencdn.net
+Ù
+idgraph.dt.fox
+prod.pyxis.atp.fox‹õ¨²
+pyxis.atp.fox‹õ¨²%
+pub-admin-elections.foxnews.comÂùq
+prod.boltdns.net…¢äå(
+www.foxnews.comä²ˆˆN
+static.foxnews.comıâÍÑ:
+prod.idgraph.dt.foxåşÚÅæ
+
+teams.microsoft.com
+‘
+abs-0.twimg.com
+abs.twimg.com¤û¤Å³
+
+	api.x.comú¾ù®T
+pbs.twimg.comİ°‡ã
+video.twimg.comàŒä—
+x.com§²¥Áî
+	twimg.comóÖÍ®‰?
+Î
+live.com
+microsoft.com¬Àİ©%
+v10.events.data.microsoft.comÌòä“
+privacy-mgmt.comôøßşÍ
+www.puppyplaats.nl¸Ã ¦
+puppyplaats.nlªÊáò3
+login.live.com·ÇÔ§
+update.microsoft.comàÍø•
+Š
+fe2cr.update.microsoft.com
+
+google.comŸãó¤6
+www.puppyplaats.nlÉ™ò²
+privacy-center.org¯ğÛï 
+translate.googleapis.com€õ­'
+login.live.comÊÄı1
+wdcp.microsoft.com£²×
+puppyplaats.nlü·Åí
+sdk.privacy-center.org¯ğÛï
+fonts.googleapis.com÷¤šÍ`A
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com±æâ‰
+googleapis.comŠ­„È¦	
+js.stripe.com¯ş¯
+
+stripe.comÛú
+live.comàÍø•
+update.microsoft.comÚ°…§»
+microsoft.comÕúÕˆ%
+v10.events.data.microsoft.com“Ûïí
+ß
+graphassets.com
+js.stripe.comƒåÛ±
+
+stripe.comƒåÛ±
+microsoft.comÙÚ†³‹%
+v10.events.data.microsoft.comÅøšŠO
+media.graphassets.comÄ®¬‹ç5@
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comŞ¡š'
+º
+'ipv4-c171-ams001-ix.1.oca.nflxvideo.net
+oca.nflxvideo.net£ÛŞŒÎ1/
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.net—²â/
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.net‚Ÿ¨ì
+/
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.netğç³é
+/
+'ipv4-c176-ams001-ix.1.oca.nflxvideo.netá¡â£,0
+'ipv4-c180-ams001-ix.1.oca.nflxvideo.net™èĞ‡
+
+thesun.co.ukÊé"
+occ-0-768-769.1.nflxso.netïíå¬@
+
+nflxso.netæŸ¾¡ì
+nflxvideo.net£ÛŞŒÎ1
+ptr.thesun.co.ukÃ¯ø
+Ï
+federated-id.live.api.bbc.co.uk
+googleapis.comÆ›é
+login.live.comÀõ‰§
+live.comÄË±Ã
+joinhoney.comˆÖñ
+privacy-mgmt.comİ´àı°
+
+google.com¡ƒ×ƒ5
+gvt2.comè 
+gcp.gvt2.comè 
+
+static.foxnews.com
+www.foxnews.com»ãº÷í
+uri.shÁììª
+time.akamai.coméºú°;
+vod.foxnews.com·Î©¢
+x.comÚ½?
+n
+prod.netflix.com
+www.netflix.comöœµ«
+push.prod.netflix.comŞ´ôd"
+web.prod.cloud.netflix.comêí…Ò
+6
+web.prod.cloud.netflix.com
+www.netflix.com«â¦Ù»
+!
+uri.sh
+www.foxnews.com’”ß•?
+-
+downloads.nordcdn.com
+nordcdn.comÚÑªÏ·
+
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.com
+update.microsoft.com±æâ‰$
+v10.events.data.microsoft.com¬‹Â
+
+www.nytimes.com
+
+www.nbc.com
+T
+push.prod.netflix.com
+www.netflix.comöœµ«"
+web.prod.cloud.netflix.comêí…Ò
+%
+vjs.zencdn.net
+
+zencdn.netˆ–£åâ
+Ÿ
+api.bbc.com
+live.comÃÕ‡
+cdn.privacy-mgmt.com¶†©Æ
+gravatar.com—¼•“
+maxai.mešªĞ•z
+api.maxai.mešªĞ•z
+fonts.googleapis.comş¸¸ÿ 
+mp.microsoft.comÏü„²
+static.files.bbci.co.uk¡º °\
+i.forbesimg.comÂ›‹é$
+promote-subscribe.forbes.com¼ø¢Å
+gvt2.comÁ¾Â
+login.live.com°õ
+www.bbc.com€Ô˜é9
+privacy-mgmt.com©¡¢ô–%
+nf.smartscreen.microsoft.comÖ¤ìÄ¾
+forbesimg.com‘¥Ãö¾
+googleapis.comğ¹´úÉ!
+nsi.activity.api.bbc.com’ÀÍ¯š"
+smartscreen.microsoft.com¬ÉØ‰ı
+open-api.spot.imÀ´£(
+static.bbci.co.ukÄ®ôÄ„
+secure.gravatar.com—¼•“'
+fe3cr.delivery.mp.microsoft.comÏü„²
+bbc.com—ŸĞåñ„
+ichef.bbci.co.uk¯—ÇÇ¥
+
+
+bbci.co.uk©­‡¨Ğ<"
+gn-web-assets.api.bbc.com‰ıƒ£r
+cdn.optimizely.com£¾Ç·
+beacons.gcp.gvt2.comµŠ‹
+microsoft.comüÅİ»–
+co.uk©­‡¨Ğ<
+optimizely.com£¾Ç·
+
+forbes.com¼ø¢Å
+spot.imÀ´£(
+gcp.gvt2.comÁ¾Â
+¿
+atp.fox
+boltdns.net¾şØ-
+static.foxnews.com¹×‰Ÿ=
+global.fncstatic.comÈä1
+pyxis.atp.foxÜ¦å·Õ
+foxnews.comèæÃñ
+www.foxnews.com½ñ‘ÍS
+prod.idgraph.dt.fox‹õ¨²
+fncstatic.comÈä1%
+content-autofill.googleapis.com¹è
+fonts.googleapis.com„…ûõ'
+prod.boltdns.net¾şØ-
+prod.pyxis.atp.foxÜ¦å·Õ,
+$cf-images.us-east-1.prod.boltdns.net¾şØ-
+googleapis.com¥€ºø¯
+dt.fox‹õ¨²
+idgraph.dt.fox‹õ¨²
 µ
-	anm.co.uk
-www.dailymail.co.ukÙ¹¾Ú“
-dailymail.co.ukÍæ²Óî(
-hulkprod.anm.co.ukê—ÿ¼‘.
-dmgmediaprivacy.co.uk¥ä©‘¬"
-cmp.dmgmediaprivacy.co.ukõå×˜“
-co.ukÈ‰ñ÷¬Ğ
+	anm.co.uk
+dmgmediaprivacy.co.ukªñıÄ¢
+co.ukü§Ù©Á
+www.dailymail.co.ukç£ÎÕí
+dailymail.co.ukÂßí÷¾
+hulkprod.anm.co.ukÊã„±ë."
+cmp.dmgmediaprivacy.co.ukÆ²Àê
+
+„
+manifest.prod.boltdns.net
+static.foxnews.com•Æ¬g
+time.akamai.com»á®ò
+vod.foxnews.comíÀ¤­ÿ
+prod.boltdns.net±Ä¶²
+¬
+nytimes.com
+
+stripe.comòÆ÷
+www.nytimes.comëåÊ«ú
+privacymanager.ioæîóº
+purr.nytimes.comÜ¯±šÀ
+
+office.comÂ¤ëß$
+ogads-pa.clients6.google.comü±š¢`
+ú
+ichef.bbci.co.uk
+privacy-mgmt.com˜Ì	!
+nsi.activity.api.bbc.comÍ€®’
+maxai.meÁÕî¤
+microsoft.com×î©s
+static.bbci.co.ukÑñåöä 
+static.files.bbci.co.ukôøœÓì.
+mp.microsoft.com×î©s
+www.bbc.comÒ¯¸‡
+optimizely.comÈŸ¡î*
+
+static.files.bbci.co.uk
+æ
+cdn.privacy-mgmt.com
+live.com“’½ÎU
+fonts.googleapis.comá Ø
+co.uk™Á–Õ"
+gn-web-assets.api.bbc.comÌÃä¹‰
+spot.imîÍš£
+secure.gravatar.com‚ñ¿*
+joinhoney.com ìşÏ£
+static.files.bbci.co.uk¥ÆÕÂ
+
+forbes.comŠ®×«
+open-api.spot.imîÍš£
+gravatar.com‚ñ¿*
+login.live.comÒƒáş
+wdcp.microsoft.comïá§é%
+v10.events.data.microsoft.comô˜¼Ø
+microsoft.comŸ›§œ
+data.microsoft.comô˜¼Ø
+d.joinhoney.comüëõH
+ichef.bbci.co.uk˜Ì	(
+federated-id.live.api.bbc.co.uk¢”ÎÍ
+googleapis.com¦‚Ó%
+maxai.meœ§ğı%
+content-autofill.googleapis.comİš$
+promote-subscribe.forbes.comŠ®×«
+privacy-mgmt.com‘àØ”ä^$
+nf.smartscreen.microsoft.com‘ÕÀ»5!
+smartscreen.microsoft.comË²ü\
+Ñ
+'ipv4-c186-ams001-ix.1.oca.nflxvideo.net
+netflix.comİæ”œä/
+'ipv4-c210-ams001-ix.1.oca.nflxvideo.net·Â»“/
+'ipv4-c194-ams001-ix.1.oca.nflxvideo.netĞœ°Û
+ptr.thesun.co.uk©Ë»
+tags.thesun.co.ukş€´
+nordvpn.comŒ
+oca.nflxvideo.netÌæÚæÚ/
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.net”Ş£Ú/
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.netŠã¥Û/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netŞÛûë"
+occ-0-768-769.1.nflxso.net‹øˆ,
+nflxvideo.netÌæÚæÚ/
+'ipv4-c205-ams001-ix.1.oca.nflxvideo.net·ÒŒİ0
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.net·Å†®Õ!
+lh5.googleusercontent.comòÃÑù
+
+nflxso.netİ±ˆæ¡/
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.net€ÑÈ´
+thesun.co.ukúâæ’
+www.netflix.com®³Šò
+
+weather.microsoft.com
+ñ
+38.172
+mp.microsoft.comßûõ¸*
+"cp801.prod.do.dsp.mp.microsoft.comßûõ¸
+www.puppyplaats.nl…µÁ‹-
+puppyplaats.nlŠê‚—Z
+accounts.google.com–®üŒ"
+fe2cr.update.microsoft.comƒÓ’ù%
+v10.events.data.microsoft.com½·ÊßV
+media.graphassets.comÌ°œ»
+js.stripe.comŠˆ¡Œû
+update.microsoft.comƒÓ’ù
+microsoft.comç†¼§Í
+sdk.privacy-center.org°·¢ù½
+graphassets.comšó¦ƒ
+amazonaws.comï‡ç
+eu-west-1.amazonaws.comï‡ç
+
+google.comˆæ¹…˜
+privacy-center.org°·¢ù½
+
+stripe.com˜ã¤ñ
+data.microsoft.comîÌ¾½ˆA
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comï‡ç
+
+stripe.network
+,
+purr.nytimes.com
+www.nytimes.comÚáƒ®ó
+
+assets.nflxext.com
+push.prod.netflix.comã­
+prod.netflix.comã­
+ichnaea-web.netflix.com¾¨Š›/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netìÍ¯ø4
+edge.api.brightcove.comĞºù
+cookielaw.orgñ…×#
+occ-0-768-769.1.nflxso.netÛøˆÁÔ
+www.netflix.com©ÅàÜ¬
+nflxvideo.netÀÿÆÈ°	
+tags.thesun.co.ukÙ¢¿Ä
+brightcove.netúÍ…	
+oca.nflxvideo.netÀÿÆÈ°	
+ptr.thesun.co.uk„˜™Û
+thesun.co.ukõÈÓç$
+joinhoney.com½§ŞÔ
+cloud.netflix.comÙãí«I
+
+nflxso.net»Ş›¸°/
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.netí•„œo/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netŒü”
+iris.tvÊ…O#
+safebrowsing.googleapis.comà£‹Ê<
+nflxext.comœ§£áàL
+co.ukõÈÓç$
+cmp.cdn.thesun.co.ukÜ±&
+players.brightcove.netúÍ…	
+d.joinhoney.com½§ŞÔ"
+web.prod.cloud.netflix.comñ€êÒ10
+'ipv4-c193-ams001-ix.1.oca.nflxvideo.netĞèØ¹€
+
+zencdn.net‡´¯€(
+ovp.iris.tvÊ…O
+googleapis.comÛÓÅŞİ'
+content-autofill.googleapis.com€ìŒ 
+vjs.zencdn.net‡´¯€(
+brightcove.comĞºù
+cdn.cookielaw.org›Æã¦
+netflix.comèÊ±ğÓ	
+²
+cloud.netflix.com
+push.prod.netflix.comÙ‹ÿ£
+femetrics.grammarly.ioÿÛˆ‚
+prod.netflix.comÙ‹ÿ£/
+'ipv4-c193-ams001-ix.1.oca.nflxvideo.netÕ±î</
+'ipv4-c205-ams001-ix.1.oca.nflxvideo.netëä¬›#
+netflix.com¤š¢ùÍ;
+ichnaea-web.netflix.comÆï‰å 0
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.netñÑÆåº0
+'ipv4-c210-ams001-ix.1.oca.nflxvideo.netê‰ºÀÁ
+nflxext.com±‚Ä¦ß
+
+nflxso.netú¸§¿÷¥
+nflximg.netç™ÁÈ/
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.net¼÷á¯#
+occ-0-768-769.1.nflxso.netÓÊÎë,(
+ extension.femetrics.grammarly.ioÿ­„Á#
+web.prod.cloud.netflix.comÊ”èöí0/
+'ipv4-c183-ams001-ix.1.oca.nflxvideo.net×©§¦.
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.netöÏ¾
+googleapis.com¬™³­º/
+'ipv4-c176-ams001-ix.1.oca.nflxvideo.net–ª¯­
+cookielaw.orgÒ¬éë’
+www.netflix.com·Ü¤³Í
+nflxvideo.netÚ¦½©‰
+/
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.netéÆÍá/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.netİßˆİ'
+content-autofill.googleapis.com•³Ö¥'
+oca.nflxvideo.netÚ¦½©‰
+/
+'ipv4-c161-ams001-ix.1.oca.nflxvideo.netÇÖ¯‹1
+grammarly.ioÿÛˆ‚
+_
+public.flourish.studio
+www.foxnews.comŒ¿Ù¾4
+static.foxnews.comôšÀ±ê
+uri.sh„¿Ü ¥
+
+www.forbes.com
+?
+services.microsoft.com%
+v10.events.data.microsoft.com³×íú5
+t
+my.foxnews.com
+sb-ssl.google.comŠğ»í
+static.foxnews.comàÌ™ºä
+	twimg.com¤ƒ˜à#
+video.twimg.com¤ƒ˜à#
+
+vod.foxnews.com
+„
+
+g1.nyt.com*
+#launchpad-wrapper.privacymanager.io©æš8
+privacymanager.ioÒÌµp
+purr.nytimes.com´³ô§G
+gvt2.com‘ï»±Á
+gcp.gvt2.com‘ï»±Á
+www.nytimes.comê½¸ŒŞ/
+nytimes.coméŸ‰åÓ~
+
+google.comºÖŞ
+googleapis.comóÃ©®Ø	
+nyt.comê¿àŠò5
+g
+map.mp.nbc.com
+nbc.com¬¥Àîè
+
+mp.nbc.com¬¥Àîè
+sp.auth.adobe.comÌ¡ÅÑ!
+onetrust.comã„¨
+\
+cdn.ketchjs.com
+ketchcdn.comø‡´Ò
+ketchjs.com€ŸÔáã×
+global.ketchcdn.comüƒši
+7
+ogads-pa.clients6.google.com
+www.nytimes.com©»³‹ 
+­
+media.graphassets.com@
+9puppyplaats-prod-public-assets.s3.eu-west-1.amazonaws.comŞ¡š'
+
+stripe.comƒåÛ±
+microsoft.com£öø²—%
+v10.events.data.microsoft.com ±Ëğ7
+¡
+'ipv4-c190-ams001-ix.1.oca.nflxvideo.net
+oca.nflxvideo.netÖ´¦ñ°$
+netflix.com¢¶µ"
+occ-0-768-769.1.nflxso.netùßü
+
+nflxso.netñ¯ï•Q
+nflxvideo.netÖ´¦ñ°$/
+'ipv4-c199-ams001-ix.1.oca.nflxvideo.net÷õîÛ
+thesun.co.ukøë
+ptr.thesun.co.ukı£_
+www.netflix.com‘ÛÚ
+¯
+e2c16.gcp.gvt2.com
+joinhoney.com¼˜
+e2c51.gcp.gvt2.comÒ‰&
+federated-id.live.api.bbc.co.ukè 
+gvt2.comİ‹«Éê
+gcp.gvt2.comÃ÷ù¹ú
+googleapis.com´ÄÇŒ
+¨
+	99.44.193
+beacons.gcp.gvt2.com»¦¦ŞS
+googleapis.com˜¢Ä–
+maxai.me³šÿÖ 
+api.maxai.me³šÿÖ 
+betterttv.net¸¼ ı
+www.thesun.co.ukÉ…ÂÊ"
+www.bbc.comêÏüáA
+
+bbci.co.uk“•¥Šî!
+gn-web-assets.api.bbc.com»Ä²” 
+static.files.bbci.co.uk¹¯Û¥ÿ
+gcp.gvt2.comçæåµö
+api.betterttv.net¸¼ ı
+thesun.co.ukëßÚ÷
+gvt2.comçæåµö
+ptr.thesun.co.ukÚÛ5
+ichef.bbci.co.ukø¿˜»
+static.bbci.co.uk‘‚‡´
+fonts.googleapis.comè©é†
+co.ukÿôÿğ
+cmp.cdn.thesun.co.ukÚµ ñ+
+bbc.com‚´º•~
+api.bbc.coméÕ· !
+í
+a57.foxnews.com
+fonts.googleapis.comÈâÅÉÜ
+www.foxnews.comÙ…¿ßÿ
+public.flourish.studioæÕúò×
+cdn.flipboard.com‚‘ºª
+googleapis.com¡¼ÿ¨ú>
+static.foxnews.comìÆÉüß'
+dt.foxÂÂğ'
+pub-admin-elections.foxnews.comØûÙú
+flipboard.com‚‘ºª
+foxnews.com¢œõüšï
+prod.idgraph.dt.foxÂÂğ
+atp.foxñÓœÅ
+global.fncstatic.com÷Ù¯¯ô
+flourish.studioæÕúò×
+idgraph.dt.foxÂÂğ
+prod.pyxis.atp.foxñÓœÅ
+pyxis.atp.foxñÓœÅ
+fncstatic.com÷Ù¯¯ô
 F
 i.dailymail.co.uk
 nordvpn.comÎÜ¯±
 www.dailymail.co.uk·Ô‹›œ
+‰
+styles.redditmedia.com
+www.reddit.comû˜Óõå
+www.redditstatic.comÄŒ¯êÆ
+www.google.coméùÜãF
+thumbs.redditmedia.comí©ş¨¢
 8
 translate.googleapis.com
 update.microsoft.com€õ­'
-Z
- mobile.events.data.microsoft.com%
-v10.events.data.microsoft.com™·Å
-nbc.com·¼êù4
-ú
-'ipv4-c174-ams001-ix.1.oca.nflxvideo.net!
-lh5.googleusercontent.com™İüğ
-tags.thesun.co.ukñÍÏµ
-microsoft.com½ü½ã
-/
-'ipv4-c186-ams001-ix.1.oca.nflxvideo.netÍ„’Û0
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net¢±êî0
-'ipv4-c194-ams001-ix.1.oca.nflxvideo.net“Êâàâ
-nflxvideo.net®¸Ç×ã
-oca.nflxvideo.net®¸Ç×ã
-teams.microsoft.com½ü½ã
-
-thesun.co.ukñÍÏµ
+¹
+44.193
+	99.44.193²¦õ’À
+betterttv.net¸¼ ı
+beacons.gcp.gvt2.com»¦¦ŞS
+googleapis.com˜¢Ä–
+api.maxai.me³šÿÖ 
+fonts.googleapis.comè©é†
+api.betterttv.net¸¼ ı
+www.thesun.co.ukÉ…ÂÊ"
+gvt2.comçæåµö
+gcp.gvt2.comçæåµö
+cmp.cdn.thesun.co.ukÚµ ñ+
+ichef.bbci.co.ukø¿˜»
+
+bbci.co.uk“•¥Šî
+static.bbci.co.uk‘‚‡´!
+gn-web-assets.api.bbc.com»Ä²”
+api.bbc.coméÕ· ! 
+static.files.bbci.co.uk¹¯Û¥ÿ
+maxai.me³šÿÖ 
+bbc.com‚´º•~
+ptr.thesun.co.ukÚÛ5
+www.bbc.comêÏüáA
+thesun.co.ukëßÚ÷
+co.ukÿôÿğ
+~
+nf.smartscreen.microsoft.com 
+static.files.bbci.co.ukªÉÅ¤
+privacy-mgmt.com‘ÕÀ»5"
+smartscreen.microsoft.comÖÇ¬æz
+l
+flipboard.com
+foxnews.comÅ¦„¥ø	
+static.foxnews.com±¨¥Ä£(
+pub-admin-elections.foxnews.com¬œÚ­û
+x
+221.95
+
+229.221.95µ¼Ú 
+www.puppyplaats.nlóåº
+puppyplaats.nlÛ±°@
+login.live.comö±²È
+
+live.comâ•—Ù
+W
+pub-admin-elections.foxnews.com
+www.foxnews.com¨Éİ
+static.foxnews.comĞ¯ˆÆ
+
+www.netflix.com
+ü
+brightcove.com
+nflxvideo.net€›ƒ
+brightcove.net¨ûì¾„
+nflxext.com•ã	.
+'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¦Ş
+
+zencdn.net±ò¢¸
+vjs.zencdn.net±ò¢¸
+iris.tv£ËÅåõ
+ovp.iris.tv£ËÅåõ
+oca.nflxvideo.net€›ƒ
+players.brightcove.net¨ûì¾„ 
+edge.api.brightcove.comàè„Àä
+prod.boltdns.net“®â¶,
+$cf-images.eu-west-1.prod.boltdns.net“®â¶
+ï
+fncstatic.com
+sp.auth.adobe.comú¸N
+prod.idgraph.dt.foxœîº
+global.fncstatic.com¶ÒòÛé
+x.com…ÁïV
+prod.pyxis.atp.foxÈä1
+pyxis.atp.foxÈä1
+static.foxnews.comÒ»àÚô
+idgraph.dt.foxœîº
+pbs.twimg.com´ş©e
+foxnews.com²ô¸¼¤
+www.foxnews.comØ’‘œÎ%
+foxnewsplayer-a.akamaihd.netõ»Ä¸
+	twimg.com›äÕ
+video.twimg.comç‚ºğ
+M
+thumbs.redditmedia.com
+www.reddit.comÎ·®V
+www.redditstatic.com¤£b
+ã
+grammarly.io
+
+snopes.comå±¡
+joinhoney.comÏíôÑ\
+netflix.comÿÛˆ‚"
+web.prod.cloud.netflix.comÿÛˆ‚
+s.joinhoney.comÏíôÑ\
+static.foxnews.comÀãËÊ
+nbc.com±µäK
+img.nbc.comÌ§ù
+www.snopes.comå±¡
+§
+img.nbc.com
+microsoft.comŒŸï	(
+ mobile.events.data.microsoft.comŒŸï	
+onetrust.com¸¡4
+	ss.nbc.coÕÒóĞ
+
+nbcuni.comáº÷™	
+joinhoney.comÖ„ïú
+nbc.com­É•å®÷
+www.nbc.com¯…ù‘#
+sp.auth.adobe.com¹¨¨¨#
+nbc.coÄÜ˜F
+launchdarkly.com»¸…'
+s.joinhoney.comÏ»d
+ü
+'ipv4-c189-ams001-ix.1.oca.nflxvideo.net
+www.netflix.com°ùÇ¿>
+
+nflxso.net¨ŠÔŒ,"
+web.prod.cloud.netflix.com¼÷á¯
+players.brightcove.netÃôşÃ
+nordvpn.comñî
+netflix.comœêñ®~
+nflxvideo.netĞ˜‚Ğ©2/
+'ipv4-c197-ams001-ix.1.oca.nflxvideo.netúçÛ/
+'ipv4-c195-ams001-ix.1.oca.nflxvideo.net·²ÆÔ"
+occ-0-768-769.1.nflxso.net±¬ã¬
+oca.nflxvideo.netĞ˜‚Ğ©2
 
 www.snopes.com
-6
-honey.io
-
-reddit.comÁøŞ
-www.reddit.comÁøŞ
-7
-ogads-pa.clients6.google.com
-www.nytimes.com©»³‹ 
-è
-js.stripe.com
-sdk.privacy-center.org¢©µÍÑ!
-translate.googleapis.com¥îâ†å%
-v10.events.data.microsoft.comÊàã–.
-media.graphassets.comƒåÛ±
-www.puppyplaats.nlÅÓŸ²*
-puppyplaats.nléÈİß¨
-update.microsoft.com¯ş¯
-microsoft.comÄßÅİb
-stripe.networkæ¯ï¨	
-m.stripe.networkæ¯ï¨	
-privacy-center.orgªƒ·ÄŒ
-
-stripe.comÑÃÇó'
-À
-nflxvideo.net
-nordvpn.comèëæ#
-occ-0-768-769.1.nflxso.netÓíğ˜ó
-oca.nflxvideo.net÷†èÇî
-thesun.co.uk¸ŞÇ…™
-sp.auth.adobe.com¢‚ú´t
-www.netflix.comã£İü&
-push.prod.netflix.com”ÔªÉ*
-tags.thesun.co.uk¡ßÍÀ˜
-players.brightcove.netÑè¹à
-teams.microsoft.com¥ÿ›
-ptr.thesun.co.ukŒ§—
-ovp.iris.tvÕäz
-prod.netflix.com”ÔªÉ*#
-web.prod.cloud.netflix.comòƒ«÷„
-
-zencdn.net€Ñó×<
-vjs.zencdn.net€Ñó×<
-™
-$cf-images.eu-west-1.prod.boltdns.net
-x.com¥ÈËö
-ovp.iris.tvîåÀÿÄ
-iris.tvîåÀÿÄ
-prod.boltdns.netª­ßÔŞ
-edge.api.brightcove.com“®â¶
-
-vod.foxnews.com
-Î
-live.com%
-v10.events.data.microsoft.comÌòä“
-privacy-mgmt.comÔùçÏÕ
-www.puppyplaats.nl‰›¶ê
-puppyplaats.nl’¶ìÔ9
-login.live.comĞ° Úü
-update.microsoft.comöÖóù
-microsoft.com¦¡‡Éb
-á
-'ipv4-c161-ams001-ix.1.oca.nflxvideo.net0
-'ipv4-c177-ams001-ix.1.oca.nflxvideo.net¯¥†è/
-'ipv4-c183-ams001-ix.1.oca.nflxvideo.net§†ê!/
-'ipv4-c195-ams001-ix.1.oca.nflxvideo.net•×”İ
-www.netflix.com®½Áü'
-netflix.comõ“ñ‡Y
-nflxvideo.net–…òÂØ#
-oca.nflxvideo.net–…òÂØ#/
-'ipv4-c189-ams001-ix.1.oca.nflxvideo.netÃÁÊğ
-thesun.co.ukÑè¶
-players.brightcove.netÚ¹ÒÅ"
-occ-0-768-769.1.nflxso.net¾Ò‰å
-
-
-nflxso.netúùÈ¯ "
-web.prod.cloud.netflix.com£ë×Å

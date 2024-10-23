@@ -3,17 +3,17 @@ import matplotlib.patches as patches
 import sys
 
 
-def plot_overlap_fixed_margin(times1, times2, fixed_margin, testNum, expected):
+def main(times1, times2, fixed_margin, testNum, expected):
     fig, ax = plt.subplots(figsize=(10, 3))
 
-    # Plot times1 and times2 as scatter plots
+    # plot times1 and times2 as scatter plots
     y_times1 = [1] * len(times1)  # y position for times1
     y_times2 = [2] * len(times2)  # y position for times2
 
     ax.scatter(times1, y_times1, color="blue", label="Times1")
     ax.scatter(times2, y_times2, color="orange", label="Times2")
 
-    # Add the fixed margin as rectangles (2 * fixed_margin length)
+    # add the fixed margin as rectangles (2 * fixed_margin length)
     for t in times1:
         rect = patches.Rectangle(
             (t - fixed_margin, 0.9),
@@ -38,7 +38,7 @@ def plot_overlap_fixed_margin(times1, times2, fixed_margin, testNum, expected):
         )
         ax.add_patch(rect)
 
-    # Set the limits, labels, and legend
+    # set the limits, labels, and legend
     ax.set_ylim(0.5, 2.5)
     ax.set_xlim(
         min(min(times1), min(times2)) - fixed_margin - 10,
@@ -100,4 +100,4 @@ if __name__ == "__main__":
         testNum = 1
 
     print("Running test", testNum)
-    plot_overlap_fixed_margin(times1, times2, fixed_margin, testNum, expected)
+    main(times1, times2, fixed_margin, testNum, expected)

@@ -18,7 +18,7 @@ func constructTestSessionRegions(earliestTime uint64, leeway uint64) *[]region {
 
 func main() {
 	if len(os.Args) != 2 {
-		log.Fatalf("Usage: %s INSPECT_MODE\n", os.Args[0])
+		log.Fatalf("Usage: %s {p,dt,t,c,e,ghc,st}\n", os.Args[0])
 	}
 	fname := os.Args[1]
 

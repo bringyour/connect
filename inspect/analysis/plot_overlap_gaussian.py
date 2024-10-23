@@ -1,29 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import math
-from scipy.integrate import quad
 from scipy.stats import norm
+
+from overlap import overlap_area
 
 
 def gaussian(x, mean, std_dev):
     return norm.pdf(x, mean, std_dev)
-
-
-def overlap_area(mean1, std_dev1, mean2, std_dev2, cutoff):
-    # define the limits for integration (cutoff applied)
-    lower_limit = max(mean1 - cutoff, mean2 - cutoff)
-    upper_limit = min(mean1 + cutoff, mean2 + cutoff)
-
-    if lower_limit >= upper_limit:
-        return 0.0  # No overlap
-
-    # define the integrand as the minimum of the two Gaussians
-    def integrand(x):
-        return min(gaussian(x, mean1, std_dev1), gaussian(x, mean2, std_dev2))
-
-    # Calculate the area using integration
-    area, _ = quad(integrand, lower_limit, upper_limit)
-    return area
 
 
 def plot_curves(ax, color, x, times, gauss, std_dev):
@@ -87,7 +70,7 @@ def plot_areas(
     return total
 
 
-def plot_gaussian_overlap(times1, times2, std_dev, cutoff):
+def main(times1, times2, std_dev, cutoff):
     max_cutoff = 4 * std_dev
     cutoff = min(
         cutoff, max_cutoff
@@ -146,20 +129,20 @@ def plot_gaussian_overlap(times1, times2, std_dev, cutoff):
     plt.close()
 
 
-# times1 = [1727265107213928000]
-# times2 = [1727265107157590000]
-# std_dev = 0.05 * 1_000_000_000
+if __name__ == "__main__":
+    # times1 = [1727265107213928000]
+    # times2 = [1727265107157590000]
+    # std_dev = 0.05 * 1_000_000_000
 
+    times1 = [180]
+    times2 = [150, 250]
+    std_dev = 30
+    cutoff = 4 * std_dev
 
-times1 = [180]
-times2 = [150, 250]
-std_dev = 30
-cutoff = 4 * std_dev
+    # 1 stdev contains 68% of the distribution
+    # 2 stdev contains 95% of the distribution
+    # 2.5 stdev contains 99% of the distribution
+    # 3 stdev contains 99.7% of the distribution
+    # 4 stdev contains 99.99% of the distribution
 
-# 1 stdev contains 68% of the distribution
-# 2 stdev contains 95% of the distribution
-# 2.5 stdev contains 99% of the distribution
-# 3 stdev contains 99.7% of the distribution
-# 4 stdev contains 99.99% of the distribution
-
-plot_gaussian_overlap(times1, times2, std_dev, cutoff)
+    main(times1, times2, std_dev, cutoff)

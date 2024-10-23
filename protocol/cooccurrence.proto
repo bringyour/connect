@@ -27,3 +27,12 @@ message Times {
     string sid = 1;  // tid
     repeated uint64 time = 2; // list of times
 }
+
+message ClustersData {
+    repeated Cluster clusters = 1; // list of clusters
+}
+
+message Cluster {
+    string id = 1; // cluster id
+    repeated string sids = 2; // list of tids
+}

@@ -71,10 +71,7 @@ func (c *coOccurrence) CalcAndSet(ov1 Overlap, ov2 Overlap) {
 	}
 }
 
-func (c *coOccurrence) Get(ov1 Overlap, ov2 Overlap) uint64 {
-	sid1 := ov1.SID()
-	sid2 := ov2.SID()
-
+func (c *coOccurrence) Get(sid1 sessionID, sid2 sessionID) uint64 {
 	// if value doesnt exist then 0 value is returned (which is desired)
 	if sid1.Compare(sid2) < 0 {
 		return (*c.cMap)[sid1][sid2]

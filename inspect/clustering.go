@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"math"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -11,9 +13,12 @@ import (
 	"strings"
 
 	"bringyour.com/inspect/data"
+	"bringyour.com/protocol"
+	"github.com/humilityai/hdbscan"
 	"github.com/oklog/ulid/v2"
 	"gonum.org/v1/gonum/floats"
 	"gonum.org/v1/gonum/stat"
+	"google.golang.org/protobuf/proto"
 )
 
 func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*data.TransportRecord) *map[sessionID]*timestamps {
@@ -213,13 +218,169 @@ func (o *generalClusterMethod) Args() string {
 	return o.args
 }
 
+// overlapToDistance converts overlap to distance using exponential decay.
+func overlapToDistance(overlap, maxOverlap float64) float64 {
+	alpha := 13.0 // adjust alpha to control the rate of decay
+
+	// no overlap means max distance
+	if overlap <= 0 {
+		return 1
+	}
+
+	// max overlap means no distance
+	if overlap >= maxOverlap {
+		return 0
+	}
+
+	// exponential decay
+	return math.Exp(-alpha * (overlap / maxOverlap))
+}
+
 func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, map[string][]float64, error) {
-	args := []string{"main.py"}
+	return GoCluster(clusterOps, printPython)
+}
+
+func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, map[string][]float64, error) {
+	// load cooccurance map
+	cooc := NewCoOccurrence(nil)
+	err := cooc.LoadData(clusterOps.CoOccurrencePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading cooccurrence map: %v", err)
+	}
+
+	// get all sids (top level) in cooc map
+	sids := make([]sessionID, 0)
+	for sid := range *cooc.cMap {
+		sids = append(sids, sid)
+	}
+	// order sids lexicographically (for consistent results)
+	sort.Slice(sids, func(i, j int) bool {
+		return sessionID(sids[i]).Compare(sessionID(sids[j])) <= 0
+	})
+
+	// map sids to integers
+	sidIndex := make(map[int]sessionID)
+	index := 0
+	for sid := range sids {
+		sidIndex[index] = sids[sid]
+		index++
+	}
+
+	// make array of the indices of the sids (as float64) for hdbscan data
+	samples := make([][]float64, index)
+	for i := 0; i < index; i++ {
+		samples[i] = []float64{float64(i)}
+	}
+
+	// hdbscan
+	minimumClusterSize := 3
+	clustering, err := hdbscan.NewClustering(samples, minimumClusterSize)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hdbscan clustering: %v", err)
+	}
+
+	// Options for clustering
+	// --   chosen   --
+	// [DEBUG] Verbose() - prints progress of clustering
+	// [GOOD] OutlierDetection() - adds all unclustered as outliers (each is unique to its closest cluster, so taking all outliers is the unclustered points)
+	// [INTERESTING] NearestNeighbor() - if used that outliers are assigned to clusters based on closest point in that cluster, otherwise based on centroid of cluster
+	// -- not chosen --
+	// [INTERESTING] OutlierClustering() - if the outliers of a cluster are more than minClusterSize then a new cluster is made with the outliers (most likely not useful)
+	// [BAD] Voronoi() - makes sure everything is clustered (we dont want this in general)
+	// [BAD] Subsample(n int) - only use first n points in clustering (bad for us since our points are sids)
+	clustering = clustering.OutlierDetection().NearestNeighbor()
+
+	distanceFunc := func(v1, v2 []float64) float64 {
+		// get the sids from the indices
+		sid1 := sidIndex[int(v1[0])]
+		sid2 := sidIndex[int(v2[0])]
+		// get the overlap value from the cooc map
+		overlap := cooc.Get(sid1, sid2)
+		// convert the overlap value to a distance
+		maxOverlap := uint64(257004153827659)
+		distance := overlapToDistance(TimestampInSeconds(overlap), TimestampInSeconds(maxOverlap))
+		return distance
+	}
+
+	// run clustering
+	score := hdbscan.VarianceScore // StabilityScore seems to not cluster anything so using VarianceScore
+	minimumSpanningTree := false   // with true seems to cluster everything together so using false
+	clustering.Run(distanceFunc, score, minimumSpanningTree)
+
+	// fmt.Printf("%+v\n", clustering)
+	// save results of clustering
+	clusters := make(map[string][]sessionID)
+	probabilities := make(map[string][]float64)
+	clusters["-1"] = make([]sessionID, 0)    // unclustered
+	probabilities["-1"] = make([]float64, 0) // unclustered
+	for i, cluster := range clustering.Clusters {
+		clusterID := fmt.Sprintf("%d", i)
+		points := cluster.Points
+		clusterSids := make([]sessionID, len(points))
+		clusterProbs := make([]float64, len(points))
+		for j, point := range points {
+			clusterSids[j] = sidIndex[int(point)]
+			clusterProbs[j] = 1.0 // set probabilites to 1.0
+		}
+		clusters[clusterID] = clusterSids
+		probabilities[clusterID] = clusterProbs
+
+		// add outliers as unclustered
+		for _, outlier := range cluster.Outliers {
+			clusters["-1"] = append(clusters["-1"], sidIndex[outlier.Index])
+			probabilities["-1"] = append(probabilities["-1"], 0.0) // set probabilites to 0.0
+		}
+	}
+
+	if clusterOps.SaveGraphs {
+		// save clusters in file
+		clustersPath := clusterOps.CoOccurrencePath + "_clusters.pb"
+		if err := SaveClusters(clusters, clustersPath); err != nil {
+			return nil, nil, fmt.Errorf("saving clusters: %v", err)
+		}
+		defer os.Remove(clustersPath) // delete clusters file
+
+		// run python script to save graphs
+		args := []string{"data_insights.py", "cooccurrence=../" + clusterOps.CoOccurrencePath, "clusters=../" + clustersPath}
+		if clusterOps.ShowHeatmapStats {
+			args = append(args, "print_stats=True")
+		}
+		if printPython {
+			fmt.Printf("[cmd] python3 %s\n", strings.Join(args, " "))
+		}
+		cmd := exec.Command("python3", args...)
+		cmd.Dir = "./analysis"
+		var stderr bytes.Buffer
+		var stdout bytes.Buffer
+		cmd.Stderr = &stderr
+		cmd.Stdout = &stdout
+		err := cmd.Run()
+		if err != nil {
+			return nil, nil, fmt.Errorf("python script: %v %v", err, stderr.String())
+		}
+
+		if printPython {
+			lines := strings.Split(stdout.String(), "\n")
+			for _, line := range lines {
+				if line == "" {
+					continue
+				}
+				fmt.Printf("[py] %s\n", line) // print lines without the specified prefixes
+
+			}
+		}
+	}
+
+	return clusters, probabilities, nil
+}
+
+func PythonCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, map[string][]float64, error) {
+	args := []string{"cluster.py"}
 	if printPython {
-		fmt.Printf("[cmd] python3 main.py %s\n", strings.Join(clusterOps.GetFormatted(), " "))
+		fmt.Printf("[cmd] python3 cluster.py %s\n", strings.Join(clusterOps.GetFormatted(), " "))
 	}
 	args = append(args, clusterOps.GetFormatted()...)
-	// cmd: python3 main.py clusterArgs...
+	// cmd: python3 cluster.py clusterArgs...
 	cmd := exec.Command("python3", args...)
 	cmd.Dir = "./analysis"
 	var stderr bytes.Buffer
@@ -278,4 +439,30 @@ func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID,
 	}
 
 	return clusters, probabilities, nil
+}
+
+func SaveClusters(clusters map[string][]sessionID, dataPath string) error {
+	clustersData := make([]*protocol.Cluster, 0)
+	for clusterID, sids := range clusters {
+		stringSids := make([]string, len(sids))
+		for i, sid := range sids {
+			stringSids[i] = string(sid)
+		}
+		cluster := protocol.Cluster{
+			Id:   clusterID,
+			Sids: stringSids,
+		}
+		clustersData = append(clustersData, &cluster)
+	}
+
+	dataToSave := &protocol.ClustersData{
+		Clusters: clustersData,
+	}
+
+	out, err := proto.Marshal(dataToSave)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(dataPath, out, 0644)
 }

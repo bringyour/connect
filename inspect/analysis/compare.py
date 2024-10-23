@@ -1,34 +1,13 @@
 import sys
-import cooccurrence_pb2
 import json
-
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import math
-import numpy as np
-from scipy.integrate import quad
-from scipy.stats import norm
+from load_protos import load_times, get_args
+from overlap import overlap_area, overlap_to_distance
 
-
-OVERLAP_SAVE_PATH = "../images/compare/overlap_matrix_"
-
-
-def overlap_area(mean1, std_dev1, mean2, std_dev2, cutoff):
-    # define the limits for integration (cutoff applied)
-    lower_limit = max(mean1, mean2) - cutoff
-    upper_limit = min(mean1, mean2) + cutoff
-
-    if lower_limit >= upper_limit:
-        return 0.0  # no overlap
-
-    middle = (mean1 + mean2) / 2
-    bigger_mean_gaussian = 0
-    if mean1 > mean2:
-        bigger_mean_gaussian = norm.cdf(middle, mean1, std_dev1)
-    else:
-        bigger_mean_gaussian = norm.cdf(middle, mean2, std_dev2)
-    return bigger_mean_gaussian * 2
+OVERLAP_SAVE_PATH = "../images/coverlap_matrix_"
 
 
 def total_overlap(times1, times2, std_dev, cutoff):
@@ -88,21 +67,6 @@ def save_overlap_matrices(overlap_results, selected_sids):
         print(f"Saved overlap matrix for std_dev={std_dev:_}ns")
 
 
-def load_times(filename1):
-    with open(filename1, "rb") as f:
-        data = f.read()
-
-    times_data = cooccurrence_pb2.TimesData()
-    times_data.ParseFromString(data)
-
-    result = {}
-    for times in times_data.times:
-        times_sid = times.sid
-        result[times_sid] = times.time
-
-    return result
-
-
 def plot_times(sid_times, sids):
     y_values = range(len(sids))  # assign a numeric value for each SID
 
@@ -152,20 +116,8 @@ def plot_times(sid_times, sids):
     plt.title("Times per SID")
     plt.grid(axis="x", alpha=0.15)
     plt.tight_layout()
-    plt.savefig("../images/compare/ctimes.png", dpi=300)
+    plt.savefig("../images/cctimes.png", dpi=300)
     plt.close()
-
-
-def overlap_to_distance(overlap, max_overlap):
-    alpha = 13  # adjust alpha to control the rate of decay
-    # no overlap means max distance
-    if overlap <= 0:
-        return 1
-    # max overlap means no distance
-    if overlap >= max_overlap:
-        return 0
-    # exponential decay
-    return math.exp(-alpha * (overlap / max_overlap))
 
 
 def create_distance_matrix(matrix):
@@ -214,19 +166,15 @@ def plot_distances(std_devs, selected_sids):
         )
         plt.yticks(ticks=np.arange(len(selected_sids)), labels=selected_sids)
         plt.tight_layout()
-        plt.savefig(f"../images/compare/distance_matrix_{std_dev}.png", dpi=300)
+        plt.savefig(f"../images/cdistance_matrix_{std_dev}.png", dpi=300)
         plt.close()
-        df.to_csv(f"../images/compare/distance_matrix_{std_dev}.csv")  # save as CSV
+        df.to_csv(f"../images/cdistance_matrix_{std_dev}.csv")  # save as CSV
 
         print(f"Saved distance matrix for std_dev={std_dev:_}ns")
 
 
 def get_config(args):
-    processed_args = {}
-    for arg in args:
-        if "=" in arg:
-            key, value = arg.split("=", maxsplit=1)
-            processed_args[key] = value
+    processed_args = get_args(args)
 
     if "config" not in processed_args:
         raise ValueError("Missing JSON argument")
