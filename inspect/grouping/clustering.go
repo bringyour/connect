@@ -208,15 +208,25 @@ func overlapToDistance(overlap, maxOverlap float64) float64 {
 }
 
 func Cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]SessionID, map[string][]float64, error) {
-	return PythonCluster(clusterOps, printPython)
+	return GoCluster(clusterOps, printPython)
 }
 
 func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]SessionID, map[string][]float64, error) {
-	// load cooccurance map
+	// load cooccurrence map
 	cooc := NewCoOccurrence(nil)
 	err := cooc.LoadData(clusterOps.CoOccurrencePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading cooccurrence map: %v", err)
+	}
+
+	// get max value from cooccurrence map
+	maxOverlap := uint64(0)
+	for _, inner := range *cooc.Data {
+		for _, overlap := range inner {
+			if overlap > maxOverlap {
+				maxOverlap = overlap
+			}
+		}
 	}
 
 	// get all sids (top level) in cooc map
@@ -268,7 +278,6 @@ func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]SessionI
 		// get the overlap value from the cooc map
 		overlap := cooc.Get(sid1, sid2)
 		// convert the overlap value to a distance
-		maxOverlap := uint64(257004153827659)
 		distance := overlapToDistance(TimestampInSeconds(overlap), TimestampInSeconds(maxOverlap))
 		return distance
 	}
