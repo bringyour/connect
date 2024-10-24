@@ -1,4 +1,4 @@
-package main
+package grouping
 
 import (
 	"bytes"
@@ -12,18 +12,17 @@ import (
 	"strconv"
 	"strings"
 
-	"bringyour.com/inspect/data"
+	"bringyour.com/inspect/payload"
 	"bringyour.com/protocol"
+
 	"github.com/humilityai/hdbscan"
 	"github.com/oklog/ulid/v2"
-	"gonum.org/v1/gonum/floats"
-	"gonum.org/v1/gonum/stat"
 	"google.golang.org/protobuf/proto"
 )
 
-func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*data.TransportRecord) *map[sessionID]*timestamps {
+func MakeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*payload.TransportRecord) *map[SessionID]*Timestamps {
 	// extract for each session the timestamps of the open, write, read, and close records
-	sessionTimestamps := make(map[sessionID]*timestamps, 0)
+	sessionTimestamps := make(map[SessionID]*Timestamps, 0)
 
 	for _, record := range *records {
 		times := []uint64{record.Open.OpenTime}
@@ -37,18 +36,18 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 			times = append(times, record.Close.CloseTime)
 		}
 
-		sid := sessionID(*record.Open.TlsServerName)
-		var ts *timestamps
+		sid := SessionID(*record.Open.TlsServerName)
+		var ts *Timestamps
 
 		// add full domain to sessionTimestamps
 		if ts1, exists := sessionTimestamps[sid]; exists {
-			ts1.times = append(ts1.times, times...)
+			ts1.Times = append(ts1.Times, times...)
 			ts = ts1
 		} else {
-			ts = &timestamps{
-				sid:           sid,
-				times:         times,
-				overlapFuncts: overlapFunctions,
+			ts = &Timestamps{
+				Sid:           sid,
+				Times:         times,
+				OverlapFuncts: overlapFunctions,
 			}
 			sessionTimestamps[sid] = ts
 		}
@@ -59,35 +58,35 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 
 		// third level domain should not be "" or full domain
 		if thirdLevelDomain != "" && thirdLevelDomain != string(sid) {
-			if existingTimestamps, ok := sessionTimestamps[sessionID(thirdLevelDomain)]; ok {
+			if existingTimestamps, ok := sessionTimestamps[SessionID(thirdLevelDomain)]; ok {
 				mergeTimestamps(existingTimestamps, ts)
 			} else {
-				sessionTimestamps[sessionID(thirdLevelDomain)] = &timestamps{
-					sid:           sessionID(thirdLevelDomain),
-					times:         times,
-					overlapFuncts: overlapFunctions,
+				sessionTimestamps[SessionID(thirdLevelDomain)] = &Timestamps{
+					Sid:           SessionID(thirdLevelDomain),
+					Times:         times,
+					OverlapFuncts: overlapFunctions,
 				}
 			}
 		}
 
 		// second level domain should not be "" or full domain
 		if secondLevelDomain != "" && secondLevelDomain != string(sid) {
-			if existingTimestamps, ok := sessionTimestamps[sessionID(secondLevelDomain)]; ok {
+			if existingTimestamps, ok := sessionTimestamps[SessionID(secondLevelDomain)]; ok {
 				mergeTimestamps(existingTimestamps, ts)
 			} else {
-				sessionTimestamps[sessionID(secondLevelDomain)] = &timestamps{
-					sid:           sessionID(secondLevelDomain),
-					times:         times,
-					overlapFuncts: overlapFunctions,
+				sessionTimestamps[SessionID(secondLevelDomain)] = &Timestamps{
+					Sid:           SessionID(secondLevelDomain),
+					Times:         times,
+					OverlapFuncts: overlapFunctions,
 				}
 			}
 		}
 
-		// if existingTimestamps, ok := sessionTimestamps[sessionID(thirdLevelDomain)]; ok {
+		// if existingTimestamps, ok := sessionTimestamps[SessionID(thirdLevelDomain)]; ok {
 		// 	mergeTimestamps(existingTimestamps, ts)
 		// } else {
-		// 	sessionTimestamps[sessionID(thirdLevelDomain)] = &timestamps{
-		// 		sid:           sessionID(thirdLevelDomain),
+		// 	sessionTimestamps[SessionID(thirdLevelDomain)] = &timestamps{
+		// 		sid:           SessionID(thirdLevelDomain),
 		// 		times:         times,
 		// 		overlapFuncts: overlapFunctions,
 		// 	}
@@ -97,8 +96,8 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 	// sort the timestamps in each session (sorted by earliest open time)
 	for _, ts := range sessionTimestamps {
 		// fmt.Println(ts.sid, len(ts.times))
-		sort.Slice(ts.times, func(i, j int) bool {
-			return ts.times[i] < ts.times[j]
+		sort.Slice(ts.Times, func(i, j int) bool {
+			return ts.Times[i] < ts.Times[j]
 		})
 	}
 
@@ -107,20 +106,20 @@ func makeTimestamps(overlapFunctions OverlapFunctions, records *map[ulid.ULID]*d
 	return &sessionTimestamps
 }
 
-func makeCoOccurrence(sessionTimestamps *map[sessionID]*timestamps) (*coOccurrence, uint64) {
+func MakeCoOccurrence(sessionTimestamps *map[SessionID]*Timestamps) (*CoOccurrence, uint64) {
 	// get all sessions' timestamps sorted by earliest open time
-	allTimestamps := make([]*timestamps, 0)
+	allTimestamps := make([]*Timestamps, 0)
 	for _, ts := range *sessionTimestamps {
 		allTimestamps = append(allTimestamps, ts)
 	}
 	sort.Slice(allTimestamps, func(i, j int) bool {
-		return allTimestamps[i].times[0] < allTimestamps[j].times[0] // sort based on first timestamp (earliest open time)
+		return allTimestamps[i].Times[0] < allTimestamps[j].Times[0] // sort based on first timestamp (earliest open time)
 	})
 
 	// populate co-occurrence map
 	cooc := NewCoOccurrence(nil)
 	for _, ts := range allTimestamps {
-		cooc.SetOuterKey(ts.sid) // populate outer map to have all needed keys
+		cooc.SetOuterKey(ts.Sid) // populate outer map to have all needed keys
 	}
 	for _, ts1 := range allTimestamps {
 		for _, ts2 := range allTimestamps {
@@ -131,35 +130,7 @@ func makeCoOccurrence(sessionTimestamps *map[sessionID]*timestamps) (*coOccurren
 		}
 	}
 
-	return cooc, allTimestamps[0].times[0]
-}
-
-// print statistics about overlaps in cooccurrence map
-func overlapStats(cooc *coOccurrence) {
-	float64Overlaps := make([]float64, 0)
-	for _, cmap := range *cooc.cMap {
-		for _, v := range cmap {
-			new_v := TimestampInSeconds(v)
-			if new_v > 0 {
-				float64Overlaps = append(float64Overlaps, new_v)
-			}
-		}
-	}
-	log.Printf(`Co-occurrence statistics:
-# of timestamps: %d
-# non-zero overlaps: %d
-	Min: %.9f
-	Max: %.9f
-	Mean: %.9f
-	StdDev: %.9f`,
-
-		len(*cooc.cMap),
-		len(float64Overlaps),
-		floats.Min(float64Overlaps),
-		floats.Max(float64Overlaps),
-		stat.Mean(float64Overlaps, nil),
-		stat.StdDev(float64Overlaps, nil),
-	)
+	return cooc, allTimestamps[0].Times[0]
 }
 
 type ClusterOpts struct {
@@ -236,11 +207,11 @@ func overlapToDistance(overlap, maxOverlap float64) float64 {
 	return math.Exp(-alpha * (overlap / maxOverlap))
 }
 
-func cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, map[string][]float64, error) {
-	return GoCluster(clusterOps, printPython)
+func Cluster(clusterOps *ClusterOpts, printPython bool) (map[string][]SessionID, map[string][]float64, error) {
+	return PythonCluster(clusterOps, printPython)
 }
 
-func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, map[string][]float64, error) {
+func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]SessionID, map[string][]float64, error) {
 	// load cooccurance map
 	cooc := NewCoOccurrence(nil)
 	err := cooc.LoadData(clusterOps.CoOccurrencePath)
@@ -249,17 +220,17 @@ func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionI
 	}
 
 	// get all sids (top level) in cooc map
-	sids := make([]sessionID, 0)
-	for sid := range *cooc.cMap {
+	sids := make([]SessionID, 0)
+	for sid := range *cooc.Data {
 		sids = append(sids, sid)
 	}
 	// order sids lexicographically (for consistent results)
 	sort.Slice(sids, func(i, j int) bool {
-		return sessionID(sids[i]).Compare(sessionID(sids[j])) <= 0
+		return SessionID(sids[i]).Compare(SessionID(sids[j])) <= 0
 	})
 
 	// map sids to integers
-	sidIndex := make(map[int]sessionID)
+	sidIndex := make(map[int]SessionID)
 	index := 0
 	for sid := range sids {
 		sidIndex[index] = sids[sid]
@@ -309,14 +280,14 @@ func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionI
 
 	// fmt.Printf("%+v\n", clustering)
 	// save results of clustering
-	clusters := make(map[string][]sessionID)
+	clusters := make(map[string][]SessionID)
 	probabilities := make(map[string][]float64)
-	clusters["-1"] = make([]sessionID, 0)    // unclustered
+	clusters["-1"] = make([]SessionID, 0)    // unclustered
 	probabilities["-1"] = make([]float64, 0) // unclustered
 	for i, cluster := range clustering.Clusters {
 		clusterID := fmt.Sprintf("%d", i)
 		points := cluster.Points
-		clusterSids := make([]sessionID, len(points))
+		clusterSids := make([]SessionID, len(points))
 		clusterProbs := make([]float64, len(points))
 		for j, point := range points {
 			clusterSids[j] = sidIndex[int(point)]
@@ -374,7 +345,7 @@ func GoCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionI
 	return clusters, probabilities, nil
 }
 
-func PythonCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sessionID, map[string][]float64, error) {
+func PythonCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]SessionID, map[string][]float64, error) {
 	args := []string{"cluster.py"}
 	if printPython {
 		fmt.Printf("[cmd] python3 cluster.py %s\n", strings.Join(clusterOps.GetFormatted(), " "))
@@ -392,7 +363,7 @@ func PythonCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sess
 		return nil, nil, fmt.Errorf("python script: %v %v", err, stderr.String())
 	}
 
-	clusters := make(map[string][]sessionID)
+	clusters := make(map[string][]SessionID)
 	probabilities := make(map[string][]float64)
 	lines := strings.Split(stdout.String(), "\n")
 	for _, line := range lines {
@@ -407,10 +378,10 @@ func PythonCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sess
 			if len(matches) == 4 {
 				clusterID := matches[1]
 				sessionIDs := strings.Split(matches[2], ",")
-				finalSids := make([]sessionID, len(sessionIDs))
+				finalSids := make([]SessionID, len(sessionIDs))
 				// trim spaces and single quotes from session IDs
 				for i := range sessionIDs {
-					finalSids[i] = sessionID(strings.Trim(sessionIDs[i], " '"))
+					finalSids[i] = SessionID(strings.Trim(sessionIDs[i], " '"))
 				}
 				clusters[clusterID] = finalSids
 
@@ -441,7 +412,7 @@ func PythonCluster(clusterOps *ClusterOpts, printPython bool) (map[string][]sess
 	return clusters, probabilities, nil
 }
 
-func SaveClusters(clusters map[string][]sessionID, dataPath string) error {
+func SaveClusters(clusters map[string][]SessionID, dataPath string) error {
 	clustersData := make([]*protocol.Cluster, 0)
 	for clusterID, sids := range clusters {
 		stringSids := make([]string, len(sids))

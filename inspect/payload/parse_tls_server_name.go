@@ -1,4 +1,4 @@
-package data
+package payload
 
 import (
 	"encoding/binary"

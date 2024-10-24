@@ -1,4 +1,4 @@
-package main
+package grouping
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 )
 
 type Overlap interface {
-	SID() sessionID
+	SID() SessionID
 	Overlap(other Overlap) uint64
 	// assuming this overlap starts before the other overlap
 	// returns true if there is no possible overlap between this overlap and the other overlap or any other overlap that starts later than the other overlap
@@ -16,50 +16,50 @@ type Overlap interface {
 }
 
 // implements Overlap interface
-type interval struct {
-	sid   sessionID
-	start uint64
-	end   uint64
+type Interval struct {
+	Sid   SessionID
+	Start uint64
+	End   uint64
 }
 
-func (intv *interval) SID() sessionID {
-	return intv.sid
+func (intv *Interval) SID() SessionID {
+	return intv.Sid
 }
 
-func (int1 *interval) Overlap(other Overlap) uint64 {
-	int2 := other.(*interval)
-	min_ends := min(int1.end, int2.end)
-	max_starts := max(int1.start, int2.start)
+func (int1 *Interval) Overlap(other Overlap) uint64 {
+	int2 := other.(*Interval)
+	min_ends := min(int1.End, int2.End)
+	max_starts := max(int1.Start, int2.Start)
 	if min_ends <= max_starts { // handle overflow
 		return 0 // no overlap
 	}
 	return min_ends - max_starts
 }
 
-func (int1 *interval) NoFutureOverlap(other Overlap) bool {
-	int2 := other.(*interval)
-	return int1.end < int2.start
+func (int1 *Interval) NoFutureOverlap(other Overlap) bool {
+	int2 := other.(*Interval)
+	return int1.End < int2.Start
 }
 
 // implements Overlap interface
-type timestamps struct {
-	sid           sessionID
-	times         []uint64
-	overlapFuncts OverlapFunctions // calculates overlap between two lists of times
+type Timestamps struct {
+	Sid           SessionID
+	Times         []uint64
+	OverlapFuncts OverlapFunctions // calculates overlap between two lists of times
 }
 
-func (ts *timestamps) SID() sessionID {
-	return ts.sid
+func (ts *Timestamps) SID() SessionID {
+	return ts.Sid
 }
 
-func (ts1 *timestamps) Overlap(other Overlap) uint64 {
-	ts2 := other.(*timestamps)
-	return ts1.overlapFuncts.CalculateOverlap(ts1.times, ts2.times)
+func (ts1 *Timestamps) Overlap(other Overlap) uint64 {
+	ts2 := other.(*Timestamps)
+	return ts1.OverlapFuncts.CalculateOverlap(ts1.Times, ts2.Times)
 }
 
-func (ts1 *timestamps) NoFutureOverlap(other Overlap) bool {
-	ts2 := other.(*timestamps)
-	return ts1.overlapFuncts.NoPossibleOverlap(ts1.times, ts2.times)
+func (ts1 *Timestamps) NoFutureOverlap(other Overlap) bool {
+	ts2 := other.(*Timestamps)
+	return ts1.OverlapFuncts.NoPossibleOverlap(ts1.Times, ts2.Times)
 }
 
 const NS_IN_SEC = uint64(1e9) // 1 * NS_TO_SEC = 1 second
@@ -88,7 +88,7 @@ type OverlapFunctions interface {
 }
 
 type FixedMarginOverlap struct {
-	margin uint64 // fixed margin in nanoseconds
+	Margin uint64 // fixed margin in nanoseconds
 }
 
 func (fmo *FixedMarginOverlap) CalculateOverlap(times1, times2 []uint64) uint64 {
@@ -104,8 +104,8 @@ func (fmo *FixedMarginOverlap) CalculateOverlap(times1, times2 []uint64) uint64 
 	// helper function to add events to the slice
 	addEvents := func(times []uint64, listID uint8) {
 		for _, t := range times {
-			start := t - fmo.margin
-			end := t + fmo.margin
+			start := t - fmo.Margin
+			end := t + fmo.Margin
 			events = append(events, fmEvent{eTime: start, eType: 1, eListID: listID}) // Start event
 			events = append(events, fmEvent{eTime: end, eType: 2, eListID: listID})   // End event
 		}
@@ -161,16 +161,16 @@ func (fmo *FixedMarginOverlap) NoPossibleOverlap(times1, times2 []uint64) bool {
 	}
 	time1 := times1[len(times1)-1]
 	time2 := times2[0]
-	return time1+fmo.margin < time2-fmo.margin
+	return time1+fmo.Margin < time2-fmo.Margin
 }
 
 type GaussianOverlap struct {
-	stdDev uint64 // standard deviation in nanoseconds
-	cutoff uint64 // cutoff in times of standard deviation
+	StdDev uint64 // standard deviation in nanoseconds
+	Cutoff uint64 // cutoff in times of standard deviation
 }
 
 func (gausso *GaussianOverlap) gaussianOverlap(g1, g2 *distuv.Normal) float64 {
-	cutoff := TimestampInSeconds(gausso.stdDev) * float64(gausso.cutoff)
+	cutoff := TimestampInSeconds(gausso.StdDev) * float64(gausso.Cutoff)
 	upperLimit := min(g1.Mu, g2.Mu) + cutoff
 	lowerLimit := max(g1.Mu, g2.Mu) - cutoff
 	if lowerLimit >= upperLimit {
@@ -196,7 +196,7 @@ func (gausso *GaussianOverlap) gaussianOverlap(g1, g2 *distuv.Normal) float64 {
 }
 
 func (gausso *GaussianOverlap) CalculateOverlap(times1, times2 []uint64) uint64 {
-	if gausso.cutoff == 0 {
+	if gausso.Cutoff == 0 {
 		fmt.Println("Cutoff is 0, no overlap possible")
 	}
 
@@ -206,7 +206,7 @@ func (gausso *GaussianOverlap) CalculateOverlap(times1, times2 []uint64) uint64 
 		gaussians := make([]*distuv.Normal, len(times))
 		for i, t := range times {
 			// fmt.Printf("times[%v] = %v\n", i, t)
-			gaussians[i] = &distuv.Normal{Mu: TimestampInSeconds(t), Sigma: TimestampInSeconds(gausso.stdDev)}
+			gaussians[i] = &distuv.Normal{Mu: TimestampInSeconds(t), Sigma: TimestampInSeconds(gausso.StdDev)}
 		}
 		return gaussians
 	}
@@ -233,6 +233,6 @@ func (gausso *GaussianOverlap) NoPossibleOverlap(times1, times2 []uint64) bool {
 	// If the distance between means is greater than the sum of their cutoffs, no overlap is possible
 	mean1 := TimestampInSeconds(times1[len(times1)-1])
 	mean2 := TimestampInSeconds(times2[0])
-	sCutoff := TimestampInSeconds(gausso.cutoff)
+	sCutoff := TimestampInSeconds(gausso.Cutoff)
 	return mean1+sCutoff < mean2-sCutoff
 }

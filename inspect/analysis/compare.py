@@ -3,11 +3,12 @@ import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from load_protos import load_times, get_args
 from overlap import overlap_area, overlap_to_distance
 
-OVERLAP_SAVE_PATH = "../images/coverlap_matrix_"
+OVERLAP_SAVE_PATH = "../images/compare/overlap_matrix_"
 
 
 def total_overlap(times1, times2, std_dev, cutoff):
@@ -22,23 +23,28 @@ def calculate_pairwise_overlaps(sid_times, sids, std_devs, cutoff_factor):
     max_width = max(len(sid) for sid in sids)
     overlap_results = {}
 
+    # create a list of all pairwise combinations of sids for tqdm progress bar
+    matrix_ids = []
+    for i, sid_i in enumerate(sids):
+        for j, sid_j in enumerate(sids):
+            if i >= j:
+                continue
+            matrix_ids.append((i, sid_i, j, sid_j))
+
     for std_dev in std_devs:
         print(f"Calculating overlaps for std_dev={std_dev:_}ns")
         overlap_matrix = np.zeros((len(sid_times), len(sid_times)))
-        for i, sid_i in enumerate(sids):
-            for j, sid_j in enumerate(sids):
-                if i >= j:
-                    continue
-                overlap_matrix[i][j] = total_overlap(
-                    sid_times[sid_i],
-                    sid_times[sid_j],
-                    std_dev,
-                    std_dev * cutoff_factor,
-                )
-                overlap_matrix[j][i] = overlap_matrix[i][j]
-                # print(
-                #     f"  {sid_i:<{max_width}} x {sid_j:<{max_width}} = {overlap_matrix[i][j]:_}"
-                # )
+        for i, sid_i, j, sid_j in tqdm(matrix_ids):
+            overlap_matrix[i][j] = total_overlap(
+                sid_times[sid_i],
+                sid_times[sid_j],
+                std_dev,
+                std_dev * cutoff_factor,
+            )
+            overlap_matrix[j][i] = overlap_matrix[i][j]
+            # print(
+            #     f"  {sid_i:<{max_width}} x {sid_j:<{max_width}} = {overlap_matrix[i][j]:_}"
+            # )
         overlap_results[std_dev] = overlap_matrix
         print()
 
@@ -116,7 +122,7 @@ def plot_times(sid_times, sids):
     plt.title("Times per SID")
     plt.grid(axis="x", alpha=0.15)
     plt.tight_layout()
-    plt.savefig("../images/cctimes.png", dpi=300)
+    plt.savefig("../images/compare/ctimes.png", dpi=300)
     plt.close()
 
 
@@ -166,9 +172,9 @@ def plot_distances(std_devs, selected_sids):
         )
         plt.yticks(ticks=np.arange(len(selected_sids)), labels=selected_sids)
         plt.tight_layout()
-        plt.savefig(f"../images/cdistance_matrix_{std_dev}.png", dpi=300)
+        plt.savefig(f"../images/compare/distance_matrix_{std_dev}.png", dpi=300)
         plt.close()
-        df.to_csv(f"../images/cdistance_matrix_{std_dev}.csv")  # save as CSV
+        df.to_csv(f"../images/compare/distance_matrix_{std_dev}.csv")  # save as CSV
 
         print(f"Saved distance matrix for std_dev={std_dev:_}ns")
 

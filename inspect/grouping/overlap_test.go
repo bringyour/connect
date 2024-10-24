@@ -1,4 +1,4 @@
-package main
+package grouping
 
 import (
 	"fmt"
@@ -67,7 +67,7 @@ func TestFixedMarginOverlap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fmo := FixedMarginOverlap{margin: tc.fixedMargin}
+			fmo := FixedMarginOverlap{Margin: tc.fixedMargin}
 			actual := fmo.CalculateOverlap(tc.times1, tc.times2)
 			if actual != tc.expected {
 				t.Errorf("Test %s failed: expected %d but got %d", tc.name, tc.expected, actual)
@@ -138,7 +138,7 @@ func TestGaussianOverlap(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cutoff := 4 * tc.stdDev // 4 stdev contains 99.99% of the distribution
-			gausso := GaussianOverlap{stdDev: tc.stdDev, cutoff: cutoff}
+			gausso := GaussianOverlap{StdDev: tc.stdDev, Cutoff: cutoff}
 			actual := TimestampInSeconds(gausso.CalculateOverlap(tc.times1, tc.times2))
 			percent := (1 - actual/tc.expected) * 100.0
 			if tc.expected != 0 {

@@ -1,10 +1,12 @@
-package main
+package evaluation
 
 import (
 	"fmt"
 	"log"
 	"math"
 	"time"
+
+	"bringyour.com/inspect/grouping"
 )
 
 type region struct {
@@ -70,8 +72,8 @@ func constructRegions(firstRegions []region, earliestTime uint64, leeway uint64)
 	finalRegions := []region{}
 	for _, r := range firstRegions {
 		// convert to nanoseconds and add earliest time
-		newMinT := r.minT*NS_IN_SEC + earliestTime
-		newMaxT := r.maxT*NS_IN_SEC + earliestTime
+		newMinT := r.minT*grouping.NS_IN_SEC + earliestTime
+		newMaxT := r.maxT*grouping.NS_IN_SEC + earliestTime
 		newRegiond := region{minT: newMinT, maxT: newMaxT}
 		finalRegions = append(finalRegions, newRegiond)
 	}
@@ -108,7 +110,7 @@ func ConstructTestSession2Regions(earliestTime uint64, leeway uint64) *[]region 
 	return finalRegions
 }
 
-func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clusters map[string][]sessionID, probabilities map[string][]float64) float64 {
+func Evaluate(sessionTimestamps map[grouping.SessionID]*grouping.Timestamps, regions []region, clusters map[string][]grouping.SessionID, probabilities map[string][]float64) float64 {
 	purities := make([]float64, 0)
 	unclusteredPurity := 0.0
 
@@ -122,7 +124,7 @@ func Evaluate(sessionTimestamps map[sessionID]*timestamps, regions []region, clu
 
 		for _, sid := range sessionIDs {
 			if timestamps, exists := sessionTimestamps[sid]; exists {
-				sessionEarliestTime := timestamps.times[0]
+				sessionEarliestTime := timestamps.Times[0]
 				region := getSessionRegion(sessionEarliestTime, regions)
 				// fmt.Printf("  [%s](%v)%v\n", sid, ReadableTime(timestamps.times[0]), region)
 				// if expected region is int, then session is not unclustered (count towards purity)

@@ -1,18 +1,18 @@
-package main
+package grouping
 
 import (
 	"fmt"
 	"os"
 
-	"google.golang.org/protobuf/proto"
-
 	"bringyour.com/protocol"
+
+	"google.golang.org/protobuf/proto"
 )
 
-type sessionID string
+type SessionID string
 
 // Compare returns -1 if s < other, 0 if s == other, and 1 if s > other.
-func (s sessionID) Compare(other sessionID) int {
+func (s SessionID) Compare(other SessionID) int {
 	switch {
 	case s < other:
 		return -1
@@ -23,28 +23,28 @@ func (s sessionID) Compare(other sessionID) int {
 	}
 }
 
-type coOccurrenceData map[sessionID]map[sessionID]uint64
+type CoOccurrenceData map[SessionID]map[SessionID]uint64
 
 // used to precompute distances for clustering
-type coOccurrence struct {
-	cMap *coOccurrenceData
+type CoOccurrence struct {
+	Data *CoOccurrenceData
 }
 
-func NewCoOccurrence(cmapData *coOccurrenceData) *coOccurrence {
+func NewCoOccurrence(cmapData *CoOccurrenceData) *CoOccurrence {
 	if cmapData == nil {
-		_cmapData := make(coOccurrenceData, 0)
+		_cmapData := make(CoOccurrenceData, 0)
 		cmapData = &_cmapData
 	}
-	return &coOccurrence{
-		cMap: cmapData,
+	return &CoOccurrence{
+		Data: cmapData,
 	}
 }
 
-func (c *coOccurrence) SetOuterKey(sid sessionID) {
-	(*c.cMap)[sid] = make(map[sessionID]uint64, 0)
+func (c *CoOccurrence) SetOuterKey(sid SessionID) {
+	(*c.Data)[sid] = make(map[SessionID]uint64, 0)
 }
 
-func (c *coOccurrence) CalcAndSet(ov1 Overlap, ov2 Overlap) {
+func (c *CoOccurrence) CalcAndSet(ov1 Overlap, ov2 Overlap) {
 	sid1 := ov1.SID()
 	sid2 := ov2.SID()
 
@@ -59,30 +59,30 @@ func (c *coOccurrence) CalcAndSet(ov1 Overlap, ov2 Overlap) {
 
 	switch sid1.Compare(sid2) {
 	case -1: // sid1 < sid2
-		if _, ok := (*c.cMap)[sid1]; !ok {
-			(*c.cMap)[sid1] = make(map[sessionID]uint64, 0)
+		if _, ok := (*c.Data)[sid1]; !ok {
+			(*c.Data)[sid1] = make(map[SessionID]uint64, 0)
 		}
-		(*c.cMap)[sid1][sid2] = totalOverlap
+		(*c.Data)[sid1][sid2] = totalOverlap
 	case 1: // sid1 > sid2
-		if _, ok := (*c.cMap)[sid2]; !ok {
-			(*c.cMap)[sid2] = make(map[sessionID]uint64, 0)
+		if _, ok := (*c.Data)[sid2]; !ok {
+			(*c.Data)[sid2] = make(map[SessionID]uint64, 0)
 		}
-		(*c.cMap)[sid2][sid1] = totalOverlap
+		(*c.Data)[sid2][sid1] = totalOverlap
 	}
 }
 
-func (c *coOccurrence) Get(sid1 sessionID, sid2 sessionID) uint64 {
+func (c *CoOccurrence) Get(sid1 SessionID, sid2 SessionID) uint64 {
 	// if value doesnt exist then 0 value is returned (which is desired)
 	if sid1.Compare(sid2) < 0 {
-		return (*c.cMap)[sid1][sid2]
+		return (*c.Data)[sid1][sid2]
 	}
-	return (*c.cMap)[sid2][sid1]
+	return (*c.Data)[sid2][sid1]
 }
 
-func (c *coOccurrence) SaveData(dataPath string) error {
+func (c *CoOccurrence) SaveData(dataPath string) error {
 	coocData := make([]*protocol.CoocOuter, 0)
 
-	for outerSid, coocInner := range *c.cMap {
+	for outerSid, coocInner := range *c.Data {
 		outer := &protocol.CoocOuter{
 			Sid: string(outerSid),
 		}
@@ -109,7 +109,7 @@ func (c *coOccurrence) SaveData(dataPath string) error {
 	return os.WriteFile(dataPath, out, 0644)
 }
 
-func (c *coOccurrence) LoadData(dataPath string) error {
+func (c *CoOccurrence) LoadData(dataPath string) error {
 	data, err := os.ReadFile(dataPath)
 	if err != nil {
 		return fmt.Errorf("could not read file: %w", err)
@@ -120,20 +120,20 @@ func (c *coOccurrence) LoadData(dataPath string) error {
 		return fmt.Errorf("could not unmarshal data: %w", err)
 	}
 
-	result := make(coOccurrenceData, 0)
+	result := make(CoOccurrenceData, 0)
 
 	for _, outer := range coocData.CoocOuter {
-		outerSid := sessionID(outer.Sid)
+		outerSid := SessionID(outer.Sid)
 
-		innerMap := make(map[sessionID]uint64)
+		innerMap := make(map[SessionID]uint64)
 		for _, inner := range outer.CoocInner {
-			innerSid := sessionID(inner.Sid)
+			innerSid := SessionID(inner.Sid)
 			innerMap[innerSid] = inner.Overlap
 		}
 
 		result[outerSid] = innerMap
 	}
 
-	c.cMap = &result
+	c.Data = &result
 	return nil
 }

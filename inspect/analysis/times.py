@@ -2,6 +2,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+from tqdm import tqdm
 
 from load_protos import load_times, get_args
 
@@ -19,11 +20,15 @@ def main(sid_times):
 
     # create the plot
     plt.figure(figsize=(10, 10))
-    colors = [plt.cm.tab10(i % 10) for i in range(len(sids))]
+    colors = [
+        plt.cm.tab10(i % 10) for i in range(len(sids))
+    ]  # as big as the number of sids
     all_times = []
 
     # iterate through each sid and its times, plotting the points
-    for i, (sid, color) in enumerate(zip(sids, colors)):
+    for i, (sid, color) in tqdm(
+        enumerate(zip(sids, colors)), total=len(sids), desc="Adding times to plot"
+    ):
         times = sid_times[sid]
         all_times.extend(times)
         plt.scatter(
@@ -39,7 +44,9 @@ def main(sid_times):
 
     # customize the plot
     plt.yticks(y_values, sids, fontsize=3)  # show sids on y-axis
-    for i, color in enumerate(colors):
+    for i, color in tqdm(
+        enumerate(colors), total=len(colors), desc="Setting label colors"
+    ):
         plt.gca().get_yticklabels()[i].set_color(color)
 
     plt.xlabel("Time (seconds)")
@@ -57,6 +64,7 @@ def main(sid_times):
 
     plt.title("Times per SID")
     plt.grid(axis="x", alpha=0.15)
+    print("Saving plot...")
     plt.savefig("../images/times.png", dpi=300)
     plt.close()
 

@@ -1,11 +1,12 @@
-package main
+package grouping
 
 import (
 	"strings"
 )
 
-func mergeTimestamps(ts1, ts2 *timestamps) {
-	ts1.times = append(ts1.times, ts2.times...)
+// adds ts2 times to ts1 times
+func mergeTimestamps(ts1, ts2 *Timestamps) {
+	ts1.Times = append(ts1.Times, ts2.Times...)
 }
 
 // SplitDomain splits a domain into subDomain, thirdLevelDomain, secondLevelDomain, and topLevelDomain.

@@ -1,4 +1,4 @@
-package data
+package payload
 
 import (
 	"encoding/binary"
@@ -7,14 +7,14 @@ import (
 	"log"
 	"os"
 
+	"bringyour.com/protocol"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
-
-	"bringyour.com/protocol"
 )
 
 const (

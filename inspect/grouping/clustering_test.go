@@ -1,11 +1,11 @@
-package main
+package grouping
 
 import (
 	"fmt"
 	"os"
 	"testing"
 
-	"bringyour.com/inspect/data"
+	"bringyour.com/inspect/payload"
 )
 
 // load pcaps into transport records
@@ -18,7 +18,7 @@ import (
 
 type clusterTest struct {
 	name string
-	sids []sessionID
+	sids []SessionID
 }
 
 func TestClustering(t *testing.T) {
@@ -37,7 +37,7 @@ func TestClustering(t *testing.T) {
 			clusters: []clusterTest{
 				{
 					name: "New York Times",
-					sids: []sessionID{
+					sids: []SessionID{
 						"www.nytimes.com",
 						"static01.nytimes.com",
 						"purr.nytimes.com",
@@ -49,7 +49,7 @@ func TestClustering(t *testing.T) {
 				},
 				{
 					name: "Wikipedia",
-					sids: []sessionID{
+					sids: []SessionID{
 						"wikipedia.org",
 						"wikimedia.org",
 						"upload.wikimedia.org",
@@ -58,7 +58,7 @@ func TestClustering(t *testing.T) {
 				},
 				{
 					name: "Whatsapp",
-					sids: []sessionID{
+					sids: []SessionID{
 						"mmg.whatsapp.net",
 						"media-lhr8-2.cdn.whatsapp.net",
 						"media-lhr8-1.cdn.whatsapp.net",
@@ -70,7 +70,7 @@ func TestClustering(t *testing.T) {
 				},
 				{
 					name: "CAT",
-					sids: []sessionID{
+					sids: []SessionID{
 						"www.cat.com",
 						"scene7.com",
 						"s7d2.scene7.com",
@@ -78,7 +78,7 @@ func TestClustering(t *testing.T) {
 				},
 				{
 					name: "Netflix",
-					sids: []sessionID{
+					sids: []SessionID{
 						"www.netflix.com",
 						"web.prod.cloud.netflix.com",
 						"occ-0-768-769.1.nflxso.net",
@@ -96,7 +96,7 @@ func TestClustering(t *testing.T) {
 			clusters: []clusterTest{
 				{
 					name: "New York Times",
-					sids: []sessionID{
+					sids: []SessionID{
 						"www.nytimes.com",
 						"purr.nytimes.com",
 						"nytimes.com",
@@ -107,7 +107,7 @@ func TestClustering(t *testing.T) {
 				},
 				{
 					name: "Twitter",
-					sids: []sessionID{
+					sids: []SessionID{
 						"x.com",
 						"video.twimg.com",
 						"twimg.com",
@@ -117,7 +117,7 @@ func TestClustering(t *testing.T) {
 				},
 				{
 					name: "Netflix",
-					sids: []sessionID{
+					sids: []SessionID{
 						"www.netflix.com",
 						"web.prod.cloud.netflix.com",
 						"occ-0-768-769.1.nflxso.net",
@@ -134,14 +134,14 @@ func TestClustering(t *testing.T) {
 				},
 				// {
 				// 	name: "NBC",
-				// 	sids: []sessionID{
+				// 	sids: []SessionID{
 				// 		"nbc.com",
 				// 		"img.nbc.com",
 				// 	},
 				// },
 				{
 					name: "Fox News",
-					sids: []sessionID{
+					sids: []SessionID{
 						"www.foxnews.com",
 						"static.foxnews.com",
 						"foxnews.com",
@@ -150,7 +150,7 @@ func TestClustering(t *testing.T) {
 				},
 				{
 					name: "Reddit",
-					sids: []sessionID{
+					sids: []SessionID{
 						"www.reddit.com",
 						"styles.redditmedia.com",
 						"redditmedia.com",
@@ -177,24 +177,24 @@ func TestClustering(t *testing.T) {
 				} else {
 					// create transport records from pcap
 					fmt.Printf("Creating transport records from pcap: %s\n", test.pcapPath)
-					data.PcapToTransportFiles(test.pcapPath, transportsPath, test.sourceIP)
+					payload.PcapToTransportFiles(test.pcapPath, transportsPath, test.sourceIP)
 				}
 
 				fmt.Printf("Creating cooccurrence map from transport records: %s\n", transportsPath)
 
 				// create timestamps for cooccurance map
-				records, err := data.LoadTransportsFromFiles(transportsPath)
+				records, err := payload.LoadTransportsFromFiles(transportsPath)
 				if err != nil {
 					t.Fatalf("Error loading transports: %v", err)
 				}
 				overlapFunctions := GaussianOverlap{
-					stdDev: TimestampInNano(0.010_000_000), // x seconds
-					cutoff: 4,                              // x standard deviations
+					StdDev: TimestampInNano(0.010_000_000), // x seconds
+					Cutoff: 4,                              // x standard deviations
 				}
-				sessionTimestamps := makeTimestamps(&overlapFunctions, records)
+				sessionTimestamps := MakeTimestamps(&overlapFunctions, records)
 
 				// make coocurrence map
-				cooc, _ := makeCoOccurrence(sessionTimestamps)
+				cooc, _ := MakeCoOccurrence(sessionTimestamps)
 				cooc.SaveData(cooccurrencePath)
 			}
 
@@ -206,7 +206,7 @@ func TestClustering(t *testing.T) {
 				CoOccurrencePath: cooccurrencePath,
 				// SaveGraphs:       true,
 			}
-			clusters, _, err := cluster(clusterOps, true)
+			clusters, _, err := Cluster(clusterOps, true)
 			if err != nil {
 				t.Fatalf("Error clustering: %v", err)
 			}
