@@ -61,6 +61,8 @@ func main() {
 		err = disconnect(args)
 	case "status":
 		err = status(args)
+	case "allow-direct":
+		err = allowDirect(args)
 	case "run":
 		err = runCampaign(args)
 	case "campaign":
@@ -80,7 +82,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|run|campaign|report|series-report> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|run|campaign|report|series-report> [flags]")
 }
 
 // role maps a serial to its opaque role, refusing anything off the allowlist.
@@ -424,4 +426,29 @@ func tail(line string) string {
 		return line[i+len(resultTag)+2:]
 	}
 	return line
+}
+
+// allowDirect sets the relay-only control on a client for its next connect:
+// off forces direct (p2p) mode off, on forces it on, clear restores the
+// normal decision.
+func allowDirect(args []string) error {
+	fs := flag.NewFlagSet("allow-direct", flag.ExitOnError)
+	serial := fs.String("serial", "", "device serial")
+	mode := fs.String("mode", "clear", "off|on|clear")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	r, err := role(*serial)
+	if err != nil {
+		return err
+	}
+	line, err := broadcast(*serial, "FG_ALLOW_DIRECT", map[string]string{"mode": *mode}, "action=allow-direct", 20*time.Second)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", r, tail(line))
+	if !strings.Contains(line, "ok=true") {
+		return errors.New("allow-direct failed")
+	}
+	return nil
 }

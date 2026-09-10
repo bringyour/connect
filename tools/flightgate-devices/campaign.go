@@ -45,6 +45,7 @@ type runMeta struct {
 	ClientProfile   string   `json:"client_profile"`
 	ProviderProfile string   `json:"provider_profile"`
 	StartMillis     int64    `json:"start_millis"`
+	DirectMode      string   `json:"direct_mode"`
 	Notes           []string `json:"notes"`
 }
 
@@ -112,6 +113,7 @@ func runCampaign(args []string) error {
 	streams := fs.Int("streams", 4, "parallel download streams")
 	url := fs.String("url", defaultLoadUrl, "download URL")
 	tag := fs.String("tag", "", "run tag")
+	directMode := fs.String("direct-mode", "stock", "recorded in meta: stock|relay-only|direct-forced")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -144,6 +146,7 @@ func runCampaign(args []string) error {
 		ClientProfile:   radio(*client),
 		ProviderProfile: radio(*provider),
 		StartMillis:     time.Now().UnixMilli(),
+		DirectMode:      *directMode,
 		Notes:           []string{},
 	}
 
@@ -485,6 +488,9 @@ type runSummary struct {
 	ProviderFastSend      float64 `json:"provider_p2p_fast_send_total"`
 	ClientFastRecv        float64 `json:"client_p2p_fast_recv_total"`
 	ClientFastRecvDrops   float64 `json:"client_p2p_fast_recv_drop_total"`
+	DirectMode            string  `json:"direct_mode"`
+	ProviderPairTypes     string  `json:"provider_selected_pair"`
+	ClientPairTypes       string  `json:"client_selected_pair"`
 }
 
 // report derives windows.csv and summary.json from a run directory's raw
@@ -523,7 +529,18 @@ func report(args []string) error {
 	_ = writer.Write(header)
 
 	summary := runSummary{Tag: meta.Tag, Windows: len(records), P2pFirstWindow: -1,
-		ClientDiagSamples: len(clientSamples), ProviderDiagSamples: len(providerSamples)}
+		ClientDiagSamples: len(clientSamples), ProviderDiagSamples: len(providerSamples),
+		DirectMode: meta.DirectMode}
+	if n := len(clientSamples); n > 0 {
+		if p2p, ok := clientSamples[n-1].Payload["p2p"].(map[string]any); ok {
+			summary.ClientPairTypes, _ = p2p["SelectedCandidatePair"].(string)
+		}
+	}
+	if n := len(providerSamples); n > 0 {
+		if p2p, ok := providerSamples[n-1].Payload["p2p"].(map[string]any); ok {
+			summary.ProviderPairTypes, _ = p2p["SelectedCandidatePair"].(string)
+		}
+	}
 	mbps := []float64{}
 	// counters are process-lifetime; the run's baseline is the newest sample
 	// before the run started, or the first sample of the capture when the
@@ -588,7 +605,7 @@ func report(args []string) error {
 		summary.P2pActive, summary.P2pFirstWindow, summary.ClientDiagSamples, summary.ProviderDiagSamples)
 	fmt.Printf("  provider: flight_wait=%.0f blocked_with_reliable_capacity=%.0f gap_reorder=%.0f timeouts=%.0f ack_write_blocked=%.0f fast_send=%.0f\n",
 		summary.ProviderFlightWait, summary.ProviderBlockedRelCap, summary.ProviderGapReorder, summary.ProviderTimeouts, summary.ProviderAckBlocked, summary.ProviderFastSend)
-	fmt.Printf("  client: fast_recv=%.0f fast_recv_drops=%.0f\n", summary.ClientFastRecv, summary.ClientFastRecvDrops)
+	fmt.Printf("  client: fast_recv=%.0f fast_recv_drops=%.0f  mode=%s pairs provider=%q client=%q\n", summary.ClientFastRecv, summary.ClientFastRecvDrops, summary.DirectMode, summary.ProviderPairTypes, summary.ClientPairTypes)
 	return nil
 }
 
@@ -608,6 +625,7 @@ func runSeries(args []string) error {
 	streams := fs.Int("streams", 4, "parallel download streams")
 	settleSeconds := fs.Int("settle-seconds", 25, "seconds after connect before measuring")
 	tag := fs.String("tag", "", "series tag")
+	interleaveRelay := fs.Bool("interleave-relay", false, "alternate relay-only (direct mode forced off) and stock runs; --runs counts each kind")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -623,11 +641,33 @@ func runSeries(args []string) error {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return err
 	}
-	for i := 0; i < *runs; i++ {
+	total := *runs
+	if *interleaveRelay {
+		total = 2 * *runs
+	}
+	for i := 0; i < total; i++ {
 		runTag := fmt.Sprintf("%s-%02d", *tag, i)
-		fmt.Printf("== %s: fresh tunnel\n", runTag)
+		directMode := "stock"
+		if *interleaveRelay {
+			if i%2 == 0 {
+				directMode = "relay-only"
+				runTag += "-relay"
+			} else {
+				runTag += "-stock"
+			}
+		}
+		fmt.Printf("== %s: fresh tunnel (%s)\n", runTag, directMode)
 		if err := disconnect([]string{"--serial", *client}); err != nil {
 			fmt.Printf("%s: disconnect: %v\n", runTag, err)
+		}
+		if *interleaveRelay {
+			mode := "clear"
+			if directMode == "relay-only" {
+				mode = "off"
+			}
+			if err := allowDirect([]string{"--serial", *client, "--mode", mode}); err != nil {
+				return fmt.Errorf("%s: allow-direct: %w", runTag, err)
+			}
 		}
 		time.Sleep(8 * time.Second)
 		if err := connectPeer([]string{"--serial", *client, "--name", *peerName}); err != nil {
@@ -641,6 +681,7 @@ func runSeries(args []string) error {
 			"--window-seconds", strconv.Itoa(*windowSeconds),
 			"--streams", strconv.Itoa(*streams),
 			"--tag", runTag,
+			"--direct-mode", directMode,
 		})
 		if err != nil {
 			fmt.Printf("%s: run: %v\n", runTag, err)
@@ -659,7 +700,7 @@ func seriesReport(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%-8s %7s %5s %9s %7s %7s %6s %6s %8s %8s %8s %8s\n", "run", "median", "dead", "dead>p2p", "min", "max", "p2p", "first", "fl_wait", "blk_cap", "reorder", "ack_blk")
+	fmt.Printf("%-14s %-10s %7s %5s %9s %7s %7s %6s %6s %8s %8s %8s %8s  %s\n", "run", "mode", "median", "dead", "dead>p2p", "min", "max", "p2p", "first", "fl_wait", "blk_cap", "reorder", "ack_blk", "pair(prov/cli)")
 	medians := []float64{}
 	deadTotal, deadAfter, active := 0, 0, 0
 	for _, entry := range entries {
@@ -674,7 +715,7 @@ func seriesReport(args []string) error {
 		if err := json.Unmarshal(b, &s); err != nil {
 			continue
 		}
-		fmt.Printf("%-8s %7.1f %5d %9d %7.1f %7.1f %6t %6d %8.0f %8.0f %8.0f %8.0f\n", entry.Name(), s.MedianMbps, s.DeadWindows, s.DeadWindowsAfterP2p, s.MinMbps, s.MaxMbps, s.P2pActive, s.P2pFirstWindow, s.ProviderFlightWait, s.ProviderBlockedRelCap, s.ProviderGapReorder, s.ProviderAckBlocked)
+		fmt.Printf("%-14s %-10s %7.1f %5d %9d %7.1f %7.1f %6t %6d %8.0f %8.0f %8.0f %8.0f  %s/%s\n", entry.Name(), s.DirectMode, s.MedianMbps, s.DeadWindows, s.DeadWindowsAfterP2p, s.MinMbps, s.MaxMbps, s.P2pActive, s.P2pFirstWindow, s.ProviderFlightWait, s.ProviderBlockedRelCap, s.ProviderGapReorder, s.ProviderAckBlocked, s.ProviderPairTypes, s.ClientPairTypes)
 		medians = append(medians, s.MedianMbps)
 		deadTotal += s.DeadWindows
 		deadAfter += s.DeadWindowsAfterP2p

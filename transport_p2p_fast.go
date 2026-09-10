@@ -75,6 +75,10 @@ type P2pDataPlaneStatsSnapshot struct {
 	FastSendFragmentHistogram [p2pFastPathFragmentHistogramBucketCount]uint64
 	// Incomplete reassembly slots discarded on expiry or slot reuse.
 	FastReassemblyEvictionCount uint64
+	// SelectedCandidatePair is "local->remote" ICE candidate types
+	// (host, srflx, prflx, relay) of the pair the last-written P2P
+	// connection selected, recorded once per connection at its first write.
+	SelectedCandidatePair string
 }
 
 const p2pFastPathFragmentHistogramBucketCount = 5
@@ -117,6 +121,16 @@ type P2pDataPlaneStats struct {
 	fastDropCount                   atomic.Uint64
 	fastSendFragmentHistogram       [p2pFastPathFragmentHistogramBucketCount]atomic.Uint64
 	fastReassemblyEvictionCount     atomic.Uint64
+	selectedCandidatePair           atomic.Value
+}
+
+// recordSelectedCandidatePair notes the ICE pair types of a connection at
+// its first write; the value is a diagnostic, not a hot-path counter.
+func (self *P2pDataPlaneStats) recordSelectedCandidatePair(pair string) {
+	if self == nil || pair == "" {
+		return
+	}
+	self.selectedCandidatePair.Store(pair)
 }
 
 // observeFastSendFragments buckets one sent message by its fragment count.
@@ -154,6 +168,9 @@ func (self *P2pDataPlaneStats) Snapshot() P2pDataPlaneStatsSnapshot {
 		FastFallbackCount:               self.fastFallbackCount.Load(),
 		FastDropCount:                   self.fastDropCount.Load(),
 		FastReassemblyEvictionCount:     self.fastReassemblyEvictionCount.Load(),
+	}
+	if pair, ok := self.selectedCandidatePair.Load().(string); ok {
+		snapshot.SelectedCandidatePair = pair
 	}
 	for bucket := range snapshot.FastSendFragmentHistogram {
 		snapshot.FastSendFragmentHistogram[bucket] = self.fastSendFragmentHistogram[bucket].Load()
