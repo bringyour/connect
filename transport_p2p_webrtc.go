@@ -969,6 +969,12 @@ type WebRtcSettings struct {
 	// window, so transfer send/receive/forward callbacks retain their
 	// intentional synchronous backpressure semantics.
 	SctpNoProgressTimeout time.Duration
+	// FastPathNoProgressTimeout bounds a native RTP/SRTP fast path that
+	// accepts writes but delivers nothing. The RTP lane has no
+	// acknowledgements of its own, so the bound needs a receiver progress
+	// report; until candidate L1 (FLIGHTGATEFIX §7) supplies one this value
+	// is recorded and not acted on. Zero disables it.
+	FastPathNoProgressTimeout time.Duration
 	// UseEgressOnlyIceInterfaces gathers host/server-reflexive candidates
 	// only from the current default-route IPv4/IPv6 addresses. Device VPN
 	// clients enable this to exclude their own tunnel, stale utun, bridge,

@@ -1,0 +1,648 @@
+package connect
+
+// Deterministic reproductions of the pinned-provider collapse mechanisms
+// named in FLIGHTGATEFIX.md §5. Each test states its mechanism (M1..M7) and
+// whether it is expected to fail on the tree it was written against; a test
+// that defines a candidate's contract before the candidate exists skips and
+// names it.
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/urnetwork/connect/protocol"
+)
+
+// flightGateSettings returns the flight-test client settings with a
+// configurable unreliable flight so several Packs can be in the air.
+func flightGateSettings(flightByteCount ByteCount) *ClientSettings {
+	settings := DefaultClientSettings()
+	settings.EncryptionSettings.Mode = EncryptionModeOff
+	settings.SendBufferSettings.UnreliableInitialFlightByteCount = flightByteCount
+	settings.SendBufferSettings.UnreliableMinimumFlightByteCount = flightByteCount
+	settings.SendBufferSettings.UnreliableMaximumFlightByteCount = flightByteCount
+	settings.SendBufferSettings.UnreliableFlightIncreaseByteCount = 1
+	settings.SendBufferSettings.UnreliableInitialFlightMessageCount = 0
+	return settings
+}
+
+// newFlightGateSender builds one no-contract sender whose routes the test
+// adds itself, plus the receive route its acknowledgements arrive on and the
+// admission-wait barrier signal.
+func newFlightGateSender(
+	t testing.TB,
+	settings *ClientSettings,
+) (*Client, Id, Route, <-chan sendSequenceId) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
+	peerId := NewId()
+	client.ContractManager().AddNoContractPeer(peerId)
+	fromPeer := make(chan []byte, 16)
+	waits := make(chan sendSequenceId, 16)
+	client.sendBuffer.beforeResendCapacityWaitForTest = func(sequenceId sendSequenceId) {
+		select {
+		case waits <- sequenceId:
+		default:
+		}
+	}
+	client.RouteManager().UpdateTransport(NewReceiveGatewayTransport(), []Route{fromPeer})
+	t.Cleanup(func() {
+		cancel()
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		if err := client.CloseAndWait(closeCtx); err != nil {
+			t.Errorf("close flight-gate sender: %v", err)
+		}
+		drainFlightGateRoute(fromPeer)
+	})
+	return client, peerId, fromPeer, waits
+}
+
+func drainFlightGateRoute(route Route) {
+	for {
+		select {
+		case message := <-route:
+			if message != nil {
+				MessagePoolReturn(message)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// addFlightGateRoute publishes one send route of the given carrier type and
+// capacity; unreliable routes carry the p2p fast-lane properties.
+func addFlightGateRoute(
+	t testing.TB,
+	client *Client,
+	transportType TransportType,
+	capacity int,
+	unreliable bool,
+) (Transport, Route) {
+	t.Helper()
+	route := make(Route, capacity)
+	transport := NewSendGatewayTransportWithType(transportType)
+	if unreliable {
+		client.RouteManager().UpdateTransportWithProperties(
+			transport,
+			[]Route{route},
+			TransferCarrierProperties{Unreliable: true},
+		)
+	} else {
+		client.RouteManager().UpdateTransport(transport, []Route{route})
+	}
+	t.Cleanup(func() {
+		drainFlightGateRoute(route)
+	})
+	return transport, route
+}
+
+// fillFlightGateRoute leaves a route with no free slot so the selector's
+// non-blocking pass must fall through to another route.
+func fillFlightGateRoute(route Route) {
+	for {
+		select {
+		case route <- nil:
+		default:
+			return
+		}
+	}
+}
+
+func sendFlightGateMessage(t testing.TB, client *Client, peerId Id, index int) {
+	t.Helper()
+	frame, err := ToFrame(
+		&protocol.SimpleMessage{Content: fmt.Sprintf("gate-%d", index)},
+		DefaultProtocolVersion,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.SendWithTimeout(frame, peerId, nil, 5*time.Second) {
+		MessagePoolReturn(frame.MessageBytes)
+		t.Fatalf("message %d was not admitted", index)
+	}
+}
+
+// decodeFlightGatePack decodes one routed Transfer frame and releases the
+// carrier bytes. It returns nil for anything that is not an application
+// Pack: nil sentinels placed by fillFlightGateRoute, ACKs, and the client
+// key announcement a Client writes to its first route.
+func decodeFlightGatePack(t testing.TB, transferFrameBytes []byte) *protocol.Pack {
+	t.Helper()
+	if transferFrameBytes == nil {
+		return nil
+	}
+	defer MessagePoolReturn(transferFrameBytes)
+	var transferFrame protocol.TransferFrame
+	if err := ProtoUnmarshal(transferFrameBytes, &transferFrame); err != nil {
+		t.Fatalf("decode TransferFrame: %v", err)
+	}
+	pack := transferFrame.Pack
+	if pack == nil {
+		frame := transferFrame.GetFrame()
+		if frame == nil || frame.GetMessageType() != protocol.MessageType_TransferPack {
+			return nil
+		}
+		pack = &protocol.Pack{}
+		if err := ProtoUnmarshal(frame.MessageBytes, pack); err != nil {
+			t.Fatalf("decode Pack: %v", err)
+		}
+	}
+	for _, frame := range pack.Frames {
+		if frame.GetMessageType() == protocol.MessageType_TransferClientKey {
+			return nil
+		}
+	}
+	return pack
+}
+
+func takeFlightGatePack(t testing.TB, route Route, timeout time.Duration) *protocol.Pack {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case transferFrameBytes := <-route:
+			if pack := decodeFlightGatePack(t, transferFrameBytes); pack != nil {
+				return pack
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for a Pack")
+			return nil
+		}
+	}
+}
+
+// takeFlightGatePackAndFill takes the next application Pack off a route and
+// leaves the route full, so the selector's non-blocking pass keeps falling
+// through to other routes as if the Pack were still queued there.
+func takeFlightGatePackAndFill(t testing.TB, route Route, timeout time.Duration) *protocol.Pack {
+	t.Helper()
+	pack := takeFlightGatePack(t, route, timeout)
+	fillFlightGateRoute(route)
+	return pack
+}
+
+// ackFlightGatePack delivers one ACK for the Pack through the sender's
+// receive pump. The Pack's tag is echoed so the sender records an RTT sample.
+func ackFlightGatePack(
+	t testing.TB,
+	client *Client,
+	peerId Id,
+	fromPeer Route,
+	pack *protocol.Pack,
+	selective bool,
+) {
+	t.Helper()
+	ackBytes, err := ProtoMarshal(&protocol.TransferFrame{
+		TransferPath: TransferPath{
+			SourceId:      peerId,
+			DestinationId: client.ClientId(),
+		}.ToProtobuf(),
+		Ack: &protocol.Ack{
+			MessageId:  pack.MessageId,
+			SequenceId: pack.SequenceId,
+			Selective:  selective,
+			Tag:        pack.Tag,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case fromPeer <- ackBytes:
+	case <-time.After(5 * time.Second):
+		MessagePoolReturn(ackBytes)
+		t.Fatal("could not deliver the ACK")
+	}
+}
+
+func flightGateSendSequence(t testing.TB, client *Client, peerId Id) *SendSequence {
+	t.Helper()
+	sequence := client.sendBuffer.lookupSendSequence(sendSequenceId{Destination: peerId}, nil)
+	if sequence == nil {
+		t.Fatal("no send sequence for the peer")
+	}
+	return sequence
+}
+
+// M1. The unreliable flight is full and never acknowledged; a reliable route
+// is also active. The next Pack must be written on the reliable route without
+// the sequence waiting on the flight. Expected red on the tree this was
+// written against: the admission gate is route-wide.
+func TestSendSequenceUnreliableFlightDoesNotGateReliableSibling(t *testing.T) {
+	client, peerId, _, waits := newFlightGateSender(t, flightGateSettings(1))
+	_, unreliable := addFlightGateRoute(t, client, TransportTypeP2p, 4, true)
+
+	sendFlightGateMessage(t, client, peerId, 0)
+	takeFlightGatePack(t, unreliable, 5*time.Second)
+
+	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 16, false)
+	sendFlightGateMessage(t, client, peerId, 1)
+	select {
+	case transferFrameBytes := <-reliable:
+		decodeFlightGatePack(t, transferFrameBytes)
+	case unexpected := <-unreliable:
+		MessagePoolReturn(unexpected)
+		t.Fatal("second Pack rode the full unreliable lane")
+	case <-waits:
+		t.Fatal("sequence waited on the unreliable flight while a reliable route had capacity")
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Pack was never written")
+	}
+	if recovery := client.SendRecoveryStats(); recovery.UnreliableFlightWaitCount != 0 ||
+		recovery.UnreliableFlightBlockedWithReliableCapacity != 0 {
+		t.Fatalf("flight waited with a reliable route available: %+v", recovery)
+	}
+}
+
+// M1 guard. Only writes the unreliable lane actually accepted are counted in
+// its flight; Packs the reliable route carried never enter it. Passes today
+// and must keep passing under every candidate.
+func TestSendSequenceUnreliableFlightTracksOnlyUnreliableWrites(t *testing.T) {
+	client, peerId, _, _ := newFlightGateSender(t, flightGateSettings(kib(64)))
+	_, unreliable := addFlightGateRoute(t, client, TransportTypeP2p, 1, true)
+
+	sendFlightGateMessage(t, client, peerId, 0)
+	first := takeFlightGatePackAndFill(t, unreliable, 5*time.Second)
+	// the unreliable route is now full; every later Pack must fall through
+	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 16, false)
+	for index := 1; index <= 3; index += 1 {
+		sendFlightGateMessage(t, client, peerId, index)
+		takeFlightGatePack(t, reliable, 5*time.Second)
+	}
+	recovery := client.SendRecoveryStats()
+	if recovery.UnreliableFlightMaximumMessageCount != 1 {
+		t.Fatalf("reliable writes entered the unreliable flight: %+v", recovery)
+	}
+	if recovery.UnreliableFlightMaximumByteCount == 0 ||
+		uint64(2*len(first.Frames[0].MessageBytes)+256) < recovery.UnreliableFlightMaximumByteCount {
+		t.Fatalf("unreliable flight bytes do not match the single tracked Pack: %+v", recovery)
+	}
+}
+
+// flightGatePeerPair wires a sender to a receiver through routes the test
+// owns, so the test is the wire and decides which carrier each Pack arrives
+// on and where the receiver's acknowledgements can go.
+type flightGatePeerPair struct {
+	sender     *Client
+	receiver   *Client
+	senderId   Id
+	receiverId Id
+	senderOut  Route
+	senderIn   Route
+}
+
+func newFlightGatePeerPair(
+	t testing.TB,
+	receiverWriteTimeout time.Duration,
+) *flightGatePeerPair {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	newSettings := func() *ClientSettings {
+		settings := DefaultClientSettings()
+		settings.EncryptionSettings.Mode = EncryptionModeOff
+		settings.SendBufferSettings.AckTimeout = 60 * time.Second
+		settings.SendBufferSettings.IdleTimeout = 60 * time.Second
+		settings.ReceiveBufferSettings.GapTimeout = 60 * time.Second
+		settings.ReceiveBufferSettings.IdleTimeout = 60 * time.Second
+		settings.ReceiveBufferSettings.WriteTimeout = receiverWriteTimeout
+		return settings
+	}
+	pair := &flightGatePeerPair{
+		senderId:   NewId(),
+		receiverId: NewId(),
+		senderOut:  make(Route, 32),
+		senderIn:   make(Route, 32),
+	}
+	pair.sender = NewClient(ctx, pair.senderId, NewNoContractClientOob(), newSettings())
+	pair.receiver = NewClient(ctx, pair.receiverId, NewNoContractClientOob(), newSettings())
+	pair.sender.ContractManager().AddNoContractPeer(pair.receiverId)
+	pair.receiver.ContractManager().AddNoContractPeer(pair.senderId)
+	pair.sender.RouteManager().UpdateTransport(NewSendGatewayTransport(), []Route{pair.senderOut})
+	pair.sender.RouteManager().UpdateTransport(NewReceiveGatewayTransport(), []Route{pair.senderIn})
+	pair.receiver.AddReceiveCallback(func(TransferPath, []*protocol.Frame, Peer) {})
+	t.Cleanup(func() {
+		cancel()
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		if err := pair.sender.CloseAndWait(closeCtx); err != nil {
+			t.Errorf("close sender: %v", err)
+		}
+		if err := pair.receiver.CloseAndWait(closeCtx); err != nil {
+			t.Errorf("close receiver: %v", err)
+		}
+		drainFlightGateRoute(pair.senderOut)
+		drainFlightGateRoute(pair.senderIn)
+	})
+	return pair
+}
+
+// receiveRoute publishes a receiver inbound route of the given carrier type.
+func (self *flightGatePeerPair) receiveRoute(t testing.TB, transportType TransportType) Route {
+	t.Helper()
+	route := make(Route, 32)
+	self.receiver.RouteManager().UpdateTransport(
+		NewReceiveGatewayTransportWithType(transportType),
+		[]Route{route},
+	)
+	t.Cleanup(func() { drainFlightGateRoute(route) })
+	return route
+}
+
+// ackRoute publishes a receiver outbound route (where its ACKs go) of the
+// given carrier type and capacity.
+func (self *flightGatePeerPair) ackRoute(
+	t testing.TB,
+	transportType TransportType,
+	capacity int,
+	properties TransferCarrierProperties,
+) Route {
+	t.Helper()
+	route := make(Route, capacity)
+	transport := NewSendGatewayTransportWithType(transportType)
+	if properties.Unreliable {
+		self.receiver.RouteManager().UpdateTransportWithProperties(transport, []Route{route}, properties)
+	} else {
+		self.receiver.RouteManager().UpdateTransport(transport, []Route{route})
+	}
+	t.Cleanup(func() { drainFlightGateRoute(route) })
+	return route
+}
+
+// deliver sends one message from the sender and hands its first wire frame
+// to the receiver on the chosen inbound route, returning the decoded Pack.
+func (self *flightGatePeerPair) deliver(
+	t testing.TB,
+	index int,
+	inbound Route,
+) *protocol.Pack {
+	t.Helper()
+	sendFlightGateMessage(t, self.sender, self.receiverId, index)
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case transferFrameBytes := <-self.senderOut:
+			copied := MessagePoolCopy(transferFrameBytes)
+			pack := decodeFlightGatePack(t, transferFrameBytes)
+			if pack == nil {
+				// the sender's client key announcement, or a resend of an
+				// earlier Pack whose ACK the test withheld: not this delivery
+				MessagePoolReturn(copied)
+				continue
+			}
+			select {
+			case inbound <- copied:
+			case <-time.After(5 * time.Second):
+				MessagePoolReturn(copied)
+				t.Fatal("receiver inbound route did not accept the Pack")
+			}
+			return pack
+		case <-deadline:
+			t.Fatal("sender wrote nothing")
+			return nil
+		}
+	}
+}
+
+// awaitAck waits for an ACK naming the Pack on the route; extra frames
+// (other ACKs, duplicates) are consumed.
+func awaitFlightGateAck(t testing.TB, route Route, pack *protocol.Pack, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case transferFrameBytes := <-route:
+			if transferFrameBytes == nil {
+				continue
+			}
+			var transferFrame protocol.TransferFrame
+			err := ProtoUnmarshal(transferFrameBytes, &transferFrame)
+			MessagePoolReturn(transferFrameBytes)
+			if err != nil {
+				t.Fatalf("decode ACK frame: %v", err)
+			}
+			if ack := transferFrame.Ack; ack != nil &&
+				Id(ack.MessageId) == Id(pack.MessageId) {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+// M2. A Pack received over the p2p lane pins its ACK to p2p; the p2p route is
+// full. The receiver's ack worker is one serial goroutine, so a later ACK
+// for a Pack received over h1 waits behind the pinned write. It must not.
+// Expected red on the tree this was written against.
+func TestReceiveSequenceAckAffinityDoesNotHeadOfLineBlock(t *testing.T) {
+	pair := newFlightGatePeerPair(t, 3*time.Second)
+	inP2p := pair.receiveRoute(t, TransportTypeP2p)
+	inH1 := pair.receiveRoute(t, TransportTypeH1)
+	outP2p := pair.ackRoute(t, TransportTypeP2p, 1, TransferCarrierProperties{Unreliable: true})
+	outH1 := pair.ackRoute(t, TransportTypeH1, 16, TransferCarrierProperties{})
+	fillFlightGateRoute(outP2p)
+
+	pair.deliver(t, 0, inP2p)
+	// let the receiver's ACK for Pack 0 reach the full p2p route and block
+	time.Sleep(300 * time.Millisecond)
+	second := pair.deliver(t, 1, inH1)
+	if !awaitFlightGateAck(t, outH1, second, time.Second) {
+		t.Fatal("ACK for the h1-received Pack waited behind the pinned p2p ACK")
+	}
+}
+
+// M2 fix contract (candidate A1). The ACK for a p2p-received Pack falls
+// through to the reliable route when the p2p route is full instead of
+// waiting for its write timeout. Expected red on the tree this was written
+// against.
+func TestReceiveSequenceAckFallsThroughWhenUnreliableIsFull(t *testing.T) {
+	pair := newFlightGatePeerPair(t, 3*time.Second)
+	inP2p := pair.receiveRoute(t, TransportTypeP2p)
+	outP2p := pair.ackRoute(t, TransportTypeP2p, 1, TransferCarrierProperties{Unreliable: true})
+	outH1 := pair.ackRoute(t, TransportTypeH1, 16, TransferCarrierProperties{})
+	fillFlightGateRoute(outP2p)
+
+	first := pair.deliver(t, 0, inP2p)
+	if !awaitFlightGateAck(t, outH1, first, time.Second) {
+		t.Fatal("ACK for the p2p-received Pack did not fall through to the reliable route")
+	}
+}
+
+// M2 guard (review finding 2 of FLIGHTGATEFIX §4). With H1 and a hybrid H3
+// carrier both active and H3 healthy, an ACK for a Pack received over H3
+// keeps its H3 affinity. Passes today; a fall-through scoped to "any
+// potentially unreliable carrier" would break it.
+func TestReceiveSequenceAckKeepsHybridH3Affinity(t *testing.T) {
+	pair := newFlightGatePeerPair(t, 3*time.Second)
+	inH3 := pair.receiveRoute(t, TransportTypeH3)
+	outH3 := pair.ackRoute(t, TransportTypeH3, 16, TransferCarrierProperties{
+		Unreliable: true,
+		unreliableForMessageByteCount: func(int) bool {
+			return false
+		},
+	})
+	outH1 := pair.ackRoute(t, TransportTypeH1, 16, TransferCarrierProperties{})
+
+	first := pair.deliver(t, 0, inH3)
+	start := time.Now()
+	if !awaitFlightGateAck(t, outH3, first, 5*time.Second) {
+		t.Fatal("ACK for the H3-received Pack left the healthy H3 carrier")
+	}
+	t.Logf("H3 ACK latency %s", time.Since(start))
+	if awaitFlightGateAck(t, outH1, first, 200*time.Millisecond) {
+		t.Fatal("ACK also appeared on H1")
+	}
+}
+
+// M3. Pack 0 rides the reliable lane, Packs 1..3 the unreliable lane and are
+// acknowledged first. That is reordering across carriers, not loss: no gap
+// resend may be written for Pack 0. A real drop on the unreliable lane must
+// still produce exactly one gap recovery. Expected red on the tree this was
+// written against: the scoreboard counts three later selective ACKs as a
+// hole regardless of lane.
+func TestSendSequenceReorderingAcrossCarriersIsNotLoss(t *testing.T) {
+	client, peerId, fromPeer, _ := newFlightGateSender(t, flightGateSettings(kib(64)))
+	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 1, false)
+	sendFlightGateMessage(t, client, peerId, 0)
+	first := takeFlightGatePackAndFill(t, reliable, 5*time.Second)
+	_, unreliable := addFlightGateRoute(t, client, TransportTypeP2p, 16, true)
+	var laterPacks []*protocol.Pack
+	for index := 1; index <= 3; index += 1 {
+		sendFlightGateMessage(t, client, peerId, index)
+		laterPacks = append(laterPacks, takeFlightGatePack(t, unreliable, 5*time.Second))
+	}
+	for _, pack := range laterPacks {
+		ackFlightGatePack(t, client, peerId, fromPeer, pack, true)
+	}
+	// the reliable lane answers within its own RTT
+	time.Sleep(100 * time.Millisecond)
+	ackFlightGatePack(t, client, peerId, fromPeer, first, false)
+	time.Sleep(200 * time.Millisecond)
+	recovery := client.SendRecoveryStats()
+	if recovery.SelectiveGapWriteCount != 0 {
+		t.Fatalf("reordering across carriers was recovered as a gap: %+v", recovery)
+	}
+
+	// a real drop: Pack 4 is lost on the unreliable lane, 5..7 are acknowledged
+	var afterDrop []*protocol.Pack
+	for index := 4; index <= 7; index += 1 {
+		sendFlightGateMessage(t, client, peerId, index)
+		afterDrop = append(afterDrop, takeFlightGatePack(t, unreliable, 5*time.Second))
+	}
+	for _, pack := range afterDrop[1:] {
+		ackFlightGatePack(t, client, peerId, fromPeer, pack, true)
+	}
+	resent := takeFlightGatePack(t, unreliable, 5*time.Second)
+	if Id(resent.MessageId) != Id(afterDrop[0].MessageId) {
+		t.Fatalf("gap recovery resent %v, want the dropped Pack", resent.MessageId)
+	}
+	recovery = client.SendRecoveryStats()
+	if recovery.SelectiveGapWriteCount != 1 {
+		t.Fatalf("real loss must produce exactly one gap recovery: %+v", recovery)
+	}
+}
+
+// M4. Acknowledgements from the unreliable lane arrive in ~20 ms and from the
+// reliable lane in ~200 ms. The sequence's scaled RTT must describe the
+// reliable lane, since that is the lane whose RTO it drives. Expected red on
+// the tree this was written against: one window averages both lanes and
+// lands on its floor.
+func TestSendSequenceRttWindowDescribesReliableLane(t *testing.T) {
+	client, peerId, fromPeer, _ := newFlightGateSender(t, flightGateSettings(kib(64)))
+	_, unreliable := addFlightGateRoute(t, client, TransportTypeP2p, 8, true)
+	var unreliablePacks []*protocol.Pack
+	for index := 0; index < 4; index += 1 {
+		sendFlightGateMessage(t, client, peerId, index)
+		unreliablePacks = append(unreliablePacks, takeFlightGatePack(t, unreliable, 5*time.Second))
+	}
+	// the direct lane answers in tens of milliseconds
+	time.Sleep(20 * time.Millisecond)
+	for _, pack := range unreliablePacks {
+		ackFlightGatePack(t, client, peerId, fromPeer, pack, true)
+	}
+	fillFlightGateRoute(unreliable)
+	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 16, false)
+	var reliablePacks []*protocol.Pack
+	sentAt := time.Now()
+	for index := 4; index < 8; index += 1 {
+		sendFlightGateMessage(t, client, peerId, index)
+		reliablePacks = append(reliablePacks, takeFlightGatePack(t, reliable, 5*time.Second))
+	}
+	// the relay lane answers in a couple of hundred milliseconds
+	time.Sleep(200*time.Millisecond - time.Since(sentAt))
+	for _, pack := range reliablePacks[:3] {
+		ackFlightGatePack(t, client, peerId, fromPeer, pack, true)
+	}
+	ackFlightGatePack(t, client, peerId, fromPeer, reliablePacks[3], false)
+	time.Sleep(100 * time.Millisecond)
+
+	sequence := flightGateSendSequence(t, client, peerId)
+	scaled := sequence.rttWindow.ScaledRtt()
+	minimum := time.Duration(float64(200*time.Millisecond) * 0.95 *
+		float64(client.settings.SendBufferSettings.RttScale))
+	if scaled < minimum {
+		t.Fatalf("scaled RTT %s describes a blend of both lanes; want at least %s for the reliable lane", scaled, minimum)
+	}
+}
+
+// M4 (F12 contract). Acknowledgements on a single reliable lane keep
+// advancing the cumulative ack while their delay grows with a queue. No
+// whole-window timeout resend may fire while that progress is recent. A lane
+// that really stops must still resend. Expected red on the tree this was
+// written against.
+func TestSendSequenceQueueInflatedRelayRttDoesNotFireWholeWindowTimeouts(t *testing.T) {
+	client, peerId, fromPeer, _ := newFlightGateSender(t, flightGateSettings(kib(64)))
+	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 16, false)
+	for index, delay := range []time.Duration{
+		100 * time.Millisecond,
+		250 * time.Millisecond,
+		600 * time.Millisecond,
+		1200 * time.Millisecond,
+	} {
+		sendFlightGateMessage(t, client, peerId, index)
+		pack := takeFlightGatePack(t, reliable, 5*time.Second)
+		time.Sleep(delay)
+		ackFlightGatePack(t, client, peerId, fromPeer, pack, false)
+	}
+	time.Sleep(100 * time.Millisecond)
+	recovery := client.SendRecoveryStats()
+	if recovery.TimeoutResendWithRecentCumulativeProgress != 0 {
+		t.Fatalf("whole-window timeouts fired while the cumulative ack was advancing: %+v", recovery)
+	}
+	drainFlightGateRoute(reliable)
+
+	// a stalled lane is still recovered
+	sendFlightGateMessage(t, client, peerId, 8)
+	takeFlightGatePack(t, reliable, 5*time.Second)
+	takeFlightGatePack(t, reliable, 10*time.Second)
+	if recovery := client.SendRecoveryStats(); recovery.TimeoutResendWriteCount == 0 {
+		t.Fatalf("a lane with no acknowledgement was never resent: %+v", recovery)
+	}
+}
+
+// Finding 1 of FLIGHTGATEFIX §4 (candidate G2). Forgetting an item from the
+// unreliable flight on RTO must not grow the window the way an
+// acknowledgement does. The primitive does not exist on this tree.
+func TestSendFlightControllerForgetDoesNotGrowWindow(t *testing.T) {
+	t.Skip("candidate G2 defines sendFlightController.forget; see flight-gate-fix-g1")
+}
+
+// R1 contract (M7). A receive callback that blocks must not block SendPacket:
+// race-commit delivery has to be asynchronous. The reproduction needs a
+// provider answer to arrive between race publication and commit, which the
+// in-process multi-client harness cannot yet schedule deterministically.
+func TestMultiClientRaceCommitDeliversAsynchronously(t *testing.T) {
+	t.Skip("candidate R1 defines asynchronous race-commit delivery; needs a race-commit scheduling seam in ip_remote_multi_client")
+}
+
+// P1 contract. Readiness of the direct lane must depend on measured probe
+// quality relative to the platform path. No such gate exists on this tree.
+func TestP2pReadinessRequiresProbeQuality(t *testing.T) {
+	t.Skip("candidate P1 defines a probe-quality readiness gate in transport_p2p_probe")
+}
