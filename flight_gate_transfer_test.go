@@ -662,3 +662,42 @@ func TestMultiClientRaceCommitDeliversAsynchronously(t *testing.T) {
 func TestP2pReadinessRequiresProbeQuality(t *testing.T) {
 	t.Skip("candidate P1 defines a probe-quality readiness gate in transport_p2p_probe")
 }
+
+// The §8 counters ride the send loop and the ack hot path; they must not
+// allocate. reliableRouteHasCapacity is called once per gated iteration and
+// recordReceiveAckRouteWrite once per ack write.
+func TestFlightGateCountersAreAllocationFree(t *testing.T) {
+	client, peerId, _, _ := newFlightGateSender(t, flightGateSettings(kib(64)))
+	_, unreliable := addFlightGateRoute(t, client, TransportTypeP2p, 4, true)
+	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 4, false)
+	sendFlightGateMessage(t, client, peerId, 0)
+	// the writer opens with the first write; wait for the Pack on either route
+	select {
+	case transferFrameBytes := <-unreliable:
+		decodeFlightGatePack(t, transferFrameBytes)
+	case transferFrameBytes := <-reliable:
+		decodeFlightGatePack(t, transferFrameBytes)
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Pack was never written")
+	}
+	sequence := flightGateSendSequence(t, client, peerId)
+	provider, ok := sequence.contractMultiRouteWriter.(transferReliableCapacityProvider)
+	if !ok {
+		t.Fatal("writer does not report reliable capacity")
+	}
+	if allocs := testing.AllocsPerRun(1000, func() {
+		provider.reliableRouteHasCapacity()
+	}); allocs != 0 {
+		t.Fatalf("reliableRouteHasCapacity allocates %.1f per call", allocs)
+	}
+	if allocs := testing.AllocsPerRun(1000, func() {
+		client.recordReceiveAckRouteWrite(TransportTypeP2p, time.Millisecond, true, false, nil)
+	}); allocs != 0 {
+		t.Fatalf("recordReceiveAckRouteWrite allocates %.1f per call", allocs)
+	}
+	if allocs := testing.AllocsPerRun(1000, func() {
+		sequence.observeItemAck(&sendItem{})
+	}); allocs != 0 {
+		t.Fatalf("observeItemAck allocates %.1f per call", allocs)
+	}
+}
