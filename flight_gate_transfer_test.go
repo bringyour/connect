@@ -239,24 +239,40 @@ func TestSendSequenceUnreliableFlightDoesNotGateReliableSibling(t *testing.T) {
 	_, unreliable := addFlightGateRoute(t, client, TransportTypeP2p, 4, true)
 
 	sendFlightGateMessage(t, client, peerId, 0)
-	takeFlightGatePack(t, unreliable, 5*time.Second)
+	first := takeFlightGatePack(t, unreliable, 5*time.Second)
 
 	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 16, false)
-	sendFlightGateMessage(t, client, peerId, 1)
-	select {
-	case transferFrameBytes := <-reliable:
-		decodeFlightGatePack(t, transferFrameBytes)
-	case unexpected := <-unreliable:
-		MessagePoolReturn(unexpected)
-		t.Fatal("second Pack rode the full unreliable lane")
-	case <-waits:
-		t.Fatal("sequence waited on the unreliable flight while a reliable route had capacity")
-	case <-time.After(5 * time.Second):
-		t.Fatal("second Pack was never written")
+	// the idle sequence may already have parked on its full flight before
+	// the reliable route existed; a gated sequence stops reading its pack
+	// channel, so the wait barrier is not the signal here: the second Pack
+	// reaching the reliable route within one resend interval is.
+	time.Sleep(50 * time.Millisecond)
+	for len(waits) > 0 {
+		<-waits
 	}
-	if recovery := client.SendRecoveryStats(); recovery.UnreliableFlightWaitCount != 0 ||
-		recovery.UnreliableFlightBlockedWithReliableCapacity != 0 {
-		t.Fatalf("flight waited with a reliable route available: %+v", recovery)
+	before := client.SendRecoveryStats()
+	sendFlightGateMessage(t, client, peerId, 1)
+	deadline := time.After(1500 * time.Millisecond)
+awaitSecond:
+	for {
+		select {
+		case transferFrameBytes := <-reliable:
+			if pack := decodeFlightGatePack(t, transferFrameBytes); pack != nil &&
+				pack.SequenceNumber == first.SequenceNumber+1 {
+				break awaitSecond
+			}
+		case transferFrameBytes := <-unreliable:
+			if pack := decodeFlightGatePack(t, transferFrameBytes); pack != nil &&
+				pack.SequenceNumber == first.SequenceNumber+1 {
+				t.Fatal("second Pack rode the full unreliable lane")
+			}
+		case <-deadline:
+			t.Fatal("second Pack was gated by the full unreliable flight while a reliable route had capacity")
+		}
+	}
+	after := client.SendRecoveryStats()
+	if after.UnreliableFlightBlockedWithReliableCapacity != before.UnreliableFlightBlockedWithReliableCapacity {
+		t.Fatalf("flight gated a Pack while a reliable route had capacity: %+v", after)
 	}
 }
 
