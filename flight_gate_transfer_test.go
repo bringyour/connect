@@ -668,22 +668,18 @@ func TestP2pReadinessRequiresProbeQuality(t *testing.T) {
 // recordReceiveAckRouteWrite once per ack write.
 func TestFlightGateCountersAreAllocationFree(t *testing.T) {
 	client, peerId, _, _ := newFlightGateSender(t, flightGateSettings(kib(64)))
-	_, unreliable := addFlightGateRoute(t, client, TransportTypeP2p, 4, true)
-	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 4, false)
-	sendFlightGateMessage(t, client, peerId, 0)
-	// the writer opens with the first write; wait for the Pack on either route
-	select {
-	case transferFrameBytes := <-unreliable:
-		decodeFlightGatePack(t, transferFrameBytes)
-	case transferFrameBytes := <-reliable:
-		decodeFlightGatePack(t, transferFrameBytes)
-	case <-time.After(5 * time.Second):
-		t.Fatal("first Pack was never written")
-	}
-	sequence := flightGateSendSequence(t, client, peerId)
-	provider, ok := sequence.contractMultiRouteWriter.(transferReliableCapacityProvider)
+	addFlightGateRoute(t, client, TransportTypeP2p, 4, true)
+	addFlightGateRoute(t, client, TransportTypeH1, 4, false)
+	// an independent writer for the destination sees the same route snapshot
+	// the sequence's writer does, without touching the sequence's own field
+	writer := client.RouteManager().OpenMultiRouteWriter(DestinationId(peerId))
+	defer client.RouteManager().CloseMultiRouteWriter(writer)
+	provider, ok := writer.(transferReliableCapacityProvider)
 	if !ok {
 		t.Fatal("writer does not report reliable capacity")
+	}
+	if !provider.reliableRouteHasCapacity() {
+		t.Fatal("an empty reliable route reports no capacity")
 	}
 	if allocs := testing.AllocsPerRun(1000, func() {
 		provider.reliableRouteHasCapacity()
@@ -695,8 +691,10 @@ func TestFlightGateCountersAreAllocationFree(t *testing.T) {
 	}); allocs != 0 {
 		t.Fatalf("recordReceiveAckRouteWrite allocates %.1f per call", allocs)
 	}
+	sequence := &SendSequence{client: client, contractMultiRouteWriter: writer}
+	item := &sendItem{unreliableCarrierObserved: true, carrierRoute: make(Route, 1)}
 	if allocs := testing.AllocsPerRun(1000, func() {
-		sequence.observeItemAck(&sendItem{})
+		sequence.observeItemAck(item)
 	}); allocs != 0 {
 		t.Fatalf("observeItemAck allocates %.1f per call", allocs)
 	}
