@@ -1835,12 +1835,17 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		AckRouteWriteMaxWait: time.Duration(
 			self.receiveAckRouteWriteMaxWaitNanos.Load(),
 		),
-		AckRouteWriteCountByTransport:   map[TransportType]uint64{},
-		AckRouteWriteWaitByTransport:    map[TransportType]time.Duration{},
-		AckRouteWriteTimeoutByTransport: map[TransportType]uint64{},
 	}
+	// The per-carrier maps exist only when a carrier has written: a client
+	// that has not acked stays allocation-free, which the multi-client memory
+	// snapshot relies on.
 	for slot, transportType := range ackTransportSlotTypes {
 		if count := self.receiveAckRouteWriteCountByTransport[slot].Load(); 0 < count {
+			if snapshot.AckRouteWriteCountByTransport == nil {
+				snapshot.AckRouteWriteCountByTransport = map[TransportType]uint64{}
+				snapshot.AckRouteWriteWaitByTransport = map[TransportType]time.Duration{}
+				snapshot.AckRouteWriteTimeoutByTransport = map[TransportType]uint64{}
+			}
 			snapshot.AckRouteWriteCountByTransport[transportType] = count
 			snapshot.AckRouteWriteWaitByTransport[transportType] = time.Duration(
 				self.receiveAckRouteWriteWaitNanosByTransport[slot].Load(),
