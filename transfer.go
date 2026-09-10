@@ -1346,6 +1346,40 @@ type ClientReceiveStatsSnapshot struct {
 	AckRouteWriteErrorCount         uint64
 	AckRouteWriteWaitDuration       time.Duration
 	AckRouteWriteMaxWait            time.Duration
+	// FLIGHTGATEFIX §8: the ack path per carrier the answered Pack arrived on
+	// (M2). Only carriers with at least one write appear.
+	AckRouteWriteCountByTransport   map[TransportType]uint64
+	AckRouteWriteWaitByTransport    map[TransportType]time.Duration
+	AckRouteWriteTimeoutByTransport map[TransportType]uint64
+}
+
+// ackTransportSlot maps a carrier type to a fixed counter slot so the ack hot
+// path indexes an array instead of a map.
+const ackTransportSlotCount = 6
+
+func ackTransportSlot(transportType TransportType) int {
+	switch transportType {
+	case TransportTypeH1:
+		return 1
+	case TransportTypeH3:
+		return 2
+	case TransportTypeH3Dns:
+		return 3
+	case TransportTypeH3DnsPump:
+		return 4
+	case TransportTypeP2p:
+		return 5
+	}
+	return 0
+}
+
+var ackTransportSlotTypes = [ackTransportSlotCount]TransportType{
+	TransportTypeUnknown,
+	TransportTypeH1,
+	TransportTypeH3,
+	TransportTypeH3Dns,
+	TransportTypeH3DnsPump,
+	TransportTypeP2p,
 }
 
 func updateAtomicMaximum(target *atomic.Uint64, value uint64) {
@@ -1388,6 +1422,19 @@ type ClientSendRecoveryStatsSnapshot struct {
 	UnreliableFlightMaximumLimitByteCount uint64
 	UnreliableFlightMaximumMessageCount   uint64
 	UnreliableFlightMaximumMessageLimit   uint64
+	// FLIGHTGATEFIX §8. Send-loop iterations that waited on a full unreliable
+	// flight while a route on a carrier that is not potentially unreliable had
+	// channel capacity: the share of a stall that is the admission gate (M1).
+	UnreliableFlightBlockedWithReliableCapacity uint64
+	// Selective-gap recoveries whose missing item was acknowledged before the
+	// gap resend was written: reordering read as loss (M3).
+	UnreliableFlightGapReorderSuspected uint64
+	// Ordinary RTO resends issued while the cumulative ack advanced within the
+	// last scaled RTT: the spurious whole-window timeout cascade (M4).
+	TimeoutResendWithRecentCumulativeProgress uint64
+	// Age of the newest acknowledgement of an item carried by an unreliable
+	// lane; zero when none was ever acknowledged (feeds a lane watchdog, M6).
+	UnreliableCarrierLastAckAge time.Duration
 }
 
 // The Transfer endpoint. All callbacks are wrapped to check for nil and
@@ -1476,6 +1523,14 @@ type Client struct {
 	unreliableFlightMaximumLimit           atomic.Uint64
 	unreliableFlightMaximumMessages        atomic.Uint64
 	unreliableFlightMaximumMessageLimit    atomic.Uint64
+	// FLIGHTGATEFIX §8: attribution counters. Atomic adds only.
+	unreliableFlightBlockedWithReliableCapacity atomic.Uint64
+	unreliableFlightGapReorderSuspected         atomic.Uint64
+	timeoutResendWithRecentCumulativeProgress   atomic.Uint64
+	unreliableCarrierLastAckNanos               atomic.Int64
+	receiveAckRouteWriteCountByTransport        [ackTransportSlotCount]atomic.Uint64
+	receiveAckRouteWriteWaitNanosByTransport    [ackTransportSlotCount]atomic.Uint64
+	receiveAckRouteWriteTimeoutByTransport      [ackTransportSlotCount]atomic.Uint64
 
 	routeManager             *RouteManager
 	contractManager          *ContractManager
@@ -1753,7 +1808,7 @@ func (self *Client) ClientTag() string {
 // A snapshot taken during traffic may straddle one Pack update, so byte and
 // message counts are consistent-enough telemetry rather than a transaction.
 func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
-	return ClientReceiveStatsSnapshot{
+	snapshot := ClientReceiveStatsSnapshot{
 		PackHandoffDropCount:            self.receivePackHandoffDropCount.Load(),
 		PackHandoffDropByteCount:        self.receivePackHandoffDropByteCount.Load(),
 		PackHandoffWaitCount:            self.receivePackHandoffWaitCount.Load(),
@@ -1780,7 +1835,21 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		AckRouteWriteMaxWait: time.Duration(
 			self.receiveAckRouteWriteMaxWaitNanos.Load(),
 		),
+		AckRouteWriteCountByTransport:   map[TransportType]uint64{},
+		AckRouteWriteWaitByTransport:    map[TransportType]time.Duration{},
+		AckRouteWriteTimeoutByTransport: map[TransportType]uint64{},
 	}
+	for slot, transportType := range ackTransportSlotTypes {
+		if count := self.receiveAckRouteWriteCountByTransport[slot].Load(); 0 < count {
+			snapshot.AckRouteWriteCountByTransport[transportType] = count
+			snapshot.AckRouteWriteWaitByTransport[transportType] = time.Duration(
+				self.receiveAckRouteWriteWaitNanosByTransport[slot].Load(),
+			)
+			snapshot.AckRouteWriteTimeoutByTransport[transportType] =
+				self.receiveAckRouteWriteTimeoutByTransport[slot].Load()
+		}
+	}
+	return snapshot
 }
 
 // Reads recovery-write counters without stopping send processing.
@@ -1812,14 +1881,26 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 		UnreliableFlightMaximumWaitDuration: time.Duration(
 			self.unreliableFlightMaximumWaitNanos.Load(),
 		),
-		UnreliableFlightGapCount:              self.unreliableFlightGapCount.Load(),
-		UnreliableFlightTimeoutCount:          self.unreliableFlightTimeoutCount.Load(),
-		UnreliableFlightReductionCount:        self.unreliableFlightReductionCount.Load(),
-		UnreliableFlightMaximumByteCount:      self.unreliableFlightMaximumBytes.Load(),
-		UnreliableFlightMaximumLimitByteCount: self.unreliableFlightMaximumLimit.Load(),
-		UnreliableFlightMaximumMessageCount:   self.unreliableFlightMaximumMessages.Load(),
-		UnreliableFlightMaximumMessageLimit:   self.unreliableFlightMaximumMessageLimit.Load(),
+		UnreliableFlightGapCount:                    self.unreliableFlightGapCount.Load(),
+		UnreliableFlightTimeoutCount:                self.unreliableFlightTimeoutCount.Load(),
+		UnreliableFlightReductionCount:              self.unreliableFlightReductionCount.Load(),
+		UnreliableFlightMaximumByteCount:            self.unreliableFlightMaximumBytes.Load(),
+		UnreliableFlightMaximumLimitByteCount:       self.unreliableFlightMaximumLimit.Load(),
+		UnreliableFlightMaximumMessageCount:         self.unreliableFlightMaximumMessages.Load(),
+		UnreliableFlightMaximumMessageLimit:         self.unreliableFlightMaximumMessageLimit.Load(),
+		UnreliableFlightBlockedWithReliableCapacity: self.unreliableFlightBlockedWithReliableCapacity.Load(),
+		UnreliableFlightGapReorderSuspected:         self.unreliableFlightGapReorderSuspected.Load(),
+		TimeoutResendWithRecentCumulativeProgress:   self.timeoutResendWithRecentCumulativeProgress.Load(),
+		UnreliableCarrierLastAckAge:                 self.unreliableCarrierLastAckAge(),
 	}
+}
+
+func (self *Client) unreliableCarrierLastAckAge() time.Duration {
+	nanos := self.unreliableCarrierLastAckNanos.Load()
+	if nanos == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, nanos))
 }
 
 func (self *Client) observeUnreliableFlightWait(waitDuration time.Duration) {
@@ -2859,17 +2940,21 @@ func (self *Client) recordReceiveAckHandoff(result receiveAckHandoffResult) {
 // counters are intentionally primitive so the mobile sampler can read them
 // without installing an observer on the ACK hot path.
 func (self *Client) recordReceiveAckRouteWrite(
+	transportType TransportType,
 	waitDuration time.Duration,
 	blocked bool,
 	priority bool,
 	err error,
 ) {
+	slot := ackTransportSlot(transportType)
 	self.receiveAckRouteWriteCount.Add(1)
+	self.receiveAckRouteWriteCountByTransport[slot].Add(1)
 	if priority {
 		self.receiveAckRoutePriorityWriteCount.Add(1)
 	}
 	if err != nil {
 		self.receiveAckRouteWriteErrorCount.Add(1)
+		self.receiveAckRouteWriteTimeoutByTransport[slot].Add(1)
 	}
 	if !blocked || waitDuration <= 0 {
 		return
@@ -2877,6 +2962,7 @@ func (self *Client) recordReceiveAckRouteWrite(
 	self.receiveAckRouteWriteBlockedCount.Add(1)
 	waitNanoseconds := uint64(waitDuration)
 	self.receiveAckRouteWriteWaitNanoseconds.Add(waitNanoseconds)
+	self.receiveAckRouteWriteWaitNanosByTransport[slot].Add(waitNanoseconds)
 	updateAtomicMaximum(&self.receiveAckRouteWriteMaxWaitNanos, waitNanoseconds)
 }
 
@@ -4761,7 +4847,10 @@ type SendSequence struct {
 	// lastHeadAckTime is when the cumulative (head) ACK last advanced.
 	lastHeadAckTime time.Time
 
-	contractMultiRouteWriter            MultiRouteWriter
+	contractMultiRouteWriter MultiRouteWriter
+	// lastCumulativeAckTime is when the cumulative ack last advanced; an RTO
+	// inside one scaled RTT of it is counted as spurious (M4).
+	lastCumulativeAckTime               time.Time
 	contractMultiRouteWriterDestination TransferPath
 	contractMultiRouteWriterAlias       TransferPath
 	removeContractMultiRouteWriterAlias func()
@@ -6003,6 +6092,12 @@ sendSequenceLoop:
 					continue
 				}
 				reliableOnlyResend := false
+				if recoveryKind == sendRecoveryNone && !self.lastCumulativeAckTime.IsZero() &&
+					sendTime.Sub(self.lastCumulativeAckTime) < self.rttWindow.ScaledRtt() {
+					// M4: a whole-window timeout while the cumulative ack is still
+					// advancing is the spurious cascade, not a stalled lane.
+					self.client.timeoutResendWithRecentCumulativeProgress.Add(1)
+				}
 				if recoveryKind == sendRecoveryNone && item.unreliableFlightTracked {
 					reliableOnlyResend = self.observeUnreliableResendTimeout(item, flightPolicy)
 				}
@@ -6336,6 +6431,11 @@ sendSequenceLoop:
 				0 < scheduler.Len() && !scheduler.HasEligible(flightEligible))
 		if flightBlocked {
 			self.client.unreliableFlightWaitCount.Add(1)
+			if provider, ok := self.contractMultiRouteWriter.(transferReliableCapacityProvider); ok &&
+				provider.reliableRouteHasCapacity() {
+				// M1: the gate, not the carrier, is what holds this Pack.
+				self.client.unreliableFlightBlockedWithReliableCapacity.Add(1)
+			}
 		}
 		if (!resendCapacity || flightBlocked) && self.sendBuffer != nil &&
 			self.sendBuffer.beforeResendCapacityWaitForTest != nil {
@@ -7363,6 +7463,7 @@ func (self *SendSequence) observeCarrierWrite(
 	item *sendItem,
 	disposition transferWriteDisposition,
 ) {
+	item.carrierRoute = disposition.route
 	if !disposition.unreliable {
 		if disposition.reliable && !item.unreliableCarrierObserved {
 			item.reliableCarrierObserved = true
@@ -7402,6 +7503,23 @@ func (self *SendSequence) trackUnreliableFlight(item *sendItem) {
 		self.client.unreliableFlowReserveUseCount.Add(1)
 	}
 	self.client.observeUnreliableFlight(self.flightController)
+}
+
+// observeItemAck reports acknowledgement evidence for the lane that carried
+// the item: the per-route progress clock on the writer, the unreliable last-ack
+// age, and reordering suspected when a scheduled gap resend was never needed.
+func (self *SendSequence) observeItemAck(item *sendItem) {
+	if item.recoveryKind == sendRecoverySelectiveGap {
+		self.client.unreliableFlightGapReorderSuspected.Add(1)
+	}
+	if item.carrierRoute != nil {
+		if observer, ok := self.contractMultiRouteWriter.(transferRouteAckProgressObserver); ok {
+			observer.observeRouteAckProgress(item.carrierRoute)
+		}
+	}
+	if item.unreliableCarrierObserved {
+		self.client.unreliableCarrierLastAckNanos.Store(time.Now().UnixNano())
+	}
 }
 
 func (self *SendSequence) releaseUnreliableFlight(item *sendItem) {
@@ -7532,6 +7650,7 @@ func (self *SendSequence) receiveAck(
 			panic(errors.New("Missing item"))
 		}
 		if !item.selectiveAcked {
+			self.observeItemAck(item)
 			self.releaseUnreliableFlight(item)
 		}
 		// refresh sendTime so the ack-timeout deadline includes the selective-ack window
@@ -7551,6 +7670,7 @@ func (self *SendSequence) receiveAck(
 		self.log.Infof("[s]ack %d %s->%s...%s s(%s)\n", ackSequenceNumber, self.client.ClientTag(), self.contractIntermediaryIds(), self.destination, self.contractMultiRouteWriterAlias.StreamId)
 	}
 
+	self.lastCumulativeAckTime = time.Now()
 	// acks are cumulative
 	// implicitly ack all earlier items in the sequence
 	i := 0
@@ -7577,6 +7697,7 @@ func (self *SendSequence) receiveAck(
 		}
 
 		if !implicitItem.selectiveAcked {
+			self.observeItemAck(implicitItem)
 			self.releaseUnreliableFlight(implicitItem)
 		}
 		// A compact head is safe only after this receiver acknowledged a full
@@ -8076,6 +8197,9 @@ type sendItem struct {
 	unreliableFlightTracked       bool
 	unreliableFlowReserve         bool
 	schedulingKey                 sendSchedulingKey
+	// carrierRoute is the route of the newest successful write, any carrier;
+	// acknowledgement progress is reported per route from it (M6 watchdog).
+	carrierRoute Route
 
 	// messageType protocol.MessageType
 }
@@ -9678,6 +9802,7 @@ func (self *ReceiveSequence) Run() {
 					)
 				}
 				self.client.recordReceiveAckRouteWrite(
+					sendAck.transportType,
 					waitDuration,
 					blocked,
 					priority,

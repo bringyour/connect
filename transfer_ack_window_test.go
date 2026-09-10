@@ -295,9 +295,9 @@ func TestReceiveAckHandoffClassifiesQueueFullAndMissingSequence(t *testing.T) {
 
 func TestReceiveAckRouteWriteStatsSeparateBlockedWaitsAndErrors(t *testing.T) {
 	client := &Client{}
-	client.recordReceiveAckRouteWrite(2*time.Millisecond, false, true, nil)
-	client.recordReceiveAckRouteWrite(5*time.Millisecond, true, false, nil)
-	client.recordReceiveAckRouteWrite(7*time.Millisecond, true, false, errors.New("write"))
+	client.recordReceiveAckRouteWrite(TransportTypeH1, 2*time.Millisecond, false, true, nil)
+	client.recordReceiveAckRouteWrite(TransportTypeP2p, 5*time.Millisecond, true, false, nil)
+	client.recordReceiveAckRouteWrite(TransportTypeP2p, 7*time.Millisecond, true, false, errors.New("write"))
 	stats := client.ReceiveStats()
 	if stats.AckRouteWriteCount != 3 ||
 		stats.AckRoutePriorityWriteCount != 1 ||
@@ -307,13 +307,26 @@ func TestReceiveAckRouteWriteStatsSeparateBlockedWaitsAndErrors(t *testing.T) {
 		stats.AckRouteWriteMaxWait != 7*time.Millisecond {
 		t.Fatalf("ACK route-write stats = %+v", stats)
 	}
+	// FLIGHTGATEFIX §8 (M2): the same writes broken out by the carrier the
+	// answered Pack arrived on.
+	if stats.AckRouteWriteCountByTransport[TransportTypeH1] != 1 ||
+		stats.AckRouteWriteCountByTransport[TransportTypeP2p] != 2 ||
+		stats.AckRouteWriteWaitByTransport[TransportTypeH1] != 0 ||
+		stats.AckRouteWriteWaitByTransport[TransportTypeP2p] != 12*time.Millisecond ||
+		stats.AckRouteWriteTimeoutByTransport[TransportTypeH1] != 0 ||
+		stats.AckRouteWriteTimeoutByTransport[TransportTypeP2p] != 1 {
+		t.Fatalf("ACK route-write stats by transport = %+v", stats)
+	}
+	if _, ok := stats.AckRouteWriteCountByTransport[TransportTypeH3]; ok {
+		t.Fatalf("carrier without writes appeared in the snapshot: %+v", stats)
+	}
 }
 
 func BenchmarkReceiveAckRouteWriteStatsImmediate(b *testing.B) {
 	client := &Client{}
 	b.ReportAllocs()
 	for range b.N {
-		client.recordReceiveAckRouteWrite(0, false, false, nil)
+		client.recordReceiveAckRouteWrite(TransportTypeUnknown, 0, false, false, nil)
 	}
 }
 
