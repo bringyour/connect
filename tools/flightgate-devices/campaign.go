@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -233,6 +234,10 @@ func writeJson(path string, value any) {
 	_ = os.WriteFile(path, b, 0o644)
 }
 
+// glogRecordStart matches the prefix of a fresh glog record (severity,
+// month, day, and a space), which ends any pending continuation.
+var glogRecordStart = regexp.MustCompile(`^[IWEF][0-9]{4} `)
+
 // diagSample is the decoded [flightgate] line; counters stay generic maps so
 // the tool follows whatever fields the SDK build carries.
 type diagSample struct {
@@ -256,16 +261,31 @@ func parseDiag(path string) ([]diagSample, error) {
 	windowsByMillis := map[int64]map[string]map[string]any{}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	// gomobile's stdout bridge splits one glog record into 1,024-byte logcat
+	// entries; a record's continuation is the next GoLog entry that does not
+	// itself start a glog record. Join until the JSON parses.
+	pending := ""
 	for scanner.Scan() {
 		line := scanner.Text()
-		i := strings.Index(line, "[flightgate] ")
-		if i < 0 {
+		message := line
+		if i := strings.Index(line, "GoLog   : "); i >= 0 {
+			message = line[i+len("GoLog   : "):]
+		}
+		var body string
+		if i := strings.Index(message, "[flightgate] "); i >= 0 {
+			body = message[i+len("[flightgate] "):]
+			pending = ""
+		} else if pending != "" && !glogRecordStart.MatchString(message) {
+			body = pending + message
+		} else {
 			continue
 		}
 		var part map[string]any
-		if err := json.Unmarshal([]byte(line[i+len("[flightgate] "):]), &part); err != nil {
+		if err := json.Unmarshal([]byte(body), &part); err != nil {
+			pending = body
 			continue
 		}
+		pending = ""
 		millisValue, _ := part["unix_millis"].(float64)
 		millis := int64(millisValue)
 		payload := byMillis[millis]
@@ -423,6 +443,16 @@ func counterValue(spec counterSpec, clientSample map[string]any, providerSample 
 	return 0
 }
 
+func baselineSample(samples []diagSample, millis int64) map[string]any {
+	if found := lastBefore(samples, millis); found != nil {
+		return found
+	}
+	if len(samples) > 0 {
+		return samples[0].Payload
+	}
+	return nil
+}
+
 // lastBefore returns the newest sample at or before millis.
 func lastBefore(samples []diagSample, millis int64) map[string]any {
 	var found map[string]any
@@ -495,8 +525,11 @@ func report(args []string) error {
 	summary := runSummary{Tag: meta.Tag, Windows: len(records), P2pFirstWindow: -1,
 		ClientDiagSamples: len(clientSamples), ProviderDiagSamples: len(providerSamples)}
 	mbps := []float64{}
-	previousClient := lastBefore(clientSamples, meta.StartMillis)
-	previousProvider := lastBefore(providerSamples, meta.StartMillis)
+	// counters are process-lifetime; the run's baseline is the newest sample
+	// before the run started, or the first sample of the capture when the
+	// capture began with the run
+	previousClient := baselineSample(clientSamples, meta.StartMillis)
+	previousProvider := baselineSample(providerSamples, meta.StartMillis)
 	for _, record := range records {
 		clientSample := lastBefore(clientSamples, record.EndMillis)
 		providerSample := lastBefore(providerSamples, record.EndMillis)
