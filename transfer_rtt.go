@@ -187,6 +187,17 @@ func (self *RttWindow) ScaledRtt() time.Duration {
 	return self.scaledRtt(time.Now())
 }
 
+// ScaledRttSampled is ScaledRtt together with whether the window holds any
+// samples. A caller choosing between two windows needs that: an unsampled
+// window answers with the conservative cold floor, which is worse evidence
+// than a sampled window of another lane (FLIGHTGATEFIX §15.2).
+func (self *RttWindow) ScaledRttSampled() (time.Duration, bool) {
+	self.stateLock.Lock()
+	sampled := self.windowCount != 0
+	self.stateLock.Unlock()
+	return self.scaledRtt(time.Now()), sampled
+}
+
 func (self *RttWindow) scaledRtt(sendTime time.Time) time.Duration {
 	self.stateLock.Lock()
 	self.coalesceWithLock(sendTime)

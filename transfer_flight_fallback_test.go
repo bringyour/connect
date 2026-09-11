@@ -463,15 +463,48 @@ func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
 	for _, index := range []int{1, 2, 3, 5, 6, 7} {
 		items[index].selectiveAcked = true
 	}
-	grace := sequence.rttWindow.ScaledRtt()
+	// both lanes have answered: the relay at 300 ms, the device rig's figure,
+	// and the direct lane at 20 ms
+	now := time.Now()
+	sequence.rttWindow.CloseSendTime(uint64(now.Add(-300 * time.Millisecond).UnixMilli()))
+	sequence.unreliableRttWindow.CloseSendTime(uint64(now.Add(-20 * time.Millisecond).UnixMilli()))
+	relayGrace := sequence.rttWindow.ScaledRtt()
+	laneGrace, sampled := sequence.unreliableScaledRtt()
+	if !sampled {
+		t.Fatal("the direct lane's own round trip was not measured")
+	}
+	t.Logf(
+		"grace for a direct-lane drop: %s from the direct lane's own estimate, against %s from the relay's; "+
+			"the direct lane's is floored at RttMinResendInterval %s",
+		laneGrace, relayGrace, sequence.sendBufferSettings.RttMinResendInterval,
+	)
+	if relayGrace <= laneGrace {
+		t.Fatalf("the direct lane's grace %s is not shorter than the relay's %s", laneGrace, relayGrace)
+	}
 	sequence.scheduleSelectiveAckRecovery(currentTime)
 	if !items[0].selectiveGapRecovered || items[0].recoveryKind != sendRecoverySelectiveGap {
 		t.Fatalf("a dropped direct-lane Pack was not scheduled for recovery: recovered=%t kind=%d",
 			items[0].selectiveGapRecovered, items[0].recoveryKind)
 	}
-	if due := items[0].resendTime.Sub(sendTime); due != grace {
-		t.Fatalf("recovery of a dropped direct-lane Pack is due %s after the send, want the grace %s", due, grace)
+	// §15.2: the grace is the carrying lane's own estimate, not the relay's
+	if due := items[0].resendTime.Sub(sendTime); due != laneGrace {
+		t.Fatalf(
+			"recovery of a dropped direct-lane Pack is due %s after the send, want the direct lane's grace %s, not the relay's %s",
+			due, laneGrace, relayGrace,
+		)
 	}
+	// a relay-carried hole keeps the relay's grace
+	relayItem := items[4]
+	relayItem.sendTime = sendTime
+	relayItem.reliableCarrierObserved = true
+	relayItem.selectiveGapRecovered = false
+	relayItem.recoveryKind = sendRecoveryNone
+	relayItem.resendTime = sendTime.Add(sequence.sendBufferSettings.SelectiveAckTimeout)
+	sequence.scheduleSelectiveAckRecovery(currentTime)
+	if due := relayItem.resendTime.Sub(sendTime); due != relayGrace {
+		t.Fatalf("a relay-carried hole is due %s after the send, want the relay's grace %s", due, relayGrace)
+	}
+	grace := laneGrace
 	// the grace is the sequence RTT, which describes the relay while both
 	// lanes carry acks; it must never exceed what the item's own timeout
 	// would have cost, or the trade stops paying

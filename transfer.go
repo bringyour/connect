@@ -706,10 +706,13 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// (10ms) without variance tracking. 1.2 was tight enough that the
 		// floor always governed; 2.0 makes the rtt-scaled value meaningful
 		// on paths slower than the floor.
-		RttScale:         2.0,
-		RttWindowSize:    128,
-		RttWindowTimeout: 60 * time.Second,
-		AckTimeout:       60 * time.Second,
+		RttScale:      2.0,
+		RttWindowSize: 128,
+		// sixteen samples is about 640 bytes per sequence against the five
+		// kilobytes a full window would cost
+		UnreliableRttWindowSize: 16,
+		RttWindowTimeout:        60 * time.Second,
+		AckTimeout:              60 * time.Second,
 		// A live lossy datagram carrier can need longer than MultiClient's
 		// ordinary 30-second provider-failure bar to recover one Pack. The
 		// liveness watchdog owns early dead-exit conviction; this is only the
@@ -3815,9 +3818,15 @@ type SendBufferSettings struct {
 	UnreliableMaxResendInterval time.Duration
 	// ResendBackoffScale float32
 
-	RttScale         float32
-	RttWindowSize    int
-	RttWindowTimeout time.Duration
+	RttScale      float32
+	RttWindowSize int
+	// UnreliableRttWindowSize sizes the direct lane's own round-trip window.
+	// It is small on purpose: the mobile steady-state ceiling has no room for
+	// a second full window per sequence, and a datagram lane's estimate does
+	// not need a long history (FLIGHTGATEFIX §15.2). Nonpositive inherits
+	// RttWindowSize.
+	UnreliableRttWindowSize int
+	RttWindowTimeout        time.Duration
 
 	// on ack timeout, no longer attempt to retransmit and notify of ack failure
 	AckTimeout time.Duration
@@ -4865,6 +4874,14 @@ type SendSequence struct {
 	rttWindow *RttWindow
 	// lastHeadAckTime is when the cumulative (head) ACK last advanced.
 	lastHeadAckTime time.Time
+	// unreliableRttWindow measures the direct lane on its own. The sequence
+	// window describes the reliable carrier, because acknowledgements of
+	// unreliable-carried items are kept out of it, so without this the
+	// datagram lane is judged by the relay's clock: it recovers late and its
+	// receiver-evidenced grace is far longer than its own round trip
+	// (FLIGHTGATEFIX §15.2). It is deliberately a short window, hundreds of
+	// bytes per sequence, because the mobile envelope has no room.
+	unreliableRttWindow *RttWindow
 
 	contractMultiRouteWriter MultiRouteWriter
 	// lastCumulativeAckTime is when the cumulative ack last advanced; an RTO
@@ -4956,6 +4973,20 @@ func newSendSequenceWithLogicalLane(
 		sendBufferSettings.MaxResendInterval,
 	)
 
+	unreliableRttWindowSize := sendBufferSettings.UnreliableRttWindowSize
+	if unreliableRttWindowSize <= 0 {
+		unreliableRttWindowSize = sendBufferSettings.RttWindowSize
+	}
+	unreliableRttWindow := NewRttWindow(
+		client.log,
+		unreliableRttWindowSize,
+		sendBufferSettings.RttWindowTimeout,
+		sendBufferSettings.RttScale,
+		sendBufferSettings.MinResendInterval,
+		sendBufferSettings.RttMinResendInterval,
+		sendBufferSettings.MaxResendInterval,
+	)
+
 	seq := &SendSequence{
 		ctx:                            cancelCtx,
 		cancel:                         cancel,
@@ -4990,6 +5021,7 @@ func newSendSequenceWithLogicalLane(
 		flightController:               newSendFlightController(sendBufferSettings),
 		idleCondition:                  NewIdleCondition(),
 		rttWindow:                      rttWindow,
+		unreliableRttWindow:            unreliableRttWindow,
 		contractSeqIndex:               0,
 	}
 	// Never encrypt control-plane traffic. A SendSequence's data source is
@@ -5611,8 +5643,11 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 	limited := self.flightController != nil && self.flightController.limited
 	mixedAckLanes := limited && self.flightController.reliableRouteAvailable
 	lateNotLostRtt := time.Duration(0)
+	lateNotLostUnreliableRtt := time.Duration(0)
+	unreliableSampled := false
 	if limited {
 		lateNotLostRtt = self.rttWindow.ScaledRtt()
+		lateNotLostUnreliableRtt, unreliableSampled = self.unreliableScaledRtt()
 	}
 
 	selectiveAckCount := 0
@@ -5651,9 +5686,17 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		// late for exactly the same reason (FLIGHTGATEFIX §14, M3). With a
 		// single ack lane the ordering rule is unchanged, so datagram tail
 		// recovery keeps its pace. An item's own RTO still covers a real loss.
+		// The grace is how long the lane that carried this item could still
+		// take to answer, so it is that lane's own estimate once the lane has
+		// answered once (FLIGHTGATEFIX §15.2). Before that there is only the
+		// sequence estimate, which describes the relay.
+		itemGrace := lateNotLostRtt
+		if item.unreliableCarrierObserved && unreliableSampled {
+			itemGrace = lateNotLostUnreliableRtt
+		}
 		lateNotLost := limited &&
 			(mixedAckLanes || item.reliableCarrierObserved && !item.unreliableFlightTracked) &&
-			currentTime.Before(item.sendTime.Add(lateNotLostRtt))
+			currentTime.Before(item.sendTime.Add(itemGrace))
 		if 0 < threshold && gapRecoveryCount < burstSize &&
 			!item.selectiveGapRecovered &&
 			(item.ackTailProbeCount == 0 || item.recoveryKind != sendRecoveryNone) &&
@@ -5668,7 +5711,7 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 				// reordering costs no traffic, while a Pack the lane really
 				// lost is still recovered well before its own timeout. The
 				// flight is not reduced for evidence that has not arrived.
-				reschedule(item, item.sendTime.Add(lateNotLostRtt), sendRecoverySelectiveGap)
+				reschedule(item, item.sendTime.Add(itemGrace), sendRecoverySelectiveGap)
 				continue
 			}
 			reschedule(item, currentTime, sendRecoverySelectiveGap)
@@ -5816,10 +5859,17 @@ func (self *SendSequence) resendIntervalForPolicy(
 	sendCount int,
 ) time.Duration {
 	maxInterval := self.sendBufferSettings.MaxResendInterval
+	scaledRtt := self.rttWindow.ScaledRtt()
 	if policy.limited && 0 < self.sendBufferSettings.UnreliableMaxResendInterval {
 		maxInterval = min(maxInterval, self.sendBufferSettings.UnreliableMaxResendInterval)
 	}
-	interval := min(self.rttWindow.ScaledRtt(), maxInterval)
+	if policy.limited {
+		// the direct lane's own clock once it has answered once
+		if unreliableRtt, sampled := self.unreliableScaledRtt(); sampled {
+			scaledRtt = unreliableRtt
+		}
+	}
+	interval := min(scaledRtt, maxInterval)
 	if shift := uint(min(max(sendCount-1, 0), 16)); 0 < shift {
 		interval = min(interval<<shift, maxInterval)
 	}
@@ -7602,7 +7652,15 @@ func (self *SendSequence) releaseUnreliableFlight(item *sendItem) {
 // resends per second while p2p is live). The unreliable lane has its own
 // bounded recovery policy and does not depend on this estimate.
 func (self *SendSequence) observeAckRtt(item *sendItem, tag sequenceTag) {
-	if !tag.set || item == nil || item.unreliableCarrierObserved {
+	if !tag.set || item == nil {
+		return
+	}
+	if item.unreliableCarrierObserved {
+		// the direct lane's own measurement; the sequence window keeps
+		// describing the relay, which is what drives its retransmit timer
+		if self.unreliableRttWindow != nil {
+			self.unreliableRttWindow.CloseSendTime(tag.sendTime)
+		}
 		return
 	}
 	self.rttWindow.CloseSendTime(tag.sendTime)
@@ -7628,6 +7686,16 @@ func (self *SendSequence) deferTimeoutResend(item *sendItem, now time.Time) bool
 	item.resendTime = now.Add(rtt)
 	self.client.timeoutResendDeferCount.Add(1)
 	return true
+}
+
+// unreliableScaledRtt is the direct lane's own scaled round trip, and
+// whether it has been measured at all. Before the lane has answered once
+// there is nothing better than the sequence estimate.
+func (self *SendSequence) unreliableScaledRtt() (time.Duration, bool) {
+	if self.unreliableRttWindow == nil {
+		return 0, false
+	}
+	return self.unreliableRttWindow.ScaledRttSampled()
 }
 
 func (self *SendSequence) unreliableFlightGates(
