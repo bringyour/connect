@@ -677,6 +677,8 @@ Low-bar risk: none on devices (the OS tun never loops back). Guard:
 server proxy soak with `OutboundDropCount` 0. Mixed route: unchanged
 throughput with the socks-shaped client. Device rig: not applicable.
 
+Landed: cbbfeea. Reordering is bounded, not eliminated: only the race burst crosses the worker, later packets of the flow may overtake it by at most the burst's length; documented on deliverRaceCommitPackets. The drop count is exposed as Tun.LinkStats rather than in the client receive stats, which have no tun.
+
 ### 13.5 M4: defer the whole-window timeout while the cumulative ack advances (S3, F12), pending
 
 Red test: `TestSendSequenceQueueInflatedRelayRttDoesNotFireWholeWindowTimeouts`.
