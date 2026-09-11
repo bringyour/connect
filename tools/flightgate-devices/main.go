@@ -63,6 +63,8 @@ func main() {
 		err = status(args)
 	case "allow-direct":
 		err = allowDirect(args)
+	case "defer-timeout-resend":
+		err = deferTimeoutResend(args)
 	case "run":
 		err = runCampaign(args)
 	case "campaign":
@@ -90,7 +92,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|defer-timeout-resend|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
 }
 
 // role maps a serial to its opaque role, refusing anything off the allowlist.
@@ -484,6 +486,30 @@ func allowDirect(args []string) error {
 	fmt.Printf("%s: %s\n", r, tail(line))
 	if !strings.Contains(line, "ok=true") {
 		return errors.New("allow-direct failed")
+	}
+	return nil
+}
+
+// deferTimeoutResend turns FLIGHTGATEFIX 13.5's deferred whole-window timeout
+// resend on or off for clients built after the call.
+func deferTimeoutResend(args []string) error {
+	fs := flag.NewFlagSet("defer-timeout-resend", flag.ExitOnError)
+	serial := fs.String("serial", "", "device serial")
+	mode := fs.String("mode", "", "on|off")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	r, err := role(*serial)
+	if err != nil {
+		return err
+	}
+	line, err := broadcast(*serial, "FG_DEFER_TIMEOUT_RESEND", map[string]string{"mode": *mode}, "action=defer-timeout-resend", 20*time.Second)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", r, tail(line))
+	if !strings.Contains(line, "ok=true") {
+		return errors.New("defer-timeout-resend failed")
 	}
 	return nil
 }
