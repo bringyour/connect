@@ -298,7 +298,7 @@ func parseDiag(path string) ([]diagSample, error) {
 		}
 		kind, _ := part["part"].(string)
 		switch kind {
-		case "state":
+		case "state", "memory":
 			for k, v := range part {
 				if k != "part" {
 					payload[k] = v

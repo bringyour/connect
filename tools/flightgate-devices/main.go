@@ -71,6 +71,12 @@ func main() {
 		err = report(args)
 	case "series-report":
 		err = seriesReport(args)
+	case "memsteady":
+		err = runMemsteady(args)
+	case "memsteady-report":
+		err = memsteadyReport(args)
+	case "build-item":
+		err = buildItem(args)
 	default:
 		usage()
 		os.Exit(2)
@@ -82,7 +88,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|run|campaign|report|series-report> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|run|campaign|report|series-report|memsteady|memsteady-report|build-item> [flags]")
 }
 
 // role maps a serial to its opaque role, refusing anything off the allowlist.
