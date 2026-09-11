@@ -463,3 +463,234 @@ it lands. The first work items on the merged tree are the §4 findings:
 
 The Phase 1 attribution campaigns in PERFVAR run against the merged tree as
 the control and each remaining candidate on top of it.
+
+## 13. Fix design on the merged tree (for review)
+
+Base for every item is flight-gate-fix at 84f0c00: PR 208 and 209 merged,
+Phase 0 counters and tests present. Items are in landing order. Each lands
+alone, with its red test green, no other test red, and its guard
+measurement recorded before the next starts. "Low-bar matrix" means the
+PERFVAR static campaign on `cell-edge-5m-down-1m-up`,
+`cell-edge-1m-down-250k-up` and `cell-edge-256k-down-64k-up` over
+`exchange-auto`, `exchange-h3` and `p2p-fast` with the mobile surrogate,
+INDISTINGUISHABLE or better against the merged tree as control.
+
+### 13.1 Finding 1: forget on RTO instead of acknowledge
+
+Mechanism M1 and M2's tail. Red test: `TestSendFlightControllerForgetDoesNotGrowWindow`.
+
+Change. `sendFlightController` gains `forget(byteCount ByteCount, key
+sendSchedulingKey, reserved bool)`: subtract `min(byteCount, byteCount)`,
+decrement `messageCount` and `messageCountByKey[key]`, clear
+`flowReserveInUse` when `reserved`; no limit, remainder or slow-start field
+changes. `SendSequence.observeUnreliableResendTimeout` keeps its shape
+(count the timeout, `reduceForLoss`, return whether the resend is
+reliable-only) but, when `policy.reliableRouteAvailable`, calls a new
+`forgetUnreliableFlight(item)` that runs `forget` with the item's bytes,
+key and reserve, clears `unreliableFlightTracked` and
+`unreliableFlowReserve`, and records `observeUnreliableFlight`.
+`releaseUnreliableFlight` stays as the acknowledgement path only. No
+settings, no wire change. This is candidate G2 on flight-gate-fix-g1
+(e77b50e) applied to the PR's function.
+
+Why this shape. An acknowledgement is the only delivery evidence the
+controller has; a timeout is the opposite evidence, so the two must not
+share a primitive. Halving first and then growing by the additive step
+is a net growth whenever the frame is smaller than the floor, which is the
+common case (frames are 1.3 KB, the floor 8 KB). Not growing on RTO keeps
+LOWBAR's "loss-responsive, receiver-evidenced growth" contract intact.
+
+Low-bar risk: none; without a reliable route the path is unchanged.
+Guard: the unit test plus `TestSendSequenceUnreliableResendTimeoutReleasesFlightWhenReliableRouteAvailable`
+from the PR. Mixed route and device rig: `UnreliableFlightMaximumLimitByteCount`
+must not climb during a p2p dead-lane phase.
+
+### 13.2 Finding 2: scoped reply fall-through
+
+Mechanism M2. Red test: `TestReceiveSequenceAckKeepsHybridH3Affinity`;
+green tests to keep: `TestReceiveSequenceAckAffinityDoesNotHeadOfLineBlock`,
+`TestReceiveSequenceAckFallsThroughWhenUnreliableIsFull`,
+`TestMultiRouteSelectorReplyAvoidsUnreliableCarrier` (PR).
+
+Change. Replace the PR's rule in `writeDetailedReplyWithCarrierPreference`
+("never pin to a potentially unreliable carrier while a reliable one is
+active") with the a1 rule (97744f6) plus the ack clock:
+
+| Condition on the affine set | Reply routes |
+|---|---|
+| Any affine route is not `Unreliable` | affinity set unchanged |
+| All affine routes `Unreliable`, at least one has channel room and `RouteAckProgressAge(route) < ReplyAffinityStaleAfter` | affinity set first, then reliable routes |
+| All affine routes `Unreliable`, none has room, or every one is stale | reliable routes first, then the affine set |
+
+`routeSnapshot` keeps `replyWriteRoutesByTransport` (a1); the ordering
+between the two halves is decided per write from `len(route) < cap(route)`
+and the clock, with no allocation. New setting
+`ReceiveBufferSettings.ReplyAffinityStaleAfter`, default 2 s (one
+`UnreliableMaxResendInterval`); zero disables the clock rule. The
+non-blocking pass runs over the whole list, so a full or stale p2p lane
+costs nothing and a healthy one keeps its ack. The PR's
+`transportPotentiallyUnreliable` and its H3 behaviour are dropped.
+
+Why this shape. Hybrid H3 publishes `Unreliable` but its stream lane is
+QUIC-reliable and LOWBAR measured newest-covered-Pack ack affinity on it at
+22.1 % faster tunneled completion and 7.5 % on upload; a blanket rule
+reverses that. The failure the PR fixed is specific: a native p2p lane that
+is full or silent. "Full" is a channel length read; "silent" is the per-route
+ack clock, which is the only forward evidence the RTP lane has until 13.3
+retires it. Answers design questions 2 and part of 1.
+
+Low-bar risk: none for H3, since its affinity is unchanged; on `p2p-fast`
+low-bar cells the ack may move to the relay when the lane is stale, which
+is the intended behaviour. Guard: low-bar matrix, all three profiles.
+Mixed route: `AckRouteWriteTimeoutByTransport[p2p]` 0 and h1-received ack
+latency under one RTT in the loss profiles. Device rig: no
+`AckRouteWriteTimeoutByTransport[p2p]` during a live p2p phase.
+
+### 13.3 M6: fast-path liveness (L1)
+
+Red test: `TestFastPathBlackholeRetiresRouteAndResetsFlight`. Candidate
+b73bf5a on flight-gate-fix-l1.
+
+Wire format. A control RTP payload of 11 bytes: `'U' 'R' 'P'` then the
+receiver's complete-message count as a big-endian uint64. It shares the
+RTP sequence space with data and the warmup marker. A fragment header
+alone is 16 bytes, so no data packet has an 11-byte payload; the receiver
+checks length and prefix before the fragment parse, exactly as the 4-byte
+`URW` warmup marker is checked today.
+
+Behaviour. `webRtcFastPath` gains `receivedMessageCount`,
+`sentMessageCount`, `remoteReceivedCount`, `unansweredSinceNanos`.
+Receiver: a reporter worker started on the first complete message sends
+the count every `p2pFastPathProgressReportInterval` (50 ms) while it has
+changed, repeating each change three times, silent when idle. Sender: a
+successful `writeMessage` sets `unansweredSince` if clear; a report with a
+higher count clears it; a watchdog sampling at `min(250 ms, timeout/4)`
+retires the association through `peerConn.cancelBecause` with cause
+"fast path no progress" and `requestImmediateReconnect` when
+`unansweredSince` is older than `WebRtcSettings.FastPathNoProgressTimeout`.
+Default: 10 s, the same as `SctpNoProgressTimeout`; zero disables. The
+seam field already exists on the branch (d781821).
+
+Older peers. A peer without the change ignores the report as a malformed
+fragment (its `accept` rejects the short payload and counts one
+`fastDropCount`); it never sends reports, so a new sender facing an old
+receiver would retire a healthy lane after 10 s. The watchdog therefore
+arms only after the first report has been received from that peer, which
+also covers the P2P wire version negotiation already used for the fast
+path. Fast-path readiness is unchanged.
+
+Composition with 13.2. Retirement withdraws the route, so the reply
+fall-through is a bridge for at most `FastPathNoProgressTimeout`; the
+ack clock in 13.2 and the report clock here are independent evidence and
+neither depends on the other being enabled.
+
+Why this shape. The SCTP lane already has a no-progress watchdog on its
+SACKs; the RTP lane has no acknowledgement of its own, so a receiver report
+is the smallest equivalent. Transfer's own acks are the alternative
+evidence but they cross the route manager and the multi-client, and the
+p2p transport must be able to retire itself without a Transfer dependency.
+Answers design question 4.
+
+Low-bar risk: an extra 11-byte packet every 50 ms while receiving, and
+false retirement under an RTT above 10 s, which the low-bar profiles do
+not reach. Guard: low-bar matrix on `p2p-fast`; MEMSTEADY unchanged
+(no buffers). Mixed route: the blackhole schedule must show retirement
+within 10 s and recovery on the relay with zero dead windows. Device rig:
+p2p route withdrawal logged when the client walks out of Wi-Fi with the
+lane up, and no retirement during a healthy 3-minute download.
+
+### 13.4 M7: asynchronous race-commit delivery (R1), 209 as a guard
+
+Red test today: none (test 11 is green under 209's bound). Tests: 11
+`TestTunInjectFromReaderGoroutineDoesNotDeadlock` stays; 12
+`TestMultiClientRaceCommitDeliversAsynchronously` is unskipped with a
+seam.
+
+Change. In `RemoteUserNatMultiClient.sendParsedPacketGroup`, the
+`receivePackets` returned by `commitRaceClientWithLock` are no longer
+handed to `deliverReceivePacket` on the caller's goroutine; they are
+enqueued on the existing `removalReceiveQueue` (bounded by
+`RemovalReceiveQueueSize`, 256, with `removalReceiveDropCount` on
+overflow), whose worker already exists for best-effort packets. Ordering
+within the flow is preserved because later packets of the committed client
+arrive through the same worker path; the first-response packets are the
+only ones that move. Seam for test 12: `beforeRaceCommitDeliveryForTest`
+on the settings, called with the committed client so the test can park the
+receive callback and assert `SendPacket` returns. 209's
+`OutboundQueueWaitTimeout` stays at 250 ms as a guard; `Tun.OutboundDropCount()`
+is added to the receive stats and must read 0 in every campaign, and the
+hosted server proxy gets the same expectation in its monitor.
+
+Why this shape. The cycle is a reentrancy: the goroutine that drains the
+tun outbound queue injects into the same stack. Bounding the wait leaves
+the injecting goroutine parked for 250 ms under the TCP inbound shard
+lock on every reentrant RST. Moving the synchronous handoff to a worker
+removes the cycle at its source with a queue that already carries the
+same ownership rules. Answers the R1 half of design question 4 from §12.
+
+Low-bar risk: none on devices (the OS tun never loops back). Guard:
+`tun_congestion_test.go`, the PR's `tun_outbound_wait_test.go`, and a
+server proxy soak with `OutboundDropCount` 0. Mixed route: unchanged
+throughput with the socks-shaped client. Device rig: not applicable.
+
+### 13.5 M4: defer the whole-window timeout while the cumulative ack advances (S3, F12), pending
+
+Red test: `TestSendSequenceQueueInflatedRelayRttDoesNotFireWholeWindowTimeouts`.
+
+Change (contract, not yet landed). In the RTO branch of the send loop, an
+item carried by a reliable lane whose `resendTime` is due while
+`lastCumulativeAckTime` is within one `rttWindow.ScaledRtt()` is
+rescheduled by one scaled RTT, at most twice per item, counted in
+`TimeoutResendDeferCount`; unreliable-carried items and sequences with no
+cumulative progress in the window resend as today. The second half of the
+test (a lane that stops must still resend) is the bound.
+
+Why this shape. With one RTT window per lane (F10, now merged) the
+remaining spurious timeouts come from queue inflation on the relay that
+outruns the scaled RTT; the cumulative ack advancing is direct evidence
+the lane is alive. Pending: the reporter's F12 round 10 was invalid, so
+this lands only with its own PERFVAR A/B (relay queue-inflation schedule,
+`TimeoutResendWithRecentCumulativeProgress` as the primary) and the low-bar
+matrix, since a deferred resend on `exchange-h1` cells is a real latency
+cost.
+
+### 13.6 M5: size-aware unreliable admission (S4), pending
+
+Red test: none; `TestFastPathMessageLossFollowsFragmentCount` is the
+characterisation and becomes the gate.
+
+Change (contract). Two knobs on `P2pTransportSettings`:
+`FastPathMaximumFragmentCount` (default 8, so a message on the fast path
+is at most 8 × 1188 bytes; larger frames select the legacy or relay lane
+through `unreliableForMessageByteCount`), and `FastPathLossyFragmentCount`
+(default 2): once the flight controller has reduced to its floor, the
+fast path accepts only messages up to that many fragments until growth
+resumes. Both are carrier properties the route snapshot already carries.
+
+Why this shape. Message loss is `1-(1-p)^n`; capping n bounds the loss
+the flight controller sees to what packet loss actually is, without
+fragment retransmission, which would duplicate Transfer's recovery.
+Pending: the benchmark sweep decides the defaults, then the mixed route
+with the 1 % and 3 % profiles must show a higher unreliable window
+(`UnreliableFlightMaximumLimitByteCount`) at equal delivery.
+
+### 13.7 Findings 3 and 5 as measurement gates
+
+Finding 3 (F1 on the low-bar regime). No code. Run the low-bar matrix on
+the merged tree against 92a37c2's parent as control, `exchange-auto` and
+`exchange-h3`, mobile surrogate, five repetitions. REGRESSION on any
+profile means G1's narrower rule (e77b50e: overflow only when the reliable
+route is a different transport from the unreliable one) replaces F1's
+`reliableRouteAvailable`.
+
+Finding 5 (ICE socket buffers). `WebRtcSettings.UdpSocketBufferByteCount`
+keeps 4 MiB where the platform is a server or desktop and becomes 512 KiB
+on iOS and Android through the SDK's platform settings, with the request
+clamped by the kernel either way. Gate: MEMSTEADY on the Android session
+block with the p2p device rig, footprint INDISTINGUISHABLE; the mixed
+route's provider-side kernel receive errors must stay 0 at 512 KiB, which
+decides whether the mobile value can be lower still.
+
+Design questions 3 and 6 from §12: S1 and S2 are both in the merged tree
+(F11b and F10) and stay together; the counter snapshot keeps its maps,
+nil until a carrier writes, and is not made primitive in this program.
