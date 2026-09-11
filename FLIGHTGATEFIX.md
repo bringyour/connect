@@ -391,6 +391,44 @@ SCTP lane with the flight never waiting, so a cap below Transfer also
 exists on that radio pairing; relay-only and one-radio controls are
 running to separate it.
 
+### 12.2a Device controls (stream C, same build, interleaved with stock)
+
+Relay-only (direct mode off through a debug hook) alternated with stock
+from a fresh tunnel per run; one extra role assignment with the Pixel as a
+Wi-Fi client against the S24 providing on LTE. Per-run medians in Mb/s:
+
+| Roles | Stock | Relay-only |
+|---|---|---|
+| S24 LTE client to Pixel Wi-Fi provider | 2.9, 2.8, 2.5, 2.5, 2.4, 2.3 | 6.2, 5.4, 5.5, 2.5, 2.3, 2.5 |
+| Pixel LTE client to S24 LTE provider | 1.9, 1.8, 1.6, 1.5, 1.6, 1.7 | 4.7, 4.5, 2.1, 2.0, 2.1, 2.1 |
+| Pixel Wi-Fi client to S24 LTE provider | 2.6, 1.9, 2.1, 1.8, 1.9, 1.8 | 2.6, 2.6, 2.6, 2.6, 2.5, 2.4 |
+
+Within every interleaved pair relay-only beat stock: by about 2x while the
+relay path was healthy, by 0.2 to 0.8 Mb/s after the relay path itself
+degraded to 2.0 to 2.6 Mb/s mid-session and stayed there while direct LTE
+stayed at 61 Mb/s. Stock with the fast path live never exceeded the
+relay-only run next to it: on a phone today the direct lane subtracts, it
+does not add. The one stock run whose fast path never negotiated ran at
+the relay ceiling of its hour over the legacy SCTP lane with the flight
+never waiting, so the cap below Transfer seen there is the
+cellular-to-cellular platform path, not a Transfer mechanism.
+
+Counters: stock runs as in 12.2 (5,300 to 10,500 flight waits, 98 to 99 %
+with reliable capacity, limit pinned at the 16-message mobile ceiling).
+Relay-only runs: flight waits 0, gap resends 0 to 234, but still 1,000 to
+17,000 whole-window timeout resends per run; the timeout machinery
+misfires on the relay lane alone, which is direct device evidence for
+13.5 and says its A/B must include a relay-only cell. Every direct path
+was host to host over the carrier addresses (both devices on the same
+carrier), one run server-reflexive, never relayed. Fast receive-queue
+drops 0; one client reassembler evicted 207 incomplete messages in a run.
+
+Consequence for the product: until 13.1 to 13.3 land, turning direct mode
+off for phone-to-phone pins (P2 in §7) is the only change that improves
+the phones measured here, at about 2x, and forfeits nothing they can use
+today. Still open: the Wi-Fi-to-Wi-Fi ceiling of the direct lane, blocked
+on the S24 joining the local Wi-Fi.
+
 ### 12.3 Third report: regression tests on the PRs
 
 PR 208 now carries `transfer_mixed_lane_regression_test.go` (a full
