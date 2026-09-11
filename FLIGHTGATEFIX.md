@@ -773,3 +773,66 @@ Design questions 3 and 6 from §12: S1 and S2 are both in the merged tree
 nil until a carrier writes, and is not made primitive in this program.
 
 Landed (13.7, finding 5): sdk 979169f on the sdk worktree's flight-gate-fix branch, UdpSocketBufferByteCount 512 KiB in the device provider settings; builds and vets against this branch. Finding 3 is a measurement, not a change.
+
+## 14. The mixed-route gap-resend regression and its fix
+
+The first PERFVAR mixed-route campaign (tests ledger 8e430ac) measured our
+tree worse than the merged PRs on selective-gap resends, worst on
+clean-lan tcp-parallel: 29 for merged against 874 for ours over five runs,
+with goodput down and two dead windows on burst-loss latency-under-load.
+Clean-lan has no loss, so the cause cannot need any.
+
+Reproduction. `TestSelectiveAckGapSkipsUnreliableItemsWhileBothLanesCarryAcks`
+builds the scoreboard state directly: a mixed-lane route, a hole carried by
+the direct lane a hundred milliseconds ago, three later items selectively
+acknowledged. It fails on our previous head (9e317ac) and on the merged
+base (89e1633) with the same message, so the defect is in the merged rule
+and our ack affinity is what makes it reachable.
+`TestMixedLaneAckAffinityDoesNotRaiseGapResends` is the end-to-end form:
+two real Clients over a fast direct lane and a slow relay lane in both
+directions, no loss, with the receiver's uplink contending for the bounded
+direct reply route; it compares ack affinity against the relay-only shape
+the merged blanket rule produced.
+
+Root cause. The selective-ack scoreboard reads "three later selective acks"
+as proof that this item was lost. That is an ordering rule, and it is only
+sound when every acknowledgement travels the same path. F11b granted a
+grace to items the reliable lane carried, which covered the obvious
+cross-lane case, but not to items the direct lane carried. Our §13.2 gives
+the direct lane its acks back, and a bounded direct reply route under
+uplink contention sends some of those acks down the relay instead. An item
+whose own ack took the relay is then overtaken by the acks of the items
+after it, and the scoreboard resends a Pack that was never lost, halving
+the flight window as it goes. Merged hid the hole by sending every ack down
+the relay, which is the affinity LOWBAR measured as worth 22 % on
+completion, so the blanket rule was not an acceptable way to keep it.
+
+Fix. While both an unreliable and a reliable carrier are active, later
+selective acks are not loss evidence for any item younger than the slowest
+lane's scaled RTT, whichever lane carried it. The grace defers the recovery
+to the moment that lane could have delivered the ack rather than dropping
+it: an ack arriving first takes the item out of the queue and nothing is
+written, and a Pack the lane really lost is still recovered at the grace
+expiry, before its own timeout and without the backoff a retransmitted item
+would otherwise wait out. The flight is not reduced for evidence that has
+not arrived. With one ack lane active the ordering rule is untouched, so
+datagram tail recovery on a direct-only route keeps its pace. The lane
+state rides on the flight controller, so the pass costs one policy read and
+one RTT read for the whole scoreboard instead of one per item.
+
+Before and after, `TestMixedLaneAckAffinityDoesNotRaiseGapResends` over 600
+messages on a lossless mixed route, three runs of each arm:
+
+| Arm | Before (9e317ac) | After |
+|---|---|---|
+| relay-only acks, the merged shape | 2, 3, 1 | 0, 0, 0 |
+| ack affinity, ours | 0, 1, 2 | 0, 0, 0 |
+
+`UnreliableFlightGapReorderSuspected` now counts the deferred recoveries an
+ack cancelled: 2 to 48 per run, every one a resend that would have been
+written before.
+
+Two tests of PR 208 asserted the old semantics and now assert the new one:
+the mixed-lane scoreboard test checks that a fresh hole's recovery is due
+in the future rather than absent, and the reply test pair was already
+rescoped in §13.2.
