@@ -543,6 +543,8 @@ Guard: the unit test plus `TestSendSequenceUnreliableResendTimeoutReleasesFlight
 from the PR. Mixed route and device rig: `UnreliableFlightMaximumLimitByteCount`
 must not climb during a p2p dead-lane phase.
 
+Landed: b712a84.
+
 ### 13.2 Finding 2: scoped reply fall-through
 
 Mechanism M2. Red test: `TestReceiveSequenceAckKeepsHybridH3Affinity`;
