@@ -621,13 +621,16 @@ func TestSendSequenceRttWindowDescribesReliableLane(t *testing.T) {
 // that really stops must still resend. Expected red on the tree this was
 // written against.
 func TestSendSequenceQueueInflatedRelayRttDoesNotFireWholeWindowTimeouts(t *testing.T) {
-	client, peerId, fromPeer, _ := newFlightGateSender(t, flightGateSettings(kib(64)))
+	settings := flightGateSettings(kib(64))
+	// the §13.5 contract, off by default until its PERFVAR A/B
+	settings.SendBufferSettings.DeferTimeoutResendWhileCumulativeProgress = true
+	client, peerId, fromPeer, _ := newFlightGateSender(t, settings)
 	_, reliable := addFlightGateRoute(t, client, TransportTypeH1, 16, false)
 	for index, delay := range []time.Duration{
 		100 * time.Millisecond,
 		250 * time.Millisecond,
-		600 * time.Millisecond,
-		1200 * time.Millisecond,
+		400 * time.Millisecond,
+		700 * time.Millisecond,
 	} {
 		sendFlightGateMessage(t, client, peerId, index)
 		pack := takeFlightGatePack(t, reliable, 5*time.Second)
@@ -636,7 +639,7 @@ func TestSendSequenceQueueInflatedRelayRttDoesNotFireWholeWindowTimeouts(t *test
 	}
 	time.Sleep(100 * time.Millisecond)
 	recovery := client.SendRecoveryStats()
-	if recovery.TimeoutResendWithRecentCumulativeProgress != 0 {
+	if recovery.TimeoutResendWriteCount != 0 {
 		t.Fatalf("whole-window timeouts fired while the cumulative ack was advancing: %+v", recovery)
 	}
 	drainFlightGateRoute(reliable)

@@ -745,13 +745,15 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		UnreliableSlowStartGrowthDivisor: 4,
 		// Approximately one conservative QUIC DATAGRAM payload. After loss,
 		// one fully acknowledged window adds about this much capacity.
-		UnreliableFlightIncreaseByteCount:    1150,
-		UnreliableFlightIncreaseMessageCount: 1,
-		UnreliableFloorSingleFlight:          false,
-		SequenceBufferSize:                   bufferSize,
-		AckBufferSize:                        bufferSize,
-		MinMessageByteCount:                  ByteCount(1),
-		ContractWaitLogThreshold:             50 * time.Millisecond,
+		UnreliableFlightIncreaseByteCount:         1150,
+		UnreliableFlightIncreaseMessageCount:      1,
+		UnreliableFloorSingleFlight:               false,
+		DeferTimeoutResendWhileCumulativeProgress: false,
+		TimeoutResendDeferLimit:                   2,
+		SequenceBufferSize:                        bufferSize,
+		AckBufferSize:                             bufferSize,
+		MinMessageByteCount:                       ByteCount(1),
+		ContractWaitLogThreshold:                  50 * time.Millisecond,
 		// this includes transport reconnections
 		WriteTimeout: 15 * time.Second,
 		// per send sequence (per peer), so scaled by the memory budget.
@@ -3851,6 +3853,12 @@ type SendBufferSettings struct {
 	UnreliableMinimumFlightMessageCount  int
 	UnreliableMaximumFlightMessageCount  int
 	UnreliableFlightIncreaseMessageCount int
+	// DeferTimeoutResendWhileCumulativeProgress delays the whole-window RTO
+	// resend of a reliable-carried item by one scaled RTT, at most
+	// TimeoutResendDeferLimit times, while the cumulative ack advanced within
+	// the last scaled RTT (FLIGHTGATEFIX §13.5). Off until its PERFVAR A/B.
+	DeferTimeoutResendWhileCumulativeProgress bool
+	TimeoutResendDeferLimit                   int
 	// UnreliableFloorSingleFlight keeps at most one message in flight on an
 	// unreliable carrier whose flight limit has collapsed to its floor after
 	// repeated loss, while a reliable carrier takes everything else. The lossy
@@ -6095,17 +6103,30 @@ sendSequenceLoop:
 				// ordinary cadence. Any resend awaits fresh acknowledgement state.
 				recoveryKind := item.recoveryKind
 				item.recoveryKind = sendRecoveryNone
-				if recoveryKind == sendRecoveryNone && self.deferTimeoutResend(item, sendTime) {
-					self.resendQueue.Add(item)
-					continue
+				if recoveryKind == sendRecoveryNone && !self.lastCumulativeAckTime.IsZero() {
+					scaledRtt := self.rttWindow.ScaledRtt()
+					if sendTime.Sub(self.lastCumulativeAckTime) < scaledRtt {
+						// M4: a whole-window timeout while the cumulative ack is
+						// still advancing is the spurious cascade, not a stalled lane.
+						self.client.timeoutResendWithRecentCumulativeProgress.Add(1)
+					}
+					if self.sendBufferSettings.DeferTimeoutResendWhileCumulativeProgress &&
+						!item.unreliableCarrierObserved &&
+						item.timeoutDeferCount < self.sendBufferSettings.TimeoutResendDeferLimit &&
+						self.lastCumulativeAckTime.After(item.sendTime.Add(-scaledRtt)) {
+						// FLIGHTGATEFIX §13.5 (F12): the cumulative ack advanced
+						// within one scaled RTT of this item's send, so the reliable
+						// lane is alive and its queue is deeper than the estimate.
+						// Wait one more RTT, a bounded number of times; a lane that
+						// stops resends on the next pass.
+						item.timeoutDeferCount += 1
+						item.resendTime = sendTime.Add(scaledRtt)
+						self.resendQueue.Add(item)
+						self.client.timeoutResendDeferCount.Add(1)
+						continue
+					}
 				}
 				reliableOnlyResend := false
-				if recoveryKind == sendRecoveryNone && !self.lastCumulativeAckTime.IsZero() &&
-					sendTime.Sub(self.lastCumulativeAckTime) < self.rttWindow.ScaledRtt() {
-					// M4: a whole-window timeout while the cumulative ack is still
-					// advancing is the spurious cascade, not a stalled lane.
-					self.client.timeoutResendWithRecentCumulativeProgress.Add(1)
-				}
 				if recoveryKind == sendRecoveryNone && item.unreliableFlightTracked {
 					reliableOnlyResend = self.observeUnreliableResendTimeout(item, flightPolicy)
 				}
@@ -8208,9 +8229,6 @@ type sendItem struct {
 	ackTailProbeCount     int
 	recoveryKind          sendRecoveryKind
 	promotedHead          bool
-	// timeoutDeferCount bounds how many times a timed-out item waits one more
-	// RTT while cumulative ACKs are still advancing (deferTimeoutResend).
-	timeoutDeferCount int
 	// forceUnwrapped pins this item to plaintext on every (re)send, so the
 	// outer wrap is skipped even if the per-peer cipher becomes available
 	// between the initial send and a retransmit.
@@ -8226,6 +8244,9 @@ type sendItem struct {
 	// carrierRoute is the route of the newest successful write, any carrier;
 	// acknowledgement progress is reported per route from it (M6 watchdog).
 	carrierRoute Route
+	// timeoutDeferCount is how many RTOs of this item were deferred while the
+	// cumulative ack kept advancing (§13.5).
+	timeoutDeferCount int
 
 	// messageType protocol.MessageType
 }
