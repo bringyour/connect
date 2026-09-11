@@ -1043,3 +1043,65 @@ device block against the merged control, per role, and that is the
 measurement this program has not made. It is a product-level finding: the
 ceiling is enforced by a number that the code's own sizing constants
 explain only a quarter of.
+
+## 16. The lossy-cell regression and the loss escape
+
+The decisive campaign (tests ledger af88fc7) returned REGRESSION. Median
+download goodput over five interleaved repetitions:
+
+| Cell | merged | f8a507a | head 566305d |
+|---|---|---|---|
+| clean-lan tcp-parallel | 21.3 | 24.9 | 25.9 |
+| clean-lan latency-under-load | 24.2 | 26.9 | 22.5 |
+| loss-100bp tcp-parallel | 17.1 | 11.5 | 10.6 |
+| loss-300bp tcp-parallel | 18.1, 0 dead | 8.2, 1 dead | 6.9, 9 dead |
+| burst-loss tcp-parallel | 17.5, 0 dead | 9.7, 1 dead | 8.2, 6 dead |
+
+Ahead of merged on every clean cell, behind on every lossy one, dead
+windows only on our arms, and flight waits zero everywhere, so the gate is
+not what separates the arms.
+
+Cause. Both mechanisms §14 and §13.5 buy less duplicate traffic with more
+recovery latency, and that trade inverts once a Pack is really gone. The
+grace was the retransmit pacing interval, which floors at
+`RttMinResendInterval`: 600 ms from the relay's clock in the campaign's head
+arm, 300 ms after the per-carrier estimate landed, against a direct lane
+whose round trip is about 20 ms. A lost Pack stalls the ordered stream for
+the grace, the receiver cannot advance past the hole, and at one to three
+per cent loss that repeats often enough to empty windows. Clean cells never
+pay it, which is the pattern in the table.
+
+Two changes.
+
+The grace is now what the carrying lane could actually deliver. It takes
+that lane's own estimate with the pacing floor removed, because pacing a
+retransmit and judging whether an acknowledgement could still arrive are
+different questions. `RttScale`, already 2, is the jitter margin, and
+`UnreliableGraceMinimum`, 10 ms, covers timer granularity and scheduling on
+a phone. On the rig's figures:
+
+| | grace for a direct-lane drop |
+|---|---|
+| relay's estimate, the campaign's head arm | 600 ms |
+| lane's estimate with the pacing floor | 300 ms |
+| lane's estimate, no pacing floor | 40 ms |
+
+Both mechanisms get an escape from the question they were built for. Every
+deferred recovery records its outcome: an acknowledgement that cancelled it
+is reordering, a recovery that had to be written is loss. While the counts
+say loss the grace is withdrawn entirely and a hole is recovered as soon as
+three later acks prove it, the merged behaviour. The counts halve past
+`graceEvidenceCap` so the measure stays recent rather than accumulating over
+a run. The retransmit defer now needs the cumulative ack to have advanced
+since that item's previous deferral, so a hole nothing can acknowledge is
+deferred once and then retransmitted.
+
+In process. `TestMixedLaneLossyDirectLaneGoodputIsNotWorseWithTheGrace`
+drops one and three per cent on the direct lane and requires the grace not
+to make the stream slower than no grace at all. It passes, but the margins
+are small, 555 ms against 562 ms at one per cent and 542 against 543 at
+three, with single-digit gap resends: the harness does not reach the
+regime the rig measured, so this is a guard against the property inverting
+again, not proof that the cells recover. Stream B's arm is the
+confirmation, and the bar is the one the campaign set: strictly better in
+the lossy cells without giving back the clean-cell win.
