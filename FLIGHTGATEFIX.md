@@ -917,13 +917,33 @@ receiver-evidenced recovery. A second window fed only by unreliable-carried
 acks fixes both, and is the candidate already written as a2f2bf2 on
 flight-gate-fix-s2.
 
-Memory: one `RttWindow` per send sequence. At `RttWindowSize` 128 samples
-of 16 bytes that is about 2 KiB plus its minimum deque, per sequence, per
-direction. On a phone that is tens of kilobytes, not free but small against
-0.38 MiB; sizing the unreliable window at 16 samples brings it to about
-256 bytes. Gate: MEMSTEADY on the device block, plus a test that the
-unreliable lane's resend interval tracks its own lane and that the relay's
-does not move.
+Landed. Acknowledgements of unreliable-carried items now feed a second
+window instead of being discarded, the unreliable lane's retransmit
+interval comes from that window once the lane has answered once, and the
+§14 grace uses the estimate of the lane that carried the item, which is
+what it always should have been. The sequence window still sees only
+reliable-carried acks, so the relay's own estimate does not move.
+
+Measured on the device rig's figures, a relay at 300 ms and a direct lane
+at 20 ms, the grace for a direct-lane drop halves:
+
+| | grace |
+|---|---|
+| before, the relay's estimate | 600 ms |
+| after, the direct lane's own | 300 ms |
+
+The remaining 300 ms is `RttMinResendInterval`, the floor that applies once
+a window holds samples, so the floor now dominates the direct lane's grace
+rather than the relay's clock. Lowering that floor for a lane whose own
+round trip is an order of magnitude under it is a separate knob with its
+own duplicate-cost trade, and this program does not take it.
+
+Memory: `UnreliableRttWindowSize` is 16 samples against `RttWindowSize`'s
+128, about 640 bytes per sequence where a second full window would be
+5 KiB. The SDK's envelope test counts both windows across the mobile
+sequence ceiling, 92 KiB, and
+`TestMobileDirectLaneRttWindowStaysSmall` fails if the direct lane's window
+grows toward the relay's.
 
 ### 15.3 Why the direct lane carries so little, and what is free
 
@@ -995,3 +1015,31 @@ constants and the consequence.
 The last is the one that stands between a future sizing change and an iOS
 crash, so it lives with the constants rather than with the code that spends
 them.
+
+### 15.6 Most of the envelope is outside any budget
+
+The mobile budgets that retain bytes sum to 6.8 MiB, 27 % of the 24 MiB
+target, yet the device block measures the Go runtime at 23.7 to 24.4 MiB.
+Roughly three quarters of the envelope is therefore outside every constant
+the sizing test can guard, and no change to those constants can move it.
+
+What can be named as living there: goroutine stacks, which scale with
+flows, sequences, carriers and every worker this program added; the gVisor
+netstack's own structures and its per-endpoint send and receive buffers,
+sized in `TunSettings` rather than in the mobile policy; the QUIC and
+WebRTC stacks with their own buffers and certificates; live packet
+ownership in flight between the tun, the multi-client and Transfer, which
+the budgets bound in aggregate but which the pools serve from the heap; and
+the Go runtime's own heap fragmentation and GC headroom, which the
+soft-limit policy shapes but does not cap.
+
+So `TestMobileRetainedByteBudgetsFitTheSteadyMemoryTarget` protects against
+one failure mode only: a sizing change to a Transfer or pool budget pushing
+the configured share past a third of the target. It cannot protect against
+a new goroutine per flow, a larger netstack buffer, or a leak, and a run
+that crosses 24 MiB will most likely do so without any budget having
+changed. Attributing the other three quarters needs a heap profile from the
+device block against the merged control, per role, and that is the
+measurement this program has not made. It is a product-level finding: the
+ceiling is enforced by a number that the code's own sizing constants
+explain only a quarter of.
