@@ -480,7 +480,7 @@ INDISTINGUISHABLE or better against the merged tree as control.
 Mechanism M1 and M2's tail. Red test: `TestSendFlightControllerForgetDoesNotGrowWindow`.
 
 Change. `sendFlightController` gains `forget(byteCount ByteCount, key
-sendSchedulingKey, reserved bool)`: subtract `min(byteCount, byteCount)`,
+sendSchedulingKey, reserved bool)`: subtract `min(byteCount, self.byteCount)`,
 decrement `messageCount` and `messageCountByKey[key]`, clear
 `flowReserveInUse` when `reserved`; no limit, remainder or slow-start field
 changes. `SendSequence.observeUnreliableResendTimeout` keeps its shape
