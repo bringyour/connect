@@ -525,6 +525,14 @@ func report(args []string) error {
 	var meta runMeta
 	if b, err := os.ReadFile(filepath.Join(dir, "meta.json")); err == nil {
 		_ = json.Unmarshal(b, &meta)
+		// runs recorded before the workload-validity check have no such key;
+		// unknown is not invalid
+		var raw map[string]any
+		if json.Unmarshal(b, &raw) == nil {
+			if _, ok := raw["valid"]; !ok {
+				meta.Valid = true
+			}
+		}
 	}
 	var records []windowRecord
 	b, err := os.ReadFile(filepath.Join(dir, "windows.json"))
