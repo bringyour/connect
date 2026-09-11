@@ -722,6 +722,16 @@ Pending: the benchmark sweep decides the defaults, then the mixed route
 with the 1 % and 3 % profiles must show a higher unreliable window
 (`UnreliableFlightMaximumLimitByteCount`) at equal delivery.
 
+Landed: 051654c, default off. Sweep (BenchmarkStreamFastWebRtcRouteLossSweep, 300 messages per cell, seeded vnet loss), message loss per 10k and reassembler evictions per 10k:
+
+| packet loss | 1 fragment | 8 fragments | 14 fragments |
+|---|---|---|---|
+| 0 % | 0 / 0 | 0 / 0 | 0 / 0 |
+| 1 % | 100 / 0 | 1167 / 900 | 1600 / 1367 |
+| 3 % | 467 / 0 | 2567 / 2033 | 3633 / 3000 |
+
+The 8-fragment cap bounds message loss at 3 % packet loss to about 26 %; the 2-fragment floor cap keeps it near the packet loss. The defaults stand pending the mixed-route campaign.
+
 ### 13.7 Findings 3 and 5 as measurement gates
 
 Finding 3 (F1 on the low-bar regime). No code. Run the low-bar matrix on
@@ -742,3 +752,5 @@ decides whether the mobile value can be lower still.
 Design questions 3 and 6 from §12: S1 and S2 are both in the merged tree
 (F11b and F10) and stay together; the counter snapshot keeps its maps,
 nil until a carrier writes, and is not made primitive in this program.
+
+Landed (13.7, finding 5): sdk 979169f on the sdk worktree's flight-gate-fix branch, UdpSocketBufferByteCount 512 KiB in the device provider settings; builds and vets against this branch. Finding 3 is a measurement, not a change.
