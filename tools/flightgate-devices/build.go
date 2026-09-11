@@ -23,6 +23,8 @@ func buildItem(args []string) error {
 	tree := fs.String("tree", "/Users/brien/urnetwork", "the shared checkouts (sibling modules and warp)")
 	sdkBranch := fs.String("sdk-branch", "flight-gate-fix", "sdk branch to pair with the commit")
 	diagSeconds := fs.String("diag-seconds", "2", "transfer diagnostic interval baked into the AAR")
+	memProfileRate := fs.String("mem-profile-rate", "0", "runtime memprofilerate; nonzero builds a private diagnostic artifact whose heap profile is non-empty")
+	suffix := fs.String("suffix", "", "build directory suffix, to keep a diagnostic artifact beside the acceptance build")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -33,7 +35,7 @@ func buildItem(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve commit: %w", err)
 	}
-	root := filepath.Join(*program, "builds", short)
+	root := filepath.Join(*program, "builds", short+*suffix)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
@@ -62,16 +64,16 @@ func buildItem(args []string) error {
 
 	godebug, _ := output("go", "list", "-f", "{{.DefaultGODEBUG}}", ".")
 	if godebug != "" {
-		godebug += ",memprofilerate=0"
+		godebug += ",memprofilerate=" + *memProfileRate
 	} else {
-		godebug = "memprofilerate=0"
+		godebug = "memprofilerate=" + *memProfileRate
 	}
 	ldflag := fmt.Sprintf("-X=runtime.godebugDefault=%s -X github.com/urnetwork/sdk.transferDiagLogSeconds=%s", godebug, *diagSeconds)
 	aar := exec.Command("make", "build_android", "MOBILE_RUNTIME_LDFLAG="+ldflag)
 	aar.Dir = filepath.Join(sdkDir, "build")
 	aar.Env = append(os.Environ(),
 		"ANDROID_NDK_HOME=/Users/brien/Library/Android/sdk/ndk/28.0.13004108",
-		"WARP_VERSION=flightgate-c"+short+"-s"+sdkShort,
+		"WARP_VERSION=flightgate-c"+short+*suffix+"-s"+sdkShort,
 		"URNETWORK_ANDROID_SDK_BUILD_OWNER=flightgate",
 	)
 	aarLog, err := os.Create(filepath.Join(root, "build-aar.log"))

@@ -126,6 +126,7 @@ func runMemsteady(args []string) error {
 	quietSeconds := fs.Int("quiet-seconds", 300, "quiet connected window after the burst")
 	streams := fs.Int("streams", 4, "parallel download streams")
 	url := fs.String("url", defaultLoadUrl, "download URL")
+	heapProfiles := fs.Bool("heap-profile", false, "capture a Go heap profile on both devices at the end of the quiet window")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -220,6 +221,18 @@ func runMemsteady(args []string) error {
 	}
 	meta.EndMillis = time.Now().UnixMilli()
 	writeJson(filepath.Join(*out, "meta.json"), meta)
+	if *heapProfiles {
+		// last, because the forced collection perturbs the runtime: every
+		// acceptance sample above is already recorded
+		for _, side := range []struct{ serial, name string }{{*client, "client"}, {*provider, "provider"}} {
+			path, err := captureHeapProfile(side.serial, *tag+"-"+side.name, *out)
+			if err != nil {
+				fmt.Printf("  %s heap profile: %v\n", side.name, err)
+				continue
+			}
+			fmt.Printf("  %s heap profile: %s\n", side.name, path)
+		}
+	}
 	time.Sleep(3 * time.Second)
 	return memsteadyReport([]string{*out})
 }
@@ -365,6 +378,11 @@ func memsteadyReport(args []string) error {
 		if s.Quiet.P50MiB*1048576 > memsteadyTargetBytes || s.Quiet.P95MiB*1048576 > memsteadyTargetBytes {
 			s.Failures = append(s.Failures, fmt.Sprintf("quiet p50/p95 %.2f/%.2f MiB above 24 MiB", s.Quiet.P50MiB, s.Quiet.P95MiB))
 		}
+		// The product ceiling is hard (it is an iOS extension limit), so the
+		// worst single sample decides, not only the percentiles.
+		if s.Quiet.MaxMiB*1048576 > memsteadyTargetBytes {
+			s.Failures = append(s.Failures, fmt.Sprintf("worst quiet sample %.2f MiB above 24 MiB", s.Quiet.MaxMiB))
+		}
 		if s.Burst.MaxMiB*1048576 > memsteadyTargetBytes {
 			s.Failures = append(s.Failures, fmt.Sprintf("active max %.2f MiB above 24 MiB", s.Burst.MaxMiB))
 		}
@@ -383,18 +401,20 @@ func memsteadyReport(args []string) error {
 		summary.Pass = false
 	}
 	writeJson(filepath.Join(dir, "memsteady.json"), summary)
-	row := fmt.Sprintf("| %s | %s | %s→%s | %.1f | %.2f / %.2f / %.2f | %.2f / %.2f / %.2f | %.2f / %.2f | %.1f / %.1f | %d | %d→%d / %d→%d | %s |",
+	headroom := math.Min(24-summary.Client.Quiet.MaxMiB, 24-summary.Provider.Quiet.MaxMiB)
+	row := fmt.Sprintf("| %s | %s | %s→%s | %.1f | %.2f / %.2f / %.2f | %.2f / %.2f / %.2f | %.2f / %.2f | %+.2f | %.1f / %.1f | %d | %d→%d / %d→%d | %s |",
 		summary.Tag, summary.Build, summary.ClientRole, summary.ProviderRole, summary.BurstMbps,
 		summary.Client.Quiet.P50MiB, summary.Client.Quiet.P95MiB, summary.Client.Quiet.MaxMiB,
 		summary.Provider.Quiet.P50MiB, summary.Provider.Quiet.P95MiB, summary.Provider.Quiet.MaxMiB,
 		summary.Client.Burst.MaxMiB, summary.Provider.Burst.MaxMiB,
+		headroom,
 		summary.Client.Quiet.PssP50, summary.Provider.Quiet.PssP50,
 		len(summary.Breaches),
 		summary.Client.WindowClientsBase, summary.Client.WindowClientsEnd, summary.Provider.WindowClientsBase, summary.Provider.WindowClientsEnd,
 		map[bool]string{true: "PASS", false: "FAIL: " + strings.Join(append(summary.Client.Failures, summary.Provider.Failures...), "; ")}[summary.Pass])
 	table := filepath.Join(filepath.Dir(filepath.Clean(dir)), "MEMSTEADY.md")
 	if _, err := os.Stat(table); err != nil {
-		header := "# MEMSTEADY device blocks (goRuntimeBytes = go_total_bytes; MiB)\n\n| run | build | roles | burst Mb/s | client quiet p50/p95/max | provider quiet p50/p95/max | active max c/p | quiet PSS p50 c/p | >28 MiB | window clients c/p (before→end) | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|\n"
+		header := "# MEMSTEADY device blocks (goRuntimeBytes = go_total_bytes; MiB)\n\n| run | build | roles | burst Mb/s | client quiet p50/p95/max | provider quiet p50/p95/max | active max c/p | worst-case headroom | quiet PSS p50 c/p | >28 MiB | window clients c/p (before→end) | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n"
 		_ = os.WriteFile(table, []byte(header), 0o644)
 	}
 	f, err := os.OpenFile(table, os.O_APPEND|os.O_WRONLY, 0o644)

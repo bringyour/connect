@@ -65,6 +65,8 @@ func main() {
 		err = allowDirect(args)
 	case "defer-timeout-resend":
 		err = deferTimeoutResend(args)
+	case "heap-profile":
+		err = heapProfile(args)
 	case "run":
 		err = runCampaign(args)
 	case "campaign":
@@ -92,7 +94,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|defer-timeout-resend|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|defer-timeout-resend|heap-profile|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
 }
 
 // role maps a serial to its opaque role, refusing anything off the allowlist.
@@ -511,5 +513,51 @@ func deferTimeoutResend(args []string) error {
 	if !strings.Contains(line, "ok=true") {
 		return errors.New("defer-timeout-resend failed")
 	}
+	return nil
+}
+
+// captureHeapProfile asks one device for a Go heap profile and pulls it.
+// Returns the local path.
+func captureHeapProfile(serial string, name string, outDir string) (string, error) {
+	r, err := role(serial)
+	if err != nil {
+		return "", err
+	}
+	line, err := broadcast(serial, "FG_HEAP_PROFILE", map[string]string{"name": name}, "action=heap-profile", 90*time.Second)
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("%s: %s\n", r, tail(line))
+	if !strings.Contains(line, "ok=true") {
+		return "", errors.New("heap profile failed")
+	}
+	remote := "/data/data/" + appPackage + "/files/" + name + ".pprof"
+	local := filepath.Join(outDir, name+".pprof")
+	// the app's files directory is not world readable; copy it out through
+	// run-as, which the debug build allows
+	if out, err := adbShell(serial, "run-as "+appPackage+" cat files/"+name+".pprof > /data/local/tmp/"+name+".pprof"); err != nil {
+		return "", fmt.Errorf("stage profile: %v: %s", err, out)
+	}
+	if out, err := adb(serial, "pull", "/data/local/tmp/"+name+".pprof", local); err != nil {
+		return "", fmt.Errorf("pull profile: %v: %s", err, out)
+	}
+	_, _ = adbShell(serial, "rm -f /data/local/tmp/"+name+".pprof")
+	_ = remote
+	return local, nil
+}
+
+func heapProfile(args []string) error {
+	fs := flag.NewFlagSet("heap-profile", flag.ExitOnError)
+	serial := fs.String("serial", "", "device serial")
+	name := fs.String("name", "heap", "profile name")
+	out := fs.String("out", ".", "directory to pull the profile into")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	path, err := captureHeapProfile(*serial, *name, *out)
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
 	return nil
 }
