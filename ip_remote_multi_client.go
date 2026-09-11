@@ -1419,6 +1419,10 @@ type RemoteUserNatMultiClient struct {
 	removalReceiveQueue         chan receivePacket
 	removalReceiveDropCount     atomic.Uint64
 	raceCommitDeliveryDropCount atomic.Uint64
+	// removalReceiveOwnedLock orders worker-owned enqueues against the
+	// worker's exit so pooled bytes handed to it are always returned.
+	removalReceiveOwnedLock   sync.Mutex
+	removalReceiveOwnedClosed bool
 	// flowReaperWake drives one parent-level idle-flow reaper. A buffered edge
 	// is sufficient: activity can only move an existing deadline later, while
 	// creating a flow is the only operation that can introduce an earlier one.
@@ -7534,6 +7538,23 @@ func (self *RemoteUserNatMultiClient) clientFlowCount(client *multiClientChannel
 // from the maintenance paths. Normal ingress keeps its direct low-latency
 // path; only synthetic teardown traffic pays this queue hop.
 func (self *RemoteUserNatMultiClient) runRemovalReceive() {
+	defer func() {
+		// nothing owned by this worker may outlive it: mark the queue closed
+		// to owned enqueues and return every pooled buffer still queued
+		self.removalReceiveOwnedLock.Lock()
+		defer self.removalReceiveOwnedLock.Unlock()
+		self.removalReceiveOwnedClosed = true
+		for {
+			select {
+			case packet := <-self.removalReceiveQueue:
+				if packet.releaseAfterDelivery {
+					MessagePoolReturn(packet.Packet)
+				}
+			default:
+				return
+			}
+		}
+	}()
 	for {
 		select {
 		case <-self.ctx.Done():
@@ -7594,11 +7615,15 @@ func (self *RemoteUserNatMultiClient) deliverRaceCommitPackets(
 		}
 		return completed
 	}
+	self.removalReceiveOwnedLock.Lock()
+	defer self.removalReceiveOwnedLock.Unlock()
 	for _, packet := range packets {
 		packet.releaseAfterDelivery = true
-		select {
-		case <-self.ctx.Done():
+		if self.removalReceiveOwnedClosed {
 			MessagePoolReturn(packet.Packet)
+			continue
+		}
+		select {
 		case self.removalReceiveQueue <- *packet:
 		default:
 			// bounded loss, the same rule as teardown resets: the exit will

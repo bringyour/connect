@@ -126,12 +126,13 @@ type webRtcFastPath struct {
 	// not be retired for the silence it cannot break.
 	remoteReportSeen    atomic.Bool
 	progressReportsSent atomic.Uint64
-	// progressReportPacket is reused under sendMutex so a report does not
-	// allocate an RTP packet per interval.
-	progressReportPacket rtp.Packet
-	watchdogOnce         sync.Once
-	reporterOnce         sync.Once
-	startWorker          func(name string, run func())
+	// progressReportPacket and its payload are reused under sendMutex so a
+	// report allocates nothing per interval.
+	progressReportPacket  rtp.Packet
+	progressReportPayload [p2pFastPathProgressReportByteCount]byte
+	watchdogOnce          sync.Once
+	reporterOnce          sync.Once
+	startWorker           func(name string, run func())
 	// oldStyleReceiverForTest makes this side behave as a peer from before
 	// progress reports: it neither parses nor sends them.
 	oldStyleReceiverForTest bool
@@ -466,16 +467,14 @@ func (self *webRtcFastPath) writeProgressReport(count uint64) error {
 	self.nextSequenceNumber += 1
 	// the report is built in place: nothing is allocated per report beyond
 	// what the RTP writer itself needs (MEMSTEADY gate, FLIGHTGATEFIX §13.3)
-	var payload [p2pFastPathProgressReportByteCount]byte
+	payload := &self.progressReportPayload
 	payload[0], payload[1], payload[2] = 'U', 'R', 'P'
 	binary.BigEndian.PutUint64(payload[3:], count)
-	self.progressReportPacket = rtp.Packet{
-		Header: rtp.Header{
-			Version:        2,
-			SequenceNumber: self.nextSequenceNumber,
-		},
-		Payload: payload[:],
+	self.progressReportPacket.Header = rtp.Header{
+		Version:        2,
+		SequenceNumber: self.nextSequenceNumber,
 	}
+	self.progressReportPacket.Payload = payload[:]
 	err := self.track.track.WriteRTP(&self.progressReportPacket)
 	if err == nil {
 		self.progressReportsSent.Add(1)
