@@ -7615,11 +7615,18 @@ func (self *SendSequence) unreliableFlightGates(
 // carrier because its flight is full and a reliable carrier can take it.
 func (self *SendSequence) reliableOnlyWrite(
 	policy transferFlightPolicySnapshot,
+	frameByteCount ByteCount,
 ) bool {
 	if !policy.reliableRouteAvailable || !self.flightController.limited {
 		return false
 	}
 	if !self.flightController.canSend() {
+		return true
+	}
+	// FLIGHTGATEFIX §13.6: at the loss floor the lane carries only small
+	// frames, whose message loss is close to the packet loss.
+	if 0 < policy.lossyMaxByteCount && policy.lossyMaxByteCount < frameByteCount &&
+		self.flightController.atFloor() {
 		return true
 	}
 	// A carrier that loss has reduced to its floor keeps proving itself with
@@ -7828,7 +7835,8 @@ func (self *SendSequence) writeMaybeWrappedBytes(
 	// A full unreliable flight must not stall this sequence while a reliable
 	// carrier is active: route the overflow reliable-only so it is neither
 	// tracked in the flight nor lost with the unreliable carrier.
-	reliableOnly = reliableOnly || self.reliableOnlyWrite(self.transferFlightPolicy())
+	reliableOnly = reliableOnly ||
+		self.reliableOnlyWrite(self.transferFlightPolicy(), ByteCount(len(transferFrameBytes)))
 	var cipher *sequenceCipher
 	if self.session != nil && !forceUnwrapped {
 		cipher = self.session.Cipher()

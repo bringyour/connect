@@ -442,3 +442,62 @@ func measureFastPathMessageLossReverse(
 	}
 	return 0
 }
+
+// §13.6: with size-aware admission on, the native carrier refuses frames
+// over FastPathMaximumFragmentCount fragments, and once the Transfer flight
+// sits at its loss floor the sequence writes frames over
+// FastPathLossyFragmentCount fragments reliable-only. Off by default.
+func TestP2pSizeAwareAdmissionBoundsFastPathFrames(t *testing.T) {
+	settings := DefaultP2pTransportSettings()
+	if settings.FastPathSizeAwareAdmission {
+		t.Fatal("size-aware admission must be off by default until the benchmark sweep")
+	}
+	if settings.FastPathMaximumFragmentCount != 8 || settings.FastPathLossyFragmentCount != 2 {
+		t.Fatalf("defaults = %d/%d fragments, want 8/2", settings.FastPathMaximumFragmentCount, settings.FastPathLossyFragmentCount)
+	}
+	settings.FastPathSizeAwareAdmission = true
+	settings.DataPlaneMode = P2pDataPlaneModeFastOnly
+	send := &P2pSendTransport{settings: settings}
+	properties := p2pTransferCarrierProperties(send)
+	if !properties.Unreliable {
+		t.Fatal("fast-only carrier is not unreliable")
+	}
+	small := 2 * p2pFastPathFragmentPayloadByteCount
+	large := 9 * p2pFastPathFragmentPayloadByteCount
+	if !properties.unreliableForMessageByteCount(small) {
+		t.Fatal("a small frame was refused by the fast path")
+	}
+	if properties.unreliableForMessageByteCount(large) {
+		t.Fatal("a frame over the fragment cap was admitted to the fast path")
+	}
+	if properties.unreliableLossyMaxMessageByteCount != ByteCount(2*p2pFastPathFragmentPayloadByteCount) {
+		t.Fatalf("lossy cap = %d bytes", properties.unreliableLossyMaxMessageByteCount)
+	}
+
+	sendSettings := DefaultSendBufferSettings()
+	sendSettings.UnreliableInitialFlightByteCount = 8192
+	sendSettings.UnreliableMinimumFlightByteCount = 8192
+	sendSettings.UnreliableMaximumFlightByteCount = 65536
+	controller := newSendFlightController(sendSettings)
+	policy := transferFlightPolicySnapshot{
+		generation:             1,
+		limited:                true,
+		reliableRouteAvailable: true,
+		lossyMaxByteCount:      properties.unreliableLossyMaxMessageByteCount,
+	}
+	controller.applyPolicy(policy)
+	sequence := &SendSequence{client: &Client{}, flightController: controller, sendBufferSettings: sendSettings}
+	if sequence.reliableOnlyWrite(policy, ByteCount(3*p2pFastPathFragmentPayloadByteCount)) {
+		t.Fatal("a growing flight wrote a mid-size frame reliable-only")
+	}
+	controller.reduceForLoss()
+	if !controller.atFloor() {
+		t.Fatal("one loss from the initial limit did not pin the flight to its floor")
+	}
+	if !sequence.reliableOnlyWrite(policy, ByteCount(3*p2pFastPathFragmentPayloadByteCount)) {
+		t.Fatal("at the floor a frame over the lossy cap still rode the fast path")
+	}
+	if sequence.reliableOnlyWrite(policy, ByteCount(p2pFastPathFragmentPayloadByteCount)) {
+		t.Fatal("at the floor a one-fragment frame was pushed off the fast path")
+	}
+}

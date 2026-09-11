@@ -103,6 +103,10 @@ type TransferCarrierProperties struct {
 	// capacity for untracked ACK, compact-recovery, contract, and probe traffic
 	// without changing the process-wide Transfer defaults.
 	unreliableFlightByteLimit ByteCount
+	// unreliableLossyMaxMessageByteCount, when positive, is the largest frame
+	// the unreliable lane should carry once loss has pinned the Transfer
+	// flight to its floor; larger frames go reliable-only (§13.6).
+	unreliableLossyMaxMessageByteCount ByteCount
 	// unreliableForMessageByteCount refines a hybrid carrier after an exact route has
 	// accepted one complete routed Transfer frame. Nil preserves the historical
 	// route-wide meaning of Unreliable. The callback must be safe for concurrent
@@ -1581,6 +1585,7 @@ type routeSnapshot struct {
 	generation                   uint64
 	unreliableTransferPath       bool
 	unreliableFlightByteLimit    ByteCount
+	unreliableLossyMaxByteCount  ByteCount
 	unreliableFlightMessageLimit int
 	unreliableFlowIsolation      bool
 	unreliableFlowReserve        bool
@@ -1645,13 +1650,16 @@ func (self *routeSnapshot) observeDirectAffinityBlocked() {
 // carrier needs Transfer-level flight control and which publication wakes a
 // sender waiting for that constraint to change.
 type transferFlightPolicySnapshot struct {
-	generation    uint64
-	limited       bool
-	byteLimit     ByteCount
-	messageLimit  int
-	flowIsolation bool
-	flowReserve   bool
-	h1Only        bool
+	generation   uint64
+	limited      bool
+	byteLimit    ByteCount
+	messageLimit int
+	// lossyMaxByteCount, when positive, is the largest frame the unreliable
+	// lane carries while the flight sits at its loss floor (§13.6).
+	lossyMaxByteCount ByteCount
+	flowIsolation     bool
+	flowReserve       bool
+	h1Only            bool
 	// reliableRouteAvailable is true while at least one active carrier is not
 	// potentially unreliable. A full unreliable flight then writes the
 	// overflow reliable-only instead of gating the whole sequence.
@@ -1666,6 +1674,7 @@ func (self *MultiRouteSelector) transferFlightPolicy() transferFlightPolicySnaps
 		generation:             snapshot.generation,
 		limited:                snapshot.unreliableTransferPath,
 		byteLimit:              snapshot.unreliableFlightByteLimit,
+		lossyMaxByteCount:      snapshot.unreliableLossyMaxByteCount,
 		messageLimit:           snapshot.unreliableFlightMessageLimit,
 		flowIsolation:          snapshot.unreliableFlowIsolation,
 		flowReserve:            snapshot.unreliableFlowReserve,
@@ -2058,6 +2067,7 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 	reliableRoutes := []Route{}
 	unreliableTransferPath := false
 	unreliableFlightByteLimit := ByteCount(0)
+	unreliableLossyMaxByteCount := ByteCount(0)
 	unreliableFlightMessageLimit := 0
 	unreliableFlowIsolation := true
 	unreliableFlowReserve := true
@@ -2114,6 +2124,10 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 				if limit := properties.unreliableFlightByteLimit; 0 < limit &&
 					(unreliableFlightByteLimit == 0 || limit < unreliableFlightByteLimit) {
 					unreliableFlightByteLimit = limit
+				}
+				if limit := properties.unreliableLossyMaxMessageByteCount; 0 < limit &&
+					(unreliableLossyMaxByteCount == 0 || limit < unreliableLossyMaxByteCount) {
+					unreliableLossyMaxByteCount = limit
 				}
 				if limit := properties.unreliableFlightMessageLimit; 0 < limit &&
 					(unreliableFlightMessageLimit == 0 || limit < unreliableFlightMessageLimit) {
@@ -2268,6 +2282,7 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 		generation:                     self.nextRouteGeneration,
 		unreliableTransferPath:         unreliableTransferPath,
 		unreliableFlightByteLimit:      unreliableFlightByteLimit,
+		unreliableLossyMaxByteCount:    unreliableLossyMaxByteCount,
 		unreliableFlightMessageLimit:   unreliableFlightMessageLimit,
 		unreliableFlowIsolation:        unreliableTransferPath && unreliableFlowIsolation,
 		unreliableFlowReserve:          unreliableTransferPath && unreliableFlowReserve,

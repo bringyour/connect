@@ -88,7 +88,7 @@ func TestSendSequenceFullUnreliableFlightWritesReliableOnlyInsteadOfStalling(t *
 	if sequence.unreliableFlightGates(withReliable) {
 		t.Fatal("open flight with a reliable route gated admission")
 	}
-	if sequence.reliableOnlyWrite(withReliable) {
+	if sequence.reliableOnlyWrite(withReliable, 0) {
 		t.Fatal("open flight forced reliable-only writes")
 	}
 
@@ -102,7 +102,7 @@ func TestSendSequenceFullUnreliableFlightWritesReliableOnlyInsteadOfStalling(t *
 	if sequence.unreliableFlightGates(withReliable) {
 		t.Fatal("full flight gated admission although a reliable route is available")
 	}
-	if !sequence.reliableOnlyWrite(withReliable) {
+	if !sequence.reliableOnlyWrite(withReliable, 0) {
 		t.Fatal("full flight did not force reliable-only writes")
 	}
 
@@ -113,7 +113,7 @@ func TestSendSequenceFullUnreliableFlightWritesReliableOnlyInsteadOfStalling(t *
 	if !sequence.unreliableFlightGates(unreliableOnly) {
 		t.Fatal("full flight without a reliable route did not gate admission")
 	}
-	if sequence.reliableOnlyWrite(unreliableOnly) {
+	if sequence.reliableOnlyWrite(unreliableOnly, 0) {
 		t.Fatal("reliable-only write requested without a reliable route")
 	}
 }
@@ -179,7 +179,7 @@ func TestSendSequenceFloorSingleFlightKeepsOneMessageOnLossyCarrier(t *testing.T
 	// healthy carrier (limit above the floor): the flight decides alone
 	first := &sendItem{transferFrameBytes: make([]byte, 512)}
 	sequence.observeCarrierWrite(first, transferWriteDisposition{unreliable: true})
-	if sequence.flightController.atFloor() || sequence.reliableOnlyWrite(policy) {
+	if sequence.flightController.atFloor() || sequence.reliableOnlyWrite(policy, 0) {
 		t.Fatalf("healthy carrier forced reliable-only: floor=%t", sequence.flightController.atFloor())
 	}
 
@@ -191,18 +191,18 @@ func TestSendSequenceFloorSingleFlightKeepsOneMessageOnLossyCarrier(t *testing.T
 	if !sequence.flightController.atFloor() {
 		t.Fatalf("flight not at floor after reductions: %d/%d", sequence.flightController.byteLimit, sequence.flightController.activeMinimumByteCount)
 	}
-	if !sequence.reliableOnlyWrite(policy) {
+	if !sequence.reliableOnlyWrite(policy, 0) {
 		t.Fatal("floor carrier with a message in flight did not force reliable-only")
 	}
 	sequence.releaseUnreliableFlight(first)
-	if sequence.reliableOnlyWrite(policy) {
+	if sequence.reliableOnlyWrite(policy, 0) {
 		t.Fatal("floor carrier with an empty flight refused its single probe message")
 	}
 
 	// the rule is opt-in: without it only a full flight forces reliable-only
 	settings.UnreliableFloorSingleFlight = false
 	sequence.observeCarrierWrite(first, transferWriteDisposition{unreliable: true})
-	if sequence.reliableOnlyWrite(policy) {
+	if sequence.reliableOnlyWrite(policy, 0) {
 		t.Fatal("floor rule applied while disabled")
 	}
 	sequence.releaseUnreliableFlight(first)

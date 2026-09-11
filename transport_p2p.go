@@ -184,9 +184,12 @@ func DefaultP2pTransportSettings() *P2pTransportSettings {
 		// message fits in the 4 KiB pooled class. The receiver retries once
 		// with Pion's exact required length for a legacy/atypical larger
 		// message, then returns to this size.
-		InitialReadBufferByteCount: 4 * 1024,
-		MaxMessageByteCount:        64 * 1024,
-		DataPlaneMode:              P2pDataPlaneModeAuto,
+		InitialReadBufferByteCount:   4 * 1024,
+		MaxMessageByteCount:          64 * 1024,
+		DataPlaneMode:                P2pDataPlaneModeAuto,
+		FastPathSizeAwareAdmission:   false,
+		FastPathMaximumFragmentCount: 8,
+		FastPathLossyFragmentCount:   2,
 	}
 }
 
@@ -275,6 +278,17 @@ type P2pTransportSettings struct {
 	// DataPlaneMode selects automatic capability fallback or one forced lane.
 	// Forced modes exist for deterministic compatibility and performance tests.
 	DataPlaneMode P2pDataPlaneMode
+	// FastPathSizeAwareAdmission bounds what the native fast path carries by
+	// fragment count (FLIGHTGATEFIX §13.6): one lost 1,188-byte fragment
+	// loses the whole message, so message loss grows with size. Off until
+	// the benchmark sweep sets the defaults below.
+	FastPathSizeAwareAdmission bool
+	// FastPathMaximumFragmentCount is the largest message the fast path
+	// accepts; larger frames select the reliable lane.
+	FastPathMaximumFragmentCount int
+	// FastPathLossyFragmentCount is the largest message the fast path
+	// accepts once loss has pinned the Transfer flight to its floor.
+	FastPathLossyFragmentCount int
 	// DataPlaneStats observes the actual negotiated lane. It may be nil when
 	// callers do not need instrumentation.
 	DataPlaneStats *P2pDataPlaneStats
@@ -359,7 +373,16 @@ func p2pTransferCarrierProperties(transport Transport) TransferCarrierProperties
 		unreliableFlightByteLimit:    p2pUnreliableFlightByteLimit(send.settings),
 		unreliableFlightMessageLimit: p2pUnreliableFlightMessageLimit(send.settings),
 	}
-	properties.unreliableForMessageByteCount = func(int) bool {
+	sizeAware := send.settings.FastPathSizeAwareAdmission
+	maximumByteCount := send.settings.FastPathMaximumFragmentCount * p2pFastPathFragmentPayloadByteCount
+	if sizeAware && 0 < send.settings.FastPathLossyFragmentCount {
+		properties.unreliableLossyMaxMessageByteCount =
+			ByteCount(send.settings.FastPathLossyFragmentCount * p2pFastPathFragmentPayloadByteCount)
+	}
+	properties.unreliableForMessageByteCount = func(byteCount int) bool {
+		if sizeAware && 0 < maximumByteCount && maximumByteCount < byteCount {
+			return false
+		}
 		if send.settings.DataPlaneMode == P2pDataPlaneModeFastOnly {
 			return true
 		}
