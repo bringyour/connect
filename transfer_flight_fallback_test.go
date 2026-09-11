@@ -469,15 +469,43 @@ func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
 	sequence.rttWindow.CloseSendTime(uint64(now.Add(-300 * time.Millisecond).UnixMilli()))
 	sequence.unreliableRttWindow.CloseSendTime(uint64(now.Add(-20 * time.Millisecond).UnixMilli()))
 	relayGrace := sequence.rttWindow.ScaledRtt()
-	laneGrace, sampled := sequence.unreliableScaledRtt()
+	laneGrace, sampled := sequence.unreliableGraceRtt()
 	if !sampled {
 		t.Fatal("the direct lane's own round trip was not measured")
 	}
+	if pacing, _ := sequence.unreliableScaledRtt(); pacing <= laneGrace {
+		t.Fatalf(
+			"the grace %s is not shorter than the lane's retransmit pacing interval %s, so the "+
+				"pacing floor is still setting it",
+			laneGrace, pacing,
+		)
+	}
 	t.Logf(
-		"grace for a direct-lane drop: %s from the direct lane's own estimate, against %s from the relay's; "+
-			"the direct lane's is floored at RttMinResendInterval %s",
+		"grace for a direct-lane drop: %s from the direct lane's own estimate, against %s from the relay's "+
+			"and %s if the retransmit pacing floor applied",
 		laneGrace, relayGrace, sequence.sendBufferSettings.RttMinResendInterval,
 	)
+	// §16: the grace is what the lane could still deliver, so the window's
+	// own scale carries the jitter margin and the minimum covers only timer
+	// granularity. The retransmit pacing floor must not apply: on this lane
+	// it is fifteen times the round trip and every real loss would stall the
+	// ordered stream for it.
+	if sequence.sendBufferSettings.RttMinResendInterval <= laneGrace {
+		t.Fatalf(
+			"the direct lane's grace is %s, at or past the retransmit pacing floor %s: a %s lane "+
+				"would stall the ordered stream for the floor on every lost Pack",
+			laneGrace, sequence.sendBufferSettings.RttMinResendInterval, 20*time.Millisecond,
+		)
+	}
+	if laneGrace < sequence.sendBufferSettings.UnreliableGraceMinimum {
+		t.Fatalf("the direct lane's grace %s is under UnreliableGraceMinimum %s",
+			laneGrace, sequence.sendBufferSettings.UnreliableGraceMinimum)
+	}
+	// the measured margin: twice the lane's round trip, from RttScale
+	if wantMargin := 2 * 20 * time.Millisecond; laneGrace != wantMargin {
+		t.Fatalf("the direct lane's grace is %s, want RttScale %v times its %s round trip",
+			laneGrace, sequence.sendBufferSettings.RttScale, 20*time.Millisecond)
+	}
 	if relayGrace <= laneGrace {
 		t.Fatalf("the direct lane's grace %s is not shorter than the relay's %s", laneGrace, relayGrace)
 	}
@@ -510,5 +538,72 @@ func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
 	// would have cost, or the trade stops paying
 	if ceiling := sequence.sendBufferSettings.UnreliableMaxResendInterval; 0 < ceiling && ceiling < grace {
 		t.Fatalf("the grace %s is longer than the unreliable lane's own resend ceiling %s", grace, ceiling)
+	}
+}
+
+// FLIGHTGATEFIX §16. The grace is insurance against reordering. A lane
+// whose own recent evidence says it is dropping gets none: waiting for it
+// only stalls the ordered stream, which is what the lossy campaign cells
+// measured. The evidence is the outcome of the deferrals themselves, an
+// acknowledgement that cancelled one against a recovery that had to be
+// written.
+func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
+	sendTime := time.Unix(1_700_000_000, 0)
+	currentTime := sendTime.Add(10 * time.Millisecond)
+	newLosing := func(cancelled int, fired int) (*SendSequence, []*sendItem) {
+		sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
+		sequence.client = &Client{}
+		sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
+		sequence.flightController.applyPolicy(transferFlightPolicySnapshot{
+			generation:             1,
+			limited:                true,
+			reliableRouteAvailable: true,
+		})
+		sequence.rttWindow.CloseSendTime(uint64(time.Now().Add(-300 * time.Millisecond).UnixMilli()))
+		sequence.unreliableRttWindow.CloseSendTime(uint64(time.Now().Add(-20 * time.Millisecond).UnixMilli()))
+		sequence.graceCancelledCount = cancelled
+		sequence.graceFiredCount = fired
+		items[0].unreliableCarrierObserved = true
+		items[0].unreliableFlightTracked = true
+		for _, index := range []int{1, 2, 3, 5, 6, 7} {
+			items[index].selectiveAcked = true
+		}
+		return sequence, items
+	}
+	// reordering: the acknowledgements kept arriving, so the grace holds
+	reordering, reorderingItems := newLosing(4, 1)
+	if reordering.unreliableLaneLosing() {
+		t.Fatal("a lane whose deferrals were mostly cancelled is not losing")
+	}
+	reordering.scheduleSelectiveAckRecovery(currentTime)
+	if !reorderingItems[0].resendTime.After(currentTime) {
+		t.Fatal("the grace was withdrawn from a lane that is reordering, not losing")
+	}
+	if !reorderingItems[0].gapRecoveryDeferred {
+		t.Fatal("a deferred recovery was not marked, so its outcome cannot be counted")
+	}
+
+	// loss: the deferrals had to be written, so the next hole waits for none
+	losing, losingItems := newLosing(1, 4)
+	if !losing.unreliableLaneLosing() {
+		t.Fatal("a lane whose deferrals mostly had to be written is not reported as losing")
+	}
+	losing.scheduleSelectiveAckRecovery(currentTime)
+	if losingItems[0].resendTime.After(currentTime) {
+		t.Fatalf(
+			"a hole on a losing lane still waits %s for a grace: the ordered stream stalls for it",
+			losingItems[0].resendTime.Sub(currentTime),
+		)
+	}
+	if losingItems[0].gapRecoveryDeferred {
+		t.Fatal("an immediate recovery was marked deferred")
+	}
+
+	// and the evidence stays recent rather than accumulating for the run
+	recent, _ := newLosing(graceEvidenceCap, graceEvidenceCap)
+	recent.observeGraceOutcome(true)
+	if graceEvidenceCap < recent.graceCancelledCount+recent.graceFiredCount {
+		t.Fatalf("the grace evidence did not decay: %d cancelled, %d fired",
+			recent.graceCancelledCount, recent.graceFiredCount)
 	}
 }

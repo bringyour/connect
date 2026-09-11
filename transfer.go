@@ -706,8 +706,10 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// (10ms) without variance tracking. 1.2 was tight enough that the
 		// floor always governed; 2.0 makes the rtt-scaled value meaningful
 		// on paths slower than the floor.
-		RttScale:      2.0,
-		RttWindowSize: 128,
+		RttScale:                 2.0,
+		RttWindowSize:            128,
+		MixedLaneAckReorderGrace: true,
+		UnreliableGraceMinimum:   10 * time.Millisecond,
 		// sixteen samples is about 640 bytes per sequence against the five
 		// kilobytes a full window would cost
 		UnreliableRttWindowSize: 16,
@@ -3820,6 +3822,18 @@ type SendBufferSettings struct {
 
 	RttScale      float32
 	RttWindowSize int
+	// MixedLaneAckReorderGrace lets an item wait for the lane that carried it
+	// before later acknowledgements from a faster lane are read as loss
+	// (FLIGHTGATEFIX §14). It is insurance against reordering and it is
+	// withdrawn automatically once a lane's own evidence says it is losing
+	// rather than reordering.
+	MixedLaneAckReorderGrace bool
+	// UnreliableGraceMinimum floors that grace. The window's scale already
+	// carries the jitter margin, so this covers only timer granularity and
+	// scheduling on a phone; it is deliberately not RttMinResendInterval,
+	// which paces retransmits and is fifteen times a direct lane's round
+	// trip (FLIGHTGATEFIX §16).
+	UnreliableGraceMinimum time.Duration
 	// UnreliableRttWindowSize sizes the direct lane's own round-trip window.
 	// It is small on purpose: the mobile steady-state ceiling has no room for
 	// a second full window per sequence, and a datagram lane's estimate does
@@ -4884,6 +4898,14 @@ type SendSequence struct {
 	unreliableRttWindow *RttWindow
 
 	contractMultiRouteWriter MultiRouteWriter
+	// graceCancelledCount and graceFiredCount are this sequence's recent
+	// evidence about the direct lane: a deferred recovery an acknowledgement
+	// cancelled was reordering, one that had to be written was loss. Their
+	// ratio withdraws the grace from a lane that is losing (FLIGHTGATEFIX
+	// §16). Both halve once their sum passes graceEvidenceCap so the measure
+	// stays recent.
+	graceCancelledCount int
+	graceFiredCount     int
 	// lastCumulativeAckTime is when the cumulative ack last advanced; an RTO
 	// inside one scaled RTT of it is counted as spurious (M4).
 	lastCumulativeAckTime               time.Time
@@ -5647,8 +5669,15 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 	unreliableSampled := false
 	if limited {
 		lateNotLostRtt = self.rttWindow.ScaledRtt()
-		lateNotLostUnreliableRtt, unreliableSampled = self.unreliableScaledRtt()
+		lateNotLostUnreliableRtt, unreliableSampled = self.unreliableGraceRtt()
 	}
+	// The grace is insurance against reordering. A lane whose own recent
+	// evidence says it is losing gets none: for it the merged rule applies
+	// and a hole is recovered as soon as three later acks prove it
+	// (FLIGHTGATEFIX §16).
+	mixedAckLanes = mixedAckLanes &&
+		self.sendBufferSettings.MixedLaneAckReorderGrace &&
+		!self.unreliableLaneLosing()
 
 	selectiveAckCount := 0
 	for _, item := range self.sendItems {
@@ -5706,11 +5735,13 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 			gapRecoveryCount += 1
 			if lateNotLost {
 				// The recovery is deferred, not dropped: it is due when the
-				// slowest ack lane has had its chance. An acknowledgement
-				// arriving first removes the item and nothing is written, so
-				// reordering costs no traffic, while a Pack the lane really
-				// lost is still recovered well before its own timeout. The
-				// flight is not reduced for evidence that has not arrived.
+				// lane that carried this item could have answered. An
+				// acknowledgement arriving first removes the item and nothing
+				// is written, so reordering costs no traffic, while a Pack the
+				// lane really lost is recovered one lane round trip later and
+				// the outcome feeds the evidence above. The flight is not
+				// reduced for evidence that has not arrived.
+				item.gapRecoveryDeferred = true
 				reschedule(item, item.sendTime.Add(itemGrace), sendRecoverySelectiveGap)
 				continue
 			}
@@ -6178,6 +6209,12 @@ sendSequenceLoop:
 				// ordinary cadence. Any resend awaits fresh acknowledgement state.
 				recoveryKind := item.recoveryKind
 				item.recoveryKind = sendRecoveryNone
+				if recoveryKind == sendRecoverySelectiveGap && item.gapRecoveryDeferred {
+					// the grace expired without an acknowledgement: this lane
+					// lost the Pack rather than reordering its ack
+					item.gapRecoveryDeferred = false
+					self.observeGraceOutcome(false)
+				}
 				if recoveryKind == sendRecoveryNone && !self.lastCumulativeAckTime.IsZero() {
 					scaledRtt := self.rttWindow.ScaledRtt()
 					if sendTime.Sub(self.lastCumulativeAckTime) < scaledRtt {
@@ -6188,13 +6225,18 @@ sendSequenceLoop:
 					if self.sendBufferSettings.DeferTimeoutResendWhileCumulativeProgress &&
 						!item.unreliableCarrierObserved &&
 						item.timeoutDeferCount < self.sendBufferSettings.TimeoutResendDeferLimit &&
-						self.lastCumulativeAckTime.After(item.sendTime.Add(-scaledRtt)) {
+						self.lastCumulativeAckTime.After(item.sendTime.Add(-scaledRtt)) &&
+						self.lastCumulativeAckTime.After(item.timeoutDeferAckTime) {
 						// FLIGHTGATEFIX §13.5 (F12): the cumulative ack advanced
 						// within one scaled RTT of this item's send, so the reliable
 						// lane is alive and its queue is deeper than the estimate.
-						// Wait one more RTT, a bounded number of times; a lane that
-						// stops resends on the next pass.
+						// Wait one more round trip. Each further deferral needs the
+						// cumulative ack to have advanced since the last one, so a
+						// hole nothing can acknowledge is deferred once and then
+						// retransmitted: deferring is right while the queue drains
+						// and wrong once the Pack is gone (§16).
 						item.timeoutDeferCount += 1
+						item.timeoutDeferAckTime = self.lastCumulativeAckTime
 						item.resendTime = sendTime.Add(scaledRtt)
 						self.resendQueue.Add(item)
 						self.client.timeoutResendDeferCount.Add(1)
@@ -7616,6 +7658,12 @@ func (self *SendSequence) observeItemAck(item *sendItem) {
 	if item.recoveryKind == sendRecoverySelectiveGap {
 		self.client.unreliableFlightGapReorderSuspected.Add(1)
 	}
+	if item.gapRecoveryDeferred {
+		// the acknowledgement arrived before the deferred recovery was
+		// written, so the evidence was ordering, not loss
+		item.gapRecoveryDeferred = false
+		self.observeGraceOutcome(true)
+	}
 	if item.carrierRoute != nil {
 		if observer, ok := self.contractMultiRouteWriter.(transferRouteAckProgressObserver); ok {
 			observer.observeRouteAckProgress(item.carrierRoute)
@@ -7686,6 +7734,44 @@ func (self *SendSequence) deferTimeoutResend(item *sendItem, now time.Time) bool
 	item.resendTime = now.Add(rtt)
 	self.client.timeoutResendDeferCount.Add(1)
 	return true
+}
+
+// graceEvidenceCap keeps the reordering-against-loss measure recent: once
+// the two counts together pass it, both halve.
+const graceEvidenceCap = 32
+
+// observeGraceOutcome records what became of a deferred recovery. An
+// acknowledgement that arrived first is evidence of reordering; a recovery
+// that had to be written is evidence of loss.
+func (self *SendSequence) observeGraceOutcome(reordering bool) {
+	if reordering {
+		self.graceCancelledCount += 1
+	} else {
+		self.graceFiredCount += 1
+	}
+	if graceEvidenceCap < self.graceCancelledCount+self.graceFiredCount {
+		self.graceCancelledCount /= 2
+		self.graceFiredCount /= 2
+	}
+}
+
+// unreliableLaneLosing reports whether this sequence's recent evidence says
+// the direct lane is dropping rather than reordering. While it does, the
+// grace is withdrawn: waiting for a lane that is losing only stalls the
+// ordered stream, which is what the lossy campaign cells measured.
+func (self *SendSequence) unreliableLaneLosing() bool {
+	return self.graceCancelledCount < self.graceFiredCount
+}
+
+// unreliableGraceRtt is how long the direct lane could still take to
+// acknowledge, its own estimate without the retransmit pacing floor.
+func (self *SendSequence) unreliableGraceRtt() (time.Duration, bool) {
+	if self.unreliableRttWindow == nil {
+		return 0, false
+	}
+	return self.unreliableRttWindow.ScaledRttWithFloorSampled(
+		self.sendBufferSettings.UnreliableGraceMinimum,
+	)
 }
 
 // unreliableScaledRtt is the direct lane's own scaled round trip, and
@@ -8346,8 +8432,15 @@ type sendItem struct {
 	// acknowledgement progress is reported per route from it (M6 watchdog).
 	carrierRoute Route
 	// timeoutDeferCount is how many RTOs of this item were deferred while the
-	// cumulative ack kept advancing (§13.5).
-	timeoutDeferCount int
+	// cumulative ack kept advancing (§13.5), and timeoutDeferAckTime is the
+	// cumulative ack the last deferral saw: the next one requires the ack to
+	// have advanced since, so a hole nothing can acknowledge is deferred at
+	// most once (FLIGHTGATEFIX §16).
+	timeoutDeferCount   int
+	timeoutDeferAckTime time.Time
+	// gapRecoveryDeferred marks a recovery the grace postponed, so its
+	// outcome can be counted as reordering or as loss.
+	gapRecoveryDeferred bool
 
 	// messageType protocol.MessageType
 }

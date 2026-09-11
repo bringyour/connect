@@ -198,7 +198,37 @@ func (self *RttWindow) ScaledRttSampled() (time.Duration, bool) {
 	return self.scaledRtt(time.Now()), sampled
 }
 
+// ScaledRttWithFloorSampled answers a different question from ScaledRtt:
+// not "how long should a retransmit wait", which is paced by
+// rttMinScaledRtt, but "could this path still deliver", which the pacing
+// floor has no business lengthening. A lane whose round trip is twenty
+// milliseconds can answer in tens, and holding an ordered stream for the
+// pacing floor instead turns every real loss into a stall (FLIGHTGATEFIX
+// §16). The returned flag reports whether the window holds any samples; an
+// unsampled window still answers with the conservative cold floor.
+func (self *RttWindow) ScaledRttWithFloorSampled(
+	floor time.Duration,
+) (time.Duration, bool) {
+	self.stateLock.Lock()
+	sampled := self.windowCount != 0
+	self.stateLock.Unlock()
+	if !sampled {
+		return self.scaledRtt(time.Now()), false
+	}
+	return self.scaledRttWithFloor(time.Now(), floor), true
+}
+
 func (self *RttWindow) scaledRtt(sendTime time.Time) time.Duration {
+	return self.scaledRttWithFloor(sendTime, 0)
+}
+
+// scaledRttWithFloor computes the scaled round trip. A positive
+// sampledFloor replaces rttMinScaledRtt for a window that holds samples;
+// an empty window always uses the cold floor.
+func (self *RttWindow) scaledRttWithFloor(
+	sendTime time.Time,
+	sampledFloor time.Duration,
+) time.Duration {
 	self.stateLock.Lock()
 	self.coalesceWithLock(sendTime)
 
@@ -207,6 +237,9 @@ func (self *RttWindow) scaledRtt(sendTime time.Time) time.Duration {
 		useRtt = self.netRtt / time.Duration(self.windowCount)
 	}
 	floor := self.rttMinScaledRtt
+	if 0 < sampledFloor {
+		floor = sampledFloor
+	}
 	if useRtt == 0 {
 		// no samples: no evidence to be aggressive on
 		floor = self.minScaledRtt

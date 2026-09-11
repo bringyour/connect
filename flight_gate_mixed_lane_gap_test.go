@@ -14,6 +14,7 @@ package connect
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +46,12 @@ type mixedLaneOptions struct {
 	blockFastReplies   bool
 	directLaneDisabled bool
 	deferTimeoutResend bool
+	// fastDropFraction drops that share of the direct lane's frames, from a
+	// seeded source so a run repeats. The relay never drops.
+	fastDropFraction float64
+	// graceDisabled removes the mixed-lane reordering grace, the shape the
+	// merged tree had.
+	graceDisabled bool
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -83,6 +90,7 @@ func newMixedLaneHarnessWithOptions(
 		settings.ReceiveBufferSettings.IdleTimeout = 120 * time.Second
 		settings.SendBufferSettings.DeferTimeoutResendWhileCumulativeProgress =
 			options.deferTimeoutResend
+		settings.SendBufferSettings.MixedLaneAckReorderGrace = !options.graceDisabled
 		return settings
 	}
 	harness := &mixedLaneGapHarness{
@@ -161,8 +169,25 @@ func newMixedLaneHarnessWithOptions(
 	// One pipeline per physical lane: a latency, and optionally a bandwidth
 	// of one frame per serialization interval. Order within a lane is kept
 	// and nothing is dropped.
-	forward := func(from Route, to Route, latency time.Duration, serialization time.Duration) {
+	dropRandom := rand.New(rand.NewSource(20260911))
+	var dropLock sync.Mutex
+	forward := func(
+		from Route,
+		to Route,
+		latency time.Duration,
+		serialization time.Duration,
+		dropFraction float64,
+	) {
 		deliver := func(b []byte) {
+			if 0 < dropFraction {
+				dropLock.Lock()
+				dropIt := dropRandom.Float64() < dropFraction
+				dropLock.Unlock()
+				if dropIt {
+					MessagePoolReturn(b)
+					return
+				}
+			}
 			timer := time.NewTimer(latency)
 			defer timer.Stop()
 			select {
@@ -215,10 +240,10 @@ func newMixedLaneHarnessWithOptions(
 			}
 		}()
 	}
-	forward(senderOutFast, receiverInFast, fastDelay, options.fastSerialization)
-	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization)
-	forward(receiverOutFast, senderIn, fastDelay, options.replySerialization)
-	forward(receiverOutSlow, senderIn, slowDelay, 0)
+	forward(senderOutFast, receiverInFast, fastDelay, options.fastSerialization, options.fastDropFraction)
+	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization, 0)
+	forward(receiverOutFast, senderIn, fastDelay, options.replySerialization, options.fastDropFraction)
+	forward(receiverOutSlow, senderIn, slowDelay, 0, 0)
 
 	t.Cleanup(func() {
 		cancel()
@@ -473,5 +498,47 @@ func TestDefaultSendBufferSettingsDeferTimeoutResendWhileProgressing(t *testing.
 	}
 	if settings.TimeoutResendDeferLimit <= 0 {
 		t.Fatalf("the defer limit is %d, so a stalled lane would never resend", settings.TimeoutResendDeferLimit)
+	}
+}
+
+// FLIGHTGATEFIX §16. The decisive campaign measured our tree behind the
+// merged base on every lossy cell while ahead on every clean one, which is
+// the signature of insurance that costs more than it saves once the packets
+// are really gone. The property that must hold: on a direct lane that is
+// dropping, the grace may not make the stream slower than having no grace
+// at all.
+func TestMixedLaneLossyDirectLaneGoodputIsNotWorseWithTheGrace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("lossy mixed-lane goodput")
+	}
+	const messageCount = 400
+	for _, dropFraction := range []float64{0.01, 0.03} {
+		measure := func(graceDisabled bool) (time.Duration, ClientSendRecoveryStatsSnapshot) {
+			harness := newMixedLaneHarnessWithOptions(t, mixedLaneOptions{
+				fastLatency:        2 * time.Millisecond,
+				slowLatency:        40 * time.Millisecond,
+				fastDropFraction:   dropFraction,
+				graceDisabled:      graceDisabled,
+				deferTimeoutResend: true,
+			})
+			start := time.Now()
+			stats := harness.run(t, messageCount)
+			return time.Since(start), stats
+		}
+		withoutGrace, withoutStats := measure(true)
+		withGrace, withStats := measure(false)
+		t.Logf(
+			"drop %.0f%%: without the grace %s (gap=%d rto=%d), with it %s (gap=%d rto=%d)",
+			100*dropFraction,
+			withoutGrace.Truncate(time.Millisecond), withoutStats.SelectiveGapWriteCount, withoutStats.TimeoutResendWriteCount,
+			withGrace.Truncate(time.Millisecond), withStats.SelectiveGapWriteCount, withStats.TimeoutResendWriteCount,
+		)
+		// the grace may cost a little scheduling noise, not a regime change
+		if tolerance := withoutGrace + withoutGrace/4; tolerance < withGrace {
+			t.Fatalf(
+				"at %.0f%% loss the grace made the stream slower: %s against %s without it, over %d messages",
+				100*dropFraction, withGrace, withoutGrace, messageCount,
+			)
+		}
 	}
 }
