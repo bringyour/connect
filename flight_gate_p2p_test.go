@@ -501,3 +501,24 @@ func TestP2pSizeAwareAdmissionBoundsFastPathFrames(t *testing.T) {
 		t.Fatal("at the floor a one-fragment frame was pushed off the fast path")
 	}
 }
+
+// MEMSTEADY gate for §13.3: a progress report costs no more allocations than
+// the warmup marker the fast path already sends, so the reporter adds
+// nothing per interval beyond the RTP writer's own work.
+func TestFastPathProgressReportAllocatesLikeWarmup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("vnet fast path allocation check")
+	}
+	pair := newFlightGateVnetPair(t, nil, nil)
+	fastPath := pair.active.fastPath.Load()
+	warmup := testing.AllocsPerRun(200, func() {
+		_ = fastPath.writeWarmup()
+	})
+	report := testing.AllocsPerRun(200, func() {
+		_ = fastPath.writeProgressReport(42)
+	})
+	t.Logf("allocations per packet: warmup=%.1f report=%.1f", warmup, report)
+	if warmup < report {
+		t.Fatalf("a progress report allocates %.1f per packet, the warmup marker %.1f", report, warmup)
+	}
+}

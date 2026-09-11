@@ -797,3 +797,79 @@ func TestFlightGateCountersAreAllocationFree(t *testing.T) {
 		t.Fatalf("observeItemAck allocates %.1f per call", allocs)
 	}
 }
+
+// MEMSTEADY gate for §13: the paths the items touch per packet or per ack
+// allocate nothing. The reply decision (13.2), the flight forget (13.1),
+// the reliable-only decision with the lossy cap (13.6), and the race-commit
+// handoff (13.4) are measured here; the fast-path report (13.3) is measured
+// against the warmup marker in flight_gate_p2p_test.go.
+func TestFlightGateItemsAreAllocationFree(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	selector := NewMultiRouteSelector(ctx, "alloc-reply", nil, TransferPath{}, true)
+	defer selector.Close()
+	h1Route := make(Route, 16)
+	p2pRoute := make(Route, 16)
+	selector.updateTransportWithProperties(NewSendGatewayTransportWithType(TransportTypeH1), []Route{h1Route}, TransferCarrierProperties{})
+	selector.updateTransportWithProperties(NewSendGatewayTransportWithType(TransportTypeP2p), []Route{p2pRoute}, TransferCarrierProperties{Unreliable: true})
+	selector.observeRouteAckProgress(p2pRoute)
+	frame := []byte{1}
+	drain := func() {
+		for _, route := range []Route{h1Route, p2pRoute} {
+			for len(route) > 0 {
+				<-route
+			}
+		}
+	}
+	if allocs := testing.AllocsPerRun(200, func() {
+		drain()
+		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second)
+	}); allocs != 0 {
+		t.Fatalf("reply route decision allocates %.1f per reply", allocs)
+	}
+	fillFlightGateRoute(p2pRoute)
+	if allocs := testing.AllocsPerRun(200, func() {
+		for len(h1Route) > 0 {
+			<-h1Route
+		}
+		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second)
+	}); allocs != 0 {
+		t.Fatalf("reply fall-through allocates %.1f per reply", allocs)
+	}
+	drain()
+
+	settings := DefaultSendBufferSettings()
+	controller := newSendFlightController(settings)
+	policy := transferFlightPolicySnapshot{generation: 1, limited: true, reliableRouteAvailable: true, lossyMaxByteCount: 2376}
+	controller.applyPolicy(policy)
+	key := sendSchedulingKey{valid: true}
+	if allocs := testing.AllocsPerRun(1000, func() {
+		controller.sendForKey(1000, key)
+		controller.forget(1000, key, false)
+	}); allocs != 0 {
+		t.Fatalf("forget allocates %.1f per call", allocs)
+	}
+	sequence := &SendSequence{client: &Client{}, flightController: controller, sendBufferSettings: settings}
+	if allocs := testing.AllocsPerRun(1000, func() {
+		sequence.reliableOnlyWrite(policy, 4000)
+	}); allocs != 0 {
+		t.Fatalf("reliable-only decision allocates %.1f per write", allocs)
+	}
+
+	// the handoff alone, measured on a bare multi-client whose queue no
+	// worker drains: the caller's side of the race-commit path allocates
+	// nothing (the worker's own delivery closure is not on this goroutine)
+	bare := &RemoteUserNatMultiClient{
+		ctx:                 ctx,
+		settings:            DefaultMultiClientSettings(),
+		removalReceiveQueue: make(chan receivePacket, 256),
+	}
+	template, _ := tcp4Packet(1, 0, 0, 0)
+	burst := []*receivePacket{{ProvideMode: protocol.ProvideMode_Network, Packet: template}}
+	if allocs := testing.AllocsPerRun(200, func() {
+		bare.deliverRaceCommitPackets(nil, nil, burst)
+		<-bare.removalReceiveQueue
+	}); allocs != 0 {
+		t.Fatalf("race-commit handoff allocates %.1f per burst", allocs)
+	}
+}

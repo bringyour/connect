@@ -511,7 +511,15 @@ measurement recorded before the next starts. "Low-bar matrix" means the
 PERFVAR static campaign on `cell-edge-5m-down-1m-up`,
 `cell-edge-1m-down-250k-up` and `cell-edge-256k-down-64k-up` over
 `exchange-auto`, `exchange-h3` and `p2p-fast` with the mobile surrogate,
-INDISTINGUISHABLE or better against the merged tree as control.
+INDISTINGUISHABLE or better against the merged tree as control. "MEMSTEADY"
+means the connect/MEMSTEADY.md 24 MiB mobile audit on the Android session
+block: goRuntimeBytes p50 and p95 at or below 24 MiB over five quiet
+connected minutes after a burst, active traffic at or below 24 MiB, no
+sample above 28 MiB, and no regression against the merged tree; stream C
+runs it per landed item and stream B records the PERFVAR memory guardrails.
+Every item keeps allocations off the per-packet and per-ack paths, and
+TestFlightGateItemsAreAllocationFree plus
+TestFastPathProgressReportAllocatesLikeWarmup hold that line.
 
 ### 13.1 Finding 1: forget on RTO instead of acknowledge
 
@@ -540,7 +548,7 @@ LOWBAR's "loss-responsive, receiver-evidenced growth" contract intact.
 
 Low-bar risk: none; without a reliable route the path is unchanged.
 Guard: the unit test plus `TestSendSequenceUnreliableResendTimeoutReleasesFlightWhenReliableRouteAvailable`
-from the PR. Mixed route and device rig: `UnreliableFlightMaximumLimitByteCount`
+from the PR. MEMSTEADY: unchanged, no new state per item. Mixed route and device rig: `UnreliableFlightMaximumLimitByteCount`
 must not climb during a p2p dead-lane phase.
 
 Landed: b712a84.
@@ -582,6 +590,8 @@ retires it. Answers design questions 2 and part of 1.
 Low-bar risk: none for H3, since its affinity is unchanged; on `p2p-fast`
 low-bar cells the ack may move to the relay when the lane is stale, which
 is the intended behaviour. Guard: low-bar matrix, all three profiles.
+MEMSTEADY: unchanged; the two reply orders are built once per route
+snapshot and the per-reply decision allocates nothing.
 Mixed route: `AckRouteWriteTimeoutByTransport[p2p]` 0 and h1-received ack
 latency under one RTT in the loss profiles. Device rig: no
 `AckRouteWriteTimeoutByTransport[p2p]` during a live p2p phase.
@@ -635,8 +645,11 @@ Answers design question 4.
 
 Low-bar risk: an extra 11-byte packet every 50 ms while receiving, and
 false retirement under an RTT above 10 s, which the low-bar profiles do
-not reach. Guard: low-bar matrix on `p2p-fast`; MEMSTEADY unchanged
-(no buffers). Mixed route: the blackhole schedule must show retirement
+not reach. Guard: low-bar matrix on `p2p-fast`. MEMSTEADY: the reporter
+and watchdog are two goroutines per fast path with one reused RTP packet
+and an 11-byte stack payload; a report costs the same allocations as the
+warmup marker (18, all inside the RTP writer). The Android block must show
+no goRuntimeBytes step when a p2p lane comes up. Mixed route: the blackhole schedule must show retirement
 within 10 s and recovery on the relay with zero dead windows. Device rig:
 p2p route withdrawal logged when the client walks out of Wi-Fi with the
 lane up, and no retirement during a healthy 3-minute download.
@@ -674,7 +687,9 @@ same ownership rules. Answers the R1 half of design question 4 from §12.
 
 Low-bar risk: none on devices (the OS tun never loops back). Guard:
 `tun_congestion_test.go`, the PR's `tun_outbound_wait_test.go`, and a
-server proxy soak with `OutboundDropCount` 0. Mixed route: unchanged
+server proxy soak with `OutboundDropCount` 0. MEMSTEADY: unchanged; the
+burst reuses the bounded removal receive queue (256 entries) and its
+pooled bytes are returned by the worker. Mixed route: unchanged
 throughput with the socks-shaped client. Device rig: not applicable.
 
 Landed: cbbfeea. Reordering is bounded, not eliminated: only the race burst crosses the worker, later packets of the flow may overtake it by at most the burst's length; documented on deliverRaceCommitPackets. The drop count is exposed as Tun.LinkStats rather than in the client receive stats, which have no tun.
@@ -698,7 +713,8 @@ the lane is alive. Pending: the reporter's F12 round 10 was invalid, so
 this lands only with its own PERFVAR A/B (relay queue-inflation schedule,
 `TimeoutResendWithRecentCumulativeProgress` as the primary) and the low-bar
 matrix, since a deferred resend on `exchange-h1` cells is a real latency
-cost.
+cost. MEMSTEADY: unchanged; one counter per item, no queue growth (a
+deferred item stays in the resend queue it was already in).
 
 Landed: d74302b, default off; the defer is anchored on the item's send time (cumulative progress within one scaled RTT before it), and test 7 runs with the setting on over a 100/250/400/700 ms queue profile that still fires two spurious timeouts with it off.
 
@@ -720,7 +736,8 @@ the flight controller sees to what packet loss actually is, without
 fragment retransmission, which would duplicate Transfer's recovery.
 Pending: the benchmark sweep decides the defaults, then the mixed route
 with the 1 % and 3 % profiles must show a higher unreliable window
-(`UnreliableFlightMaximumLimitByteCount`) at equal delivery.
+(`UnreliableFlightMaximumLimitByteCount`) at equal delivery. MEMSTEADY:
+unchanged; the caps are two integers on the carrier properties.
 
 Landed: 051654c, default off. Sweep (BenchmarkStreamFastWebRtcRouteLossSweep, 300 messages per cell, seeded vnet loss), message loss per 10k and reassembler evictions per 10k:
 
@@ -745,7 +762,9 @@ Finding 5 (ICE socket buffers). `WebRtcSettings.UdpSocketBufferByteCount`
 keeps 4 MiB where the platform is a server or desktop and becomes 512 KiB
 on iOS and Android through the SDK's platform settings, with the request
 clamped by the kernel either way. Gate: MEMSTEADY on the Android session
-block with the p2p device rig, footprint INDISTINGUISHABLE; the mixed
+block with the p2p device rig: the buffers are kernel memory per ICE
+socket, so goRuntimeBytes must be unchanged and whole-app PSS must not
+rise by more than 512 KiB times the gathered socket count; the mixed
 route's provider-side kernel receive errors must stay 0 at 512 KiB, which
 decides whether the mobile value can be lower still.
 
