@@ -700,6 +700,8 @@ this lands only with its own PERFVAR A/B (relay queue-inflation schedule,
 matrix, since a deferred resend on `exchange-h1` cells is a real latency
 cost.
 
+Landed: d74302b, default off; the defer is anchored on the item's send time (cumulative progress within one scaled RTT before it), and test 7 runs with the setting on over a 100/250/400/700 ms queue profile that still fires two spurious timeouts with it off.
+
 ### 13.6 M5: size-aware unreliable admission (S4), pending
 
 Red test: none; `TestFastPathMessageLossFollowsFragmentCount` is the
