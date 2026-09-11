@@ -338,3 +338,27 @@ func (self *sendFlightController) atFloor() bool {
 	}
 	return 0 < self.messageLimit && self.messageLimit <= self.activeMinimumMessageCount
 }
+
+// forget removes one tracked message from the flight without treating it as
+// delivered: the byte and message counts drop, the flow reserve it may hold
+// is released, and no limit grows. A timeout is the opposite of delivery
+// evidence, so it must not share acknowledge's growth (FLIGHTGATEFIX §13.1).
+func (self *sendFlightController) forget(
+	byteCount ByteCount,
+	key sendSchedulingKey,
+	reserved bool,
+) {
+	self.byteCount -= min(byteCount, self.byteCount)
+	if 0 < self.messageCount {
+		self.messageCount -= 1
+		if key.valid && 0 < self.messageCountByKey[key] {
+			self.messageCountByKey[key] -= 1
+			if self.messageCountByKey[key] == 0 {
+				delete(self.messageCountByKey, key)
+			}
+		}
+	}
+	if reserved {
+		self.flowReserveInUse = false
+	}
+}

@@ -7625,8 +7625,26 @@ func (self *SendSequence) observeUnreliableResendTimeout(
 		self.client.observeUnreliableFlight(self.flightController)
 		return false
 	}
-	self.releaseUnreliableFlight(item)
+	self.forgetUnreliableFlight(item)
 	return true
+}
+
+// forgetUnreliableFlight drops a timed-out item from the unreliable flight
+// so the reliable lane can carry its resend; unlike releaseUnreliableFlight
+// it credits no delivery, so the window that reduceForLoss just halved
+// does not grow back on the same timeout.
+func (self *SendSequence) forgetUnreliableFlight(item *sendItem) {
+	if !item.unreliableFlightTracked {
+		return
+	}
+	item.unreliableFlightTracked = false
+	self.flightController.forget(
+		item.MessageByteCount(),
+		item.schedulingKey,
+		item.unreliableFlowReserve,
+	)
+	item.unreliableFlowReserve = false
+	self.client.observeUnreliableFlight(self.flightController)
 }
 
 func (self *SendSequence) receiveAck(
