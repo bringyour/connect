@@ -1105,3 +1105,99 @@ regime the rig measured, so this is a guard against the property inverting
 again, not proof that the cells recover. Stream B's arm is the
 confirmation, and the bar is the one the campaign set: strictly better in
 the lossy cells without giving back the clean-cell win.
+
+## 17. Device memory attribution (follow-up, not in this program)
+
+Stream C's heap profiles across 17 MEMSTEADY blocks, recorded here because
+the sizing tests live here and the finding is a product risk rather than a
+program task. The 24 MiB ceiling is breached on every build measured,
+including the pre-merge shipping code, which is the worst of the three:
+worst quiet samples 28.67 and 28.45 MiB with 165 and 78 samples above 28.
+So the overshoot is a pre-existing product defect, not something this
+program introduced.
+
+The class tree of `goRuntimeBytes`:
+
+| Class | Share |
+|---|---|
+| live heap | about a third |
+| heap spans unused | the largest remainder |
+| heap free | with the spans, most of the rest |
+| goroutine stacks | scales with flows, sequences and carriers |
+| runtime metadata | fixed and small |
+| profiling buckets | fixed and small |
+
+Two consequences. Heap slack and GC metadata scale with the live heap
+through the pacer, so every live byte costs about three at the runtime,
+and across ten blocks the worst sample crosses 24 MiB once the live heap
+passes 10.5 MiB. Live heap tracks outstanding pooled packet ownership,
+which reached 2,098 objects and 3.98 MiB in the worst block.
+
+The decisive line: the mobile idle reclaimer never ran in any quiet window
+in any block, so burst ownership is never returned during the five minutes
+the acceptance rule measures. Its gate is an outstanding-owner count of
+sixteen (`mobileIdleMemoryMaxOutstandingPoolCount`), while the trim it
+guards only ever drops free-list buffers and never touches buffers a
+consumer holds. A connected tunnel at idle legitimately holds hundreds,
+so the gate can never be satisfied and the reclaimer defers forever. That
+is the root cause to fix in the follow-up; no code changed here.
+
+Memory remains a not-worse-than-merged check on our arms, not a gate.
+
+## 18. One lane-loss signal, and the contract it must satisfy
+
+The interim numbers for c64442c said the grace and the escape had not
+fixed the lossy cells. The counters said why: against merged, our tree put
+two to seven times more traffic and acknowledgements on the lossy direct
+lane, wrote five to eighteen times more gap recoveries, deferred almost
+every timeout, and reduced the flight half as often. Merged reaches the
+right lossy behaviour by accident, reducing the window on every gap and
+keeping every acknowledgement off the direct lane, and pays for it in the
+clean cells.
+
+The contract, in `flight_gate_lane_contract_test.go`, using only the API
+that predates this program so it runs against the merged base too. One
+classification of a lane drives three behaviours, and each is stated in
+both regimes:
+
+| Contract | merged 89e1633 | ours before | ours after |
+|---|---|---|---|
+| classification tips on one proven loss | pass | fail | pass |
+| reordering is not classified as loss | fail | pass | pass |
+| window reduces on a proven gap | pass | pass | pass |
+| window unmoved by reordering | fail | pass | pass |
+| replies keep a healthy lane | fail | pass | pass |
+| replies leave a losing lane | pass | fail | pass |
+| hybrid keeps its own lane's affinity | fail | pass | pass |
+
+Merged holds every losing row and fails every clean one; this tree before
+the signal was the mirror image. The contract is to hold all seven, which
+is what strictly better means here.
+
+The signal. The sender latches a lane as losing on the first proven loss,
+a recovery the lane forced us to write or a timeout of an item it carried,
+and the latch decays over `unreliableLaneLossHold` clean acknowledgements.
+While it is set: gaps recover at once and reduce the flight, including a
+deferred recovery that had to be written, and timeouts are not deferred.
+The receiver has its own earlier evidence, a selective acknowledgement,
+which exists precisely because something is missing; while it is emitting
+one its replies take the reliable carrier. A carrier whose own lane shows
+no loss keeps its affinity, so hybrid H3 is untouched by another lane's
+trouble.
+
+Instrumentation. The per-transport acknowledgement counters recorded the
+carrier of the Pack being answered, not the carrier the acknowledgement
+left on, so the h1 ack-priority companion never appeared and every cell
+read `ack_writes_h1` as zero. They now record the carrier written.
+
+How close the in-process instrument comes. In the campaign's shape, a
+direct lane at 20 ms losing one or three per cent, a relay at 200 ms, a
+bounded reply route under uplink contention and four concurrent producers,
+it reaches about 2 Mb/s over six or seven one-second windows with the
+direct lane carrying roughly half the frames and losing twelve to sixty of
+them. The harness measures nine to eighteen Mb/s with gap resends in the
+thousands. So the instrument reproduces the shape and the direction but
+not the magnitude: it cannot yet separate two arms the way a campaign cell
+does, and above roughly three times this volume its synthetic forwarders
+and bounded reply route wedge on each other. It is a pre-flight check, not
+a substitute for stream B's arm.
