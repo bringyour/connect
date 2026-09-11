@@ -2890,9 +2890,17 @@ func (self *MultiRouteSelector) writeDetailedReplyWithCarrierPreference(
 	timeout time.Duration,
 	preferredTransportType TransportType,
 	staleAfter time.Duration,
+	laneLosing bool,
 ) (bool, transferWriteDisposition, error) {
 	policy := routeWriteReplyAffineFirst
-	if snapshot := self.activeRoutesSnapshot.Load(); snapshot != nil {
+	if laneLosing {
+		// The lane this Pack arrived on is dropping, so its acknowledgements
+		// are dropping too and every lost cumulative ack costs the sender a
+		// window. Reply on the reliable carrier until the lane recovers
+		// (FLIGHTGATEFIX §18). A carrier whose own lane shows no loss keeps
+		// its affinity, so hybrid H3 is unaffected by another lane's trouble.
+		policy = routeWriteReplyReliableFirst
+	} else if snapshot := self.activeRoutesSnapshot.Load(); snapshot != nil {
 		affine := snapshot.affinityWriteRoutesByTransport[preferredTransportType]
 		if 0 < len(affine) && len(affine) < len(snapshot.replyAffineFirstByTransport[preferredTransportType]) {
 			// every affine route is unreliable and a reliable lane exists

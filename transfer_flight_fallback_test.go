@@ -231,14 +231,14 @@ func TestMultiRouteSelectorReplyAvoidsUnreliableCarrier(t *testing.T) {
 
 	// a healthy affine lane with room keeps the reply
 	for i := 0; i < 2; i++ {
-		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter)
+		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter, false)
 		if err != nil || !success || disposition.transportType != TransportTypeP2p {
 			t.Fatalf("reply %d with healthy p2p affinity: success=%t disposition=%+v err=%v; want p2p", i, success, disposition, err)
 		}
 	}
 	// the affine lane is full: the reply leaves on the reliable lane at once
 	for i := 2; i < 6; i++ {
-		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter)
+		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter, false)
 		if err != nil || !success || disposition.transportType != TransportTypeH1 {
 			t.Fatalf("reply %d with full p2p affinity: success=%t disposition=%+v err=%v; want H1", i, success, disposition, err)
 		}
@@ -252,19 +252,19 @@ func TestMultiRouteSelectorReplyAvoidsUnreliableCarrier(t *testing.T) {
 	selector.observeRouteAckProgress(p2pRoute)
 	clock, _ := selector.routeAckProgress.Load(p2pRoute)
 	clock.(*atomic.Int64).Store(time.Now().Add(-2 * staleAfter).UnixNano())
-	success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{6}, time.Second, TransportTypeP2p, staleAfter)
+	success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{6}, time.Second, TransportTypeP2p, staleAfter, false)
 	if err != nil || !success || disposition.transportType != TransportTypeH1 {
 		t.Fatalf("reply with stale p2p affinity: success=%t disposition=%+v err=%v; want H1", success, disposition, err)
 	}
 	// a zero stale bound disables the clock rule
-	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{7}, time.Second, TransportTypeP2p, 0)
+	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{7}, time.Second, TransportTypeP2p, 0, false)
 	if err != nil || !success || disposition.transportType != TransportTypeP2p {
 		t.Fatalf("reply with the clock rule off: success=%t disposition=%+v err=%v; want p2p", success, disposition, err)
 	}
 
 	// with only the unreliable carrier the reply keeps using it
 	selector.updateTransport(h1Transport, nil)
-	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{9}, time.Second, TransportTypeP2p, staleAfter)
+	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{9}, time.Second, TransportTypeP2p, staleAfter, false)
 	if err != nil || !success || disposition.transportType != TransportTypeP2p {
 		t.Fatalf("p2p-only reply: success=%t disposition=%+v err=%v", success, disposition, err)
 	}
@@ -550,7 +550,7 @@ func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
 func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
 	sendTime := time.Unix(1_700_000_000, 0)
 	currentTime := sendTime.Add(10 * time.Millisecond)
-	newLosing := func(cancelled int, fired int) (*SendSequence, []*sendItem) {
+	newSequence := func() (*SendSequence, []*sendItem) {
 		sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
 		sequence.client = &Client{}
 		sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
@@ -561,8 +561,6 @@ func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
 		})
 		sequence.rttWindow.CloseSendTime(uint64(time.Now().Add(-300 * time.Millisecond).UnixMilli()))
 		sequence.unreliableRttWindow.CloseSendTime(uint64(time.Now().Add(-20 * time.Millisecond).UnixMilli()))
-		sequence.graceCancelledCount = cancelled
-		sequence.graceFiredCount = fired
 		items[0].unreliableCarrierObserved = true
 		items[0].unreliableFlightTracked = true
 		for _, index := range []int{1, 2, 3, 5, 6, 7} {
@@ -570,23 +568,24 @@ func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
 		}
 		return sequence, items
 	}
-	// reordering: the acknowledgements kept arriving, so the grace holds
-	reordering, reorderingItems := newLosing(4, 1)
+	// nothing proven lost: the lane is reordering and the grace holds
+	reordering, reorderingItems := newSequence()
 	if reordering.unreliableLaneLosing() {
-		t.Fatal("a lane whose deferrals were mostly cancelled is not losing")
+		t.Fatal("a lane with no proven loss is classified losing")
 	}
 	reordering.scheduleSelectiveAckRecovery(currentTime)
 	if !reorderingItems[0].resendTime.After(currentTime) {
-		t.Fatal("the grace was withdrawn from a lane that is reordering, not losing")
+		t.Fatal("the grace was withdrawn from a lane with no proven loss")
 	}
 	if !reorderingItems[0].gapRecoveryDeferred {
 		t.Fatal("a deferred recovery was not marked, so its outcome cannot be counted")
 	}
 
-	// loss: the deferrals had to be written, so the next hole waits for none
-	losing, losingItems := newLosing(1, 4)
+	// one proven loss latches the lane, and the next hole waits for nothing
+	losing, losingItems := newSequence()
+	losing.noteUnreliableLaneLoss()
 	if !losing.unreliableLaneLosing() {
-		t.Fatal("a lane whose deferrals mostly had to be written is not reported as losing")
+		t.Fatal("one proven loss did not classify the lane as losing")
 	}
 	losing.scheduleSelectiveAckRecovery(currentTime)
 	if losingItems[0].resendTime.After(currentTime) {
@@ -599,11 +598,23 @@ func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
 		t.Fatal("an immediate recovery was marked deferred")
 	}
 
-	// and the evidence stays recent rather than accumulating for the run
-	recent, _ := newLosing(graceEvidenceCap, graceEvidenceCap)
-	recent.observeGraceOutcome(true)
-	if graceEvidenceCap < recent.graceCancelledCount+recent.graceFiredCount {
-		t.Fatalf("the grace evidence did not decay: %d cancelled, %d fired",
-			recent.graceCancelledCount, recent.graceFiredCount)
+	// hysteresis: the latch clears after a stated run of clean
+	// acknowledgements, so the signal neither flaps nor sticks
+	recovering, recoveringItems := newSequence()
+	recovering.noteUnreliableLaneLoss()
+	for range unreliableLaneLossHold - 1 {
+		recovering.noteUnreliableLaneProgress()
+	}
+	if !recovering.unreliableLaneLosing() {
+		t.Fatalf("the latch cleared in under %d clean acknowledgements", unreliableLaneLossHold)
+	}
+	recovering.noteUnreliableLaneProgress()
+	if recovering.unreliableLaneLosing() {
+		t.Fatalf("the latch did not clear after %d clean acknowledgements, so the signal sticks",
+			unreliableLaneLossHold)
+	}
+	recovering.scheduleSelectiveAckRecovery(currentTime)
+	if !recoveringItems[0].resendTime.After(currentTime) {
+		t.Fatal("a lane that stopped losing did not get the grace back")
 	}
 }

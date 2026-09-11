@@ -823,7 +823,7 @@ func TestFlightGateItemsAreAllocationFree(t *testing.T) {
 	}
 	if allocs := testing.AllocsPerRun(200, func() {
 		drain()
-		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second)
+		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second, false)
 	}); allocs != 0 {
 		t.Fatalf("reply route decision allocates %.1f per reply", allocs)
 	}
@@ -832,7 +832,7 @@ func TestFlightGateItemsAreAllocationFree(t *testing.T) {
 		for len(h1Route) > 0 {
 			<-h1Route
 		}
-		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second)
+		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second, false)
 	}); allocs != 0 {
 		t.Fatalf("reply fall-through allocates %.1f per reply", allocs)
 	}
