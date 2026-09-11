@@ -641,6 +641,8 @@ within 10 s and recovery on the relay with zero dead windows. Device rig:
 p2p route withdrawal logged when the client walks out of Wi-Fi with the
 lane up, and no retirement during a healthy 3-minute download.
 
+Landed: f51ebca, with TestFastPathProgressReportIsHarmlessToOldReceiver for the older-peer case.
+
 ### 13.4 M7: asynchronous race-commit delivery (R1), 209 as a guard
 
 Red test today: none (test 11 is green under 209's bound). Tests: 11
