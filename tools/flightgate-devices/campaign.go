@@ -46,6 +46,7 @@ type runMeta struct {
 	ProviderProfile string   `json:"provider_profile"`
 	StartMillis     int64    `json:"start_millis"`
 	DirectMode      string   `json:"direct_mode"`
+	Build           string   `json:"build"`
 	LoadBytes       int64    `json:"load_bytes"`
 	TunRxBytes      int64    `json:"tun_rx_bytes"`
 	Valid           bool     `json:"valid"`
@@ -117,6 +118,7 @@ func runCampaign(args []string) error {
 	url := fs.String("url", defaultLoadUrl, "download URL")
 	tag := fs.String("tag", "", "run tag")
 	directMode := fs.String("direct-mode", "stock", "recorded in meta: stock|relay-only|direct-forced")
+	buildLabel := fs.String("build", "", "recorded in meta: the build under test")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -150,6 +152,7 @@ func runCampaign(args []string) error {
 		ProviderProfile: radio(*provider),
 		StartMillis:     time.Now().UnixMilli(),
 		DirectMode:      *directMode,
+		Build:           *buildLabel,
 		Notes:           []string{},
 	}
 
@@ -510,6 +513,7 @@ type runSummary struct {
 	ClientFastRecv        float64 `json:"client_p2p_fast_recv_total"`
 	ClientFastRecvDrops   float64 `json:"client_p2p_fast_recv_drop_total"`
 	DirectMode            string  `json:"direct_mode"`
+	Build                 string  `json:"build"`
 	ProviderPairTypes     string  `json:"provider_selected_pair"`
 	ClientPairTypes       string  `json:"client_selected_pair"`
 }
@@ -559,7 +563,7 @@ func report(args []string) error {
 
 	summary := runSummary{Tag: meta.Tag, Windows: len(records), P2pFirstWindow: -1,
 		ClientDiagSamples: len(clientSamples), ProviderDiagSamples: len(providerSamples),
-		DirectMode: meta.DirectMode, Valid: meta.Valid}
+		DirectMode: meta.DirectMode, Build: meta.Build, Valid: meta.Valid}
 	if n := len(clientSamples); n > 0 {
 		if p2p, ok := clientSamples[n-1].Payload["p2p"].(map[string]any); ok {
 			summary.ClientPairTypes, _ = p2p["SelectedCandidatePair"].(string)
@@ -655,8 +659,27 @@ func runSeries(args []string) error {
 	settleSeconds := fs.Int("settle-seconds", 25, "seconds after connect before measuring")
 	tag := fs.String("tag", "", "series tag")
 	interleaveRelay := fs.Bool("interleave-relay", false, "alternate relay-only (direct mode forced off) and stock runs; --runs counts each kind")
+	alternateApk := fs.String("alternate-apk", "", "label=apk,label=apk: alternate two builds run by run, reinstalling in place before each; --runs counts each build")
+	buildLabel := fs.String("build", "", "build label recorded on every run when not alternating")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	type arm struct{ label, apk string }
+	arms := []arm{}
+	if *alternateApk != "" {
+		if *interleaveRelay {
+			return errors.New("--alternate-apk and --interleave-relay do not combine")
+		}
+		for _, spec := range strings.Split(*alternateApk, ",") {
+			label, apk, ok := strings.Cut(spec, "=")
+			if !ok {
+				return fmt.Errorf("bad --alternate-apk entry %q", spec)
+			}
+			arms = append(arms, arm{label, apk})
+		}
+		if len(arms) != 2 {
+			return errors.New("--alternate-apk needs exactly two builds")
+		}
 	}
 	if _, err := role(*client); err != nil {
 		return fmt.Errorf("client: %w", err)
@@ -671,12 +694,32 @@ func runSeries(args []string) error {
 		return err
 	}
 	total := *runs
-	if *interleaveRelay {
+	if *interleaveRelay || len(arms) == 2 {
 		total = 2 * *runs
 	}
+	installed := ""
 	for i := 0; i < total; i++ {
 		runTag := fmt.Sprintf("%s-%02d", *tag, i)
 		directMode := "stock"
+		build := *buildLabel
+		if len(arms) == 2 {
+			current := arms[i%2]
+			build = current.label
+			runTag += "-" + current.label
+			if installed != current.apk {
+				fmt.Printf("== %s: installing %s on both devices\n", runTag, current.label)
+				if err := install([]string{"--update", "--apk", current.apk}); err != nil {
+					return fmt.Errorf("%s: install: %w", runTag, err)
+				}
+				installed = current.apk
+				for _, serial := range []string{*client, *provider} {
+					_, _ = adbShell(serial, "monkey -p "+appPackage+" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1")
+				}
+				// the provider re-registers after its restart; connect-peer
+				// below retries until it is visible again
+				time.Sleep(20 * time.Second)
+			}
+		}
 		if *interleaveRelay {
 			if i%2 == 0 {
 				directMode = "relay-only"
@@ -729,6 +772,7 @@ func runSeries(args []string) error {
 			"--streams", strconv.Itoa(*streams),
 			"--tag", runTag,
 			"--direct-mode", directMode,
+			"--build", build,
 		})
 		if err != nil {
 			fmt.Printf("%s: run: %v\n", runTag, err)
@@ -747,7 +791,7 @@ func seriesReport(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%-14s %-10s %7s %5s %9s %7s %7s %6s %6s %8s %8s %8s %8s  %s\n", "run", "mode", "median", "dead", "dead>p2p", "min", "max", "p2p", "first", "fl_wait", "blk_cap", "reorder", "ack_blk", "pair(prov/cli)")
+	fmt.Printf("%-14s %-14s %7s %5s %9s %7s %7s %6s %6s %8s %8s %8s %8s  %s\n", "run", "mode", "median", "dead", "dead>p2p", "min", "max", "p2p", "first", "fl_wait", "blk_cap", "reorder", "ack_blk", "pair(prov/cli)")
 	medians := []float64{}
 	deadTotal, deadAfter, active := 0, 0, 0
 	for _, entry := range entries {
@@ -763,10 +807,13 @@ func seriesReport(args []string) error {
 			continue
 		}
 		mode := s.DirectMode
+		if s.Build != "" {
+			mode = s.Build + "/" + s.DirectMode
+		}
 		if !s.Valid {
 			mode = "INVALID"
 		}
-		fmt.Printf("%-14s %-10s %7.1f %5d %9d %7.1f %7.1f %6t %6d %8.0f %8.0f %8.0f %8.0f  %s/%s\n", entry.Name(), mode, s.MedianMbps, s.DeadWindows, s.DeadWindowsAfterP2p, s.MinMbps, s.MaxMbps, s.P2pActive, s.P2pFirstWindow, s.ProviderFlightWait, s.ProviderBlockedRelCap, s.ProviderGapReorder, s.ProviderAckBlocked, s.ProviderPairTypes, s.ClientPairTypes)
+		fmt.Printf("%-14s %-14s %7.1f %5d %9d %7.1f %7.1f %6t %6d %8.0f %8.0f %8.0f %8.0f  %s/%s\n", entry.Name(), mode, s.MedianMbps, s.DeadWindows, s.DeadWindowsAfterP2p, s.MinMbps, s.MaxMbps, s.P2pActive, s.P2pFirstWindow, s.ProviderFlightWait, s.ProviderBlockedRelCap, s.ProviderGapReorder, s.ProviderAckBlocked, s.ProviderPairTypes, s.ClientPairTypes)
 		if !s.Valid {
 			continue
 		}
