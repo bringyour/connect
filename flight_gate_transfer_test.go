@@ -544,6 +544,13 @@ func TestSendSequenceReorderingAcrossCarriersIsNotLoss(t *testing.T) {
 	if recovery.SelectiveGapWriteCount != 0 {
 		t.Fatalf("reordering across carriers was recovered as a gap: %+v", recovery)
 	}
+	// settle the first phase: a cumulative ack for Pack 3 retires the
+	// selectively acknowledged items, so their cumulative probes cannot be
+	// mistaken for the second phase's gap recovery
+	ackFlightGatePack(t, client, peerId, fromPeer, laterPacks[2], false)
+	time.Sleep(100 * time.Millisecond)
+	drainFlightGateRoute(unreliable)
+	gapWritesBefore := client.SendRecoveryStats().SelectiveGapWriteCount
 
 	// a real drop: Pack 4 is lost on the unreliable lane, 5..7 are acknowledged
 	var afterDrop []*protocol.Pack
@@ -559,7 +566,7 @@ func TestSendSequenceReorderingAcrossCarriersIsNotLoss(t *testing.T) {
 		t.Fatalf("gap recovery resent %v, want the dropped Pack", resent.MessageId)
 	}
 	recovery = client.SendRecoveryStats()
-	if recovery.SelectiveGapWriteCount != 1 {
+	if recovery.SelectiveGapWriteCount != gapWritesBefore+1 {
 		t.Fatalf("real loss must produce exactly one gap recovery: %+v", recovery)
 	}
 }
@@ -646,7 +653,39 @@ func TestSendSequenceQueueInflatedRelayRttDoesNotFireWholeWindowTimeouts(t *test
 // unreliable flight on RTO must not grow the window the way an
 // acknowledgement does. The primitive does not exist on this tree.
 func TestSendFlightControllerForgetDoesNotGrowWindow(t *testing.T) {
-	t.Skip("candidate G2 defines sendFlightController.forget; see flight-gate-fix-g1")
+	settings := DefaultSendBufferSettings()
+	settings.UnreliableInitialFlightByteCount = 4096
+	settings.UnreliableMinimumFlightByteCount = 4096
+	settings.UnreliableMaximumFlightByteCount = 65536
+	settings.UnreliableInitialFlightMessageCount = 4
+	settings.UnreliableMinimumFlightMessageCount = 2
+	settings.UnreliableMaximumFlightMessageCount = 64
+	controller := newSendFlightController(settings)
+	controller.applyPolicy(transferFlightPolicySnapshot{generation: 1, limited: true})
+	sequence := &SendSequence{client: &Client{}, flightController: controller}
+	item := &sendItem{
+		transferFrameBytes:      make([]byte, 1000),
+		unreliableFlightTracked: true,
+	}
+	controller.send(item.MessageByteCount())
+	controller.send(1000)
+	// the RTO halves admission; whatever the release does afterwards must
+	// not exceed that reduced limit, because a timeout is not delivery
+	byteLimitBefore, messageLimitBefore := controller.byteLimit, controller.messageLimit
+	sequence.observeUnreliableResendTimeout(
+		item,
+		transferFlightPolicySnapshot{limited: true, reliableRouteAvailable: true},
+	)
+	reducedByteLimit := max(controller.activeMinimumByteCount, byteLimitBefore/2)
+	reducedMessageLimit := max(controller.activeMinimumMessageCount, messageLimitBefore/2)
+	if item.unreliableFlightTracked || controller.byteCount != 1000 || controller.messageCount != 1 {
+		t.Fatalf("RTO release did not remove the item: tracked=%v bytes=%d messages=%d",
+			item.unreliableFlightTracked, controller.byteCount, controller.messageCount)
+	}
+	if reducedByteLimit < controller.byteLimit || reducedMessageLimit < controller.messageLimit {
+		t.Fatalf("RTO release grew the window as if the item had been delivered: limits %d/%d, want at most %d/%d",
+			controller.byteLimit, controller.messageLimit, reducedByteLimit, reducedMessageLimit)
+	}
 }
 
 // R1 contract (M7). A receive callback that blocks must not block SendPacket:
