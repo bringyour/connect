@@ -389,16 +389,35 @@ func connectPeer(args []string) error {
 		fmt.Printf("%s: VPN consent pending; opening the app so it can finish starting the tunnel\n", r)
 		_, _ = adbShell(*serial, "monkey -p "+appPackage+" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1")
 	}
-	// a run measured without a tunnel is not a run: wait for the tun to appear
-	deadline := time.Now().Add(60 * time.Second)
+	// A run measured without a tunnel is not a run, and a run whose workload
+	// was started before the VPN routes were installed measures the radio
+	// instead: wait for the tun interface AND for this shell's uid to route
+	// through it.
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		if name, _, _ := tunCounters(*serial); name != "" {
+		name, _, _ := tunCounters(*serial)
+		if name != "" && tunnelRoutesShell(*serial) {
+			// let the route set settle before any connection is opened
+			time.Sleep(5 * time.Second)
 			return nil
 		}
 		time.Sleep(2 * time.Second)
 	}
-	fmt.Printf("%s: no tun interface within 60 s of connect\n", r)
+	fmt.Printf("%s: the tunnel did not claim this shell's traffic within 90 s\n", r)
 	return nil
+}
+
+// tunnelRoutesShell reports whether the adb shell uid's traffic is routed
+// into the VPN tunnel, which is what the on-device load helper runs as.
+func tunnelRoutesShell(serial string) bool {
+	out, _ := adbShell(serial, "ip route get 1.1.1.1 2>/dev/null | head -1")
+	fields := strings.Fields(out)
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) && isTunName(fields[i+1]) {
+			return true
+		}
+	}
+	return false
 }
 
 func disconnect(args []string) error {

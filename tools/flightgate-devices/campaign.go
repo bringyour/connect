@@ -46,6 +46,9 @@ type runMeta struct {
 	ProviderProfile string   `json:"provider_profile"`
 	StartMillis     int64    `json:"start_millis"`
 	DirectMode      string   `json:"direct_mode"`
+	LoadBytes       int64    `json:"load_bytes"`
+	TunRxBytes      int64    `json:"tun_rx_bytes"`
+	Valid           bool     `json:"valid"`
 	Notes           []string `json:"notes"`
 }
 
@@ -194,10 +197,13 @@ func runCampaign(args []string) error {
 	if err := load.Start(); err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
+	loadClosed := false
 	defer func() {
 		_, _ = adbShell(*client, "pkill -f flightgate-load")
-		_ = load.Wait()
-		loadFile.Close()
+		if !loadClosed {
+			_ = load.Wait()
+			loadFile.Close()
+		}
 	}()
 
 	records := []windowRecord{}
@@ -224,8 +230,22 @@ func runCampaign(args []string) error {
 		fmt.Printf("  window %2d: %6.1f Mb/s  client=%s provider=%s\n", i, record.Mbps, record.ClientRadio, record.ProviderRadio)
 		writeJson(filepath.Join(*out, "windows.json"), records)
 	}
-	// give the last diagnostic line a chance to land before the capture stops
+	// A workload that bypassed the tunnel measures the radio, not the product:
+	// compare what the helper moved with what crossed the tun interface.
 	time.Sleep(3 * time.Second)
+	_ = load.Wait()
+	loadFile.Close()
+	loadClosed = true
+	meta.LoadBytes = loadLogTotalBytes(filepath.Join(*out, "load.log"))
+	for _, record := range records {
+		meta.TunRxBytes += record.ClientTunRx
+	}
+	meta.Valid = meta.LoadBytes == 0 || float64(meta.TunRxBytes) >= 0.5*float64(meta.LoadBytes)
+	if !meta.Valid {
+		meta.Notes = append(meta.Notes, "workload bypassed the tunnel: tun rx is far below the bytes the helper moved")
+		fmt.Printf("  INVALID: helper moved %d bytes, tun carried %d\n", meta.LoadBytes, meta.TunRxBytes)
+	}
+	writeJson(filepath.Join(*out, "meta.json"), meta)
 	return report([]string{*out})
 }
 
@@ -470,6 +490,7 @@ func lastBefore(samples []diagSample, millis int64) map[string]any {
 
 type runSummary struct {
 	Tag                   string  `json:"tag"`
+	Valid                 bool    `json:"valid"`
 	Windows               int     `json:"windows"`
 	DeadWindows           int     `json:"dead_windows_under_5mbps"`
 	MedianMbps            float64 `json:"median_mbps"`
@@ -530,7 +551,7 @@ func report(args []string) error {
 
 	summary := runSummary{Tag: meta.Tag, Windows: len(records), P2pFirstWindow: -1,
 		ClientDiagSamples: len(clientSamples), ProviderDiagSamples: len(providerSamples),
-		DirectMode: meta.DirectMode}
+		DirectMode: meta.DirectMode, Valid: meta.Valid}
 	if n := len(clientSamples); n > 0 {
 		if p2p, ok := clientSamples[n-1].Payload["p2p"].(map[string]any); ok {
 			summary.ClientPairTypes, _ = p2p["SelectedCandidatePair"].(string)
@@ -660,6 +681,11 @@ func runSeries(args []string) error {
 		if err := disconnect([]string{"--serial", *client}); err != nil {
 			fmt.Printf("%s: disconnect: %v\n", runTag, err)
 		}
+		// the provider must not also be a client of this client: that loops the
+		// tunnel back on itself and the measurement is meaningless
+		if err := disconnect([]string{"--serial", *provider}); err != nil {
+			fmt.Printf("%s: provider disconnect: %v\n", runTag, err)
+		}
 		if *interleaveRelay {
 			mode := "clear"
 			if directMode == "relay-only" {
@@ -715,7 +741,14 @@ func seriesReport(args []string) error {
 		if err := json.Unmarshal(b, &s); err != nil {
 			continue
 		}
-		fmt.Printf("%-14s %-10s %7.1f %5d %9d %7.1f %7.1f %6t %6d %8.0f %8.0f %8.0f %8.0f  %s/%s\n", entry.Name(), s.DirectMode, s.MedianMbps, s.DeadWindows, s.DeadWindowsAfterP2p, s.MinMbps, s.MaxMbps, s.P2pActive, s.P2pFirstWindow, s.ProviderFlightWait, s.ProviderBlockedRelCap, s.ProviderGapReorder, s.ProviderAckBlocked, s.ProviderPairTypes, s.ClientPairTypes)
+		mode := s.DirectMode
+		if !s.Valid {
+			mode = "INVALID"
+		}
+		fmt.Printf("%-14s %-10s %7.1f %5d %9d %7.1f %7.1f %6t %6d %8.0f %8.0f %8.0f %8.0f  %s/%s\n", entry.Name(), mode, s.MedianMbps, s.DeadWindows, s.DeadWindowsAfterP2p, s.MinMbps, s.MaxMbps, s.P2pActive, s.P2pFirstWindow, s.ProviderFlightWait, s.ProviderBlockedRelCap, s.ProviderGapReorder, s.ProviderAckBlocked, s.ProviderPairTypes, s.ClientPairTypes)
+		if !s.Valid {
+			continue
+		}
 		medians = append(medians, s.MedianMbps)
 		deadTotal += s.DeadWindows
 		deadAfter += s.DeadWindowsAfterP2p
@@ -728,4 +761,20 @@ func seriesReport(args []string) error {
 		fmt.Printf("series: runs=%d median_of_medians=%.1f dead_windows=%d dead_after_p2p=%d p2p_active_runs=%d\n", len(medians), medians[len(medians)/2], deadTotal, deadAfter, active)
 	}
 	return nil
+}
+
+// loadLogTotalBytes reads the helper's final "done total_bytes=N" line.
+func loadLogTotalBytes(path string) int64 {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if _, rest, ok := strings.Cut(line, "done total_bytes="); ok {
+			value, _, _ := strings.Cut(rest, " ")
+			n, _ := strconv.ParseInt(value, 10, 64)
+			return n
+		}
+	}
+	return 0
 }

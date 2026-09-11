@@ -461,6 +461,7 @@ func runMemsteadySeries(args []string) error {
 		} {
 			_ = disconnect([]string{"--serial", assignment.client})
 			_ = provide([]string{"--serial", assignment.client, "--control", "never"})
+			_ = disconnect([]string{"--serial", assignment.provider})
 			_ = provide([]string{"--serial", assignment.provider, "--control", "network", "--network", "all"})
 			waitPeer(assignment.client, assignment.peerName)
 			if err := connectPeer([]string{"--serial", assignment.client, "--name", assignment.peerName}); err != nil {
