@@ -408,3 +408,77 @@ func memsteadyReport(args []string) error {
 	}
 	return nil
 }
+
+// runMemsteadySeries runs the MEMSTEADY block on a list of builds, each in
+// both role assignments (device-b client through device-a providing, then
+// the swap), installing each build in place on both devices first. Builds
+// are "label=apk-path" pairs, in order.
+func runMemsteadySeries(args []string) error {
+	fs := flag.NewFlagSet("memsteady-series", flag.ExitOnError)
+	deviceA := fs.String("device-a", "3B161FDJG001KT", "device-a serial")
+	deviceB := fs.String("device-b", "R5CX21FY6ND", "device-b serial")
+	nameA := fs.String("name-a", "Pixel", "device-a's device name substring as a peer")
+	nameB := fs.String("name-b", "Samsung", "device-b's device name substring as a peer")
+	out := fs.String("out", "", "series directory (created)")
+	burstSeconds := fs.Int("burst-seconds", 60, "burst length")
+	quietSeconds := fs.Int("quiet-seconds", 300, "quiet connected window")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *out == "" || fs.NArg() == 0 {
+		return errors.New("--out and at least one label=apk are required")
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return err
+	}
+	settle := func(serial string) {
+		_, _ = adbShell(serial, "monkey -p "+appPackage+" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1")
+		time.Sleep(8 * time.Second)
+	}
+	waitPeer := func(serial string, name string) {
+		for i := 0; i < 12; i++ {
+			line, err := broadcast(serial, "FG_STATUS", nil, "status {", 20*time.Second)
+			if err == nil && strings.Contains(line, `"device_name":"`) && strings.Contains(line, `"provide_enabled":true`) && strings.Contains(strings.ToLower(line), strings.ToLower(name)) {
+				return
+			}
+			time.Sleep(10 * time.Second)
+		}
+	}
+	for _, spec := range fs.Args() {
+		label, apk, ok := strings.Cut(spec, "=")
+		if !ok {
+			return fmt.Errorf("bad build spec %q", spec)
+		}
+		fmt.Printf("=== build %s\n", label)
+		if err := install([]string{"--update", "--apk", apk}); err != nil {
+			return fmt.Errorf("%s: install: %w", label, err)
+		}
+		settle(*deviceA)
+		settle(*deviceB)
+		for _, assignment := range []struct{ tag, client, provider, peerName, providerRole, clientRole string }{
+			{"A", *deviceB, *deviceA, *nameA, "device-a", "device-b"},
+			{"B", *deviceA, *deviceB, *nameB, "device-b", "device-a"},
+		} {
+			_ = disconnect([]string{"--serial", assignment.client})
+			_ = provide([]string{"--serial", assignment.client, "--control", "never"})
+			_ = provide([]string{"--serial", assignment.provider, "--control", "network", "--network", "all"})
+			waitPeer(assignment.client, assignment.peerName)
+			if err := connectPeer([]string{"--serial", assignment.client, "--name", assignment.peerName}); err != nil {
+				fmt.Printf("%s %s: connect: %v\n", label, assignment.tag, err)
+				continue
+			}
+			time.Sleep(25 * time.Second)
+			runTag := label + "-" + assignment.tag
+			err := runMemsteady([]string{
+				"--client", assignment.client, "--provider", assignment.provider,
+				"--out", filepath.Join(*out, runTag), "--tag", runTag, "--build", label,
+				"--burst-seconds", strconv.Itoa(*burstSeconds), "--quiet-seconds", strconv.Itoa(*quietSeconds),
+			})
+			if err != nil {
+				fmt.Printf("%s: %v\n", runTag, err)
+			}
+			_ = disconnect([]string{"--serial", assignment.client})
+		}
+	}
+	return nil
+}

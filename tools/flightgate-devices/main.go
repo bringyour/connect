@@ -75,6 +75,8 @@ func main() {
 		err = runMemsteady(args)
 	case "memsteady-report":
 		err = memsteadyReport(args)
+	case "memsteady-series":
+		err = runMemsteadySeries(args)
 	case "build-item":
 		err = buildItem(args)
 	default:
@@ -88,7 +90,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|run|campaign|report|series-report|memsteady|memsteady-report|build-item> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
 }
 
 // role maps a serial to its opaque role, refusing anything off the allowlist.
@@ -387,6 +389,15 @@ func connectPeer(args []string) error {
 		fmt.Printf("%s: VPN consent pending; opening the app so it can finish starting the tunnel\n", r)
 		_, _ = adbShell(*serial, "monkey -p "+appPackage+" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1")
 	}
+	// a run measured without a tunnel is not a run: wait for the tun to appear
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if name, _, _ := tunCounters(*serial); name != "" {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	fmt.Printf("%s: no tun interface within 60 s of connect\n", r)
 	return nil
 }
 
