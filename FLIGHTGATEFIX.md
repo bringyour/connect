@@ -836,3 +836,142 @@ Two tests of PR 208 asserted the old semantics and now assert the new one:
 the mixed-lane scoreboard test checks that a fresh hole's recovery is due
 in the future rather than absent, and the reply test pair was already
 rescoped in §13.2.
+
+### 14.1 The trade this makes, and which clock sets it
+
+The grace is the sequence RTT window's scaled RTT. With F10 merged that
+window is fed only by acknowledgements of reliable-carried items, so it
+describes the relay, and its floor is `RttMinResendInterval`, 300 ms. The
+direct lane's own round trip on the device rig is about 20 ms. So a Pack
+the direct lane really dropped now waits up to the relay's scaled RTT,
+never less than 300 ms, before its recovery is written, where the merged
+tree would have written it as soon as three later acks arrived.
+
+That is deliberate: it buys the goodput back from resends the lane never
+lost. It is also unguarded. Every item younger than the grace defers,
+including on a lane that is dropping heavily, so the cost concentrates
+exactly where the first campaign already showed our previous head at 2 of 5
+dead windows against merged's 0, burst-loss latency-under-load. That cell
+is the one to read first in the next campaign, and the one that would
+justify reverting to a lane-specific grace.
+
+The right grace for a direct-lane item is when *that lane* could have
+delivered the ack, not when the relay could. There is no per-carrier RTT
+estimate to ask: F10 removed the unreliable samples from the one window
+rather than giving them a window of their own, so the only estimate the
+sender holds describes the relay. A per-carrier estimate is therefore a
+precondition for tightening this, and it is §15.2.
+
+`TestMixedLaneDirectLaneLossIsRecoveredByTheGrace` asserts the delay
+exactly, so no later change can lengthen it quietly, and asserts it stays
+at or under the unreliable lane's own resend ceiling, which is what the
+item would otherwise have waited for.
+
+## 15. What the device runs leave, under a strict memory ceiling
+
+The device block removed the gate: provider flight waits fell from
+7,142-11,762 per three-minute run on the pre-merge build to 0 on merged and
+0 through all seven §13 items, and gap resends fell five to fifteen fold.
+Throughput did not move: against a 523-546 Mb/s direct reference every
+tunnelled run on every build sat between 0.1 and 7.1 Mb/s. The counter that
+does not change on any build is timeout resends, 13,000 to 19,000 per
+three-minute run, present in relay-only runs with the flight never waiting
+and in a cellular run where the fast path never negotiated.
+
+The 24 MiB mobile ceiling is strict: exceeding it crashes iOS, the rig's Go
+runtime figure is the accepted surrogate, and the final head already
+measured 24.38 MiB provider quiet p95 in one role against 23.74 and 23.88
+for the merged control. There is no headroom to spend, so every item below
+is judged on retained bytes first.
+
+### 15.1 The timeout-resend storm (landed)
+
+`TestSingleReliableLaneQueueInflatedRttDoesNotStorm` reproduces it with one
+reliable lane, no loss, no flight gate: give the lane a bandwidth and the
+sender writes a window into a route that drains at link rate, so an item's
+acknowledgement cannot come back inside a retransmit timer that started
+when the item was queued, and the whole window is rewritten every interval.
+The scaled RTT tracks the head of the queue while the tail waits far
+longer, and every timeout the test sees fires while the cumulative ack is
+still advancing, which the test asserts rather than assumes.
+
+§13.5's defer is the answer and it was off. Over 300 messages on a lane
+serialising a frame every 12 ms:
+
+| | timeout resends | deferred | fired with a live cumulative ack |
+|---|---|---|---|
+| defer off | 31 | 0 | 31 |
+| defer on | 0 | 45 | 45 |
+
+Turning it on is free in memory: a deferred item was already in the resend
+queue and leaves it on the same acknowledgement, so nothing is retained
+longer. It is now the default, with the contract as a test.
+
+### 15.2 A per-carrier RTO (proposed, precondition for 14.1)
+
+The unreliable lane's retransmit interval is `min(sequence scaled RTT,
+UnreliableMaxResendInterval)`. With F10 the sequence window describes the
+relay, so a datagram lane with a 20 ms round trip is judged by a 300 ms or
+larger clock: it recovers late, and under §14 it also waits that long for
+receiver-evidenced recovery. A second window fed only by unreliable-carried
+acks fixes both, and is the candidate already written as a2f2bf2 on
+flight-gate-fix-s2.
+
+Memory: one `RttWindow` per send sequence. At `RttWindowSize` 128 samples
+of 16 bytes that is about 2 KiB plus its minimum deque, per sequence, per
+direction. On a phone that is tens of kilobytes, not free but small against
+0.38 MiB; sizing the unreliable window at 16 samples brings it to about
+256 bytes. Gate: MEMSTEADY on the device block, plus a test that the
+unreliable lane's resend interval tracks its own lane and that the relay's
+does not move.
+
+### 15.3 Why the direct lane carries so little, and what is free
+
+The mobile policy caps the unreliable flight at 128 KiB and 16 messages.
+Those are not the same budget. `TestUnreliableFlightRetainedBytesAreBoundedByTheByteLimit`
+measures what each ceiling actually admits at 256-byte messages:
+
+| message ceiling | messages admitted | bytes held of the 128 KiB budget |
+|---|---|---|
+| 16 | 16 | 4 KiB, 3 % |
+| 128 | 128 | 32 KiB, 25 % |
+| 1024 | 512 | 128 KiB, 100 % |
+
+The byte ceiling binds on its own, so the message ceiling decides only how
+much of a budget already granted small messages may use. At the tunnel's
+typical 930-byte message, 16 messages is about 15 KiB per round trip: at
+20 ms that is 6 Mb/s, and the rest of the 128 KiB budget goes unused. That
+is the whole reason overflow reaches the relay on a link that can do 500.
+
+Raising the message ceiling is therefore the one window change that retains
+no more bytes: the byte ceiling is unchanged and still binds. Its real cost
+is per-item structure, roughly 200 bytes of `sendItem` and resend-queue
+entry for each additional in-flight message, so 16 to 128 costs about
+22 KiB per active send sequence, and the resend queue's own 512 KiB mobile
+budget still bounds the total. That is a measurable number against 0.38 MiB
+of headroom, so it is proposed, not taken: the change is one constant in
+the SDK's mobile memory policy and it must be gated by a device MEMSTEADY
+block before it lands.
+
+Raising the byte ceiling is the other way to make the direct lane carry the
+bulk, and it is forbidden by the ceiling: bytes in flight are retained
+bytes, one for one. To carry 100 Mb/s at a 20 ms round trip needs 250 KiB
+in flight, about twice the entire current budget. That is a product trade
+between mobile footprint and direct-lane throughput, and this program does
+not take it.
+
+### 15.4 Retention of the landed items
+
+| Item | What it retains | Bound | Measured |
+|---|---|---|---|
+| 13.2 reply orders | two route slices per carrier per snapshot | route count, rebuilt per generation | no per-flow growth |
+| 13.3 progress reporter | one reused RTP packet and an 11-byte payload, two goroutines | per fast path association | allocation-free per report |
+| 13.4 race-commit handoff | the burst, in the removal receive queue | the queue, 16 entries on mobile, about 24 KiB | `TestRaceCommitHandoffRetentionIsBounded` |
+| 13.6 fragment caps | two integers on the carrier properties | per carrier | negligible |
+| per-carrier ack counters | three maps, built per snapshot call | nil until a carrier writes | not retained |
+| §14 deferral | nothing; the item was already queued and leaves on the same ack | unchanged | unchanged |
+
+The one item that can hold more than before is 13.4, and the mobile policy
+already clamps its queue to sixteen entries. Nothing here explains 0.38 MiB
+on its own, so the device block's next run should attribute the quiet p95
+against the merged control per item rather than for the tree as a whole.
