@@ -586,6 +586,8 @@ Mixed route: `AckRouteWriteTimeoutByTransport[p2p]` 0 and h1-received ack
 latency under one RTT in the loss profiles. Device rig: no
 `AckRouteWriteTimeoutByTransport[p2p]` during a live p2p phase.
 
+Landed: e853d73. The PR's reply test and its ack-lane regression test encoded the blanket rule and now assert the scoped one (a healthy lane keeps the reply; a full or stale lane hands it to the relay); the stale case is modelled through the ack-writer test seam.
+
 ### 13.3 M6: fast-path liveness (L1)
 
 Red test: `TestFastPathBlackholeRetiresRouteAndResetsFlight`. Candidate
