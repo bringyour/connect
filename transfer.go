@@ -748,7 +748,7 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		UnreliableFlightIncreaseByteCount:         1150,
 		UnreliableFlightIncreaseMessageCount:      1,
 		UnreliableFloorSingleFlight:               false,
-		DeferTimeoutResendWhileCumulativeProgress: false,
+		DeferTimeoutResendWhileCumulativeProgress: true,
 		TimeoutResendDeferLimit:                   2,
 		SequenceBufferSize:                        bufferSize,
 		AckBufferSize:                             bufferSize,
@@ -3856,7 +3856,10 @@ type SendBufferSettings struct {
 	// DeferTimeoutResendWhileCumulativeProgress delays the whole-window RTO
 	// resend of a reliable-carried item by one scaled RTT, at most
 	// TimeoutResendDeferLimit times, while the cumulative ack advanced within
-	// the last scaled RTT (FLIGHTGATEFIX §13.5). Off until its PERFVAR A/B.
+	// the last scaled RTT (FLIGHTGATEFIX §13.5, §15). A retransmit timer
+	// started when an item was queued cannot be met by a lane that drains at
+	// link rate, so without this the whole window is rewritten every
+	// interval against a path that is demonstrably delivering.
 	DeferTimeoutResendWhileCumulativeProgress bool
 	TimeoutResendDeferLimit                   int
 	// UnreliableFloorSingleFlight keeps at most one message in flight on an

@@ -873,3 +873,77 @@ func TestFlightGateItemsAreAllocationFree(t *testing.T) {
 		t.Fatalf("race-commit handoff allocates %.1f per burst", allocs)
 	}
 }
+
+// FLIGHTGATEFIX §15 memory gate: the race-commit handoff (§13.4) holds its
+// burst in the removal receive queue, so what it can retain is the queue's
+// own bound, not the number of flows. On a phone the mobile memory policy
+// clamps that queue to sixteen entries.
+func TestRaceCommitHandoffRetentionIsBounded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const queueSize = 8
+	const burstCount = 64
+	bare := &RemoteUserNatMultiClient{
+		ctx:                 ctx,
+		log:                 NewNoopLogger(),
+		settings:            DefaultMultiClientSettings(),
+		removalReceiveQueue: make(chan receivePacket, queueSize),
+	}
+	template, _ := tcp4Packet(1, 0, 0, 0)
+	burst := make([]*receivePacket, 0, burstCount)
+	for range burstCount {
+		burst = append(burst, &receivePacket{
+			ProvideMode: protocol.ProvideMode_Network,
+			Packet:      MessagePoolCopy(template),
+		})
+	}
+	bare.deliverRaceCommitPackets(nil, nil, burst)
+	if retained := len(bare.removalReceiveQueue); retained != queueSize {
+		t.Fatalf("the handoff retained %d packets, want the queue's %d", retained, queueSize)
+	}
+	if drops := bare.RaceCommitDeliveryDropCount(); drops != burstCount-queueSize {
+		t.Fatalf("dropped %d packets past the bound, want %d", drops, burstCount-queueSize)
+	}
+	for len(bare.removalReceiveQueue) > 0 {
+		packet := <-bare.removalReceiveQueue
+		MessagePoolReturn(packet.Packet)
+	}
+}
+
+// FLIGHTGATEFIX §15: the unreliable flight's byte ceiling is the memory
+// budget and it binds on its own, so the message ceiling can only decide
+// how much of that budget small messages are allowed to use. Raising the
+// message ceiling therefore cannot retain more bytes than the byte ceiling
+// already grants, which is what makes it the one window change that costs
+// no retained memory.
+func TestUnreliableFlightRetainedBytesAreBoundedByTheByteLimit(t *testing.T) {
+	const byteLimit = 128 * 1024
+	settings := DefaultSendBufferSettings()
+	settings.UnreliableInitialFlightByteCount = byteLimit
+	settings.UnreliableMinimumFlightByteCount = byteLimit
+	settings.UnreliableMaximumFlightByteCount = byteLimit
+	for _, messageLimit := range []int{16, 128, 1024} {
+		settings.UnreliableInitialFlightMessageCount = messageLimit
+		settings.UnreliableMinimumFlightMessageCount = messageLimit
+		settings.UnreliableMaximumFlightMessageCount = messageLimit
+		controller := newSendFlightController(settings)
+		controller.applyPolicy(transferFlightPolicySnapshot{generation: 1, limited: true})
+		// admit small messages until the flight refuses; nothing acknowledges
+		admitted := 0
+		for controller.canSend() && admitted < 4*messageLimit {
+			controller.send(256)
+			admitted += 1
+		}
+		if int(controller.byteCount) > byteLimit+256 {
+			t.Fatalf(
+				"message limit %d let the flight retain %d bytes, past the %d byte budget",
+				messageLimit, controller.byteCount, byteLimit,
+			)
+		}
+		if messageLimit <= admitted && controller.messageCount > messageLimit {
+			t.Fatalf("message limit %d admitted %d messages", messageLimit, controller.messageCount)
+		}
+		t.Logf("message limit %d: admitted %d messages holding %d bytes of the %d byte budget",
+			messageLimit, controller.messageCount, controller.byteCount, byteLimit)
+	}
+}

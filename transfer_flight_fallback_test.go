@@ -440,3 +440,42 @@ func TestSelectiveAckGapSkipsUnreliableItemsWhileBothLanesCarryAcks(t *testing.T
 		t.Fatal("datagram tail recovery regressed on a single-lane route")
 	}
 }
+
+// FLIGHTGATEFIX §14. The grace is a trade: a Pack the direct lane really
+// dropped waits for it before its recovery is written. The delay is
+// asserted here so no later change can quietly lengthen it, and it must
+// stay at or under the unreliable lane's own resend ceiling, which is what
+// the item would otherwise wait for.
+func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
+	sendTime := time.Unix(1_700_000_000, 0)
+	currentTime := sendTime.Add(10 * time.Millisecond)
+	sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
+	sequence.client = &Client{}
+	sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
+	sequence.flightController.applyPolicy(transferFlightPolicySnapshot{
+		generation:             1,
+		limited:                true,
+		reliableRouteAvailable: true,
+	})
+	// item 0 is a real drop on the direct lane
+	items[0].unreliableCarrierObserved = true
+	items[0].unreliableFlightTracked = true
+	for _, index := range []int{1, 2, 3, 5, 6, 7} {
+		items[index].selectiveAcked = true
+	}
+	grace := sequence.rttWindow.ScaledRtt()
+	sequence.scheduleSelectiveAckRecovery(currentTime)
+	if !items[0].selectiveGapRecovered || items[0].recoveryKind != sendRecoverySelectiveGap {
+		t.Fatalf("a dropped direct-lane Pack was not scheduled for recovery: recovered=%t kind=%d",
+			items[0].selectiveGapRecovered, items[0].recoveryKind)
+	}
+	if due := items[0].resendTime.Sub(sendTime); due != grace {
+		t.Fatalf("recovery of a dropped direct-lane Pack is due %s after the send, want the grace %s", due, grace)
+	}
+	// the grace is the sequence RTT, which describes the relay while both
+	// lanes carry acks; it must never exceed what the item's own timeout
+	// would have cost, or the trade stops paying
+	if ceiling := sequence.sendBufferSettings.UnreliableMaxResendInterval; 0 < ceiling && ceiling < grace {
+		t.Fatalf("the grace %s is longer than the unreliable lane's own resend ceiling %s", grace, ceiling)
+	}
+}
