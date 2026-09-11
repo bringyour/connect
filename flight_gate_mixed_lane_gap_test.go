@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,15 @@ type mixedLaneGapHarness struct {
 	received   chan int
 	forwarders sync.WaitGroup
 	ctx        context.Context
+	// deliveries records when each frame reached the receiver, so a run can
+	// be read as a rate over time rather than only as a total.
+	deliveryLock  sync.Mutex
+	deliveryTimes []time.Time
+	// per-lane carriage, so a run can say which lane actually carried the
+	// payload and how much of it the lane lost
+	fastCarried atomic.Uint64
+	slowCarried atomic.Uint64
+	fastDropped atomic.Uint64
 }
 
 // mixedLaneOptions describes the two lanes. A lane has a latency and,
@@ -159,6 +169,12 @@ func newMixedLaneHarnessWithOptions(
 	}
 
 	harness.receiver.AddReceiveCallback(func(_ TransferPath, frames []*protocol.Frame, _ Peer) {
+		now := time.Now()
+		harness.deliveryLock.Lock()
+		for range frames {
+			harness.deliveryTimes = append(harness.deliveryTimes, now)
+		}
+		harness.deliveryLock.Unlock()
 		select {
 		case harness.received <- len(frames):
 		default:
@@ -177,6 +193,7 @@ func newMixedLaneHarnessWithOptions(
 		latency time.Duration,
 		serialization time.Duration,
 		dropFraction float64,
+		carried *atomic.Uint64,
 	) {
 		deliver := func(b []byte) {
 			if 0 < dropFraction {
@@ -184,9 +201,13 @@ func newMixedLaneHarnessWithOptions(
 				dropIt := dropRandom.Float64() < dropFraction
 				dropLock.Unlock()
 				if dropIt {
+					harness.fastDropped.Add(1)
 					MessagePoolReturn(b)
 					return
 				}
+			}
+			if carried != nil {
+				carried.Add(1)
 			}
 			timer := time.NewTimer(latency)
 			defer timer.Stop()
@@ -240,10 +261,10 @@ func newMixedLaneHarnessWithOptions(
 			}
 		}()
 	}
-	forward(senderOutFast, receiverInFast, fastDelay, options.fastSerialization, options.fastDropFraction)
-	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization, 0)
-	forward(receiverOutFast, senderIn, fastDelay, options.replySerialization, options.fastDropFraction)
-	forward(receiverOutSlow, senderIn, slowDelay, 0, 0)
+	forward(senderOutFast, receiverInFast, fastDelay, options.fastSerialization, options.fastDropFraction, &harness.fastCarried)
+	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization, 0, &harness.slowCarried)
+	forward(receiverOutFast, senderIn, fastDelay, options.replySerialization, options.fastDropFraction, nil)
+	forward(receiverOutSlow, senderIn, slowDelay, 0, 0, nil)
 
 	t.Cleanup(func() {
 		cancel()
@@ -538,6 +559,181 @@ func TestMixedLaneLossyDirectLaneGoodputIsNotWorseWithTheGrace(t *testing.T) {
 			t.Fatalf(
 				"at %.0f%% loss the grace made the stream slower: %s against %s without it, over %d messages",
 				100*dropFraction, withGrace, withoutGrace, messageCount,
+			)
+		}
+	}
+}
+
+// mixedLaneRunResult is one multi-flow run read the way the PERFVAR harness
+// reads a campaign cell: how long the payload took, and how many one-second
+// windows carried almost nothing.
+type mixedLaneRunResult struct {
+	elapsed     time.Duration
+	deadWindows int
+	windows     int
+	stats       ClientSendRecoveryStatsSnapshot
+	fastCarried uint64
+	slowCarried uint64
+	fastDropped uint64
+}
+
+// megabitsPerSecond is the goodput a campaign cell would report for this run
+// at the tunnel's typical message size.
+func (self mixedLaneRunResult) megabitsPerSecond(messageCount int) float64 {
+	if self.elapsed <= 0 {
+		return 0
+	}
+	return float64(messageCount) * tunnelTypicalMessageByteCount * 8 /
+		self.elapsed.Seconds() / 1e6
+}
+
+// runMultiFlow offers the payload from several concurrent producers, the
+// shape of the harness's tcp-parallel workload, and reports the run as a
+// rate over one-second windows. A window carrying under a quarter of the
+// run's mean is dead, the same shape as the campaign's under-5-Mb/s rule
+// against its roughly 20-Mb/s cells.
+func (self *mixedLaneGapHarness) runMultiFlow(
+	t testing.TB,
+	flows int,
+	messagesPerFlow int,
+) mixedLaneRunResult {
+	t.Helper()
+	content := ""
+	for len(content) < tunnelTypicalMessageByteCount-16 {
+		content += "mixed-lane-flow-"
+	}
+	messageCount := flows * messagesPerFlow
+	start := time.Now()
+	var producers sync.WaitGroup
+	for flow := range flows {
+		producers.Add(1)
+		go func(flow int) {
+			defer producers.Done()
+			for index := range messagesPerFlow {
+				frame, err := ToFrame(
+					&protocol.SimpleMessage{Content: fmt.Sprintf("%s%d-%d", content, flow, index)},
+					DefaultProtocolVersion,
+				)
+				if err != nil {
+					return
+				}
+				if !self.sender.SendWithTimeout(frame, self.receiverId, nil, 60*time.Second) {
+					MessagePoolReturn(frame.MessageBytes)
+					return
+				}
+			}
+		}(flow)
+	}
+	producers.Wait()
+	delivered := 0
+	deadline := time.After(180 * time.Second)
+	for delivered < messageCount {
+		select {
+		case frames := <-self.received:
+			delivered += frames
+		case <-deadline:
+			t.Fatalf("only %d of %d messages were delivered", delivered, messageCount)
+		}
+	}
+	elapsed := time.Since(start)
+	time.Sleep(300 * time.Millisecond)
+
+	self.deliveryLock.Lock()
+	times := append([]time.Time(nil), self.deliveryTimes...)
+	self.deliveryLock.Unlock()
+	windowCount := max(1, int(elapsed/time.Second))
+	perWindow := make([]int, windowCount)
+	for _, at := range times {
+		index := int(at.Sub(start) / time.Second)
+		if index < 0 {
+			index = 0
+		}
+		if windowCount <= index {
+			index = windowCount - 1
+		}
+		perWindow[index] += 1
+	}
+	mean := float64(len(times)) / float64(windowCount)
+	deadWindows := 0
+	for _, count := range perWindow {
+		if float64(count) < mean/4 {
+			deadWindows += 1
+		}
+	}
+	return mixedLaneRunResult{
+		elapsed:     elapsed,
+		deadWindows: deadWindows,
+		windows:     windowCount,
+		stats:       self.sender.SendRecoveryStats(),
+	}
+}
+
+// FLIGHTGATEFIX §16. The in-process instrument in the campaign's own
+// regime: a direct lane at 20 ms losing one or three per cent, a relay at
+// 200 ms, a bounded direct reply route the receiver's own uplink contends
+// for, and the payload offered by four concurrent producers the way the
+// tcp-parallel cell offers it. The property under test is the one the
+// campaign says we fail: with the grace on, a lossy direct lane must not
+// make the stream slower, or deader, than with it off.
+func TestMixedLaneCampaignRegimeGoodputIsNotWorseWithTheGrace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("campaign-regime mixed-lane goodput")
+	}
+	const (
+		flows           = 4
+		messagesPerFlow = 1500
+		messageCount    = flows * messagesPerFlow
+	)
+	for _, dropFraction := range []float64{0.01, 0.03} {
+		measure := func(graceDisabled bool) mixedLaneRunResult {
+			harness := newMixedLaneHarnessWithOptions(t, mixedLaneOptions{
+				fastLatency: 20 * time.Millisecond,
+				slowLatency: 200 * time.Millisecond,
+				// the direct lane carries the bulk and the relay is the
+				// narrow overflow, which is the shape the device rig shows
+				fastSerialization:  time.Millisecond,
+				slowSerialization:  4 * time.Millisecond,
+				fastDropFraction:   dropFraction,
+				replySerialization: time.Millisecond,
+				graceDisabled:      graceDisabled,
+				deferTimeoutResend: true,
+			})
+			harness.startReverseLoad(5 * time.Millisecond)
+			result := harness.runMultiFlow(t, flows, messagesPerFlow)
+			result.fastCarried = harness.fastCarried.Load()
+			result.slowCarried = harness.slowCarried.Load()
+			result.fastDropped = harness.fastDropped.Load()
+			return result
+		}
+		without := measure(true)
+		with := measure(false)
+		report := func(name string, result mixedLaneRunResult) {
+			t.Logf(
+				"drop %.0f%% %s: %s, %.1f Mb/s, %d of %d windows dead, gap=%d rto=%d deferred=%d, "+
+					"direct lane carried %d and lost %d, relay carried %d",
+				100*dropFraction, name,
+				result.elapsed.Truncate(time.Millisecond),
+				result.megabitsPerSecond(messageCount),
+				result.deadWindows, result.windows,
+				result.stats.SelectiveGapWriteCount,
+				result.stats.TimeoutResendWriteCount,
+				result.stats.TimeoutResendDeferCount,
+				result.fastCarried, result.fastDropped, result.slowCarried,
+			)
+		}
+		report("without the grace", without)
+		report("with the grace   ", with)
+		if tolerance := without.elapsed + without.elapsed/4; tolerance < with.elapsed {
+			t.Fatalf(
+				"at %.0f%% loss the grace made the stream slower: %s against %s without it (%.1f against %.1f Mb/s)",
+				100*dropFraction, with.elapsed, without.elapsed,
+				with.megabitsPerSecond(messageCount), without.megabitsPerSecond(messageCount),
+			)
+		}
+		if without.deadWindows < with.deadWindows {
+			t.Fatalf(
+				"at %.0f%% loss the grace added dead windows: %d against %d without it",
+				100*dropFraction, with.deadWindows, without.deadWindows,
 			)
 		}
 	}
