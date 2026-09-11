@@ -871,7 +871,8 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 		// association. A peer-advertised zero receive window pauses the bound:
 		// that is intentional receiver backpressure, not a dead path. The
 		// worker is lazy and has no idle timer/radio wakeups.
-		SctpNoProgressTimeout: 10 * time.Second,
+		SctpNoProgressTimeout:     10 * time.Second,
+		FastPathNoProgressTimeout: 10 * time.Second,
 		// openrelay.metered.ca and stun.stunprotocol.org are defunct — every
 		// gather against them burned a multi-second i/o timeout per attempt
 		// (observed on-device 2026-07-25) and delayed candidate gathering.
@@ -970,11 +971,16 @@ type WebRtcSettings struct {
 	// intentional synchronous backpressure semantics.
 	SctpNoProgressTimeout time.Duration
 	// FastPathNoProgressTimeout bounds a native RTP/SRTP fast path that
-	// accepts writes but delivers nothing. The RTP lane has no
-	// acknowledgements of its own, so the bound needs a receiver progress
-	// report; until candidate L1 (FLIGHTGATEFIX §7) supplies one this value
-	// is recorded and not acted on. Zero disables it.
+	// accepts writes but delivers nothing. The receiver reports its
+	// complete-message count on the reverse lane; a write left unanswered by
+	// any report advance for this long retires the association, the same
+	// contract SctpNoProgressTimeout gives the reliable lane. The watchdog
+	// arms only after the peer's first report, so an older peer that never
+	// reports is never retired for it. Zero disables it.
 	FastPathNoProgressTimeout time.Duration
+	// oldStyleFastPathReceiverForTest models a peer from before progress
+	// reports for compatibility tests.
+	oldStyleFastPathReceiverForTest bool
 	// UseEgressOnlyIceInterfaces gathers host/server-reflexive candidates
 	// only from the current default-route IPv4/IPv6 addresses. Device VPN
 	// clients enable this to exclude their own tunnel, stale utun, bridge,

@@ -338,3 +338,107 @@ func BenchmarkStreamFastWebRtcRouteLossSweep(b *testing.B) {
 		}
 	}
 }
+
+// Compatibility for 13.3: a peer from before progress reports drops each
+// report as one malformed fragment (fastDropCount) and never reports back,
+// so a new sender facing it must not retire a healthy lane.
+func TestFastPathProgressReportIsHarmlessToOldReceiver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("vnet fast path compatibility")
+	}
+	const noProgressTimeout = 300 * time.Millisecond
+	pair := newFlightGateVnetPair(t, nil, func(active, passive *WebRtcSettings) {
+		active.FastPathNoProgressTimeout = noProgressTimeout
+		passive.FastPathNoProgressTimeout = noProgressTimeout
+		passive.oldStyleFastPathReceiverForTest = true
+	})
+	// the old receiver still gets every message
+	if loss := measureFastPathMessageLoss(t, pair, 1000, 20); loss != 0 {
+		t.Fatalf("old-style receiver lost %.2f of the messages", loss)
+	}
+	// the new sender keeps writing for longer than its bound and is not retired
+	message := bytes.Repeat([]byte{0x3c}, 1000)
+	deadline := time.Now().Add(3 * noProgressTimeout)
+	for time.Now().Before(deadline) {
+		if _, err := pair.activeFast.WriteFastPathMessage(message); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case <-pair.active.ctx.Done():
+		t.Fatalf("new sender retired a healthy lane to an old receiver: %v", context.Cause(pair.active.ctx))
+	default:
+	}
+	activeFast := pair.active.fastPath.Load()
+	passiveFast := pair.passive.fastPath.Load()
+	// the active side received messages from nobody, so it sent no reports;
+	// the passive side received and would have reported: with the old-style
+	// parse it sent none, and every report the active side does send to it
+	// counts as one drop, no more
+	if activeFast.remoteReportSeen.Load() {
+		t.Fatal("an old-style receiver produced a progress report")
+	}
+	if sent := passiveFast.progressReportsSent.Load(); sent != 0 {
+		t.Fatalf("old-style receiver sent %d reports", sent)
+	}
+	// a report from the old side is impossible, so drops on the old side come
+	// only from reports the new side sent for messages it received: none here
+	if drops := pair.passiveStats.Snapshot().FastDropCount; drops != activeFast.progressReportsSent.Load() {
+		t.Fatalf("old-style receiver drops = %d, reports sent to it = %d", drops, activeFast.progressReportsSent.Load())
+	}
+	// now the new side receives one message, reports, and the old side must
+	// drop exactly that report without any other effect
+	if loss := measureFastPathMessageLossReverse(t, pair, 1000, 1); loss != 0 {
+		t.Fatal("the new side did not receive the reverse message")
+	}
+	time.Sleep(4 * p2pFastPathProgressReportInterval)
+	sent := activeFast.progressReportsSent.Load()
+	if sent == 0 {
+		t.Fatal("the new side received a message and reported nothing")
+	}
+	deadline = time.Now().Add(time.Second)
+	for pair.passiveStats.Snapshot().FastDropCount < sent {
+		if deadline.Before(time.Now()) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if drops := pair.passiveStats.Snapshot().FastDropCount; drops != sent {
+		t.Fatalf("old-style receiver dropped %d packets for %d reports", drops, sent)
+	}
+	select {
+	case <-pair.passive.ctx.Done():
+		t.Fatalf("old-style receiver was retired: %v", context.Cause(pair.passive.ctx))
+	default:
+	}
+}
+
+// measureFastPathMessageLossReverse sends count messages from the passive
+// side and returns the fraction the active side never reassembled.
+func measureFastPathMessageLossReverse(
+	t testing.TB,
+	pair *flightGateVnetPair,
+	size int,
+	count int,
+) float64 {
+	t.Helper()
+	message := bytes.Repeat([]byte{0x5a}, size)
+	received := 0
+	for index := 0; index < count; index += 1 {
+		if _, err := pair.passiveFast.WriteFastPathMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.After(2 * time.Second)
+	for received < count {
+		select {
+		case incoming := <-pair.activeFast.FastPathMessages():
+			MessagePoolReturn(incoming.message)
+			received += 1
+		case <-deadline:
+			return 1 - float64(received)/float64(count)
+		}
+	}
+	return 0
+}
