@@ -975,3 +975,23 @@ The one item that can hold more than before is 13.4, and the mobile policy
 already clamps its queue to sixteen entries. Nothing here explains 0.38 MiB
 on its own, so the device block's next run should attribute the quiet p95
 against the merged control per item rather than for the tree as a whole.
+
+### 15.5 Sizing invariants
+
+The constants that decide whether the tunnel trickles or crashes a phone
+live in two repositories and drift independently, and none of them had a
+test. These pin relationships, not values, and each failure names the
+constants and the consequence.
+
+| Test | Where | What it catches |
+|---|---|---|
+| `TestRetransmitIntervalCoversTheWindowOrTheDeferIsOn` | connect | a window that cannot drain inside the retransmit interval at the rate the device rig measured, with the defer off: the storm of §15.1 |
+| `TestUnreliableFlightFloorHoldsATypicalMessage` | connect | a loss floor under one tunnel message, which stops the direct lane rather than slowing it |
+| `TestP2pUnreliableFlightLimitsStayInsideTheirReceiveQueue` | connect | the carrier's flight and its receive queue drifting apart, or the reserve for untracked ACK traffic disappearing |
+| `TestUnreliableFlightMessageCeilingAdmitsItsByteBudget` | connect | a message ceiling that replaces the byte budget with a much smaller one |
+| `TestMobileUnreliableFlightCeilingsKeepTheirStatedTrade` | sdk | the mobile message ceiling falling further below the bytes already granted; it holds the §15.3 trade at about a tenth and explains what raising it would cost |
+| `TestMobileRetainedByteBudgetsFitTheSteadyMemoryTarget` | sdk | a sizing change pushing the budgets that retain bytes past a third of the 24 MiB target, measured today at 6.7 MiB, 26.7 % |
+
+The last is the one that stands between a future sizing change and an iOS
+crash, so it lives with the constants rather than with the code that spends
+them.
