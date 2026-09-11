@@ -877,6 +877,9 @@ type MultiClientSettings struct {
 	// window maintenance, and repeated removals must not grow memory without
 	// bound.
 	RemovalReceiveQueueSize int
+	// beforeRaceCommitDeliveryForTest observes the race-commit burst before it
+	// is handed to the removal receive worker.
+	beforeRaceCommitDeliveryForTest func(client *multiClientChannel, packetCount int)
 	// PacketGroupMax* bounds one exact-flow ownership transaction after a
 	// native packet batch is parsed. A nonpositive value preserves the legacy
 	// unbounded-per-input-batch behavior. An individually oversized packet is
@@ -1347,6 +1350,9 @@ type receivePacket struct {
 	// tcpControl preserves the wire-direction flags and sequence numbers that
 	// IpPath.Reverse intentionally drops before application delivery.
 	tcpControl tcpControlObservation
+	// releaseAfterDelivery marks pooled bytes the removal receive worker owns:
+	// it returns them once the receive callback has run (FLIGHTGATEFIX §13.4).
+	releaseAfterDelivery bool
 }
 
 type tcpControlObservation struct {
@@ -1410,8 +1416,9 @@ type RemoteUserNatMultiClient struct {
 	// Best-effort removal-generated packets are delivered by one isolated
 	// worker. A permanently blocked downstream therefore cannot wedge the
 	// maintenance paths; the fixed queue caps retained packets and memory.
-	removalReceiveQueue     chan receivePacket
-	removalReceiveDropCount atomic.Uint64
+	removalReceiveQueue         chan receivePacket
+	removalReceiveDropCount     atomic.Uint64
+	raceCommitDeliveryDropCount atomic.Uint64
 	// flowReaperWake drives one parent-level idle-flow reaper. A buffered edge
 	// is sufficient: activity can only move an existing deadline later, while
 	// creating a flow is the only operation that can introduce an earlier one.
@@ -6845,17 +6852,14 @@ func (self *RemoteUserNatMultiClient) sendParsedPacketGroup(
 						}
 					}
 				}
-				completed := false
-				for _, packet := range receivePackets {
-					self.deliverReceivePacket(packet.Source, packet.ProvideMode, packet.IpPath, packet.Packet)
-					if update.observeTcpControl(packet.tcpControl, true) {
-						completed = true
-					}
-				}
-				if completed {
+				if self.deliverRaceCommitPackets(update, client, receivePackets) {
 					self.retireCompletedTcpFlow(update)
 				}
 				for _, packet := range returnPackets {
+					if packet.releaseAfterDelivery {
+						// owned by the removal receive worker now
+						continue
+					}
 					MessagePoolReturn(packet.Packet)
 				}
 				// A successful no-response commitment still starts its silence
@@ -7546,8 +7550,71 @@ func (self *RemoteUserNatMultiClient) runRemovalReceive() {
 					packet.Packet,
 				)
 			})
+			if packet.releaseAfterDelivery {
+				MessagePoolReturn(packet.Packet)
+			}
 		}
 	}
+}
+
+// deliverRaceCommitPackets hands the responses buffered during a race to the
+// removal receive worker instead of the caller's goroutine. The caller is
+// the goroutine that drains the tun's outbound queue on the socks client and
+// the hosted proxy; delivering inline there made netstack's reply wait on a
+// queue only that goroutine drains (FLIGHTGATEFIX §13.4, M7). TCP control
+// observation stays synchronous because it is flow state, not delivery.
+//
+// Reordering bound: only this burst crosses the worker. Later packets of
+// the committed flow take the direct receive path and can reach the
+// consumer before the burst does; the burst is at most the responses the
+// exit produced before the race committed (typically the SYN-ACK or the
+// first segment), and the worker is a queue hop with no wait, so the
+// consumer sees at most that many packets early. TCP absorbs it as
+// out-of-order delivery; UDP consumers already tolerate reordering.
+func (self *RemoteUserNatMultiClient) deliverRaceCommitPackets(
+	update *multiClientChannelUpdate,
+	client *multiClientChannel,
+	packets []*receivePacket,
+) (completed bool) {
+	if update != nil {
+		for _, packet := range packets {
+			if update.observeTcpControl(packet.tcpControl, true) {
+				completed = true
+			}
+		}
+	}
+	if self.settings != nil && self.settings.beforeRaceCommitDeliveryForTest != nil {
+		self.settings.beforeRaceCommitDeliveryForTest(client, len(packets))
+	}
+	if self.removalReceiveQueue == nil {
+		// bare fixtures assemble the struct without a queue: deliver inline,
+		// the caller keeps ownership of the bytes
+		for _, packet := range packets {
+			self.deliverReceivePacket(packet.Source, packet.ProvideMode, packet.IpPath, packet.Packet)
+		}
+		return completed
+	}
+	for _, packet := range packets {
+		packet.releaseAfterDelivery = true
+		select {
+		case <-self.ctx.Done():
+			MessagePoolReturn(packet.Packet)
+		case self.removalReceiveQueue <- *packet:
+		default:
+			// bounded loss, the same rule as teardown resets: the exit will
+			// retransmit, and blocking here would recreate the cycle
+			MessagePoolReturn(packet.Packet)
+			self.raceCommitDeliveryDropCount.Add(1)
+			self.addRemovalReceiveDrops(1)
+		}
+	}
+	return completed
+}
+
+// RaceCommitDeliveryDropCount is the number of buffered race responses
+// dropped because the removal receive worker's queue was full.
+func (self *RemoteUserNatMultiClient) RaceCommitDeliveryDropCount() uint64 {
+	return self.raceCommitDeliveryDropCount.Load()
 }
 
 func (self *RemoteUserNatMultiClient) enqueueRemovalReceive(packet *receivePacket) {

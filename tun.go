@@ -1577,6 +1577,18 @@ func (self *Tun) Close() error {
 // Stats returns the gVisor stack statistics for this Tun's private stack.
 // OutboundDropCount is the number of netstack packets dropped because the
 // outbound queue stayed full past OutboundQueueWaitTimeout.
+// TunLinkStatsSnapshot is the tun link's own counters for campaign records;
+// the outbound drop count must read 0 wherever the bounded wait is only a
+// guard (FLIGHTGATEFIX §13.4).
+type TunLinkStatsSnapshot struct {
+	OutboundDropCount uint64
+}
+
+// LinkStats reads the link endpoint counters without stopping the stack.
+func (self *Tun) LinkStats() TunLinkStatsSnapshot {
+	return TunLinkStatsSnapshot{OutboundDropCount: self.OutboundDropCount()}
+}
+
 func (self *Tun) OutboundDropCount() uint64 {
 	return self.ep.dropCount.Load()
 }

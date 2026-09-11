@@ -7,6 +7,7 @@ package connect
 // names it.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -693,7 +694,62 @@ func TestSendFlightControllerForgetDoesNotGrowWindow(t *testing.T) {
 // provider answer to arrive between race publication and commit, which the
 // in-process multi-client harness cannot yet schedule deterministically.
 func TestMultiClientRaceCommitDeliversAsynchronously(t *testing.T) {
-	t.Skip("candidate R1 defines asynchronous race-commit delivery; needs a race-commit scheduling seam in ip_remote_multi_client")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	providerClient := NewClient(ctx, NewId(), NewNoContractClientOob(), DefaultClientSettings())
+	defer providerClient.Cancel()
+	release := make(chan struct{})
+	delivered := make(chan []byte, 4)
+	natClient, err := testingNewMultiClient(
+		ctx,
+		providerClient,
+		func(source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {
+			// the consumer is parked, the way an injecting tun reader is
+			<-release
+			delivered <- append([]byte(nil), packet...)
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer natClient.Close()
+	multi := natClient.(*RemoteUserNatMultiClient)
+	observed := make(chan int, 1)
+	multi.settings.beforeRaceCommitDeliveryForTest = func(_ *multiClientChannel, packetCount int) {
+		observed <- packetCount
+	}
+	template, _ := tcp4Packet(1, 0, 0, 0)
+	burst := []*receivePacket{
+		{ProvideMode: protocol.ProvideMode_Network, Packet: MessagePoolCopy(template), Pooled: true},
+		{ProvideMode: protocol.ProvideMode_Network, Packet: MessagePoolCopy(template), Pooled: true},
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		multi.deliverRaceCommitPackets(nil, nil, burst)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("race-commit delivery blocked on the parked consumer")
+	}
+	if count := <-observed; count != 2 {
+		t.Fatalf("burst observed = %d packets, want 2", count)
+	}
+	close(release)
+	for index := 0; index < 2; index += 1 {
+		select {
+		case packet := <-delivered:
+			if !bytes.Equal(packet, template) {
+				t.Fatal("delivered packet differs from the buffered response")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("buffered response %d was never delivered", index)
+		}
+	}
+	if drops := multi.RaceCommitDeliveryDropCount(); drops != 0 {
+		t.Fatalf("race-commit deliveries dropped: %d", drops)
+	}
 }
 
 // P1 contract. Readiness of the direct lane must depend on measured probe
