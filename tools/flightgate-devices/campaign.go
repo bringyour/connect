@@ -697,7 +697,20 @@ func runSeries(args []string) error {
 		}
 		time.Sleep(8 * time.Second)
 		if err := connectPeer([]string{"--serial", *client, "--name", *peerName}); err != nil {
-			return fmt.Errorf("%s: connect: %w", runTag, err)
+			// a lost provider registration is a rig fault, not a measurement:
+			// retry this run once the peer is back rather than burning it
+			fmt.Printf("%s: connect: %v; waiting for the provider to reappear\n", runTag, err)
+			recovered := false
+			for attempt := 0; attempt < 12; attempt++ {
+				time.Sleep(15 * time.Second)
+				if err := connectPeer([]string{"--serial", *client, "--name", *peerName}); err == nil {
+					recovered = true
+					break
+				}
+			}
+			if !recovered {
+				return fmt.Errorf("%s: the provider never came back", runTag)
+			}
 		}
 		time.Sleep(time.Duration(*settleSeconds) * time.Second)
 		err := runCampaign([]string{

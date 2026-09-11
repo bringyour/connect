@@ -403,8 +403,7 @@ func connectPeer(args []string) error {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	fmt.Printf("%s: the tunnel did not claim this shell's traffic within 90 s\n", r)
-	return nil
+	return fmt.Errorf("%s: the tunnel did not claim this shell's traffic within 90 s", r)
 }
 
 // tunnelRoutesShell reports whether the adb shell uid's traffic is routed
