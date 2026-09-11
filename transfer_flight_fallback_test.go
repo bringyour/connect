@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -210,6 +211,11 @@ func TestSendSequenceFloorSingleFlightKeepsOneMessageOnLossyCarrier(t *testing.T
 // A reply keeps its carrier affinity on reliable carriers but never rides a
 // potentially unreliable one while a reliable route is active.
 func TestMultiRouteSelectorReplyAvoidsUnreliableCarrier(t *testing.T) {
+	// FLIGHTGATEFIX §13.2 replaced the blanket rule this test first encoded
+	// ("never pin a reply to a potentially unreliable carrier while a
+	// reliable one is active") with a scoped one: the affine unreliable lane
+	// keeps the reply while it has channel room and its ack clock is fresh;
+	// a full or stale lane hands the reply to the reliable lanes.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -219,28 +225,46 @@ func TestMultiRouteSelectorReplyAvoidsUnreliableCarrier(t *testing.T) {
 	h1Route := make(Route, 16)
 	selector.updateTransportWithProperties(h1Transport, []Route{h1Route}, TransferCarrierProperties{})
 	p2pTransport := NewSendGatewayTransportWithType(TransportTypeP2p)
-	p2pRoute := make(Route, 16)
+	p2pRoute := make(Route, 2)
 	selector.updateTransportWithProperties(p2pTransport, []Route{p2pRoute}, TransferCarrierProperties{Unreliable: true})
+	const staleAfter = time.Second
 
-	if !selector.transportPotentiallyUnreliable(TransportTypeP2p) || selector.transportPotentiallyUnreliable(TransportTypeH1) {
-		t.Fatal("carrier reliability classification is wrong")
-	}
-	for i := 0; i < 6; i++ {
-		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p)
-		if err != nil || !success || disposition.transportType != TransportTypeH1 {
-			t.Fatalf("reply %d with p2p affinity: success=%t disposition=%+v err=%v; want H1", i, success, disposition, err)
+	// a healthy affine lane with room keeps the reply
+	for i := 0; i < 2; i++ {
+		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter)
+		if err != nil || !success || disposition.transportType != TransportTypeP2p {
+			t.Fatalf("reply %d with healthy p2p affinity: success=%t disposition=%+v err=%v; want p2p", i, success, disposition, err)
 		}
 	}
-	if len(h1Route) != 6 || len(p2pRoute) != 0 {
-		t.Fatalf("routes after replies: h1=%d p2p=%d, want 6/0", len(h1Route), len(p2pRoute))
+	// the affine lane is full: the reply leaves on the reliable lane at once
+	for i := 2; i < 6; i++ {
+		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter)
+		if err != nil || !success || disposition.transportType != TransportTypeH1 {
+			t.Fatalf("reply %d with full p2p affinity: success=%t disposition=%+v err=%v; want H1", i, success, disposition, err)
+		}
+	}
+	if len(h1Route) != 4 || len(p2pRoute) != 2 {
+		t.Fatalf("routes after replies: h1=%d p2p=%d, want 4/2", len(h1Route), len(p2pRoute))
+	}
+	// room again, but the lane's ack clock is stale: reliable first
+	<-p2pRoute
+	<-p2pRoute
+	selector.observeRouteAckProgress(p2pRoute)
+	clock, _ := selector.routeAckProgress.Load(p2pRoute)
+	clock.(*atomic.Int64).Store(time.Now().Add(-2 * staleAfter).UnixNano())
+	success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{6}, time.Second, TransportTypeP2p, staleAfter)
+	if err != nil || !success || disposition.transportType != TransportTypeH1 {
+		t.Fatalf("reply with stale p2p affinity: success=%t disposition=%+v err=%v; want H1", success, disposition, err)
+	}
+	// a zero stale bound disables the clock rule
+	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{7}, time.Second, TransportTypeP2p, 0)
+	if err != nil || !success || disposition.transportType != TransportTypeP2p {
+		t.Fatalf("reply with the clock rule off: success=%t disposition=%+v err=%v; want p2p", success, disposition, err)
 	}
 
 	// with only the unreliable carrier the reply keeps using it
 	selector.updateTransport(h1Transport, nil)
-	if selector.transportPotentiallyUnreliable(TransportTypeP2p) {
-		t.Fatal("p2p flagged unreliable-replaceable without a reliable route")
-	}
-	success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{9}, time.Second, TransportTypeP2p)
+	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{9}, time.Second, TransportTypeP2p, staleAfter)
 	if err != nil || !success || disposition.transportType != TransportTypeP2p {
 		t.Fatalf("p2p-only reply: success=%t disposition=%+v err=%v", success, disposition, err)
 	}

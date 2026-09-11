@@ -1565,7 +1565,16 @@ type routeSnapshot struct {
 	// sets materialized as slices at publication time, so multiple transports
 	// can share affinity without allocating on the write path.
 	affinityWriteRoutesByTransport map[TransportType][]Route
-	routeCarrierProperties         map[Route]TransferCarrierProperties
+	// replyAffineFirstByTransport and replyReliableFirstByTransport are the
+	// two orders a reply (an ACK) can use when every affine route of the
+	// carrier is potentially unreliable: the affine lanes followed by the
+	// reliable lanes, or the reverse. When any affine route is reliable both
+	// equal the affinity set, so hybrid H3 keeps its affinity unchanged. The
+	// writer picks per reply from channel room and the route ack clock
+	// (FLIGHTGATEFIX §13.2).
+	replyAffineFirstByTransport   map[TransportType][]Route
+	replyReliableFirstByTransport map[TransportType][]Route
+	routeCarrierProperties        map[Route]TransferCarrierProperties
 	// reliableRoutes is the subset of routes whose carrier is not potentially
 	// unreliable, in route order. Reliable-only writes use it when non-empty.
 	reliableRoutes               []Route
@@ -1805,12 +1814,37 @@ func (self *routeSnapshot) writeRoutesReliableOnly() []Route {
 	return routes
 }
 
+// routeWritePolicy selects which published route order one write uses.
+type routeWritePolicy int
+
+const (
+	// routeWriteOrdinary is the weighted policy with optional carrier affinity.
+	routeWriteOrdinary routeWritePolicy = iota
+	// routeWriteReliableOnly is the overflow path of a full unreliable flight.
+	routeWriteReliableOnly
+	// routeWriteReplyAffineFirst is a reply whose affine unreliable lane is
+	// healthy: that lane first, the reliable lanes as the fall-through.
+	routeWriteReplyAffineFirst
+	// routeWriteReplyReliableFirst is a reply whose affine unreliable lanes
+	// are all full or stale: the reliable lanes first, the affine lanes last.
+	routeWriteReplyReliableFirst
+)
+
 func (self *routeSnapshot) writeRoutesFor(
 	preferredTransportType TransportType,
-	reliableOnly bool,
+	policy routeWritePolicy,
 ) []Route {
-	if reliableOnly {
+	switch policy {
+	case routeWriteReliableOnly:
 		return self.writeRoutesReliableOnly()
+	case routeWriteReplyAffineFirst:
+		if routes := self.replyAffineFirstByTransport[preferredTransportType]; 0 < len(routes) {
+			return routes
+		}
+	case routeWriteReplyReliableFirst:
+		if routes := self.replyReliableFirstByTransport[preferredTransportType]; 0 < len(routes) {
+			return routes
+		}
 	}
 	return self.writeRoutesForTransport(preferredTransportType)
 }
@@ -2171,6 +2205,45 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 		eligible = append(eligible, affinityRoutes...)
 		affinityWriteRoutesByTransport[transportType] = eligible
 	}
+	replyAffineFirstByTransport := map[TransportType][]Route{}
+	replyReliableFirstByTransport := map[TransportType][]Route{}
+	for transportType, eligible := range affinityWriteRoutesByTransport {
+		allUnreliable := true
+		for _, route := range eligible {
+			if !routeCarrierProperties[route].Unreliable {
+				allUnreliable = false
+				break
+			}
+		}
+		if !allUnreliable {
+			replyAffineFirstByTransport[transportType] = eligible
+			replyReliableFirstByTransport[transportType] = eligible
+			continue
+		}
+		included := make(map[Route]bool, len(eligible))
+		for _, route := range eligible {
+			included[route] = true
+		}
+		reliable := make([]Route, 0, len(activeRoutes))
+		for _, route := range activeRoutes {
+			if !included[route] && !routeCarrierProperties[route].Unreliable {
+				reliable = append(reliable, route)
+			}
+		}
+		if len(reliable) == 0 {
+			replyAffineFirstByTransport[transportType] = eligible
+			replyReliableFirstByTransport[transportType] = eligible
+			continue
+		}
+		affineFirst := make([]Route, 0, len(eligible)+len(reliable))
+		affineFirst = append(affineFirst, eligible...)
+		affineFirst = append(affineFirst, reliable...)
+		reliableFirst := make([]Route, 0, len(eligible)+len(reliable))
+		reliableFirst = append(reliableFirst, reliable...)
+		reliableFirst = append(reliableFirst, eligible...)
+		replyAffineFirstByTransport[transportType] = affineFirst
+		replyReliableFirstByTransport[transportType] = reliableFirst
+	}
 
 	var weight map[Route]float32
 	if self.weightedRoutes {
@@ -2188,6 +2261,8 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 		routes:                         activeRoutes,
 		routeTransportTypes:            routeTransportTypes,
 		affinityWriteRoutesByTransport: affinityWriteRoutesByTransport,
+		replyAffineFirstByTransport:    replyAffineFirstByTransport,
+		replyReliableFirstByTransport:  replyReliableFirstByTransport,
 		routeCarrierProperties:         routeCarrierProperties,
 		reliableRoutes:                 reliableRoutes,
 		generation:                     self.nextRouteGeneration,
@@ -2767,7 +2842,7 @@ func (self *MultiRouteSelector) writeDetailedWithCarrierPreference(
 		transferFrameBytes,
 		timeout,
 		preferredTransportType,
-		false,
+		routeWriteOrdinary,
 	)
 }
 
@@ -2781,60 +2856,56 @@ func (self *MultiRouteSelector) writeDetailedReliableOnly(
 		transferFrameBytes,
 		timeout,
 		TransportTypeUnknown,
-		true,
+		routeWriteReliableOnly,
 	)
 }
 
 // writeDetailedReplyWithCarrierPreference writes a reply (an ACK) with the
-// carrier affinity of the packet it answers, except that a reply is never
-// pinned to a potentially unreliable carrier while a reliable one is active.
-// A cumulative ACK lost on a lossy datagram lane times out the sender's whole
-// window; on the reliable carrier it costs one extra hop of latency.
+// carrier affinity of the Pack it answers. When every affine route is
+// potentially unreliable (native p2p at the top priority), the reply keeps
+// that lane first only while at least one affine route has channel room and
+// its ack clock is not older than staleAfter; otherwise the reliable lanes
+// come first and the affine lanes last. A cumulative ACK lost on a full or
+// dead datagram lane times out the sender's whole window; on the relay it
+// costs one hop of latency. Hybrid carriers whose affinity set includes a
+// reliable lane are unchanged. Zero staleAfter disables the clock rule.
 func (self *MultiRouteSelector) writeDetailedReplyWithCarrierPreference(
 	ctx context.Context,
 	transferFrameBytes []byte,
 	timeout time.Duration,
 	preferredTransportType TransportType,
+	staleAfter time.Duration,
 ) (bool, transferWriteDisposition, error) {
-	if self.transportPotentiallyUnreliable(preferredTransportType) {
-		return self.writeDetailedWithRoutePolicy(
-			ctx,
-			transferFrameBytes,
-			timeout,
-			TransportTypeUnknown,
-			true,
-		)
+	policy := routeWriteReplyAffineFirst
+	if snapshot := self.activeRoutesSnapshot.Load(); snapshot != nil {
+		affine := snapshot.affinityWriteRoutesByTransport[preferredTransportType]
+		if 0 < len(affine) && len(affine) < len(snapshot.replyAffineFirstByTransport[preferredTransportType]) {
+			// every affine route is unreliable and a reliable lane exists
+			healthy := false
+			for _, route := range affine {
+				if cap(route) <= len(route) {
+					continue
+				}
+				if 0 < staleAfter {
+					if age, ok := self.RouteAckProgressAge(route); ok && staleAfter <= age {
+						continue
+					}
+				}
+				healthy = true
+				break
+			}
+			if !healthy {
+				policy = routeWriteReplyReliableFirst
+			}
+		}
 	}
 	return self.writeDetailedWithRoutePolicy(
 		ctx,
 		transferFrameBytes,
 		timeout,
 		preferredTransportType,
-		false,
+		policy,
 	)
-}
-
-// transportPotentiallyUnreliable reports whether every active route of the
-// transport type is a potentially unreliable carrier and a reliable route
-// exists to take its place.
-func (self *MultiRouteSelector) transportPotentiallyUnreliable(
-	transportType TransportType,
-) bool {
-	snapshot := self.activeRoutesSnapshot.Load()
-	if snapshot == nil || len(snapshot.reliableRoutes) == 0 {
-		return false
-	}
-	found := false
-	for _, route := range snapshot.routes {
-		if snapshot.routeTransportTypes[route] != transportType {
-			continue
-		}
-		if !snapshot.routeCarrierProperties[route].Unreliable {
-			return false
-		}
-		found = true
-	}
-	return found
 }
 
 func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
@@ -2842,7 +2913,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 	transferFrameBytes []byte,
 	timeout time.Duration,
 	preferredTransportType TransportType,
-	reliableOnly bool,
+	policy routeWritePolicy,
 ) (bool, transferWriteDisposition, error) {
 	enterTime := time.Now()
 	preferredBlockedObserved := false
@@ -2851,7 +2922,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 	// writer selector and writes its ordered stream serially; the mutex below is
 	// only needed when a write must retain and reuse the selector timer.
 	initialSnapshot := self.acquireWriterSnapshot()
-	initialRoutes := initialSnapshot.writeRoutesFor(preferredTransportType, reliableOnly)
+	initialRoutes := initialSnapshot.writeRoutesFor(preferredTransportType, policy)
 	if self.log.V(2).Enabled() {
 		self.log.Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(initialRoutes))
 	}
@@ -2902,7 +2973,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 		// on every packet
 		snapshot := self.acquireWriterSnapshot()
 		notify := snapshot.notify
-		activeRoutes := snapshot.writeRoutesFor(preferredTransportType, reliableOnly)
+		activeRoutes := snapshot.writeRoutesFor(preferredTransportType, policy)
 
 		if self.log.V(2).Enabled() {
 			self.log.Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))

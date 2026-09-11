@@ -778,9 +778,12 @@ func DefaultReceiveBufferSettingsWithBufferSize(bufferSize int) *ReceiveBufferSe
 	return &ReceiveBufferSettings{
 		GapTimeout: 60 * time.Second,
 		// the receive idle timeout should be a bit longer than the send idle timeout
-		IdleTimeout:          120 * time.Second,
-		SequenceBufferSize:   bufferSize,
-		H1SequenceBufferSize: bufferSize,
+		IdleTimeout: 120 * time.Second,
+		// one unreliable resend interval: a lane silent that long has already
+		// cost the sender a retransmit train
+		ReplyAffinityStaleAfter: 2 * time.Second,
+		SequenceBufferSize:      bufferSize,
+		H1SequenceBufferSize:    bufferSize,
 		// Count headroom absorbs a flight of small tunnel packets. Retained
 		// encoded Transfer bytes remain independently bounded, so large frames
 		// cannot multiply the channel capacity into a memory spike.
@@ -8327,6 +8330,11 @@ func newResendQueue(budget *TransferMemoryBudget, minByteCount ByteCount) *resen
 type ReceiveBufferSettings struct {
 	GapTimeout  time.Duration
 	IdleTimeout time.Duration
+	// ReplyAffinityStaleAfter is how long an unreliable lane may go without
+	// acknowledgement progress before a reply for a Pack received on it
+	// prefers the reliable lanes (FLIGHTGATEFIX §13.2). Zero keeps replies on
+	// an affine unreliable lane whenever it has channel room.
+	ReplyAffinityStaleAfter time.Duration
 
 	SequenceBufferSize int
 	// H1SequenceBufferSize optionally gives reliable H1 arrivals more burst
@@ -9804,6 +9812,7 @@ func (self *ReceiveSequence) Run() {
 							shared,
 							self.receiveBufferSettings.WriteTimeout,
 							sendAck.transportType,
+							self.receiveBufferSettings.ReplyAffinityStaleAfter,
 						)
 						blocked = disposition.initiallyBlocked
 						waitDuration = disposition.initialWaitDuration

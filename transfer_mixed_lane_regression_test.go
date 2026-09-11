@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,19 +178,33 @@ func decodeTransferFlightTestPack(t *testing.T, transferFrameBytes []byte) *prot
 // unreliable lane with ACKs on that same lane, where the provider's UDP socket
 // dropped them and every lost cumulative ACK timed out the sender's whole
 // window. An ACK for an unreliable-carried Pack must leave on the reliable
-// lane while one is active.
+// lane while one is active and the unreliable lane is full or stale
+// (FLIGHTGATEFIX §13.2 scoped the original blanket rule: a healthy affine
+// lane with room keeps the reply; here the lane's ack clock is stale, the
+// shape of a dead data plane).
 func TestReceiveSequenceAcksUnreliableCarriedPacksOnReliableLane(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	settings := DefaultClientSettings()
 	settings.EncryptionSettings.Mode = EncryptionModeOff
+	unreliableOut := make(Route, 16)
+	reliableOut := make(Route, 16)
+	unreliableIn := make(Route, 16)
+	settings.ReceiveBufferSettings.ReplyAffinityStaleAfter = time.Millisecond
+	settings.ReceiveBufferSettings.afterAckWriterOpenForTest = func(
+		_ receiveSequenceId,
+		writer MultiRouteWriter,
+	) {
+		// the lane acknowledged once, long ago, and nothing since
+		selector := writer.(*MultiRouteSelector)
+		selector.observeRouteAckProgress(unreliableOut)
+		clock, _ := selector.routeAckProgress.Load(unreliableOut)
+		clock.(*atomic.Int64).Store(time.Now().Add(-time.Second).UnixNano())
+	}
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
 	peerId := NewId()
 	client.ContractManager().AddNoContractPeer(peerId)
 
-	unreliableOut := make(Route, 16)
-	reliableOut := make(Route, 16)
-	unreliableIn := make(Route, 16)
 	client.RouteManager().UpdateTransportWithProperties(
 		NewSendGatewayTransportWithType(TransportTypeP2p),
 		[]Route{unreliableOut},
