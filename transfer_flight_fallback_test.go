@@ -312,10 +312,14 @@ func TestSelectiveAckGapSkipsReliableItemsNotYetLateInMixedLanes(t *testing.T) {
 		items[index].selectiveAcked = true
 	}
 	sequence.scheduleSelectiveAckRecovery(currentTime)
-	if items[0].selectiveGapRecovered {
-		t.Fatal("fresh reliable-carried gap item was gap-resent behind fast-lane acks")
+	// §14: the fresh item's recovery is deferred to the moment the slowest
+	// ack lane has had its chance, so nothing is written now and an ack
+	// arriving first removes it; the stale item is written immediately.
+	if !items[0].resendTime.After(currentTime) {
+		t.Fatalf("fresh reliable-carried gap item was gap-resent behind fast-lane acks: due %s", items[0].resendTime.Sub(currentTime))
 	}
-	if !items[4].selectiveGapRecovered || items[4].recoveryKind != sendRecoverySelectiveGap {
+	if !items[4].selectiveGapRecovered || items[4].recoveryKind != sendRecoverySelectiveGap ||
+		items[4].resendTime.After(currentTime) {
 		t.Fatalf("stale reliable-carried gap item was not gap-resent: recovered=%t kind=%d", items[4].selectiveGapRecovered, items[4].recoveryKind)
 	}
 
@@ -373,4 +377,66 @@ func TestSendSequenceDefersTimeoutResendWhileAcksProgress(t *testing.T) {
 		t.Fatal("deferred a timeout of an unreliable-carried item")
 	}
 	sequence.releaseUnreliableFlight(unreliable)
+}
+
+// FLIGHTGATEFIX §14 (M3). While acknowledgements arrive over two lanes of
+// different latency, "three later selective acks" says nothing about this
+// item: the later acks may simply have taken the faster lane. The merged
+// rule granted that grace only to reliable-carried items, so an item the
+// direct lane carried whose ack took the relay (its bounded reply route was
+// full) was read as lost and resent. With a single ack lane the ordering
+// rule is unchanged, so datagram tail recovery keeps its pace.
+func TestSelectiveAckGapSkipsUnreliableItemsWhileBothLanesCarryAcks(t *testing.T) {
+	sendTime := time.Unix(1_700_000_000, 0)
+	currentTime := sendTime.Add(100 * time.Millisecond)
+	newMixed := func() (*SendSequence, []*sendItem) {
+		sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
+		sequence.client = &Client{}
+		sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
+		sequence.flightController.applyPolicy(transferFlightPolicySnapshot{
+			generation:             1,
+			limited:                true,
+			reliableRouteAvailable: true,
+		})
+		for _, index := range []int{1, 2, 3, 5, 6, 7} {
+			items[index].selectiveAcked = true
+		}
+		return sequence, items
+	}
+	// item 0 rode the direct lane 100 ms ago and its ack is still in the air
+	// on the relay; item 4 rode it long ago and is really missing
+	sequence, items := newMixed()
+	for _, index := range []int{0, 4} {
+		items[index].unreliableCarrierObserved = true
+		items[index].unreliableFlightTracked = true
+	}
+	items[4].sendTime = sendTime.Add(-5 * time.Second)
+	sequence.scheduleSelectiveAckRecovery(currentTime)
+	// nothing is written for the fresh item now: its recovery is due only
+	// once the relay could have delivered its ack, and an ack arriving
+	// first takes the item out of the queue
+	if !items[0].resendTime.After(currentTime) {
+		t.Fatalf("a fresh direct-lane item was gap-resent on ack-lane reordering: due %s",
+			items[0].resendTime.Sub(currentTime))
+	}
+	if !items[4].selectiveGapRecovered || items[4].recoveryKind != sendRecoverySelectiveGap ||
+		items[4].resendTime.After(currentTime) {
+		t.Fatalf("a stale direct-lane item was not gap-resent: recovered=%t kind=%d",
+			items[4].selectiveGapRecovered, items[4].recoveryKind)
+	}
+
+	// one ack lane only: the ordering rule is untouched, whichever lane
+	sequenceOne, itemsOne := newSelectiveAckRecoveryTestSequence(8, sendTime)
+	sequenceOne.client = &Client{}
+	sequenceOne.flightController = newSendFlightController(sequenceOne.sendBufferSettings)
+	sequenceOne.flightController.applyPolicy(transferFlightPolicySnapshot{generation: 1, limited: true})
+	itemsOne[0].unreliableCarrierObserved = true
+	itemsOne[0].unreliableFlightTracked = true
+	for _, index := range []int{1, 2, 3, 5, 6, 7} {
+		itemsOne[index].selectiveAcked = true
+	}
+	sequenceOne.scheduleSelectiveAckRecovery(currentTime)
+	if !itemsOne[0].selectiveGapRecovered || itemsOne[0].resendTime.After(currentTime) {
+		t.Fatal("datagram tail recovery regressed on a single-lane route")
+	}
 }

@@ -5603,6 +5603,15 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		self.resendQueue.Add(item)
 	}
 
+	// One read of the lane state and the RTT estimate for the whole pass:
+	// both are per-sequence, not per-item, and the estimate takes a lock.
+	limited := self.flightController != nil && self.flightController.limited
+	mixedAckLanes := limited && self.flightController.reliableRouteAvailable
+	lateNotLostRtt := time.Duration(0)
+	if limited {
+		lateNotLostRtt = self.rttWindow.ScaledRtt()
+	}
+
 	selectiveAckCount := 0
 	for _, item := range self.sendItems {
 		if item != nil && item.selectiveAcked {
@@ -5631,22 +5640,35 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		if gapItem == nil {
 			gapItem = item
 		}
-		// Mixed lanes: an item carried by the reliable route is routinely
-		// acknowledged after later items that rode a direct datagram lane
-		// with a fraction of its latency. Until it is older than the reliable
-		// lane's RTT it is late, not lost; a gap resend now only doubles the
-		// relay traffic. Its own RTO still covers a real loss.
-		lateNotLost := self.flightController != nil && self.flightController.limited &&
-			item.reliableCarrierObserved && !item.unreliableFlightTracked &&
-			currentTime.Before(item.sendTime.Add(self.rttWindow.ScaledRtt()))
-		if 0 < threshold && gapRecoveryCount < burstSize && !lateNotLost &&
+		// Mixed lanes: acknowledgements arrive over two lanes whose latencies
+		// differ by an order of magnitude, so later selective acks say nothing
+		// about this item until the slowest lane has had its chance. That
+		// holds whichever lane carried the item: a direct-lane item whose
+		// reply took the relay, because its bounded reply route was full, is
+		// late for exactly the same reason (FLIGHTGATEFIX §14, M3). With a
+		// single ack lane the ordering rule is unchanged, so datagram tail
+		// recovery keeps its pace. An item's own RTO still covers a real loss.
+		lateNotLost := limited &&
+			(mixedAckLanes || item.reliableCarrierObserved && !item.unreliableFlightTracked) &&
+			currentTime.Before(item.sendTime.Add(lateNotLostRtt))
+		if 0 < threshold && gapRecoveryCount < burstSize &&
 			!item.selectiveGapRecovered &&
 			(item.ackTailProbeCount == 0 || item.recoveryKind != sendRecoveryNone) &&
 			threshold <= remainingSelectiveAckCount {
 			item.selectiveGapRecovered = true
 			self.selectiveGapRecoveryActive = true
-			reschedule(item, currentTime, sendRecoverySelectiveGap)
 			gapRecoveryCount += 1
+			if lateNotLost {
+				// The recovery is deferred, not dropped: it is due when the
+				// slowest ack lane has had its chance. An acknowledgement
+				// arriving first removes the item and nothing is written, so
+				// reordering costs no traffic, while a Pack the lane really
+				// lost is still recovered well before its own timeout. The
+				// flight is not reduced for evidence that has not arrived.
+				reschedule(item, item.sendTime.Add(lateNotLostRtt), sendRecoverySelectiveGap)
+				continue
+			}
+			reschedule(item, currentTime, sendRecoverySelectiveGap)
 			unreliableGapRecovery = unreliableGapRecovery || item.unreliableFlightTracked
 		}
 	}
