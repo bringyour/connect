@@ -1422,3 +1422,151 @@ The 9 % exchange-path regression of the merged PRs on radios is finding 3
 (§13.7), which the low-bar guard already returned as REGRESSION on
 `exchange-auto`; this design does not touch it, and G1's narrower rule
 remains the named answer.
+
+## 20. Second round: the reporter on the direct route, the relay storm behind the lossless recoveries, and a landing of merged plus what measures
+
+Design for review, 2026-09-12, from the run records of flightgate-a66
+(`/tmp/flightgate/a66-lowbar-p2p`, `a66-mixed`) read run by run against
+merged on the same seeds. Both falsified predictions resolve to mechanisms
+that D1 to D7 never touched, and the resolution says the same thing twice:
+the mechanisms this program added interact into regimes merged never
+enters, so the landable tree is merged plus the few items that measure as
+wins on their own.
+
+### 20.1 The forced-direct gap is §13.3's progress reporter
+
+Same seed, per run, the client's uplink in the upload direction (a
+9-packet queue; the reports are the packets a66 sends beyond merged's
+while sending fewer Transfer messages, 1,504 against 1,553 on the first
+cell):
+
+| Cell | uplink packets merged → a66 | uplink queue drops | gap writes | transfer s |
+|---|---|---|---|---|
+| 5m-down-1m-up | 2,408 to 2,505 → 3,203 to 3,293 | 256 to 292 → 418 to 445 | 130 to 136 → 156 to 177 | 37.0 to 39.5 → 44.0 to 46.4 |
+| 1m-down-250k-up | 653 to 682 → 1,043 to 1,137 | 31 to 53 → 106 to 121 | 19 to 27 → 33 to 41 | 21.6 to 23.2 → 26.4 to 30.4 |
+| 256k-down-64k-up | 206 to 248 → 374 to 492 | 9 to 15 → 87 to 132 | 5 to 11 → 10 to 11 | 17.3 to 24.5 → 24.9 to 39.7 |
+
+Mechanism, in `transport_p2p_fast_native.go`. Every fast-path receiver
+starts `runProgressReporter` on its first complete message and writes an
+11-byte report every 50 ms while its count changes, three repeats per
+change. The sender of an upload is a receiver too, of the provider's acks,
+so it reports on its own uplink at up to 20 packets a second; the reverse
+direction shows the same +835 packets a run. The cell-edge queue is
+counted in packets: at 64 kbit/s it drains about six data packets a
+second, so the reports alone are three times its drain rate and tail-drop
+the data, which is the 87 to 132 drops, the empty first window on every
+64 kbit/s run, the run that stalled twice, and the readiness requests that
+never got through in the three lost runs. The same 61-byte packets are
+free on a LAN and absent on the exchange routes, which have no fast path:
+that is the isolation stage 3 found. No setting turns the reporter off;
+`FastPathNoProgressTimeout` zero stops only the watchdog. D1 did what it
+said, whole-window timeouts fell from 28 to 4 per run on the first cell;
+the deficit was never the timer.
+
+### 20.2 The 182 lossless recoveries are two runs of a relay storm
+
+The clean-lan tcp-parallel cell moves 2 MB in 2.4 to 4.1 s behind a 3.5
+to 3.9 s route setup, so it measures the first seconds of a direct lane
+coming up, not a steady state. Provider side, per run:
+
+| run | merged: p2p KB, timeouts, gap | a66: p2p KB, timeouts written/deferred, gap, Mbit/s |
+|---|---|---|
+| 1 | 50, 0, 4 | 151, 0/0, 0, 27.7 |
+| 2 | 40, 0, 0 | 738, 985/3,491, 56, 17.4 |
+| 3 | 43, 0, 0 | 269, 261/358, 100, 16.2 |
+| 4 | 47, 0, 0 | 346, 0/0, 0, 25.0 |
+| 5 | 49, 0, 0 | 1,143, 0/0, 0, 27.2 |
+
+Merged's direct lane carries 2 % of the payload in every run and never
+stripes enough to reach any scoreboard state; its timeouts are zero
+everywhere. Ours carries 7 to 55 %, and in two of five runs the striping
+turns into a storm: 4,476 whole-window timeouts with recent cumulative
+progress, of which the defer holds 3,491 and `TimeoutResendDeferLimit`
+releases 985 as written duplicates; the relay carries 8,228 packets
+against merged's 2,015 for the same 2 MB; the device answers every
+duplicate past its head with a fresh head ack, 2,362 acks against 64 in a
+good run; and the 56 and 100 gap writes are `unreliable_flight_gap_count`
+zero, so every one is a relay-carried hole whose F11b grace expired inside
+the inflated relay. D4 could not gate them: it leaves F11b unchanged by
+design, and the holes are not on the direct lane. The clean-cell "win" is
+real in the runs where the lane engages cleanly and absent in the runs
+where it does not; a bimodal outcome cannot be strictly better than a
+stable one on any primary but its median.
+
+### 20.3 The landing: merged, plus what measures on its own
+
+| Kept, with its measurement | Removed, with its measurement |
+|---|---|
+| §13.5 deferred retransmit, on, limit 2, with §16's since-last-deferral rule: relay-only 8.0 → 15.5 Mbit/s, 13 → 0 dead windows, 17,907 → 111 timeouts; mixed 9.4 → 16.1, 20 → 9 | §13.3 reporter, watchdog and the `URP` control payload: 13 to 57 % on every forced-direct repetition, three readiness losses, never measured to help (the blackhole schedule is uninterpretable) |
+| §13.1 forget on RTO: an invariant with its test, untouched by any arm | §13.2 scoped reply affinity, `ReplyAffinityStaleAfter`, the receiver's `replyLaneLosing`, the reply orders on the route snapshot: the striping that feeds 20.2, hybrid H3 parity on stage 3 |
+| §13.4 asynchronous race-commit delivery: a reentrancy fix with tests 11 and 12, off the recovery path | §14, §16, §18: grace, escape, latch, `gapRecoveryDeferred`, the seven-row contract as a gate |
+| §8 counters and the carrier-written ack counters, the flight-gate tests that assert merged's semantics | D4 to D7: `arrivalReliability`, `selectiveAckConclusive`, the conclusive count, the per-pass reduce, the hole-carrier counters |
+| D1 and D3: `resendIntervalForPolicy` and `observeAckRtt` are merged's text, the direct window is gone | §13.6 size-aware admission and its three knobs: goodput 0.8 and 2.0 Mbit/s lower with the cap on |
+
+What returns to merged's text: `scheduleSelectiveAckRecovery`,
+`receiveAck`, `observeItemAck`, the receiver's `writeSnapshot` and
+`writeAck`, `writeDetailedReplyWithCarrierPreference` and
+`transportPotentiallyUnreliable`, `sequenceAck`, `receiveAckMessage`,
+`sendItem`, `transferFlightPolicySnapshot`, `routeSnapshot`'s reply
+orders and `RouteAckProgressAge`, `SendBufferSettings` and
+`ReceiveBufferSettings` less the removed knobs, `WebRtcSettings` less
+`FastPathNoProgressTimeout`, `P2pTransportSettings` less the three cap
+knobs, `transport_p2p_fast_native.go` whole. What stays as written: the
+RTO branch's defer block with `!item.unreliableCarrierObserved` and the
+progress-since-last-deferral term, `forget` and `forgetUnreliableFlight`,
+`deliverRaceCommitPackets`, the counters. Memory is merged's less the
+sixteen-sample window; `sendItem` and `sequenceAck` return to merged's
+sizes, asserted.
+
+Tests. The PR's own mixed-lane tests return to their 89e1633 text and are
+the guard that the recovery path is merged's. The defer tests (test 7,
+`TestSingleReliableLaneQueueInflatedRttDoesNotStorm`,
+`TestRetransmitIntervalCoversTheWindowOrTheDeferIsOn`), the forget test
+and the R1 tests stay. One new guard, red on 66a2130:
+`TestFastPathWiresOnlyFragmentsAndWarmup`, over the vnet factory: while
+one side receives N messages and sends M, the packets it emits are exactly
+M's fragments plus the warmup marker, so no per-interval control packet can
+return unnoticed. The contract file, the ack-arrival, lane-clock,
+classification and mixed-lane-gap tests and the §14/§16 rows of
+`transfer_flight_fallback_test.go` move behind the build tag
+`flightgate_next`: they are the specification of the affinity candidate in
+20.5, not a gate on this landing.
+
+### 20.4 Why remove rather than refine
+
+Four arms each fixed one regime and cost another, and 20.2 shows why: the
+added mechanisms make the direct lane engage, and engaging creates
+scoreboard and relay states merged never reaches, so every refinement has
+been a repair of a state the previous mechanism created. The strict bar is
+per cell on three primaries, and a bimodal cell fails it however good its
+median. Merged is stable everywhere measured and slow in the ways §13.5
+fixes; a tree that is merged plus the defer is the first arm whose every
+difference from merged has its own measurement, and it lands the one
+mechanism that has beaten merged in every seed it was tried on.
+
+### 20.5 Measurements that call the landing done, and what comes after
+
+The bar for this landing is not worse than merged on any primary in any of
+the seventeen cells, better where the defer acts. Forced direct, three
+cells: INDISTINGUISHABLE with the paired sign not stable against us, no
+readiness loss beyond merged's, and the reporter's signature gone:
+`carrier.p2p_network.forward` and `.reverse` `admitted_packet_count`
+within 5 % of merged's per seed. Exchange, six cells: unchanged. Mixed,
+eight cells: gap resends and dead windows equal to merged's within noise,
+goodput at or above, and the relay-only and mixed
+`mixed-relay-queue-inflation-3s` cells at or above 15.5 and 16.1 Mbit/s
+with 0 and at most 9 dead windows. Devices: the p2p-live series must show
+merged's packet counts on the direct lane; the relay-only series' 9 % is
+finding 3, merged's own, and out of scope. Memory: MEMSTEADY not worse.
+
+After it, each alone against this landing, one at a time: (1) reply
+affinity with a storm guard, which is either a bound on reliable-only
+overflow tied to the relay's own window or a receiver that does not switch
+its reply lane per snapshot, measured on a cell whose transfer outlasts
+its setup, since clean-lan tcp-parallel cannot see a direct lane at all;
+(2) M6 as the route manager's ack-progress watchdog from §7's L1 text, no
+wire cost, gated on the forced-direct packet count; (3) finding 3's G1
+rule on `exchange-auto`, owed to the reporter; (4) `TimeoutResendDeferLimit`
+2 against progress-bounded, since the 111 and 6,770 written timeouts that
+remain with the defer on are limit releases; (5) the §15.3 mobile message
+ceiling under MEMSTEADY.
