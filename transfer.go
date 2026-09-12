@@ -770,6 +770,7 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		ReliableAdmissionBoundedByDelivery: false,
 		DeferredItemIsLateForTheScoreboard: false,
 		DeferTimeoutResendBackoff:          true,
+		ReliableTimerUsesDeviation:         false,
 		ContractFillFraction:               0.8,
 		PrewarmOpeningContract:             true,
 		CompactContractHead:                true,
@@ -4015,6 +4016,16 @@ type SendBufferSettings struct {
 	// flows make the window several times deeper, so every firing costs
 	// that much more, which is why only that workload shows it.
 	DeferTimeoutResendBackoff bool
+	// ReliableTimerUsesDeviation reads the retransmit timer of a
+	// reliable-carried item as RFC 6298 does, the mean round trip plus four
+	// deviations, instead of the mean times RttScale (FLIGHTGATEFIX §25.2).
+	// The relay of the exchange cells has a mean under a second and goes
+	// 2.75 s without acknowledging, a three-times excursion that a fixed
+	// margin cannot cover without lengthening every lane's retransmit. Off
+	// by default: a candidate to be read in one campaign, and it divides the
+	// work with the deferral backoff rather than replacing it, since a stall
+	// longer than anything sampled is the backoff's to bound.
+	ReliableTimerUsesDeviation bool
 	// ResendQueueBudget, when set, is a byte budget shared across sequences
 	// (typically all clients of one device): resend queue bytes above the
 	// floor reserve from it, and admission pauses above the floor while it
@@ -5943,7 +5954,14 @@ func (self *SendSequence) resendIntervalForPolicy(
 	if policy.limited && 0 < self.sendBufferSettings.UnreliableMaxResendInterval {
 		maxInterval = min(maxInterval, self.sendBufferSettings.UnreliableMaxResendInterval)
 	}
-	interval := min(self.rttWindow.ScaledRtt(), maxInterval)
+	baseRtt := self.rttWindow.ScaledRtt()
+	if self.sendBufferSettings.ReliableTimerUsesDeviation && !policy.limited {
+		// §25.2: a reliable-carried item's timer follows the lane's own
+		// spread. A direct-carried item keeps the scaled mean, since its cap
+		// and its recovery are the unreliable flight's business.
+		baseRtt = self.rttWindow.DeviationRtt()
+	}
+	interval := min(baseRtt, maxInterval)
 	if shift := uint(min(max(sendCount-1, 0), 16)); 0 < shift {
 		interval = min(interval<<shift, maxInterval)
 	}

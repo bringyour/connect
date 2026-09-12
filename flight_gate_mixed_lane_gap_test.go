@@ -153,6 +153,14 @@ type mixedLaneOptions struct {
 	// deferTimeoutResendBackoffOff turns off FLIGHTGATEFIX §24.3's deferral
 	// backoff, which is the shape the campaign's storm runs measured.
 	deferTimeoutResendBackoffOff bool
+	// slowStallAfter and slowStallFor hold the relay entirely for a stretch
+	// mid-transfer, the in-flight stall the campaign's gap export measures
+	// (2.75 to 2.9 s without a cumulative advance) (FLIGHTGATEFIX §25.1).
+	slowStallAfter time.Duration
+	slowStallFor   time.Duration
+	// reliableTimerUsesDeviation turns on FLIGHTGATEFIX §25.2's RFC 6298
+	// timer, off in the landed tree.
+	reliableTimerUsesDeviation bool
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -197,6 +205,8 @@ func newMixedLaneHarnessWithOptions(
 			options.deferredItemIsLateForTheScoreboard
 		settings.SendBufferSettings.DeferTimeoutResendBackoff =
 			!options.deferTimeoutResendBackoffOff
+		settings.SendBufferSettings.ReliableTimerUsesDeviation =
+			options.reliableTimerUsesDeviation
 		if 0 < options.resendBudget {
 			settings.SendBufferSettings.ResendQueueMaxByteCount = options.resendBudget
 		}
@@ -375,6 +385,14 @@ func newMixedLaneHarnessWithOptions(
 					pace := serialization
 					if stepped := slowSerializationNow(); to == receiverInSlow && 0 < stepped {
 						pace = stepped
+					}
+					if to == receiverInSlow && 0 < options.slowStallFor {
+						// the relay holds everything for one stretch
+						since := time.Since(harnessStart)
+						if options.slowStallAfter <= since &&
+							since < options.slowStallAfter+options.slowStallFor {
+							pace += options.slowStallAfter + options.slowStallFor - since
+						}
 					}
 					timer := time.NewTimer(pace)
 					select {

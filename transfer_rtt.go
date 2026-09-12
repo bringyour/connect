@@ -48,6 +48,15 @@ type RttWindow struct {
 	minimums         []rttWindowMinimum
 	minimumHeadIndex int
 	minimumCount     int
+
+	// rttVar is RFC 6298's deviation term: an exponentially weighted mean of
+	// |sample - mean|, one duration of state and no retained bytes. The
+	// scaled mean this window reports carries a fixed margin, RttScale, which
+	// cannot cover an excursion of several times the mean without lengthening
+	// every retransmit on every lane. The deviation covers it where the lane
+	// has shown a wide spread and tightens toward the mean where it has not
+	// (FLIGHTGATEFIX §25.2).
+	rttVar time.Duration
 }
 
 func NewRttWindow(
@@ -162,6 +171,20 @@ func (self *RttWindow) closeSendTime(sendTimeUnixMilli uint64, receiveTime time.
 	windowHeadIndex := (self.windowTailIndex + self.windowCount) % len(self.window)
 	self.window[windowHeadIndex] = item
 	self.windowCount++
+	// the deviation is measured against the mean before this sample joins it,
+	// as RFC 6298 does, so one outlier does not hide inside its own mean
+	if self.windowCount != 1 {
+		mean := self.netRtt / time.Duration(self.windowCount-1)
+		deviation := item.rtt - mean
+		if deviation < 0 {
+			deviation = -deviation
+		}
+		// rttVar = 3/4 rttVar + 1/4 deviation
+		self.rttVar = (3*self.rttVar + deviation) / 4
+	} else {
+		// RFC 6298's first sample: the deviation starts at half the sample
+		self.rttVar = item.rtt / 2
+	}
 	self.netRtt += item.rtt
 
 	// Newer equal minima supersede older ones. This keeps the deque shortest
@@ -178,6 +201,36 @@ func (self *RttWindow) closeSendTime(sendTimeUnixMilli uint64, receiveTime time.
 	minimumTailIndex := (self.minimumHeadIndex + self.minimumCount) % len(self.minimums)
 	self.minimums[minimumTailIndex] = rttWindowMinimum{rtt: item.rtt, sequence: item.sequence}
 	self.minimumCount++
+}
+
+// DeviationRtt is RFC 6298's retransmit timer for this window: the mean
+// round trip plus four deviations, floored as the scaled mean is and capped
+// by the same overall maximum. An empty window answers with the cold floor,
+// exactly as the scaled mean does, so a cold start is unchanged.
+//
+// Against the scaled mean it trades two things. A lane whose samples are
+// tight reports a shorter timer, so a genuinely lost tail is recovered
+// sooner. A lane whose samples are spread reports a longer one, so a
+// routine excursion of several times the mean no longer rewrites the whole
+// window; its rare real loss waits longer for it (FLIGHTGATEFIX §25.2).
+func (self *RttWindow) DeviationRtt() time.Duration {
+	return self.deviationRtt(time.Now())
+}
+
+func (self *RttWindow) deviationRtt(sendTime time.Time) time.Duration {
+	self.stateLock.Lock()
+	self.coalesceWithLock(sendTime)
+
+	if self.windowCount == 0 {
+		self.stateLock.Unlock()
+		// no evidence: the cold floor, as the scaled mean answers
+		return min(self.minScaledRtt, self.maxScaledRtt)
+	}
+	mean := self.netRtt / time.Duration(self.windowCount)
+	margin := max(self.rttMinScaledRtt, 4*self.rttVar)
+	self.stateLock.Unlock()
+
+	return min(max(mean+margin, self.rttMinScaledRtt), self.maxScaledRtt)
 }
 
 // clamp(mean rtt of window * scale, floor, overall max), where the floor is
