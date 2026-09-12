@@ -1570,3 +1570,148 @@ rule on `exchange-auto`, owed to the reporter; (4) `TimeoutResendDeferLimit`
 2 against progress-bounded, since the 111 and 6,770 written timeouts that
 remain with the defer on are limit releases; (5) the §15.3 mobile message
 ceiling under MEMSTEADY.
+
+## 21. Third round: the deferral removed merged's accidental throttle, so it needs an explicit one
+
+Design for review, 2026-09-12, from the b0b04c8 records (`/tmp/flightgate/
+b0b-defer-on|off`, `b0b-mixed`) read run by run beside merged and a66 on
+the same seeds, and from the diff 66a2130..b0b04c8. The two leads are one
+mechanism seen at two intensities.
+
+### 21.1 What the records say
+
+Lead 2, relay-only, `mixed-relay-queue-inflation-3s` (after 3 s the relay
+becomes 20 Mbit/s with a 5 MB queue and 100 ms base delay, no loss). The
+two stalled runs carry a signature no other run of this cell has, on any
+tree or setting:
+
+| seed, state | windows Mbit/s | provider timeouts written / deferred, gap writes | device timeouts written, carrier-change writes |
+|---|---|---|---|
+| 20260912 on | 1.8, 0, 0, 1.1, 8.8, 10.7, 0.2, 0.1, 1.4, 18.6, 15.3 | 2,780 / 2,036, 1,025 | 2,287, 83 |
+| 20260913 on | 2.7, 0, 0, 1.9, 17.3, 17.2, 12.3, 0.2, 0.1, 0.1, 3.5 | 2,823 / 2,560, 1,020 | 1,419, 178 |
+| 20260910 on | 13.2, 17.1, 17.0 | 0 / 2,472, 0 | 0, 0 |
+| 20260912 off | 6.9, 4.0, 13.8, 17.4, 15.5 | 3,210 / 0, 0 | 578, 0 |
+
+A thousand gap writes on a FIFO lane that cannot reorder, timeouts in
+both directions, and carrier-change writes, which come only from
+`scheduleRetiredReliableCarrierRecovery` on a route-generation change:
+the relay stopped carrying anything for two ten-second stretches and the
+device's route set changed under it. The stalled run also logs the
+multi-client's `busy_probe` at ten seconds with `bar=3000`, its
+`sendstalltimeout`; the good runs log none. Receive-handoff drops are zero
+on both ends. In transfer.go the relay-only path is the same code on a66
+and b0b: the revert's hunks there remove the arrival lane and the
+per-snapshot reply switch and nothing else, and §13.1's forget needs an
+unreliable-tracked item. So the removal set did not add a mechanism; the
+question is why the defer, on this tree, could drive a relay into a state
+merged never reaches (0 timeouts in every clean-lan run of three
+campaigns, 1 dead window relay-only). Five runs a state cannot separate a
+new cause from a rate the a66 campaign happened not to sample, so the
+reproduction below comes first.
+
+Lead 1 is the same storm at one fifth the intensity. The 99 lossless gap
+writes are 93 in one run, beside 498 written, 1,072 deferred and 1,570
+spurious timeouts at 15.5 Mbit/s, while the other four runs wrote 0 to 3
+at 21 to 25 Mbit/s and merged 0 to 6; the storm run's direct lane carried
+175 KB against 31 to 67 in the rest. The 93 are `unreliable_flight_gap_count`
+6, so nearly all are relay-carried holes: items the defer left past
+F11b's time grace without rewriting them, which the next round of
+direct-lane acks then proved.
+
+### 21.2 The mechanism
+
+Merged writes every spurious whole-window timeout. Each rewrite is a
+route-channel write that blocks when the relay's channel is full, and a
+blocked write stalls the sequence loop's admission of new Packs. That is a
+throttle: merged cannot push more than about one window past what the
+relay drains before it stops itself. It costs merged the 17,907 to 35,670
+duplicates the defer removes, and it is why merged's relay queue never
+outruns its own estimate. The defer keeps the item in the queue and writes
+nothing, so the loop goes on admitting up to `ResendQueueMaxByteCount`, 2
+MiB by default, into a lane that has just proved it cannot drain what it
+holds: at 20 Mbit/s that is 800 ms of queue on top of the base delay. The
+window's 128-sample mean lags the inflation, every item's timer fires
+spurious, `TimeoutResendDeferLimit` releases the third firing as a written
+duplicate, the inner TCP's own timer fires and retransmits through the
+tunnel, and the multi-client's 3 s send-stall bar trips. The defer removed
+a throttle merged had by accident, and the storm is what a lane does
+without one.
+
+### 21.3 The change: a deferral pauses admission to the reliable lane
+
+One rule, no estimator. While any item of a sequence holds a deferral,
+the sequence writes no new Pack to a reliable lane. Precisely:
+
+- `sendItem.deferralOutstanding bool`, set when `shouldDeferTimeoutResend`
+  grants a deferral, cleared when the item is removed by an acknowledgement
+  (both branches of `receiveAck`) or when its timeout is finally written;
+  `SendSequence.deferralOutstandingCount int` follows it.
+- At the write site where `unreliableFlightGates` is evaluated, a new Pack
+  whose write would be reliable-only, or any new Pack when the route has no
+  unreliable carrier, waits while `0 < deferralOutstandingCount`, through
+  the same wait path as the flight gate, until the count reaches zero or
+  the earliest deferred `resendTime`. Packs the unreliable flight admits
+  are written as today, so the direct lane is not starved by the relay's
+  queue. Retransmits, probes and gap recoveries are not admissions and are
+  unaffected.
+- `SendBufferSettings.DeferTimeoutResendPausesAdmission`, default true,
+  identity-bearing for the harness like the defer itself; zero cost when
+  no deferral is outstanding.
+- Counters: `DeferralAdmissionWaitCount`, `DeferralAdmissionWaitDuration`.
+
+Why this shape. The deferral already asserts that the lane holds more than
+it can drain in one estimate; admitting more contradicts the assertion.
+Bounding the pipe by acknowledgement rather than by a rate estimate needs
+no new state beyond a bool and an int, and it is what merged's blocking
+write did, minus the duplicate. The pause ends when the deferred item is
+acknowledged, which for a merely late item is one queue delay after the
+deferral, while everything sent after it is still draining, so the lane
+does not idle. Rejected: capping the deferral's length (the storm is
+depth, not time); a bandwidth-delay bound (an estimator, and the window's
+mean is exactly what lags); removing the defer (its win is the largest
+result this program has); lane-proven loss as the gap and deferral
+evidence (a later same-route selective ack proves a FIFO hole; it would
+end the free deferral of a head hole and F11b's expiry writes, but it is a
+second change and the storm explains both leads, so it is the named
+follow-up if the residue survives the pause).
+
+Unchanged: the defer's condition and limit, §13.1, §13.4, merged's
+recovery path, the forced-direct route (no reliable lane, no deferral, the
+three cells that just cleared), and the low-bar exchange cells, which are
+the risk to watch: their queues inflate by design, so a deferral there
+now pauses the mobile surrogate's admission for a queue delay; the six
+cells must stay INDISTINGUISHABLE.
+
+### 21.4 Tests, red on b0b04c8 unless marked
+
+| Test | Regime | Asserts |
+|---|---|---|
+| `TestDeferralPausesReliableAdmission` | single reliable lane | an item's timeout is deferred; new Packs offered are not written until the item is acknowledged or its deferral expires |
+| `TestDeferredItemAcknowledgedEndsThePause` | single reliable lane | an acknowledgement before the deferral expires resumes admission at once, and the count returns to zero |
+| `TestDeferralDoesNotPauseTheUnreliableFlight` (guard) | mixed | with a relay item deferred, a Pack the flight admits is still written to the direct lane |
+| `TestSingleReliableLaneQueueInflatedRttDoesNotStorm`, extended | single reliable lane | a lane draining at link rate with a budget above its bandwidth-delay product: whole-window writes stay zero as today, and the lane's unacknowledged bytes never exceed twice its bandwidth-delay product, which today they reach the budget |
+| `TestInflatedRelayDoesNotStallTheTransfer` | single reliable lane | the schedule's shape in process, a 3 s step to a slower rate with a deep queue and a 2 MiB budget: no whole-window write, no window without delivery, completion within a stated bound |
+| sizes and allocation | | `sendItem` gains no bytes (the bool sits in padding), the write path allocates nothing while paused |
+
+### 21.5 Measurements, in order
+
+1. Reproduction before the change: seeds 20260912 and 20260913 three times
+   each, defer on and off, on b0b04c8 and 66a2130, with transport logging
+   at V(1) and `RaceCommitDeliveryDropCount` and the route-generation count
+   exported, so the route churn is attributed to the send-stall bar or to
+   something else before the pause is credited with removing it. If a66
+   stalls too, the removal set is exonerated and the mechanism above stands
+   alone.
+2. The pause alone against b0b04c8 on all seventeen cells and both
+   queue-inflation A/Bs: relay-only every seed at or above 15 Mbit/s with
+   no dead window, the bimodality gone; mixed at or above 14.6 Mbit/s and
+   at most 4 dead windows; `clean-lan / tcp-parallel` gap resends at or
+   below merged's 9 in every run, no run with a written whole-window
+   timeout; the six mixed cells now behind on gap resends at or above
+   merged; the six exchange low-bar cells INDISTINGUISHABLE; the three
+   forced-direct cells unchanged; `DeferralAdmissionWaitDuration` reported
+   per cell so the pause's cost is visible where it acts.
+3. If the exchange cells move, the pause is scoped to routes whose
+   `ResendQueueMaxByteCount` exceeds the lane's measured drain in one
+   scaled RTT, which is the estimator this design avoided and would then
+   have earned its place.
