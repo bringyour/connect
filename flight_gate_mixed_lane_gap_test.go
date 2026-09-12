@@ -14,7 +14,9 @@ package connect
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,6 +42,56 @@ type mixedLaneGapHarness struct {
 	fastCarried atomic.Uint64
 	slowCarried atomic.Uint64
 	fastDropped atomic.Uint64
+	// laneRoutes are the seven routes by name, so a stalled run can say
+	// whether a route is full, which is the harness wedging, or empty,
+	// which is the transfer layer stalling.
+	laneRoutes []mixedLaneRoute
+	// runDeadline bounds a multi-flow run; past it the run is reported as
+	// stalled rather than failing the test, so a stall can be compared.
+	runDeadline time.Duration
+}
+
+type mixedLaneRoute struct {
+	name  string
+	route Route
+}
+
+// stallDiagnostics describes a run that has stopped delivering: route
+// occupancy, both clients' counters, and where the transfer goroutines are
+// parked.
+func (self *mixedLaneGapHarness) stallDiagnostics(t testing.TB, delivered int, messageCount int) {
+	t.Helper()
+	var occupancy strings.Builder
+	for _, lane := range self.laneRoutes {
+		fmt.Fprintf(&occupancy, " %s=%d/%d", lane.name, len(lane.route), cap(lane.route))
+	}
+	t.Logf("stall after %d of %d: routes%s", delivered, messageCount, occupancy.String())
+	t.Logf("stall sender: %+v", self.sender.SendRecoveryStats())
+	t.Logf("stall receiver: %+v", self.receiver.ReceiveStats())
+	buffer := make([]byte, 8<<20)
+	buffer = buffer[:runtime.Stack(buffer, true)]
+	parked := map[string]int{}
+	for _, goroutine := range strings.Split(string(buffer), "\n\n") {
+		lines := strings.Split(goroutine, "\n")
+		for index := 1; index+1 < len(lines); index += 2 {
+			frame := lines[index]
+			if strings.Contains(frame, "urnetwork/connect.") && !strings.Contains(frame, "_test.go") {
+				parked[strings.TrimSpace(frame)] += 1
+				break
+			}
+		}
+	}
+	names := make([]string, 0, len(parked))
+	for name := range parked {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return parked[names[j]] < parked[names[i]] })
+	for index, name := range names {
+		if 24 <= index {
+			break
+		}
+		t.Logf("stall goroutines %3d  %s", parked[name], name)
+	}
 }
 
 // mixedLaneOptions describes the two lanes. A lane has a latency and,
@@ -62,6 +114,10 @@ type mixedLaneOptions struct {
 	// graceDisabled removes the mixed-lane reordering grace, the shape the
 	// merged tree had.
 	graceDisabled bool
+	// fastBurstLoss replaces the independent drop on the direct lane with a
+	// two-state chain, each direction with its own state, the campaign's
+	// burst-loss shape.
+	fastBurstLoss *laneBurstLoss
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -104,9 +160,10 @@ func newMixedLaneHarnessWithOptions(
 		return settings
 	}
 	harness := &mixedLaneGapHarness{
-		senderId:   NewId(),
-		receiverId: NewId(),
-		received:   make(chan int, 4096),
+		senderId:    NewId(),
+		receiverId:  NewId(),
+		received:    make(chan int, 4096),
+		runDeadline: 180 * time.Second,
 	}
 	harness.ctx = ctx
 	harness.sender = NewClient(ctx, harness.senderId, NewNoContractClientOob(), newSettings())
@@ -123,6 +180,15 @@ func newMixedLaneHarnessWithOptions(
 	receiverInSlow := make(Route, 64)
 	receiverOutFast := make(Route, 4)
 	receiverOutSlow := make(Route, 64)
+	harness.laneRoutes = []mixedLaneRoute{
+		{"senderOutFast", senderOutFast},
+		{"senderOutSlow", senderOutSlow},
+		{"senderIn", senderIn},
+		{"receiverInFast", receiverInFast},
+		{"receiverInSlow", receiverInSlow},
+		{"receiverOutFast", receiverOutFast},
+		{"receiverOutSlow", receiverOutSlow},
+	}
 
 	if !options.directLaneDisabled {
 		harness.sender.RouteManager().UpdateTransportWithProperties(
@@ -185,20 +251,27 @@ func newMixedLaneHarnessWithOptions(
 	// One pipeline per physical lane: a latency, and optionally a bandwidth
 	// of one frame per serialization interval. Order within a lane is kept
 	// and nothing is dropped.
-	dropRandom := rand.New(rand.NewSource(20260911))
+	var fastLoss, fastReplyLoss *laneLossProcess
+	if options.fastBurstLoss != nil {
+		fastLoss = newLaneLossProcess(20260911, 0, options.fastBurstLoss)
+		fastReplyLoss = newLaneLossProcess(20260912, 0, options.fastBurstLoss)
+	} else if 0 < options.fastDropFraction {
+		fastLoss = newLaneLossProcess(20260911, options.fastDropFraction, nil)
+		fastReplyLoss = newLaneLossProcess(20260912, options.fastDropFraction, nil)
+	}
 	var dropLock sync.Mutex
 	forward := func(
 		from Route,
 		to Route,
 		latency time.Duration,
 		serialization time.Duration,
-		dropFraction float64,
+		loss *laneLossProcess,
 		carried *atomic.Uint64,
 	) {
 		deliver := func(b []byte) {
-			if 0 < dropFraction {
+			if loss != nil {
 				dropLock.Lock()
-				dropIt := dropRandom.Float64() < dropFraction
+				dropIt := loss.lost()
 				dropLock.Unlock()
 				if dropIt {
 					harness.fastDropped.Add(1)
@@ -261,10 +334,10 @@ func newMixedLaneHarnessWithOptions(
 			}
 		}()
 	}
-	forward(senderOutFast, receiverInFast, fastDelay, options.fastSerialization, options.fastDropFraction, &harness.fastCarried)
-	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization, 0, &harness.slowCarried)
-	forward(receiverOutFast, senderIn, fastDelay, options.replySerialization, options.fastDropFraction, nil)
-	forward(receiverOutSlow, senderIn, slowDelay, 0, 0, nil)
+	forward(senderOutFast, receiverInFast, fastDelay, options.fastSerialization, fastLoss, &harness.fastCarried)
+	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization, nil, &harness.slowCarried)
+	forward(receiverOutFast, senderIn, fastDelay, options.replySerialization, fastReplyLoss, nil)
+	forward(receiverOutSlow, senderIn, slowDelay, 0, nil, nil)
 
 	t.Cleanup(func() {
 		cancel()
@@ -575,6 +648,24 @@ type mixedLaneRunResult struct {
 	fastCarried uint64
 	slowCarried uint64
 	fastDropped uint64
+	// stalled is set when the run did not finish inside the deadline;
+	// delivered is how far it got. A stalled run is the collapse the
+	// campaign's dead windows record, so it is a result, not a test error.
+	stalled   bool
+	delivered int
+}
+
+// describe is the one-line reading of a run.
+func (self mixedLaneRunResult) describe(messageCount int) string {
+	if self.stalled {
+		return fmt.Sprintf("STALLED after %d of %d messages", self.delivered, messageCount)
+	}
+	return fmt.Sprintf(
+		"%s, %.1f Mb/s, %d of %d windows dead",
+		self.elapsed.Truncate(time.Millisecond),
+		self.megabitsPerSecond(messageCount),
+		self.deadWindows, self.windows,
+	)
 }
 
 // megabitsPerSecond is the goodput a campaign cell would report for this run
@@ -626,16 +717,39 @@ func (self *mixedLaneGapHarness) runMultiFlow(
 	}
 	producers.Wait()
 	delivered := 0
-	deadline := time.After(180 * time.Second)
+	deadline := time.After(self.runDeadline)
+	stall := time.NewTimer(30 * time.Second)
+	defer stall.Stop()
+	diagnosed := false
+	stalled := false
+waiting:
 	for delivered < messageCount {
 		select {
 		case frames := <-self.received:
 			delivered += frames
+			if !stall.Stop() {
+				<-stall.C
+			}
+			stall.Reset(30 * time.Second)
+		case <-stall.C:
+			if !diagnosed {
+				diagnosed = true
+				self.stallDiagnostics(t, delivered, messageCount)
+			}
 		case <-deadline:
-			t.Fatalf("only %d of %d messages were delivered", delivered, messageCount)
+			stalled = true
+			break waiting
 		}
 	}
 	elapsed := time.Since(start)
+	if stalled {
+		return mixedLaneRunResult{
+			elapsed:   elapsed,
+			stalled:   true,
+			delivered: delivered,
+			stats:     self.sender.SendRecoveryStats(),
+		}
+	}
 	time.Sleep(300 * time.Millisecond)
 
 	self.deliveryLock.Lock()
@@ -714,12 +828,10 @@ func TestMixedLaneCampaignRegimeGoodputIsNotWorseWithTheGrace(t *testing.T) {
 		with := measure(false)
 		report := func(name string, result mixedLaneRunResult) {
 			t.Logf(
-				"drop %.0f%% %s: %s, %.1f Mb/s, %d of %d windows dead, gap=%d rto=%d deferred=%d, "+
+				"drop %.0f%% %s: %s, gap=%d rto=%d deferred=%d, "+
 					"direct lane carried %d and lost %d, relay carried %d",
 				100*dropFraction, name,
-				result.elapsed.Truncate(time.Millisecond),
-				result.megabitsPerSecond(messageCount),
-				result.deadWindows, result.windows,
+				result.describe(messageCount),
 				result.stats.SelectiveGapWriteCount,
 				result.stats.TimeoutResendWriteCount,
 				result.stats.TimeoutResendDeferCount,
@@ -728,6 +840,14 @@ func TestMixedLaneCampaignRegimeGoodputIsNotWorseWithTheGrace(t *testing.T) {
 		}
 		report("without the grace", without)
 		report("with the grace   ", with)
+		if with.stalled {
+			t.Fatalf("at %.0f%% loss the run with the grace stalled after %d of %d messages",
+				100*dropFraction, with.delivered, messageCount)
+		}
+		if without.stalled {
+			t.Fatalf("at %.0f%% loss the run without the grace stalled after %d of %d messages",
+				100*dropFraction, without.delivered, messageCount)
+		}
 		if tolerance := without.elapsed + without.elapsed/4; tolerance < with.elapsed {
 			t.Fatalf(
 				"at %.0f%% loss the grace made the stream slower: %s against %s without it (%.1f against %.1f Mb/s)",
