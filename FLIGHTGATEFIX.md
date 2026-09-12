@@ -2631,3 +2631,100 @@ lane with one item cannot storm, and a probe paced by the lane's minimum
 is never later than merged's grace. Build 29.3 inside the lane rule, keep
 row 7 as a held row with the bound above, keep row 9 as the asserted
 trade, and write no test against the stall's length.
+
+## 30. Eleventh round: the ordering correction, the audit of my own claims, and the columns that remain
+
+Written 2026-09-12 against 8b65713.
+
+### 30.1 The correction, and the principle behind it
+
+§29.4 told a reader that merged's whole-window rewrite delivers the stuck
+window through the direct lane during a relay stall and that the lane rule
+was behind on delivery. Measured, merged delivers 48 and 49 frames during
+the stall against the lane rule's 51 and 50, for 2,002 and 2,039 writes
+into the stalled lane against 7 and 3. The claim was wrong, and the record
+should say so in the section that made it.
+
+Two facts make it wrong, and both are invariants rather than tuning. The
+receive stream is ordered, so a retransmission advances delivery only by
+filling the first missing item; every write past that item buys nothing
+until it is filled, whichever lane carries it. And on a striped route in
+steady state the unreliable flight is full by construction: the overflow
+to the relay exists precisely because the flight admits nothing more, so
+a rewrite written p2p-first cannot change lanes while the inner flow is
+still sending, and goes where the original went, behind the stall. Room
+in the flight appears only after the inner flow has backpressured on the
+stalled ordered stream, which is after the stall has already cost a
+window of delivery; even then the room is a flight's worth, tens of
+kilobytes against a stuck window of hundreds, and the writes beyond it
+still land in the stalled lane. The stream's reversion of the wider probe
+set is right, and row 10 stands with both halves: delivery does not
+separate the trees, writes into the stalled lane separate them by two
+orders of magnitude.
+
+The principle, for any later claim: a retransmit heals only if it fills
+the first missing item and only if it can take a lane that is delivering,
+and the second condition is false on a striped route until the inner flow
+stops. A claim that a rewrite heals faster than a probe must state both
+conditions and is bounded by the flight's size.
+
+### 30.2 The audit of my sections for the same flaw
+
+| Where | Claim | Standing |
+|---|---|---|
+| §29.4 | merged's rewrite delivers the stuck window through the direct lane; a flight-bounded probe set closes a delivery column | retracted by 30.1; the column did not exist |
+| §29.3 | the lone-tail probe "with room in the direct flight takes the direct lane, which is the heal" | conditional and mostly moot: a dropped tail leaves the relay idle, so the probe is delivered through the relay itself, which is why row 7 closes regardless of lane; a stalled lone tail is healed only with flight room, which 30.1 says is absent while the inner flow sends. The row's bound does not depend on the lane. |
+| §29.2, angle 4 | "which is the heal" | the same conditional; corrected as above |
+| §27.1 | the duplicates queue behind the originals in the stalled lane and the lane inflates on them | consistent with 30.1 and now measured (2,002 writes, no delivery) |
+| §26.1, §26.2 | the head probe as the response to silence, counted, never claimed to deliver during the stall | stands |
+| §24.3 | merged's roughly a thousand rewrites for the same stall | a count, stands |
+| §19 to §25 | no claim that a rewrite heals; §21.2's throttle claim was withdrawn on other grounds | nothing to correct |
+
+### 30.3 The columns that remain, after row 7 and row 10
+
+On the recovery path, none where merged leads and the column is open. In
+detail:
+
+- Row 9, a hole proven by one same-lane acknowledgement waits its own
+  timer, at most one interval. Its argument needs restating more
+  precisely than §29.4 gave it: the scoreboard state "X unacknowledged,
+  later items selectively acknowledged" arises only when the receiver has
+  a hole at or below X, since a received X is covered cumulatively by any
+  later acknowledgement; the ambiguity is a hole below X, transient, with
+  X's own selective acknowledgement lost on the p2p-first reply lane,
+  which a single later same-lane selective acknowledgement cannot be told
+  from a dropped X. The interval is the protection: it gives the hole
+  below time to fill and X's cumulative coverage to arrive. Exhausted:
+  a threshold of one reintroduces that spurious write; repeating
+  outstanding selective acknowledgements in every snapshot would close it
+  without a wire change but multiplies acknowledgement frames by the
+  items above a hole, since each is written as its own frame; range-coded
+  selective acknowledgements would close it cheaply and are a wire change.
+  Recommendation: keep the row as the asserted, bounded trade; the
+  no-wire-change closure is named if the matrix ever shows the column
+  moving a primary.
+- The stall's length: the relay's, every tree reads 2.75 s, no test
+  against it.
+- Deferrals on a draining lane, thousands against merged's none: re-arms,
+  not wire or delivery; if the matrix carries a processing column it
+  should be measured rather than assumed, and the expectation is that
+  merged's writes cost more than our re-arms.
+- Memory: merged's less the direct window plus a few words per route; the
+  §22 ring must not be allocated while its flag is off, which is the one
+  place we could be behind by 256 bytes a sequence, and it is a
+  housekeeping item, not a column.
+- The unreliable lane, the forced-direct route and the exchange cells
+  are merged's paths or better by construction, as before.
+
+### 30.4 What the definitive campaign is doing
+
+Said plainly: on the recovery path there is no open column where merged
+leads, so the campaign confirms magnitudes and rates rather than
+discovering a mechanism. It confirms the storm-cell result at twenty
+repetitions against the null band, the relay-only cell's bimodality gone
+or not at its rate, and the low-bar cells unchanged. What it can still
+discover is outside the recovery path and outside the instrument: the
+route-generation changes seen in the earlier stalled seeds, which are the
+transport's, and the mobile envelope on devices, which is §17's. If a
+mixed cell comes back behind merged outside the band, the reading should
+start from those, not from the rows the contract already holds.
