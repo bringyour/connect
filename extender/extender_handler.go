@@ -26,8 +26,9 @@ import (
 // inner bytes. Every refusal is 403 with no body and closes the connection.
 //
 // An extender request that arrives over h2 is refused, because an h2 stream
-// cannot be hijacked. Any request that is not an extender request is refused
-// in this phase; phase 1b answers it with the reverse proxy (A5).
+// cannot be hijacked. A request that is not an extender request is not refused
+// at all: it goes to the reverse proxy, which answers it with the real site
+// when its server name is on the whitelist (A5).
 
 type extenderHandler struct {
 	server *ExtenderServer
@@ -37,9 +38,9 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	server := self.server
 
 	if !isExtenderRequest(req) {
-		// A5 replaces this with a reverse proxy to the requested name in
-		// phase 1b; until then an extender only speaks the extender protocol.
-		self.refuse(w, req, "request", fmt.Errorf("%s %s is not an extender request", req.Method, req.URL.Path))
+		// everything that is not the extender protocol looks like an ordinary
+		// host to whoever asked (A5)
+		server.proxy.serve(w, req)
 		return
 	}
 	if req.ProtoMajor == 2 {
@@ -128,12 +129,7 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 
 // Refuses with 403 and no body, closing the connection (A4).
 func (self *extenderHandler) refuse(w http.ResponseWriter, req *http.Request, stage string, err error) {
-	self.server.reportError(stage, err)
-	if req.ProtoMajor == 1 {
-		w.Header().Set("Connection", "close")
-		w.Header().Set("Content-Length", "0")
-	}
-	w.WriteHeader(http.StatusForbidden)
+	refuseRequest(self.server, w, req, http.StatusForbidden, stage, err)
 }
 
 // The A3 shape: POST / with the extender content type.

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/idna"
 
@@ -47,9 +48,11 @@ import (
 // and no tls record starts with a length of 1024 or less, so the first four
 // bytes tell the two apart. v1 acceptance is dropped one release later.
 //
-// What this phase does not do: the reverse proxy for non-extender requests
-// (A5) and the dns forwarder for non-translation queries (A6). Both are
-// refused here and land in phase 1b.
+// Everything that is not the extender protocol is answered as a real host
+// would answer it: a request whose server name is on the whitelist is reverse
+// proxied to that name (A5), and a query on udp 53 that is not the translation
+// is resolved and answered (A6). A prober therefore sees a working site and a
+// working resolver, and the extender protocol stays inside the outer tls.
 //
 // The server is safe for concurrent use. Close interrupts every listener and
 // connection it owns; CloseAndWait also joins their goroutines.
@@ -67,6 +70,20 @@ func DefaultExtenderSettings() *ExtenderSettings {
 		QuicIdleTimeout:             30 * time.Second,
 		MaxConnectionCountPerSource: 64,
 		MaxConnectionCount:          4096,
+
+		ProxyMaxRequestByteCount:         1024 * 1024,
+		ProxyMaxResponseByteCount:        8 * 1024 * 1024,
+		ProxyMaxConnectionCountPerSource: 8,
+		ProxyMaxConnectionCount:          256,
+		ProxyIdleTimeout:                 30 * time.Second,
+
+		DnsMaxQueryRatePerSource:  10,
+		DnsMaxQueryBurstPerSource: 20,
+		DnsMaxQueryRate:           500,
+		DnsMaxQueryBurst:          500,
+		DnsMaxResponseByteCount:   4096,
+		DnsForwardWorkerCount:     64,
+		DnsForwardTimeout:         5 * time.Second,
 
 		DnsTlds: []string{connect.DefaultExtenderDnsTld},
 	}
@@ -88,6 +105,52 @@ type ExtenderSettings struct {
 	MaxConnectionCountPerSource int
 	// Concurrent connections over every carrier (A9). <= 0 disables.
 	MaxConnectionCount int
+
+	// Bounds of the reverse proxy that answers everything that is not an
+	// extender request (A5). The request body and the concurrency bounds
+	// refuse with 503 before anything is relayed; the response bound cuts a
+	// body that is already being written, because the status and headers have
+	// already left. <= 0 disables each.
+	ProxyMaxRequestByteCount         int64
+	ProxyMaxResponseByteCount        int64
+	ProxyMaxConnectionCountPerSource int
+	ProxyMaxConnectionCount          int
+	// Budget for one upstream response header and for each further step of the
+	// relay, so a site that stops sending releases the proxied slot (A5).
+	ProxyIdleTimeout time.Duration
+	// SpoofDomains, when set, replaces connect.SpoofDomains() in the whitelist
+	// (A5, A10). Tests install synthetic names through it.
+	SpoofDomains []string
+	// ProxyTlsConfig, when set, is the upstream client configuration of the
+	// reverse proxy, which verifies normally. Tests inject the roots of their
+	// fixture site. Nil keeps the platform defaults.
+	ProxyTlsConfig *tls.Config
+
+	// Bounds of the udp 53 forwarder that answers queries which are not the
+	// translation (A6). The per-source rate limit and the one in-flight query
+	// per source keep one address from spending the whole budget; a query over
+	// any of them is dropped silently. <= 0 disables each.
+	DnsMaxQueryRatePerSource  float64
+	DnsMaxQueryBurstPerSource int
+	DnsMaxQueryRate           float64
+	DnsMaxQueryBurst          int
+	// Answers larger than this are truncated with the TC bit (A6).
+	DnsMaxResponseByteCount int
+	// Queries resolved at once. The forwarder hands every query to these
+	// workers and drops when they are all busy, so a slow resolver never
+	// blocks the translation's read loop (A6).
+	DnsForwardWorkerCount int
+	// Budget of one resolution, which bounds how long a query holds a worker
+	// and its source's in-flight slot. Not named in A6; without it a resolver
+	// that never answers retires a worker permanently.
+	DnsForwardTimeout time.Duration
+	// DnsForward, when set, resolves one question and returns the raw dns
+	// response wire (A6). Nil builds a DohCache from DohSettings on first use.
+	DnsForward func(ctx context.Context, qType dnsmessage.Type, name string) ([]byte, bool)
+	// DohSettings, when set, configures the forwarder's own DoH cache. Nil
+	// takes connect.DefaultDohSettings(), which is the connect default server
+	// list (A6).
+	DohSettings *connect.DohSettings
 
 	// Encoding tlds of the dns carrier. A query that does not use one of them
 	// is not part of the translation.
@@ -150,6 +213,8 @@ type ExtenderServer struct {
 
 	certificates    *extenderCertificates
 	certificatesErr error
+
+	proxy *extenderProxy
 
 	httpServer  *http.Server
 	http2Server *http2.Server
@@ -220,17 +285,32 @@ func NewExtenderServer(
 	// A certificate failure is reported when serving starts, so the
 	// constructor keeps its shape for callers that cannot handle an error.
 	self.certificates, self.certificatesErr = newExtenderCertificates(settings.IdentityKeySeed, settings)
+	self.proxy = newExtenderProxy(self)
 
 	handler := &extenderHandler{server: self}
-	// an h2 connection only ever gets refusals in this phase, so it is
-	// reclaimed on the same budget a connection has to make its request
+	// an idle h2 connection is reclaimed on the same budget a connection has to
+	// make its request; a proxied exchange on it is bounded by the proxy
 	self.http2Server = &http2.Server{
 		IdleTimeout: settings.HeaderTimeout,
 	}
 	self.httpServer = &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: settings.HeaderTimeout,
-		ErrorLog:          log.New(extenderLogWriter{}, "", 0),
+		// a request whose body never arrives is dropped on the same budget,
+		// and net/http clears the deadline on hijack, so the relay that
+		// follows an accepted request keeps only its own deadlines (A9)
+		ReadTimeout: settings.HeaderTimeout,
+		ErrorLog:    log.New(extenderLogWriter{}, "", 0),
+		// the sni of a terminated tcp connection is not on the request, which
+		// is no longer a *tls.Conn, so it is carried on the connection context
+		// along with the per-connection proxy budget (A3, A5)
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			serverName := ""
+			if requestConn, ok := conn.(*connWithInitialBytes); ok {
+				serverName = requestConn.serverName
+			}
+			return newExtenderRequestContext(ctx, serverName)
+		},
 	}
 	// h2 support is configured through the standard path even though the
 	// extender dispatches the protocol itself: it has already read the first
@@ -242,6 +322,12 @@ func NewExtenderServer(
 	self.h3Server = &http3.Server{
 		Handler:     handler,
 		IdleTimeout: settings.QuicIdleTimeout,
+		// the udp carriers take the sni from the request, which carries the
+		// terminated connection state, so only the proxy budget is per
+		// connection here
+		ConnContext: func(ctx context.Context, quicConn *quic.Conn) context.Context {
+			return newExtenderRequestContext(ctx, "")
+		},
 	}
 
 	return self
@@ -385,7 +471,12 @@ func remoteAddressString(remoteAddr net.Addr) string {
 // The limit key of a connection: the address without the port, so a source
 // cannot multiply its budget by using more ports.
 func connectionSource(remoteAddr net.Addr) string {
-	address := remoteAddressString(remoteAddr)
+	return connectionSourceAddress(remoteAddressString(remoteAddr))
+}
+
+// The limit key of an address in text form, which is how a request carries the
+// peer it arrived from.
+func connectionSourceAddress(address string) string {
 	if host, _, err := net.SplitHostPort(address); err == nil {
 		return host
 	}
@@ -423,9 +514,13 @@ func (self *ExtenderServer) startConnection(connection net.Conn) {
 }
 
 // ListenAndServe owns every accepted listener and connection until shutdown.
+// It reports a bind failure and nothing else: a Close that lands while a
+// carrier is still binding ends the call with no error, as a Close after the
+// carriers are up does.
 func (self *ExtenderServer) ListenAndServe() error {
 	if !self.beginWorker() {
-		return self.ctx.Err()
+		// shutdown started before serving, which is not a bind failure
+		return nil
 	}
 	defer self.endWorker()
 	defer self.Close()
@@ -467,11 +562,13 @@ func (self *ExtenderServer) ListenAndServe() error {
 		}
 		ownedListener, ok := self.addListener(listener)
 		if !ok {
-			return self.ctx.Err()
+			// shutdown started while binding, which is not a bind failure
+			return nil
 		}
 		listeners[port] = ownedListener
 		if !self.beginWorker() {
-			return self.ctx.Err()
+			// shutdown started while binding, which is not a bind failure
+			return nil
 		}
 		go func() {
 			defer self.endWorker()
@@ -538,12 +635,14 @@ func (self *ExtenderServer) ListenAndServe() error {
 		}
 		ownedCloser, ok := self.addCloser(func() { packetConn.Close() })
 		if !ok {
-			return self.ctx.Err()
+			// shutdown started while binding, which is not a bind failure
+			return nil
 		}
 		packetConns = append(packetConns, ownedCloser)
 
 		if !self.beginWorker() {
-			return self.ctx.Err()
+			// shutdown started while binding, which is not a bind failure
+			return nil
 		}
 		go func() {
 			defer self.endWorker()
@@ -580,6 +679,11 @@ func (self *ExtenderServer) serveQuicCarrier(
 			dnsTlds = append(dnsTlds, []byte(connect.DefaultExtenderDnsTld))
 		}
 		ptSettings.DnsTlds = dnsTlds
+		// every query that is not the translation is resolved and answered on
+		// this same socket, so a prober of udp 53 gets a working resolver (A6)
+		forwarder := newExtenderDnsForwarder(self, packetConn)
+		defer forwarder.close()
+		ptSettings.DnsOtherHandler = forwarder.handleQuery
 		translation, err := connect.NewPacketTranslation(
 			self.ctx,
 			connect.PacketTranslationModeDecode53,
@@ -704,6 +808,7 @@ func (self *ExtenderServer) Close() {
 		closeCloser()
 	}
 	self.httpServer.Close()
+	self.proxy.close()
 }
 
 // CloseAndWait interrupts and joins every listener and connection worker.
@@ -712,7 +817,14 @@ func (self *ExtenderServer) CloseAndWait() {
 	self.workers.Wait()
 }
 
+// An empty secret list is an open extender, which is what an operator
+// activated extender is; a non-empty list requires the hmac over timestamp and
+// nonce to match one entry, which is the private extender of a network space's
+// manual configuration (A4).
 func (self *ExtenderServer) IsAllowedSecret(header *protocol.ExtenderHeader) bool {
+	if len(self.allowedSecrets) == 0 {
+		return true
+	}
 	for _, secret := range self.allowedSecrets {
 		mac := hmac.New(sha256.New, []byte(secret))
 		timestampBytes := make([]byte, 8)
@@ -829,8 +941,11 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 		self.reportError("header length", err)
 		return
 	}
-	requestConn := newConnWithInitialBytes(clientConn, initialBytes)
-	self.serveHttpConnection(handleCtx, requestConn, clientConn.ConnectionState().NegotiatedProtocol)
+	// the terminated connection is the only place the requested name survives:
+	// what the http server serves from here is no longer a *tls.Conn (A3, A5)
+	connectionState := clientConn.ConnectionState()
+	requestConn := newConnWithInitialBytes(clientConn, initialBytes, connectionState.ServerName)
+	self.serveHttpConnection(handleCtx, requestConn, connectionState.NegotiatedProtocol)
 }
 
 // Serves one terminated connection with the http server. h2 is dispatched
@@ -842,8 +957,10 @@ func (self *ExtenderServer) serveHttpConnection(
 	negotiatedProtocol string,
 ) {
 	if negotiatedProtocol == http2.NextProtoTLS {
+		// h2 never reaches the ConnContext of the http server, so the request
+		// context is built here instead
 		self.http2Server.ServeConn(requestConn, &http2.ServeConnOpts{
-			Context:    ctx,
+			Context:    newExtenderRequestContext(ctx, requestConn.serverName),
 			BaseConfig: self.httpServer,
 			Handler:    self.httpServer.Handler,
 		})
@@ -919,11 +1036,7 @@ func (self *ExtenderServer) dialForward(
 	clientAddress string,
 	header *protocol.ExtenderHeader,
 ) (net.Conn, error) {
-	dialContext := self.forwardDialer.DialContext
-	if self.settings.DialContext != nil {
-		dialContext = self.settings.DialContext
-	}
-	forwardConn, err := dialContext(ctx, forwardNetwork(clientAddress), net.JoinHostPort(
+	forwardConn, err := self.dialContext()(ctx, forwardNetwork(clientAddress), net.JoinHostPort(
 		header.DestinationHost,
 		fmt.Sprintf("%d", header.DestinationPort),
 	))
@@ -942,6 +1055,16 @@ func (self *ExtenderServer) dialForward(
 		return nil, err
 	}
 	return forwardConn, nil
+}
+
+// The egress of this extender: the configured seam, or the forward dialer.
+// The forward and the reverse proxy share it, so a test that injects one
+// observes both (A5, A7).
+func (self *ExtenderServer) dialContext() connect.DialContextFunction {
+	if self.settings.DialContext != nil {
+		return self.settings.DialContext
+	}
+	return self.forwardDialer.DialContext
 }
 
 // The dial network of the family of the client's outer socket. An address with

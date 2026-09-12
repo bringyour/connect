@@ -95,6 +95,14 @@ type PacketTranslationSettings struct {
 
 	WritePacketsPerSecond int
 	SequenceBufferSize    int
+
+	// DnsOtherHandler, when set, receives every well-formed query on a decode53
+	// socket that is not part of the translation (EXTENDER.md A6). The query
+	// bytes are a copy the handler may retain, and the address is the datagram
+	// source to answer on. It runs on the decoder's read loop and must not
+	// block: the extender's forwarder admits the query and hands it to its own
+	// workers. Nil ignores such queries, which is the behavior before A6.
+	DnsOtherHandler func(query []byte, addr net.Addr)
 }
 
 type packet struct {
@@ -841,6 +849,13 @@ func (self *packetTranslation) handleDnsOther(packetData []byte, addr net.Addr) 
 
 			// else unknown
 		}
+	}
+
+	if handler := self.settings.DnsOtherHandler; handler != nil {
+		// the read buffer is reused by the next read, so the handler is given
+		// bytes of its own; a query that does not parse never reaches it,
+		// which is the cheapest place to drop junk under a flood
+		handler(slices.Clone(packetData), addr)
 	}
 
 	return

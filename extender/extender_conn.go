@@ -16,20 +16,30 @@ import (
 // http request (A3); when it is an http request those bytes belong to the
 // request line or the h2 preface and must be seen by the server that follows.
 //
+// It also carries the server name of the terminated connection, which is the
+// only place the requested name survives once the connection is no longer a
+// *tls.Conn (A5).
+//
 // Close is idempotent and closes the channel the carrier joins on, so the
 // carrier can wait for the http server to finish with the connection without
 // racing the handler.
 type connWithInitialBytes struct {
 	net.Conn
 	initialBytes []byte
+	serverName   string
 	closeOnce    sync.Once
 	closed       chan struct{}
 }
 
-func newConnWithInitialBytes(conn net.Conn, initialBytes []byte) *connWithInitialBytes {
+func newConnWithInitialBytes(
+	conn net.Conn,
+	initialBytes []byte,
+	serverName string,
+) *connWithInitialBytes {
 	return &connWithInitialBytes{
 		Conn:         conn,
 		initialBytes: initialBytes,
+		serverName:   serverName,
 		closed:       make(chan struct{}),
 	}
 }

@@ -29,6 +29,8 @@ import (
 
 	quic "github.com/quic-go/quic-go"
 
+	"golang.org/x/net/dns/dnsmessage"
+
 	"testing"
 )
 
@@ -1098,4 +1100,106 @@ func selfSign(hosts []string, organization string, validFrom time.Duration, vali
 	keyPemBytes = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
 
 	return
+}
+
+// A query on a decode53 socket that is not the translation reaches the hook
+// with its own bytes and its source address, and a translated packet does not
+// (EXTENDER.md A6).
+func TestPacketTranslationDeliversOtherDnsQueries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serverConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type otherQuery struct {
+		queryBytes []byte
+		addr       net.Addr
+	}
+	otherQueries := make(chan otherQuery, 4)
+	settings := DefaultPacketTranslationSettings()
+	settings.DnsTlds = [][]byte{[]byte("pt.example.")}
+	settings.DnsOtherHandler = func(queryBytes []byte, addr net.Addr) {
+		otherQueries <- otherQuery{queryBytes: queryBytes, addr: addr}
+	}
+	translation, err := NewPacketTranslation(ctx, PacketTranslationModeDecode53, serverConn, settings)
+	if err != nil {
+		serverConn.Close()
+		t.Fatal(err)
+	}
+	defer translation.Close()
+
+	clientConn, err := net.DialUDP(
+		"udp",
+		nil,
+		serverConn.LocalAddr().(*net.UDPAddr),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+
+	newQuery := func(name string, qType dnsmessage.Type) []byte {
+		builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 0x4242})
+		builder.EnableCompression()
+		if err := builder.StartQuestions(); err != nil {
+			t.Fatal(err)
+		}
+		if err := builder.Question(dnsmessage.Question{
+			Name:  dnsmessage.MustNewName(name),
+			Type:  qType,
+			Class: dnsmessage.ClassINET,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		queryBytes, err := builder.Finish()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return queryBytes
+	}
+
+	queryBytes := newQuery("other.example.", dnsmessage.TypeA)
+	if _, err := clientConn.Write(queryBytes); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delivered := <-otherQueries:
+		if !bytes.Equal(delivered.queryBytes, queryBytes) {
+			t.Fatalf("delivered %x, expected %x", delivered.queryBytes, queryBytes)
+		}
+		if delivered.addr.String() != clientConn.LocalAddr().String() {
+			t.Fatalf("delivered address = %s, expected %s", delivered.addr, clientConn.LocalAddr())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the query was not delivered to the hook")
+	}
+
+	// a txt query under the encoding tld is the translation, not an other query
+	if _, err := clientConn.Write(newQuery("aaaa.pt.example.", dnsmessage.TypeTXT)); err != nil {
+		t.Fatal(err)
+	}
+	// the next other query is a barrier: it can only be delivered after the
+	// read loop has already handled the translated one
+	if _, err := clientConn.Write(newQuery("second.example.", dnsmessage.TypeA)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delivered := <-otherQueries:
+		var parser dnsmessage.Parser
+		if _, err := parser.Start(delivered.queryBytes); err != nil {
+			t.Fatal(err)
+		}
+		question, err := parser.Question()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if question.Name.String() != "second.example." {
+			t.Fatalf("delivered %s, expected the second query", question.Name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second query was not delivered to the hook")
+	}
 }

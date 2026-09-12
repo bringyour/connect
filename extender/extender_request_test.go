@@ -7,7 +7,6 @@ package extender
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -16,41 +15,16 @@ import (
 	"testing"
 	"time"
 
-	quic "github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
-
 	"google.golang.org/protobuf/proto"
 
 	"github.com/urnetwork/connect"
 )
 
 // A raw client on the tcp carrier, so a test can send what the production
-// client never sends. nextProtos selects the outer alpn, which is what tells
-// h2 from http/1.1.
+// client never sends. It fronts the extender with the name no whitelist
+// carries, so a request through it is never proxied.
 func newRawExtenderHttpClient(fixture *extenderFixture, nextProtos []string) *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialTLSContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
-				conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fixture.authority(fixture.tcpPort))
-				if err != nil {
-					return nil, err
-				}
-				tlsConn := tls.Client(conn, &tls.Config{
-					ServerName:         testServerName,
-					InsecureSkipVerify: true,
-					MinVersion:         tls.VersionTLS13,
-					NextProtos:         nextProtos,
-				})
-				if err := tlsConn.HandshakeContext(ctx); err != nil {
-					conn.Close()
-					return nil, err
-				}
-				return tlsConn, nil
-			},
-			ForceAttemptHTTP2: true,
-		},
-		Timeout: 20 * time.Second,
-	}
+	return newRawExtenderHttpClientWithServerName(fixture, testServerName, nextProtos)
 }
 
 // The serialized header a valid request carries.
@@ -88,9 +62,9 @@ func TestExtenderRefusesTheRequestOverH2(t *testing.T) {
 	}
 }
 
-// A request that is not an extender request is refused in this phase,
-// whatever server name it asks for. Phase 1b answers it with the reverse
-// proxy (A5).
+// A request that is not an extender request is refused when the name it was
+// fronted with is not on the whitelist, whatever host it asks for: the sni
+// decides, not the request (A5).
 func TestExtenderRefusesEveryOtherRequest(t *testing.T) {
 	fixture := newExtenderFixture(t, "127.0.0.1", nil)
 	serverNames := []string{testServerName, "other.example", "dest.example"}
@@ -194,6 +168,75 @@ func TestExtenderRefusesUnauthorizedRequests(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "403") {
 				t.Fatalf("%s %s error = %v, expected a 403 refusal", carrier, c.description, err)
+			}
+		}
+	}
+}
+
+// An extender with no secrets accepts every header, which is what an operator
+// activated extender is; one with secrets requires the hmac to match (A4).
+func TestExtenderSecretsGateTheRequest(t *testing.T) {
+	cases := []struct {
+		description    string
+		allowedSecrets []string
+		secret         string
+		accepted       bool
+	}{
+		{
+			description:    "open extender, no signature",
+			allowedSecrets: nil,
+			secret:         "",
+			accepted:       true,
+		},
+		{
+			description:    "open extender, any signature",
+			allowedSecrets: nil,
+			secret:         "any-secret",
+			accepted:       true,
+		},
+		{
+			description:    "private extender, no signature",
+			allowedSecrets: []string{testSecret},
+			secret:         "",
+			accepted:       false,
+		},
+		{
+			description:    "private extender, wrong signature",
+			allowedSecrets: []string{testSecret},
+			secret:         "not-the-secret",
+			accepted:       false,
+		},
+		{
+			description:    "private extender, right signature",
+			allowedSecrets: []string{testSecret},
+			secret:         testSecret,
+			accepted:       true,
+		},
+	}
+	for _, c := range cases {
+		fixture := newExtenderFixtureWithSecrets(t, "127.0.0.1", c.allowedSecrets, nil)
+		extenderConfig := fixture.extenderConfig(connect.ExtenderCarrierTcp)
+		extenderConfig.Secret = c.secret
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		conn, _, err := connect.DialExtender(
+			ctx,
+			fixture.connectSettings(),
+			extenderConfig,
+			&connect.ExtenderDial{DestinationHost: "dest.example", DestinationPort: 443},
+		)
+		cancel()
+		if conn != nil {
+			conn.Close()
+		}
+		if c.accepted && err != nil {
+			t.Fatalf("%s: %v", c.description, err)
+		}
+		if !c.accepted {
+			if err == nil {
+				t.Fatalf("%s was accepted", c.description)
+			}
+			if !strings.Contains(err.Error(), "403") {
+				t.Fatalf("%s error = %v, expected a 403 refusal", c.description, err)
 			}
 		}
 	}
@@ -454,25 +497,11 @@ func TestExtenderServicesReachTheirHandlers(t *testing.T) {
 	}
 }
 
-// A request that is not an extender request is refused over h3 too, which is
-// where phase 1b's reverse proxy will answer it (A3, A5).
+// A request that is not an extender request and carries a name the whitelist
+// does not have is refused over h3 too (A3, A5).
 func TestExtenderRefusesAPlainRequestOverH3(t *testing.T) {
 	fixture := newExtenderFixture(t, "127.0.0.1", nil)
-	h3Transport := &http3.Transport{
-		TLSClientConfig: &tls.Config{
-			ServerName:         testServerName,
-			InsecureSkipVerify: true,
-			NextProtos:         []string{http3.NextProtoH3},
-		},
-		Dial: func(
-			ctx context.Context,
-			addr string,
-			tlsConfig *tls.Config,
-			quicConfig *quic.Config,
-		) (*quic.Conn, error) {
-			return quic.DialAddr(ctx, fixture.authority(fixture.quicPort), tlsConfig, quicConfig)
-		},
-	}
+	h3Transport := newRawExtenderH3Transport(fixture, testServerName)
 	defer h3Transport.Close()
 
 	request, err := http.NewRequest(http.MethodGet, "https://"+testServerName+"/", nil)

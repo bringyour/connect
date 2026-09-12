@@ -6,6 +6,7 @@
 package extender
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -19,14 +20,25 @@ import (
 	"testing"
 	"time"
 
+	quic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+
 	"github.com/urnetwork/connect"
 )
+
+// The caller address the fixture site reports from /hello.
+const testHelloClientAddress = "198.51.100.7"
 
 // Synthetic encoding tld of the dns carrier in tests.
 const testDnsTld = "x.example."
 
-// Synthetic fronted name the client presents as the outer sni.
+// Synthetic fronted name the client presents as the outer sni. It is not on
+// the whitelist, so a plain request that carries it is refused.
 const testServerName = "front.example"
+
+// Synthetic spoof name, installed in place of the bundled list (A10). It is on
+// the whitelist and is never a valid extender destination (A5).
+const testSpoofName = "spoof.example"
 
 // Secret of the private extender under test.
 const testSecret = "fixture-secret"
@@ -39,6 +51,9 @@ type destination struct {
 	rootCAs         *x509.CertPool
 	familyAddresses map[string]string
 	requestCount    atomicCount
+	// held, when set, blocks every /hold request until it is closed, which is
+	// how a test holds a proxied exchange open or stalls one mid body
+	held chan struct{}
 }
 
 // atomicCount counts handled destination requests without a lock.
@@ -64,7 +79,7 @@ func (self *atomicCount) get() int {
 func newDestination(t *testing.T) *destination {
 	t.Helper()
 	certificate, err := selfSignedCertificate(
-		[]string{"dest.example", "dest4.example", "dest6.example"},
+		[]string{"dest.example", "dest4.example", "dest6.example", testSpoofName},
 		"Extender Test",
 		time.Hour,
 		24*time.Hour,
@@ -79,12 +94,42 @@ func newDestination(t *testing.T) *destination {
 		certificate:     certificate,
 		rootCAs:         rootCAs,
 		familyAddresses: map[string]string{},
+		held:            make(chan struct{}),
 	}
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			dest.requestCount.add()
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"host":"` + req.Host + `"}`))
+			switch req.URL.Path {
+			case "/hello":
+				// the shape the forward probe reads, alongside the host echo
+				// every other route answers with
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(
+					`{"host":"` + req.Host + `","client_address":"` + testHelloClientAddress + `"}`,
+				))
+			case "/bytes":
+				byteCount, err := strconv.Atoi(req.URL.Query().Get("n"))
+				if err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Write(bytes.Repeat([]byte("x"), byteCount))
+			case "/hold":
+				// headers and a first byte arrive at once; the rest never does
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Write([]byte("x"))
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				select {
+				case <-dest.held:
+				case <-req.Context().Done():
+				}
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"host":"` + req.Host + `"}`))
+			}
 		}),
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{*certificate},
@@ -133,7 +178,7 @@ func (self *destination) addressesForHost(host string) map[string]string {
 		return map[string]string{"tcp4": self.familyAddresses["tcp4"]}
 	case "dest6.example":
 		return map[string]string{"tcp6": self.familyAddresses["tcp6"]}
-	case "dest.example":
+	case "dest.example", testSpoofName:
 		return self.familyAddresses
 	default:
 		return map[string]string{}
@@ -156,12 +201,25 @@ type extenderFixture struct {
 	serveDone       chan error
 }
 
-// Builds the extender on the given loopback address. configure runs before the
-// server is constructed, so a test can change limits, the identity key or the
-// service handlers.
+// Builds the private extender of the carrier tests, which requires the fixture
+// secret on every header.
 func newExtenderFixture(
 	t *testing.T,
 	loopbackIp string,
+	configure func(settings *ExtenderSettings),
+) *extenderFixture {
+	t.Helper()
+	return newExtenderFixtureWithSecrets(t, loopbackIp, []string{testSecret}, configure)
+}
+
+// Builds the extender on the given loopback address. An empty secret list is
+// an open extender, which is what an operator activated extender is (A4).
+// configure runs before the server is constructed, so a test can change
+// limits, the identity key or the service handlers.
+func newExtenderFixtureWithSecrets(
+	t *testing.T,
+	loopbackIp string,
+	allowedSecrets []string,
 	configure func(settings *ExtenderSettings),
 ) *extenderFixture {
 	t.Helper()
@@ -197,6 +255,12 @@ func newExtenderFixture(
 	settings := DefaultExtenderSettings()
 	settings.DnsTlds = []string{testDnsTld}
 	settings.HeaderTimeout = 5 * time.Second
+	// the whitelist is the synthetic spoof list plus the operator patterns, and
+	// the reverse proxy verifies the fixture site normally (A5)
+	settings.SpoofDomains = []string{testSpoofName}
+	settings.ProxyTlsConfig = &tls.Config{
+		RootCAs: dest.rootCAs,
+	}
 	settings.Listen = func(network string, address string) (net.Listener, error) {
 		if address != fmt.Sprintf(":%d", fixture.tcpPort) {
 			return nil, fmt.Errorf("unexpected extender listen %s %s", network, address)
@@ -242,7 +306,7 @@ func newExtenderFixture(
 	ctx, cancel := context.WithCancel(context.Background())
 	fixture.server = NewExtenderServer(
 		ctx,
-		[]string{testSecret},
+		allowedSecrets,
 		[]string{"dest.example", "dest4.example", "dest6.example"},
 		map[int][]connect.ExtenderConnectMode{
 			fixture.tcpPort:  {connect.ExtenderConnectModeTcpTls},
@@ -326,6 +390,21 @@ func (self *extenderFixture) nextForwardNetwork() (string, error) {
 	}
 }
 
+// Every forward dial network the extender has been asked for so far. The
+// upstream pools are reused, so a test that makes several requests observes
+// only the dials that actually happened.
+func (self *extenderFixture) forwardNetworksSeen() []string {
+	networks := []string{}
+	for {
+		select {
+		case network := <-self.forwardNetworks:
+			networks = append(networks, network)
+		default:
+			return networks
+		}
+	}
+}
+
 // The next attributed connection failure, for tests that assert a refusal.
 func (self *extenderFixture) nextError() (error, bool) {
 	select {
@@ -339,4 +418,57 @@ func (self *extenderFixture) nextError() (error, bool) {
 // The extender address as the client dials it for one carrier.
 func (self *extenderFixture) authority(port int) string {
 	return net.JoinHostPort(self.ip.String(), strconv.Itoa(port))
+}
+
+// A raw client on the tcp carrier that presents serverName as the outer sni,
+// which is what the whitelist is checked against. nextProtos selects the outer
+// alpn, so the same helper drives http/1.1 and h2.
+func newRawExtenderHttpClientWithServerName(
+	fixture *extenderFixture,
+	serverName string,
+	nextProtos []string,
+) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+				conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fixture.authority(fixture.tcpPort))
+				if err != nil {
+					return nil, err
+				}
+				tlsConn := tls.Client(conn, &tls.Config{
+					ServerName:         serverName,
+					InsecureSkipVerify: true,
+					MinVersion:         tls.VersionTLS13,
+					NextProtos:         nextProtos,
+				})
+				if err := tlsConn.HandshakeContext(ctx); err != nil {
+					conn.Close()
+					return nil, err
+				}
+				return tlsConn, nil
+			},
+			ForceAttemptHTTP2: true,
+		},
+		Timeout: 20 * time.Second,
+	}
+}
+
+// The same on the quic carrier, where the sni reaches the handler on the
+// request's own connection state.
+func newRawExtenderH3Transport(fixture *extenderFixture, serverName string) *http3.Transport {
+	return &http3.Transport{
+		TLSClientConfig: &tls.Config{
+			ServerName:         serverName,
+			InsecureSkipVerify: true,
+			NextProtos:         []string{http3.NextProtoH3},
+		},
+		Dial: func(
+			ctx context.Context,
+			addr string,
+			tlsConfig *tls.Config,
+			quicConfig *quic.Config,
+		) (*quic.Conn, error) {
+			return quic.DialAddr(ctx, fixture.authority(fixture.quicPort), tlsConfig, quicConfig)
+		},
+	}
 }
