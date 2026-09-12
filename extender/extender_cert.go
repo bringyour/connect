@@ -43,6 +43,13 @@ const extenderLeafValidFor = 30 * 24 * time.Hour
 // Cached leaves, evicting the least recently used.
 const extenderLeafCacheCount = 1024
 
+// Subject organization of the leaf issued for a handshake that carried no sni,
+// which is what a dial presents while the spoof list is empty (A10). A leaf
+// needs some identity, and there is no name to derive one from: the extender
+// address is not a name the client asked for, and an empty subject with no san
+// is not a certificate a verifying client would accept.
+const extenderUnnamedOrganization = "Extender"
+
 type extenderCertificates struct {
 	stateLock sync.Mutex
 
@@ -58,6 +65,9 @@ type extenderCertificates struct {
 
 	validFrom time.Duration
 	validFor  time.Duration
+
+	// test seam; nil in production
+	certificateHandler func(serverName string)
 }
 
 // One cache entry, so eviction can find the name from the order list.
@@ -74,11 +84,12 @@ func newExtenderCertificates(identityKeySeed []byte, settings *ExtenderSettings)
 		return nil, err
 	}
 	certificates := &extenderCertificates{
-		leafPrivateKey:    leafPrivateKey,
-		serverNameEntries: map[string]*list.Element{},
-		recentServerNames: list.New(),
-		validFrom:         settings.ValidFrom,
-		validFor:          settings.ValidFor,
+		leafPrivateKey:     leafPrivateKey,
+		serverNameEntries:  map[string]*list.Element{},
+		recentServerNames:  list.New(),
+		validFrom:          settings.ValidFrom,
+		validFor:           settings.ValidFor,
+		certificateHandler: settings.CertificateHandler,
 	}
 	if 0 < len(identityKeySeed) {
 		identityPrivateKey, err := connect.ExtenderPrivateKeyFromSeed(identityKeySeed)
@@ -113,6 +124,9 @@ func (self *extenderCertificates) SignChallenge(challenge []byte) []byte {
 
 // The tls callback for every carrier. A name is issued once and reused.
 func (self *extenderCertificates) GetCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	if self.certificateHandler != nil {
+		self.certificateHandler(clientHello.ServerName)
+	}
 	return self.certificateForServerName(clientHello.ServerName)
 }
 
@@ -189,16 +203,22 @@ func (self *extenderCertificates) newCaCertificate(identityPrivateKey ed25519.Pr
 }
 
 // Issues one leaf, under the identity ca when there is one and self-signed
-// otherwise.
+// otherwise. An empty name is a handshake that sent no sni (A10): it gets a
+// leaf with the placeholder subject and no san, which every carrier serves
+// like any other.
 func (self *extenderCertificates) issue(serverName string) (*tls.Certificate, error) {
 	serialNumber, err := newCertificateSerialNumber()
 	if err != nil {
 		return nil, err
 	}
+	organization := guessOrganizationName(serverName)
+	if organization == "" {
+		organization = extenderUnnamedOrganization
+	}
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{guessOrganizationName(serverName)},
+			Organization: []string{organization},
 		},
 		NotBefore:             time.Now().Add(-self.validFrom),
 		KeyUsage:              x509.KeyUsageDigitalSignature,

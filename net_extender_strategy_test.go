@@ -3,7 +3,9 @@ package connect
 import (
 	"context"
 	"crypto/ed25519"
+	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 )
@@ -239,8 +241,7 @@ func TestClientStrategyCollapseDropsRetiredAddresses(t *testing.T) {
 	if len(dialers) != 6 {
 		t.Fatalf("dialers = %d, expected three per address", len(dialers))
 	}
-	// a dialer that has never completed a dial is dropped by the drop timeout
-	// alone, which is not what this test is about
+	// give every dialer a success, so only the directory's verdict can drop one
 	for _, dialer := range dialers {
 		dialer.Update(ctx, nil)
 	}
@@ -271,6 +272,65 @@ func TestClientStrategyCollapseDropsRetiredAddresses(t *testing.T) {
 	clientStrategy.collapseExtenderDialers()
 	if count := len(testExtenderDialers(clientStrategy)); count != 0 {
 		t.Fatalf("dialers = %d, expected every retired address to be dropped", count)
+	}
+}
+
+// A dialer that was expanded and never dialed survives the collapse that runs
+// before its first attempt, and one whose error has aged past the drop timeout
+// still goes (E2). parallelEval launches one parallel block of an expanded
+// round at a time, so judging the timeout from a never-set last error dropped
+// every candidate past the first block before it was ever tried.
+func TestClientStrategyCollapseKeepsUntriedDialers(t *testing.T) {
+	clock := newTestClock()
+	clientStrategy, directory, _ := newTestExtenderStrategy(t, clock, func(settings *ClientStrategySettings) {
+		settings.ExtenderDropTimeout = time.Minute
+	})
+
+	// more candidates than one parallel block launches
+	for i := range 4 {
+		directory.AddBootstrap(
+			netip.MustParseAddr(fmt.Sprintf("192.0.2.%d", 120+i)),
+			ExtenderSourceDns,
+		)
+	}
+	expandedDialers := clientStrategy.expandExtenderDialers()
+	if len(expandedDialers) <= clientStrategy.settings.ParallelBlockSize {
+		t.Fatalf(
+			"dialers = %d, expected more than the parallel block of %d",
+			len(expandedDialers),
+			clientStrategy.settings.ParallelBlockSize,
+		)
+	}
+	for _, dialer := range expandedDialers {
+		if dialer.createTime.IsZero() {
+			t.Fatal("an expanded dialer carries no creation time")
+		}
+	}
+
+	// the collapse at the top of the next round runs before any of them dialed
+	clientStrategy.collapseExtenderDialers()
+	if count := len(testExtenderDialers(clientStrategy)); count != len(expandedDialers) {
+		t.Fatalf("dialers = %d, expected every untried dialer to survive", count)
+	}
+
+	// a dialer that was created and last failed before the drop timeout is
+	// still discovery cache the collapse clears
+	now := time.Now()
+	staleDialer := expandedDialers[0]
+	func() {
+		staleDialer.mutex.Lock()
+		defer staleDialer.mutex.Unlock()
+		staleDialer.createTime = now.Add(-2 * time.Minute)
+		staleDialer.errorCount = 1
+		staleDialer.lastErrorTime = now.Add(-90 * time.Second)
+	}()
+	clientStrategy.collapseExtenderDialers()
+	remainingDialers := testExtenderDialers(clientStrategy)
+	if slices.Contains(remainingDialers, staleDialer) {
+		t.Fatal("a dialer whose error aged past the drop timeout was retained")
+	}
+	if len(remainingDialers) != len(expandedDialers)-1 {
+		t.Fatalf("dialers = %d, expected only the stale dialer to be dropped", len(remainingDialers))
 	}
 }
 

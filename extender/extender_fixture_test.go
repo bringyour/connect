@@ -197,8 +197,12 @@ type extenderFixture struct {
 	quicPort        int
 	dnsPort         int
 	forwardNetworks chan string
-	errors          chan error
-	serveDone       chan error
+	// the outer sni of every handshake the extender terminated, so a test can
+	// prove what a dial presented -- an empty entry is a ClientHello with no
+	// sni at all (A10)
+	serverNames chan string
+	errors      chan error
+	serveDone   chan error
 }
 
 // Builds the private extender of the carrier tests, which requires the fixture
@@ -249,6 +253,7 @@ func newExtenderFixtureWithSecrets(
 		quicPort:        quicPacketConn.LocalAddr().(*net.UDPAddr).Port,
 		dnsPort:         dnsPacketConn.LocalAddr().(*net.UDPAddr).Port,
 		forwardNetworks: make(chan string, 64),
+		serverNames:     make(chan string, 64),
 		errors:          make(chan error, 64),
 	}
 
@@ -295,6 +300,12 @@ func newExtenderFixtureWithSecrets(
 	settings.ErrorHandler = func(stage string, err error) {
 		select {
 		case fixture.errors <- fmt.Errorf("%s: %w", stage, err):
+		default:
+		}
+	}
+	settings.CertificateHandler = func(serverName string) {
+		select {
+		case fixture.serverNames <- serverName:
 		default:
 		}
 	}
@@ -402,6 +413,16 @@ func (self *extenderFixture) forwardNetworksSeen() []string {
 		default:
 			return networks
 		}
+	}
+}
+
+// The outer sni of the next handshake the extender terminated.
+func (self *extenderFixture) nextServerName() (string, bool) {
+	select {
+	case serverName := <-self.serverNames:
+		return serverName, true
+	case <-time.After(10 * time.Second):
+		return "", false
 	}
 }
 

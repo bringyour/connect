@@ -187,6 +187,11 @@ type ExtenderSettings struct {
 	// It runs synchronously and must not block. Nil retains the silent
 	// production behavior.
 	ErrorHandler func(stage string, err error)
+	// CertificateHandler, when set, receives the outer sni of every handshake
+	// as its certificate is selected, on every carrier. Tests use it to observe
+	// what a dial presented; an empty name is a ClientHello that carried no sni
+	// at all (A10). It runs synchronously and must not block.
+	CertificateHandler func(serverName string)
 }
 
 type ExtenderServer struct {

@@ -153,8 +153,8 @@ func TestExtenderConfigsForCandidateUseSpoofDomainsAndRecordPorts(t *testing.T) 
 	}
 }
 
-// With no bundled spoof list a dialer still works: it carries no outer name,
-// and the dial presents the destination name instead (A10).
+// With no bundled spoof list a dialer carries no outer name, so the dial
+// presents no sni at all rather than naming the operator destination (A10).
 func TestExtenderConfigsForCandidateWithoutSpoofDomains(t *testing.T) {
 	restore := setSpoofDomainsForTest(nil)
 	defer restore()
@@ -170,6 +170,37 @@ func TestExtenderConfigsForCandidateWithoutSpoofDomains(t *testing.T) {
 	}
 	if extenderConfigs[0].Profile.ServerName != "" {
 		t.Fatalf("profile name = %q, expected none", extenderConfigs[0].Profile.ServerName)
+	}
+}
+
+// A feed dial keeps its own rule: a spoof name when the list has one, and the
+// extender ip otherwise, which crypto/tls also sends as no sni. A feed dial has
+// no destination host, so there is nothing an empty name could leak (A10, E3).
+func TestExtenderFeedConfigServerName(t *testing.T) {
+	ip := netip.MustParseAddr("192.0.2.12")
+	candidate := &ExtenderCandidate{
+		Ip:      ip,
+		TcpPort: ExtenderTcpPort,
+	}
+
+	restoreEmpty := setSpoofDomainsForTest(nil)
+	extenderConfig := extenderFeedConfig(candidate, ExtenderConnectModeTcpTls)
+	restoreEmpty()
+	if extenderConfig == nil {
+		t.Fatal("no feed config was built")
+	}
+	if extenderConfig.Profile.ServerName != ip.String() {
+		t.Fatalf("feed name = %q, expected the extender ip", extenderConfig.Profile.ServerName)
+	}
+
+	restoreSpoof := setSpoofDomainsForTest([]string{"one.example"})
+	extenderConfig = extenderFeedConfig(candidate, ExtenderConnectModeTcpTls)
+	restoreSpoof()
+	if extenderConfig == nil {
+		t.Fatal("no feed config was built")
+	}
+	if extenderConfig.Profile.ServerName != "one.example" {
+		t.Fatalf("feed name = %q, expected the spoof name", extenderConfig.Profile.ServerName)
 	}
 }
 

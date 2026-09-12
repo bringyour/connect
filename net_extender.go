@@ -201,16 +201,10 @@ func newExtenderDialTlsContext(
 			panic(err)
 		}
 
-		// with no bundled spoof list a dialer carries no outer name (A10), so
-		// the destination name is presented instead: an outer handshake still
-		// has to name something, and the destination is the one name this
-		// dial is already for
-		outerTlsConfig := extenderTlsConfig
-		if outerTlsConfig.ServerName == "" {
-			outerTlsConfig = extenderTlsConfig.Clone()
-			outerTlsConfig.ServerName = host
-		}
-
+		// the outer name is the dialer's spoof name, and nothing at all with
+		// an empty spoof list (A10). The destination is deliberately not
+		// substituted: it is the operator name this whole layer exists to keep
+		// out of the outer ClientHello
 		serverConn, _, err := dialExtenderStream(
 			ctx,
 			connectSettings,
@@ -219,7 +213,7 @@ func newExtenderDialTlsContext(
 				DestinationHost: host,
 				DestinationPort: port,
 			},
-			outerTlsConfig,
+			extenderTlsConfig,
 		)
 		if err != nil {
 			return nil, err
@@ -275,8 +269,9 @@ func DialExtender(
 }
 
 // The outer TLS configuration of one extender dialer. The spoof name is
-// presented as the SNI, the self-signed leaf is never checked against a root,
-// and 1.3 is required so the certificate is encrypted on the wire.
+// presented as the sni, an empty name presents no sni at all (A10), the
+// self-signed leaf is never checked against a root, and 1.3 is required so the
+// certificate is encrypted on the wire.
 func newExtenderTlsConfig(extenderConfig *ExtenderConfig) *tls.Config {
 	tlsConfig := newClientTlsConfig(&tls.Config{
 		ServerName:         extenderConfig.Profile.ServerName,
@@ -588,6 +583,10 @@ func dialExtenderQuic(
 	}
 	closers = append(closers, func() { quicTransport.Close() })
 
+	// with an empty spoof list the outer name is empty (A10). quic-go fills an
+	// empty ServerName with the ip literal it is dialing, and crypto/tls omits
+	// an ip literal from the sni extension, so the ClientHello still carries no
+	// name -- the same shape the tcp carrier sends
 	quicTlsConfig := extenderTlsConfig.Clone()
 	quicTlsConfig.NextProtos = []string{http3.NextProtoH3}
 	quicConfig := &quic.Config{

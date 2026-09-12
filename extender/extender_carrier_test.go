@@ -182,6 +182,101 @@ func TestExtenderV1FramedClientReachesDestination(t *testing.T) {
 	}
 }
 
+// A dial with no outer name reaches the destination on every carrier, and the
+// extender sees a handshake that carried no sni at all, which is what an empty
+// spoof list presents so the operator name never appears outside (A10).
+func TestExtenderCarriersAcceptAnEmptyServerName(t *testing.T) {
+	carriers := []string{
+		connect.ExtenderCarrierTcp,
+		connect.ExtenderCarrierQuic,
+		connect.ExtenderCarrierDns,
+	}
+	for _, family := range testLoopbackFamilies {
+		for _, carrier := range carriers {
+			fixture := newExtenderFixture(t, family.loopbackIp, nil)
+			extenderConfig := fixture.extenderConfig(carrier)
+			extenderConfig.Profile.ServerName = ""
+			client := connect.NewExtenderHttpClient(fixture.connectSettings(), extenderConfig)
+
+			response, err := client.Get("https://dest.example/hello")
+			if err != nil {
+				if extenderErr, ok := fixture.nextError(); ok {
+					t.Fatalf("%s %s: %v; extender: %v", carrier, family.loopbackIp, err, extenderErr)
+				}
+				t.Fatalf("%s %s: %v", carrier, family.loopbackIp, err)
+			}
+			body, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil {
+				t.Fatalf("%s %s: %v", carrier, family.loopbackIp, err)
+			}
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("%s %s status = %d, expected %d", carrier, family.loopbackIp, response.StatusCode, http.StatusOK)
+			}
+			if !strings.Contains(string(body), "dest.example") {
+				t.Fatalf("%s %s body = %q", carrier, family.loopbackIp, body)
+			}
+			serverName, ok := fixture.nextServerName()
+			if !ok {
+				t.Fatalf("%s %s: the extender terminated no handshake", carrier, family.loopbackIp)
+			}
+			if serverName != "" {
+				t.Fatalf(
+					"%s %s outer sni = %q, expected the ClientHello to carry none",
+					carrier,
+					family.loopbackIp,
+					serverName,
+				)
+			}
+			client.CloseIdleConnections()
+		}
+	}
+}
+
+// A dialer that carries a spoof name presents exactly that name as the outer
+// sni, and the destination name never leaves the inner tls (A10).
+func TestExtenderCarriersPresentTheSpoofName(t *testing.T) {
+	fixture := newExtenderFixture(t, "127.0.0.1", nil)
+	client := connect.NewExtenderHttpClient(
+		fixture.connectSettings(),
+		fixture.extenderConfig(connect.ExtenderCarrierTcp),
+	)
+	defer client.CloseIdleConnections()
+
+	response, err := client.Get("https://dest.example/hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	serverName, ok := fixture.nextServerName()
+	if !ok {
+		t.Fatal("the extender terminated no handshake")
+	}
+	if serverName != testServerName {
+		t.Fatalf("outer sni = %q, expected %q", serverName, testServerName)
+	}
+}
+
+// An unnamed handshake still gets a usable leaf: a fixed placeholder subject
+// and no san, because there is no name to issue for (A10, B3).
+func TestExtenderCertificatesIssueForAnEmptyServerName(t *testing.T) {
+	certificates, err := newExtenderCertificates(nil, DefaultExtenderSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := certificates.certificateForServerName("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := certificate.Leaf
+	if 0 < len(leaf.DNSNames) || 0 < len(leaf.IPAddresses) {
+		t.Fatalf("an unnamed leaf carries a san: dns %v ip %v", leaf.DNSNames, leaf.IPAddresses)
+	}
+	if len(leaf.Subject.Organization) != 1 || leaf.Subject.Organization[0] != extenderUnnamedOrganization {
+		t.Fatalf("unnamed leaf subject = %q, expected the placeholder", leaf.Subject.String())
+	}
+}
+
 // Builds the v1 client shape: outer tls, a four byte big-endian length, the
 // serialized header, then the inner tls straight away.
 func newV1ExtenderDialTlsContext(t *testing.T, fixture *extenderFixture) func(context.Context, string, string) (net.Conn, error) {

@@ -325,6 +325,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		if settings.ExposeServerHostNames && settings.ExposeServerIps {
 			dialer := &clientDialer{
 				description:        "normal",
+				createTime:         time.Now(),
 				minimumWeight:      0.5,
 				priority:           25,
 				dialTlsContext:     newNormalDialTlsContext(settings, clientWebSocketNextProtos),
@@ -340,6 +341,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// fragment+reorder
 			dialer1 := &clientDialer{
 				description:        "fragment+reorder",
+				createTime:         time.Now(),
 				minimumWeight:      0.25,
 				priority:           50,
 				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, true, true, clientWebSocketNextProtos),
@@ -350,6 +352,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// this is the highest priority because it has no performance impact and additional security benefits
 			dialer2 := &clientDialer{
 				description:        "fragment",
+				createTime:         time.Now(),
 				minimumWeight:      0.25,
 				priority:           0,
 				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, true, false, clientWebSocketNextProtos),
@@ -359,6 +362,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// reorder
 			dialer3 := &clientDialer{
 				description:        "reorder",
+				createTime:         time.Now(),
 				minimumWeight:      0.25,
 				priority:           50,
 				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, false, true, clientWebSocketNextProtos),
@@ -378,6 +382,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		copiedConfig := *extenderConfig
 		dialer := &clientDialer{
 			description:        "configured extender",
+			createTime:         time.Now(),
 			persistent:         true,
 			minimumWeight:      settings.ExtenderMinimumWeight,
 			priority:           100,
@@ -1416,8 +1421,19 @@ func (self *ClientStrategy) collapseExtenderDialers() {
 				dialer.mutex.Lock()
 				defer dialer.mutex.Unlock()
 
-				return !dialer.isLastSuccessWithLock() &&
-					self.settings.ExtenderDropTimeout <= now.Sub(dialer.lastErrorTime)
+				if dialer.isLastSuccessWithLock() {
+					return false
+				}
+				// the timeout runs from the later of creation and the last
+				// error (E2). Judging it from the last error alone drops a
+				// dialer that was expanded and never dialed on the very next
+				// collapse, because its zero last error is older than any
+				// timeout
+				since := dialer.createTime
+				if since.Before(dialer.lastErrorTime) {
+					since = dialer.lastErrorTime
+				}
+				return self.settings.ExtenderDropTimeout <= now.Sub(since)
 			}()
 			if expired {
 				dropDialers = append(dropDialers, dialer)
@@ -1459,9 +1475,9 @@ func (self *ClientStrategy) collapseExtenderDialers() {
 // already excludes every non-extender dialer while one is configured.
 //
 // The outer name is one random spoof domain per dialer (A10). With no bundled
-// spoof list the name is left empty, which makes the dial present the
-// destination host name instead -- a dialer must still work before operations
-// ship the list.
+// spoof list the name is left empty and the dial presents no sni at all: the
+// operator name the inner TLS is for must never appear in the outer
+// ClientHello, and a connection to an ip literal carries no name anyway.
 func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDialer) {
 	if self.settings.ExpandExtenderProfileCount <= 0 {
 		return []*clientDialer{}
@@ -1571,6 +1587,7 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 			visitedExtenderIpProfiles[ipProfile] = true
 			dialer := &clientDialer{
 				description:        fmt.Sprintf("extender %s", extenderConfig.Profile.ConnectMode),
+				createTime:         time.Now(),
 				minimumWeight:      self.settings.ExtenderMinimumWeight,
 				priority:           extenderDialerPriority(extenderConfig.Profile.ConnectMode),
 				dialTlsContext:     newExtenderDialTlsContext(&self.settings.ConnectSettings, extenderConfig, clientWebSocketNextProtos),
@@ -1686,6 +1703,11 @@ func (self *ClientStrategy) waitForExtenderInitialSample(ctx context.Context) {
 // non-extender dialers are never dropped
 type clientDialer struct {
 	description string
+	// Set at construction and never changed, so it is read without the mutex.
+	// The drop timeout is judged from the later of this and lastErrorTime, so a
+	// dialer that was expanded but never dialed survives to its first attempt
+	// (E2).
+	createTime time.Time
 	// persistent dialers were supplied explicitly and are not discovery cache.
 	persistent    bool
 	minimumWeight float32
