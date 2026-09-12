@@ -48,6 +48,11 @@ func init() {
 			stats.ReliableLaneStallOnsetOutstanding,
 		)
 	}
+	laneRecoveryRecordSendsForTree = func(sequence *SendSequence, items []*sendItem) {
+		for _, item := range items {
+			sequence.observeLaneSend(item)
+		}
+	}
 	laneRecoveryTimerVerdictForTree = func(sequence *SendSequence, item *sendItem) string {
 		switch sequence.laneTimerVerdictFor(item, time.Now()) {
 		case laneTimerEndpointDrop:

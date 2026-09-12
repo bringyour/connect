@@ -2100,6 +2100,10 @@ const laneAckSlotCount = 8
 type laneAckSlot struct {
 	route                      Route
 	highestAckedSequenceNumber uint64
+	// highestSentSequenceNumber is the newest item this route has carried,
+	// which with the oldest-outstanding test identifies a lane's one tail
+	// (FLIGHTGATEFIX §29.3).
+	highestSentSequenceNumber uint64
 	// lastAckNanos is when this route last acknowledged anything. It, and
 	// not the sequence's cumulative clock, decides whether the route is
 	// draining: on a mixed route a relay whose head is stuck while
@@ -2195,6 +2199,49 @@ func (self *SendSequence) laneHighestAcked(route Route) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// observeLaneSend records that this route has now carried up to at least
+// this sequence number, which with the oldest-outstanding test identifies
+// a lane's one tail (FLIGHTGATEFIX §29.3).
+func (self *SendSequence) observeLaneSend(item *sendItem) {
+	if item == nil || item.carrierRoute == nil {
+		return
+	}
+	if slot := self.laneSlotFor(item.carrierRoute); 0 <= slot {
+		if self.laneAcks[slot].highestSentSequenceNumber < item.sequenceNumber {
+			self.laneAcks[slot].highestSentSequenceNumber = item.sequenceNumber
+		}
+	}
+}
+
+// laneHighestSent reports the newest sequence number this route carried.
+func (self *SendSequence) laneHighestSent(route Route) (uint64, bool) {
+	if route == nil {
+		return 0, false
+	}
+	for index := range self.laneAcks {
+		slot := &self.laneAcks[index]
+		if slot.set && slot.route == route {
+			return slot.highestSentSequenceNumber, true
+		}
+	}
+	return 0, false
+}
+
+// laneLoneTail reports whether this item is the only thing outstanding on
+// its route: the oldest outstanding on it and the newest it carried. A
+// lane has exactly one such item, so a probe conditioned on it cannot
+// storm however deep the window (FLIGHTGATEFIX §29.3).
+func (self *SendSequence) laneLoneTail(item *sendItem) bool {
+	if !self.laneProvenRecovery(item) {
+		return false
+	}
+	if highest, ok := self.laneHighestSent(item.carrierRoute); !ok ||
+		highest != item.sequenceNumber {
+		return false
+	}
+	return self.laneOldestOutstanding(item.carrierRoute) == item
 }
 
 // laneLastAck reports when this route last acknowledged anything.
@@ -5286,7 +5333,9 @@ type SendSequence struct {
 	// the retransmit pacing floor. It measures the drain by delivery rather
 	// than by the round-trip mean, which lags an inflation by design
 	// (FLIGHTGATEFIX §22). Allocated once with the sequence: 256 bytes.
-	deliveredBytes      [deliveredBytesRingSize]deliveredBytesSample
+	// nil unless ReliableAdmissionBoundedByDelivery is set: an off flag must
+	// not retain bytes (FLIGHTGATEFIX §29.4).
+	deliveredBytes      []deliveredBytesSample
 	deliveredBytesHead  int
 	deliveredBytesCount int
 	deliveredByteTotal  ByteCount
@@ -5396,8 +5445,14 @@ func newSendSequenceWithLogicalLane(
 		sendBufferSettings.MaxResendInterval,
 	)
 
+	var deliveredBytes []deliveredBytesSample
+	if sendBufferSettings.ReliableAdmissionBoundedByDelivery {
+		deliveredBytes = make([]deliveredBytesSample, deliveredBytesRingSize)
+	}
+
 	seq := &SendSequence{
 		sequenceStartTime:              time.Now(),
+		deliveredBytes:                 deliveredBytes,
 		ctx:                            cancelCtx,
 		cancel:                         cancel,
 		done:                           make(chan struct{}),
@@ -6105,12 +6160,39 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		// no time grace, because the lane's own acknowledgements say whether
 		// it was dropped at an endpoint or is merely queued behind.
 		provingAckCount := remainingSelectiveAckCount
+		laneLoneTail := false
 		if laneRuleActive && self.laneProvenRecovery(item) {
 			lateNotLost = false
 			provingAckCount = 0
 			if slot := self.laneSlotFor(item.carrierRoute); 0 <= slot {
 				provingAckCount = laneAckCounts[slot]
 			}
+			// §29.3: the information to tell a dropped tail from a stalled
+			// one exists at neither end, but the response does not need it,
+			// because a lane has exactly one tail. A hole that is its route's
+			// only outstanding item, with three later acknowledgements from
+			// any lane, is probed at the window's minimum rather than waiting
+			// for the head probe: the probe is written p2p-first, so with
+			// room in the direct flight it heals through the direct lane, and
+			// with none it costs one duplicate. The probe round trip never
+			// exceeds the scaled round trip, so this is never later than
+			// merged's own timer and is earlier whenever the relay's minimum
+			// is under its mean.
+			laneLoneTail = provingAckCount < threshold &&
+				threshold <= remainingSelectiveAckCount &&
+				self.laneLoneTail(item)
+		}
+		if laneLoneTail && item.ackTailProbeCount < self.sendBufferSettings.AckTailProbeLimit {
+			probeTime := item.sendTime.Add(self.rttWindow.probeRtt(currentTime))
+			if probeTime.Before(currentTime) {
+				probeTime = currentTime
+			}
+			if probeTime.Before(item.resendTime) {
+				item.ackTailProbeCount += 1
+				self.selectiveGapRecoveryActive = true
+				reschedule(item, probeTime, sendRecoveryAckTailProbe)
+			}
+			continue
 		}
 		// FLIGHTGATEFIX §23.2: the grace above ends exactly when the item's
 		// own timer first comes due, so a deferral of that timer leaves the
@@ -6628,7 +6710,16 @@ sendSequenceLoop:
 					// an endpoint: written with backoff, as today
 					self.client.laneProvenTimeoutWriteCount.Add(1)
 				} else if laneVerdict == laneTimerSilent {
-					if head := self.laneOldestOutstanding(item.carrierRoute); head != nil && head != item {
+					// §29.4 proposed widening this to the oldest items the
+					// unreliable flight admits, so the direct lane's spare
+					// room would heal the held window. Measured, it delivers
+					// nothing extra: the receiver's stream is ordered, so
+					// during a relay stall nothing past the relay-carried head
+					// can be delivered however much is rewritten, and the
+					// wider set cost 6 and 22 writes against 2. The probe set
+					// is the route head alone.
+					head := self.laneOldestOutstanding(item.carrierRoute)
+					if head != nil && head != item {
 						// Held behind the head's probe. The head may itself be
 						// due in this pass, so the hold is never shorter than
 						// one of the head's own intervals: re-arming to a time
@@ -8090,6 +8181,7 @@ func (self *SendSequence) observeCarrierWrite(
 	disposition transferWriteDisposition,
 ) {
 	item.carrierRoute = disposition.route
+	self.observeLaneSend(item)
 	if !disposition.unreliable {
 		if disposition.reliable && !item.unreliableCarrierObserved {
 			item.reliableCarrierObserved = true
@@ -8179,7 +8271,7 @@ type deliveredBytesSample struct {
 // The running total only grows, so a sample is a checkpoint rather than a
 // rate, and the ring is sized by time rather than by acknowledgement count.
 func (self *SendSequence) observeDeliveredBytes(byteCount ByteCount, at time.Time) {
-	if byteCount <= 0 {
+	if byteCount <= 0 || self.deliveredBytes == nil {
 		return
 	}
 	self.deliveredByteTotal += byteCount
@@ -8193,12 +8285,12 @@ func (self *SendSequence) observeDeliveredBytes(byteCount ByteCount, at time.Tim
 			return
 		}
 	}
-	self.deliveredBytesHead = (self.deliveredBytesHead + 1) % deliveredBytesRingSize
+	self.deliveredBytesHead = (self.deliveredBytesHead + 1) % len(self.deliveredBytes)
 	self.deliveredBytes[self.deliveredBytesHead] = deliveredBytesSample{
 		atNanos: atNanos,
 		total:   self.deliveredByteTotal,
 	}
-	if self.deliveredBytesCount < deliveredBytesRingSize {
+	if self.deliveredBytesCount < len(self.deliveredBytes) {
 		self.deliveredBytesCount += 1
 	}
 }
@@ -8207,14 +8299,15 @@ func (self *SendSequence) observeDeliveredBytes(byteCount ByteCount, at time.Tim
 // running total now, less the total at the newest sample older than d. A
 // scan of at most sixteen entries, allocation-free.
 func (self *SendSequence) deliveredBytesOver(d time.Duration, now time.Time) ByteCount {
-	if self.deliveredBytesCount == 0 || d <= 0 {
+	if self.deliveredBytes == nil || self.deliveredBytesCount == 0 || d <= 0 {
 		return 0
 	}
 	horizon := now.Add(-d).UnixNano()
 	base := ByteCount(0)
 	found := false
 	for offset := range self.deliveredBytesCount {
-		index := (self.deliveredBytesHead - offset + deliveredBytesRingSize) % deliveredBytesRingSize
+		index := (self.deliveredBytesHead - offset + len(self.deliveredBytes)) %
+			len(self.deliveredBytes)
 		sample := self.deliveredBytes[index]
 		if sample.atNanos <= horizon {
 			base = sample.total
@@ -8226,7 +8319,7 @@ func (self *SendSequence) deliveredBytesOver(d time.Duration, now time.Time) Byt
 		// the whole history is inside the window; the oldest sample is the
 		// earliest total this sequence can attribute
 		oldest := (self.deliveredBytesHead - self.deliveredBytesCount + 1 +
-			deliveredBytesRingSize) % deliveredBytesRingSize
+			len(self.deliveredBytes)) % len(self.deliveredBytes)
 		base = self.deliveredBytes[oldest].total
 	}
 	return max(0, self.deliveredByteTotal-base)

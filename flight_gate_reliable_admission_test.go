@@ -14,7 +14,28 @@ func admissionSequence(t testing.TB) *SendSequence {
 	sequence, _ := newSelectiveAckRecoveryTestSequence(1, time.Unix(1_700_000_000, 0))
 	sequence.client = &Client{}
 	sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
+	// the ring is allocated only where the flag is on, as production does,
+	// because an off flag must not retain bytes (FLIGHTGATEFIX §29.4)
+	sequence.sendBufferSettings.ReliableAdmissionBoundedByDelivery = true
+	sequence.deliveredBytes = make([]deliveredBytesSample, deliveredBytesRingSize)
 	return sequence
+}
+
+// A sequence built with the flag off retains no ring at all.
+func TestDeliveredBytesRingIsNotRetainedWhenOff(t *testing.T) {
+	if DefaultSendBufferSettings().ReliableAdmissionBoundedByDelivery {
+		t.Skip("the bound is on by default, so the ring is always built")
+	}
+	sequence, _ := newSelectiveAckRecoveryTestSequence(1, time.Unix(1_700_000_000, 0))
+	sequence.client = &Client{}
+	if sequence.deliveredBytes != nil {
+		t.Fatal("a sequence built without the delivery bound still holds its ring")
+	}
+	// and the accessors are safe on it
+	sequence.observeDeliveredBytes(1024, time.Now())
+	if over := sequence.deliveredBytesOver(time.Second, time.Now()); over != 0 {
+		t.Fatalf("delivery over a second reads %d B with no ring", over)
+	}
 }
 
 // The measure is delivery over a window, and it follows a step down within

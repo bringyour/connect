@@ -164,6 +164,10 @@ type mixedLaneOptions struct {
 	// reliableLaneProvenRecovery turns on FLIGHTGATEFIX §26.2's lane rule,
 	// off in the landed tree.
 	reliableLaneProvenRecovery bool
+	// fastFlightMessageLimit bounds what the direct lane's unreliable flight
+	// admits, so a test can vary the healing rate the flight allows
+	// (FLIGHTGATEFIX §29.4). Zero keeps the carrier's own limit.
+	fastFlightMessageLimit int
 	// slowDropFraction drops that share of the relay's frames, from a seeded
 	// source. A reliable carrier retransmits below Transfer, so this models
 	// a drop at an endpoint rather than on the wire: the only reliable-lane
@@ -187,6 +191,16 @@ func newMixedLaneGapHarness(
 		slowLatency:      slowDelay,
 		blockFastReplies: blockFastReplies,
 	})
+}
+
+// fastCarrierProperties is the direct lane's carrier, with the flight limit
+// a test may set.
+func fastCarrierProperties(options mixedLaneOptions) TransferCarrierProperties {
+	properties := TransferCarrierProperties{Unreliable: true}
+	if 0 < options.fastFlightMessageLimit {
+		properties.unreliableFlightMessageLimit = options.fastFlightMessageLimit
+	}
+	return properties
 }
 
 func newMixedLaneHarnessWithOptions(
@@ -261,7 +275,7 @@ func newMixedLaneHarnessWithOptions(
 		harness.sender.RouteManager().UpdateTransportWithProperties(
 			NewSendGatewayTransportWithType(TransportTypeP2p),
 			[]Route{senderOutFast},
-			TransferCarrierProperties{Unreliable: true},
+			fastCarrierProperties(options),
 		)
 	}
 	harness.sender.RouteManager().UpdateTransport(

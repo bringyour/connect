@@ -44,6 +44,14 @@ func laneRecoveryArms() []laneRecoveryArm { return laneRecoveryArmsForTree() }
 // which is merged's case.
 var laneRecoveryRecordAcksForTree = func(*SendSequence, []*sendItem) {}
 
+// laneRecoveryRecordSendsForTree lets a tree that tracks what each route
+// has carried populate it; a tree without one does nothing.
+var laneRecoveryRecordSendsForTree = func(*SendSequence, []*sendItem) {}
+
+func laneRecoveryRecordSends(sequence *SendSequence, items []*sendItem) {
+	laneRecoveryRecordSendsForTree(sequence, items)
+}
+
 func laneRecoveryRecordAcks(sequence *SendSequence, items []*sendItem) {
 	laneRecoveryRecordAcksForTree(sequence, items)
 }
@@ -94,6 +102,11 @@ type laneRecoveryLink struct {
 	receiver   *Client
 	receiverId Id
 	received   chan int
+	// deliveries records when each frame reached the receiver, so a row can
+	// ask what was delivered during a stall rather than only in total.
+	deliveryLock  sync.Mutex
+	deliveryTimes []time.Time
+	start         time.Time
 }
 
 // newLaneRecoveryLink connects a sender to a receiver over one reliable
@@ -110,6 +123,7 @@ func newLaneRecoveryLink(
 	queueFrames int,
 	stepAfter time.Duration,
 	stepSerialization time.Duration,
+	directFlightMessageLimit int,
 	configure func(*SendBufferSettings),
 ) *laneRecoveryLink {
 	t.Helper()
@@ -145,7 +159,32 @@ func newLaneRecoveryLink(
 		NewSendGatewayTransportWithType(TransportTypeH1), []Route{receiverOut})
 	link.receiver.RouteManager().UpdateTransport(
 		NewReceiveGatewayTransportWithType(TransportTypeH1), []Route{receiverIn})
+	// an optional direct lane beside the relay, so a row can ask what a
+	// healthy unreliable carrier delivers while the relay is stalled
+	var directOut, directIn Route
+	if 0 < directFlightMessageLimit {
+		directOut = make(Route, 64)
+		directIn = make(Route, 256)
+		properties := TransferCarrierProperties{Unreliable: true}
+		properties.unreliableFlightMessageLimit = directFlightMessageLimit
+		link.sender.RouteManager().UpdateTransportWithProperties(
+			NewSendGatewayTransportWithType(TransportTypeP2p),
+			[]Route{directOut},
+			properties,
+		)
+		link.receiver.RouteManager().UpdateTransportWithProperties(
+			NewReceiveGatewayTransportWithType(TransportTypeP2p),
+			[]Route{directIn},
+			properties,
+		)
+	}
 	link.receiver.AddReceiveCallback(func(_ TransferPath, frames []*protocol.Frame, _ Peer) {
+		now := time.Now()
+		link.deliveryLock.Lock()
+		for range frames {
+			link.deliveryTimes = append(link.deliveryTimes, now)
+		}
+		link.deliveryLock.Unlock()
 		select {
 		case link.received <- len(frames):
 		default:
@@ -153,6 +192,7 @@ func newLaneRecoveryLink(
 	})
 
 	start := time.Now()
+	link.start = start
 	var forwarders sync.WaitGroup
 	forward := func(from Route, to Route, paced bool) {
 		forwarders.Add(1)
@@ -206,6 +246,9 @@ func newLaneRecoveryLink(
 	}
 	forward(senderOut, receiverIn, true)
 	forward(receiverOut, senderIn, false)
+	if directOut != nil {
+		forward(directOut, directIn, false)
+	}
 
 	t.Cleanup(func() {
 		cancel()
@@ -214,7 +257,10 @@ func newLaneRecoveryLink(
 		link.sender.CloseAndWait(closeCtx)
 		link.receiver.CloseAndWait(closeCtx)
 		forwarders.Wait()
-		for _, route := range []Route{senderOut, receiverIn, receiverOut, senderIn} {
+		for _, route := range []Route{senderOut, receiverIn, receiverOut, senderIn, directOut, directIn} {
+			if route == nil {
+				continue
+			}
 			for {
 				select {
 				case message := <-route:
@@ -335,18 +381,21 @@ func TestLaneRecoveryRow6RelayItemProvenByRelayAcks(t *testing.T) {
 	}
 }
 
-// Row 7. The trade, stated so it is assertable and so merged's column
-// records where merged is faster: a relay endpoint drop with direct-lane
-// acknowledgements only and no later relay item. merged and the landed
-// tree recover it within F11b's grace; a tree that reads lanes waits for
-// the route head's probe, and the row states that bound.
-func TestLaneRecoveryRow7RelayTailDropWaitsForTheProbe(t *testing.T) {
+// Row 7, restated by §29.3. A relay endpoint drop with direct-lane
+// acknowledgements only and no later relay item: the hole is its route's
+// one tail, and a lane has exactly one, so it is probed at the window's
+// minimum rather than waiting for the route head. The bound is that it is
+// scheduled no later than merged's own timer would fire, which is its send
+// time plus the scaled round trip, and earlier whenever the relay's
+// minimum is under its mean. The trade column is gone.
+func TestLaneRecoveryRow7RelayTailDropIsProbedNoLaterThanMerged(t *testing.T) {
 	for _, arm := range laneRecoveryArms() {
 		sequence, items, sendTime := laneRecoveryScoreboard(t, 8, arm.configure)
 		relay := make(Route, 4)
 		direct := make(Route, 4)
-		// the relay carried only the hole; everything later took the direct
-		// lane, so no later relay acknowledgement will ever prove it
+		// the relay carried only the hole, and it is the newest thing the
+		// relay carried; everything later took the direct lane, so no later
+		// relay acknowledgement will ever prove it
 		hole := items[0]
 		hole.reliableCarrierObserved = true
 		hole.carrierRoute = relay
@@ -354,19 +403,75 @@ func TestLaneRecoveryRow7RelayTailDropWaitsForTheProbe(t *testing.T) {
 			items[index].selectiveAcked = true
 			items[index].carrierRoute = direct
 		}
+		laneRecoveryRecordSends(sequence, items[:1])
 		laneRecoveryRecordAcks(sequence, items[1:])
-		sequence.scheduleSelectiveAckRecovery(sendTime.Add(10 * time.Second))
-		recovered := hole.selectiveGapRecovered
-		reads := laneRecoveryReadsLanes(sequence)
-		t.Logf("%s: row 7: relay tail drop recovered by the gap rule=%v (reads lanes=%v)",
-			arm.name, recovered, reads)
-		if reads && recovered {
-			t.Errorf("%s: row 7: a tree that reads lanes recovered a relay tail drop by the gap "+
-				"rule, but no later relay acknowledgement exists to prove it", arm.name)
+
+		// merged and the landed tree cannot act before F11b's grace expires,
+		// which is the item's send time plus the scaled round trip. A tree
+		// that reads lanes probes at the window's minimum instead.
+		mergedWouldFire := sendTime.Add(sequence.rttWindow.ScaledRtt())
+		sequence.scheduleSelectiveAckRecovery(sendTime.Add(time.Millisecond))
+		early := hole.selectiveGapRecovered || hole.ackTailProbeCount != 0
+		earlyAt := hole.resendTime
+		if !early {
+			// past the grace, where every tree acts
+			sequence.scheduleSelectiveAckRecovery(mergedWouldFire)
 		}
-		if !reads && !recovered {
-			t.Errorf("%s: row 7: a tree that does not read lanes must recover this within F11b's "+
-				"grace, and did not", arm.name)
+		recovered := hole.selectiveGapRecovered || hole.ackTailProbeCount != 0
+		scheduled := hole.resendTime
+		if early {
+			scheduled = earlyAt
+		}
+		t.Logf("%s: row 7: relay tail drop scheduled %s after its send (merged's timer at %s), "+
+			"acted before the grace=%v, recovered=%v",
+			arm.name, scheduled.Sub(sendTime).Truncate(time.Millisecond),
+			mergedWouldFire.Sub(sendTime).Truncate(time.Millisecond), early, recovered)
+		if !recovered {
+			t.Errorf("%s: row 7: a relay tail drop with three later acknowledgements was not "+
+				"scheduled for recovery at all", arm.name)
+			continue
+		}
+		if mergedWouldFire.Before(scheduled) {
+			t.Errorf(
+				"%s: row 7: the tail drop is scheduled %s after its send, later than merged's own "+
+					"timer at %s; the probe round trip never exceeds the scaled round trip, so "+
+					"this must never be later",
+				arm.name, scheduled.Sub(sendTime), mergedWouldFire.Sub(sendTime),
+			)
+		}
+		if arm.readsLanes && !early {
+			t.Errorf("%s: row 7: a tree that reads lanes waited for F11b's grace instead of "+
+				"probing its route's one tail", arm.name)
+		}
+	}
+}
+
+// The probe round trip never exceeds the scaled round trip, in every state
+// of the window, which is what makes row 7's bound hold by construction.
+func TestLaneRecoveryProbeRttNeverExceedsTheScaledRtt(t *testing.T) {
+	settings := DefaultSendBufferSettings()
+	for _, samples := range [][]time.Duration{
+		{},
+		{400 * time.Millisecond},
+		{50 * time.Millisecond, 3 * time.Second},
+		{3 * time.Second, 50 * time.Millisecond},
+		{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond},
+	} {
+		window := NewRttWindow(
+			NewNoopLogger(), settings.RttWindowSize, settings.RttWindowTimeout,
+			settings.RttScale, settings.MinResendInterval,
+			settings.RttMinResendInterval, settings.MaxResendInterval,
+		)
+		now := time.Now()
+		for index, sample := range samples {
+			at := now.Add(time.Duration(index) * time.Millisecond)
+			window.closeSendTime(uint64(at.Add(-sample).UnixMilli()), at)
+		}
+		probe := window.ProbeRtt()
+		scaled := window.ScaledRtt()
+		if scaled < probe {
+			t.Errorf("with samples %v the probe round trip is %s, past the scaled round trip %s",
+				samples, probe, scaled)
 		}
 	}
 }
@@ -381,7 +486,7 @@ func TestLaneRecoveryRow3DrainingLaneIsNotRewritten(t *testing.T) {
 	const messageCount = 1200
 	for _, arm := range laneRecoveryArms() {
 		link := newLaneRecoveryLink(
-			t, 20*time.Millisecond, 12*time.Millisecond, 0, 0, 64, 0, 0, arm.configure)
+			t, 20*time.Millisecond, 12*time.Millisecond, 0, 0, 64, 0, 0, 0, arm.configure)
 		stats := laneRecoverySend(t, link, messageCount)
 		t.Logf("%s: row 3: draining lane wrote %d whole-window retransmits, %d gap recoveries",
 			arm.name, stats.TimeoutResendWriteCount, stats.SelectiveGapWriteCount)
@@ -427,7 +532,7 @@ func TestLaneRecoveryRows1And2StallWritesAreLogarithmic(t *testing.T) {
 		for _, arm := range laneRecoveryArms() {
 			link := newLaneRecoveryLink(
 				t, 100*time.Millisecond, row.serialization,
-				1500*time.Millisecond, 2750*time.Millisecond, 1024, 0, 0, arm.configure)
+				1500*time.Millisecond, 2750*time.Millisecond, 1024, 0, 0, 0, arm.configure)
 			stats := laneRecoverySend(t, link, row.messageCount)
 			const bound = 10
 			t.Logf("%s: %s: wrote %d whole-window retransmits through the stall (bound %d)%s",
@@ -516,7 +621,7 @@ func TestLaneRecoveryRow1BoundIsIndependentOfOutstanding(t *testing.T) {
 		for index, messageCount := range []int{1500, 5000} {
 			link := newLaneRecoveryLink(
 				t, 100*time.Millisecond, 3*time.Millisecond,
-				1500*time.Millisecond, 2750*time.Millisecond, 2048, 0, 0, arm.configure)
+				1500*time.Millisecond, 2750*time.Millisecond, 2048, 0, 0, 0, arm.configure)
 			stats := laneRecoverySend(t, link, messageCount)
 			t.Logf("%s: row 1 at %d messages: wrote %d%s",
 				arm.name, messageCount, stats.TimeoutResendWriteCount,
@@ -557,7 +662,7 @@ func TestLaneRecoveryRow8LateItemOnADrainingLaneIsNeverWritten(t *testing.T) {
 		// still delivering and never stops
 		link := newLaneRecoveryLink(
 			t, 50*time.Millisecond, 500*time.Microsecond, 0, 0, 4096,
-			time.Second, 12*time.Millisecond, arm.configure)
+			time.Second, 12*time.Millisecond, 0, arm.configure)
 		stats := laneRecoverySend(t, link, messageCount)
 		t.Logf("%s: row 8: draining under inflation wrote %d whole-window retransmits%s",
 			arm.name, stats.TimeoutResendWriteCount, laneRecoveryDetailForTree(stats))
@@ -608,10 +713,10 @@ func TestLaneRecoveryRow9ProvenDropWaitsAtMostOneInterval(t *testing.T) {
 	}
 }
 
-// Row 10. The held-item re-arm: an item riding behind the route head must
+// Row 11. The held-item re-arm: an item riding behind the route head must
 // never be re-armed to a time already past, which spins it through the
 // resend loop. The ratio of rides to probes is the check.
-func TestLaneRecoveryRow10HeldItemsDoNotSpin(t *testing.T) {
+func TestLaneRecoveryRow11HeldItemsDoNotSpin(t *testing.T) {
 	if testing.Short() {
 		t.Skip("lane recovery contract, live link")
 	}
@@ -621,19 +726,94 @@ func TestLaneRecoveryRow10HeldItemsDoNotSpin(t *testing.T) {
 		}
 		link := newLaneRecoveryLink(
 			t, 100*time.Millisecond, 3*time.Millisecond,
-			1500*time.Millisecond, 2750*time.Millisecond, 2048, 0, 0, arm.configure)
+			1500*time.Millisecond, 2750*time.Millisecond, 2048, 0, 0, 0, arm.configure)
 		stats := laneRecoverySend(t, link, 3000)
 		rides, probes := laneRecoveryRidesAndProbes(stats)
-		t.Logf("%s: row 10: %d rides against %d probes", arm.name, rides, probes)
+		t.Logf("%s: row 11: %d rides against %d probes", arm.name, rides, probes)
 		if probes == 0 {
-			t.Errorf("%s: row 10: no probe was written, so the row measured nothing", arm.name)
+			t.Errorf("%s: row 11: no probe was written, so the row measured nothing", arm.name)
 			continue
 		}
 		// a ride costs one queue re-arm per item per probe interval; orders of
 		// magnitude more than that is the loop spinning
 		if 10_000*probes < rides {
-			t.Errorf("%s: row 10: %d rides against %d probes, so a held item is being re-armed "+
+			t.Errorf("%s: row 11: %d rides against %d probes, so a held item is being re-armed "+
 				"into the past and spinning", arm.name, rides, probes)
+		}
+	}
+}
+
+// Row 10, both halves asserted separately so each column's failure is
+// legible. During a stall of the relay while the direct lane stays
+// healthy: delivery must continue, and nothing extra must be written into
+// the stalled lane. §29.4 expected merged to lead the first half, because
+// its whole-window rewrite goes p2p-first and the direct lane carries what
+// it can. Measured, it does not: the receiver's stream is ordered, so
+// nothing past the relay-carried head can be delivered however much is
+// rewritten, and the delivered count is the same on every arm at every
+// flight size. So the first half does not separate the trees, and the
+// second half does, by two orders of magnitude.
+func TestLaneRecoveryRow10StallHealingAndWritesIntoTheStalledLane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("lane recovery contract, live link")
+	}
+	const (
+		messageCount = 2500
+		stallAfter   = 1500 * time.Millisecond
+		stallFor     = 2750 * time.Millisecond
+	)
+	// more than one direct-flight size, since the claim under test was that
+	// the healing rate should follow the flight
+	for _, flight := range []int{4, 32} {
+		delivered := map[string]int{}
+		written := map[string]uint64{}
+		for _, arm := range laneRecoveryArms() {
+			link := newLaneRecoveryLink(
+				t, 100*time.Millisecond, 2*time.Millisecond,
+				stallAfter, stallFor, 2048, 0, 0, flight, arm.configure)
+			stats := laneRecoverySend(t, link, messageCount)
+			link.deliveryLock.Lock()
+			times := append([]time.Time(nil), link.deliveryTimes...)
+			link.deliveryLock.Unlock()
+			during := 0
+			for _, at := range times {
+				if since := at.Sub(link.start); stallAfter <= since &&
+					since < stallAfter+stallFor {
+					during += 1
+				}
+			}
+			delivered[arm.name] = during
+			written[arm.name] = stats.TimeoutResendWriteCount
+			t.Logf("%s: row 10 at flight %d: delivered %d frames during the stall, wrote %d%s",
+				arm.name, flight, during, stats.TimeoutResendWriteCount,
+				laneRecoveryDetailForTree(stats))
+
+			// the second half: nothing extra written into the stalled lane
+			const bound = 10
+			if arm.readsLanes && bound < int(stats.TimeoutResendWriteCount) {
+				t.Errorf(
+					"%s: row 10 at flight %d: wrote %d retransmits into a stalled lane, want at "+
+						"most %d; the bound must hold at every flight size",
+					arm.name, flight, stats.TimeoutResendWriteCount, bound,
+				)
+			}
+		}
+		// the first half: a tree that reads lanes must not deliver less
+		var perItem, perLane int
+		var havePerLane bool
+		for _, arm := range laneRecoveryArms() {
+			if arm.readsLanes {
+				perLane, havePerLane = delivered[arm.name], true
+			} else {
+				perItem = delivered[arm.name]
+			}
+		}
+		if havePerLane && 0 < perItem && perLane < perItem/2 {
+			t.Errorf(
+				"at flight %d a tree that reads lanes delivered %d frames during the stall "+
+					"against %d, so probing one item costs delivery the rewrite would have bought",
+				flight, perLane, perItem,
+			)
 		}
 	}
 }
