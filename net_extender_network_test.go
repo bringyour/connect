@@ -15,6 +15,9 @@ import (
 // reaches the network. The end-to-end sample against a real extender lives in
 // `extender/extender_feed_client_test.go`.
 
+// The operator gossip identity hello serves in these tests (C6).
+const testExtenderGossipPeerId = "12D3KooWtestoperatorpeerid"
+
 // A client strategy whose every carrier dial fails at once, so a sample
 // attempt costs nothing.
 func newTestDeadDialStrategy(t *testing.T, ctx context.Context) *ClientStrategy {
@@ -63,7 +66,7 @@ func newTestExtenderNetworkClient(
 	settings.DialTimeout = 2 * time.Second
 	settings.HelloTimeout = 2 * time.Second
 	settings.IpVersionSupported = func(ipVersion int) bool { return true }
-	settings.Hello = func(ctx context.Context) ([]string, error) {
+	settings.Hello = func(ctx context.Context) (*ExtenderHelloResult, error) {
 		return nil, nil
 	}
 	if configure != nil {
@@ -94,7 +97,7 @@ func TestExtenderNetworkClientBootstrapsAndAppliesHelloRootKeys(t *testing.T) {
 	rootPublicKey := rootPrivateKey.Public().(ed25519.PublicKey)
 
 	resolved := make(chan string, 16)
-	_, directory, _ := newTestExtenderNetworkClient(t, clock, func(settings *ExtenderNetworkClientSettings) {
+	networkClient, directory, _ := newTestExtenderNetworkClient(t, clock, func(settings *ExtenderNetworkClientSettings) {
 		settings.ResolveDns = func(ctx context.Context, name string) ([]netip.Addr, error) {
 			select {
 			case resolved <- name:
@@ -105,8 +108,11 @@ func TestExtenderNetworkClientBootstrapsAndAppliesHelloRootKeys(t *testing.T) {
 				netip.MustParseAddr("2001:db8::200"),
 			}, nil
 		}
-		settings.Hello = func(ctx context.Context) ([]string, error) {
-			return []string{ExtenderKeySeedHex(rootPublicKey)}, nil
+		settings.Hello = func(ctx context.Context) (*ExtenderHelloResult, error) {
+			return &ExtenderHelloResult{
+				RootPublicKeyHexes: []string{ExtenderKeySeedHex(rootPublicKey)},
+				GossipPeerId:       testExtenderGossipPeerId,
+			}, nil
 		}
 	})
 
@@ -153,6 +159,18 @@ func TestExtenderNetworkClientBootstrapsAndAppliesHelloRootKeys(t *testing.T) {
 		}
 		if deadline.Before(time.Now()) {
 			t.Fatal("the hello root keys were never applied")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// the same answer carries the operator's gossip identity, which the member
+	// role's node dials (C6, D3)
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if networkClient.Status().GossipPeerId == testExtenderGossipPeerId {
+			break
+		}
+		if deadline.Before(time.Now()) {
+			t.Fatalf("the gossip peer id never reached the status")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -229,7 +247,7 @@ func TestExtenderNetworkClientDoesNotRebootstrapAboveTheLowWaterMark(t *testing.
 				netip.MustParseAddr("192.0.2.222"),
 			}, nil
 		}
-		settings.Hello = func(ctx context.Context) ([]string, error) {
+		settings.Hello = func(ctx context.Context) (*ExtenderHelloResult, error) {
 			select {
 			case helloCalls <- struct{}{}:
 			default:

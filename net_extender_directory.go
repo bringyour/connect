@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	mathrand "math/rand"
 	"net/netip"
 	"slices"
 	"strings"
@@ -61,6 +62,10 @@ const (
 // Version of the persisted envelope. A stored document of another version is
 // discarded, exactly like an unreadable one.
 const ExtenderDirectoryStoreVersion = 1
+
+// The bounded buffer of one Subscribe consumer (D4). A consumer that falls
+// this far behind is cut off rather than waited on.
+const ExtenderDirectorySubscribeBufferCount = 64
 
 // The progress of the network client's first feed sample, which is what the
 // startup gate waits on (E4). `None` means no network client is running, so
@@ -235,6 +240,18 @@ type ExtenderDirectory struct {
 	ipAddresses  map[netip.Addr]*extenderDirectoryAddress
 	version      uint64
 	savedVersion uint64
+	// the live subscriptions of Subscribe, which the feed server of phase 5a
+	// streams from
+	subscriptions map[*extenderDirectorySubscription]bool
+}
+
+// One live subscription to the applied messages (D4). The channel is the
+// bounded buffer: the directory never waits on a subscriber, and a subscriber
+// that fills it is cut off by closing the channel, which is what its consumer
+// reads as "fell behind, disconnect".
+type extenderDirectorySubscription struct {
+	messages chan *protocol.ExtenderGossipMessage
+	closed   bool
 }
 
 func NewExtenderDirectoryWithDefaults(ctx context.Context) *ExtenderDirectory {
@@ -267,6 +284,7 @@ func NewExtenderDirectory(
 		rootKeySet:           NewExtenderRootKeySet(),
 		keyHexRecords:        map[string]*extenderDirectoryRecord{},
 		ipAddresses:          map[netip.Addr]*extenderDirectoryAddress{},
+		subscriptions:        map[*extenderDirectorySubscription]bool{},
 	}
 	self.load()
 	// arm the save loop's subscription here, not inside the goroutine: a
@@ -452,6 +470,9 @@ func (self *ExtenderDirectory) ApplyRecord(
 		address.publicKeyHex = keyHex
 	}
 	self.enforceAddressCapWithLock(now)
+	self.publishWithLock(&protocol.ExtenderGossipMessage{
+		Message: &protocol.ExtenderGossipMessage_Record{Record: record},
+	})
 	self.changedWithLock()
 	return true, nil
 }
@@ -490,8 +511,121 @@ func (self *ExtenderDirectory) ApplyRevocation(
 	}
 	keyRecord.revocation = revocation
 	keyRecord.revocationBody = body
+	self.publishWithLock(&protocol.ExtenderGossipMessage{
+		Message: &protocol.ExtenderGossipMessage_Revocation{Revocation: revocation},
+	})
 	self.changedWithLock()
 	return true, nil
+}
+
+// Subscribe returns the applied signed messages as they land, and the
+// unsubscribe that releases the subscription (D4). The channel is bounded:
+// when a consumer falls behind it is closed rather than waited on, so one slow
+// feed subscriber can never stall an apply. A consumer therefore treats a
+// closed channel as a disconnect, not as an orderly end of stream.
+//
+// The unsubscribe is idempotent and safe to call after the channel has been
+// closed by an overflow.
+func (self *ExtenderDirectory) Subscribe() (<-chan *protocol.ExtenderGossipMessage, func()) {
+	subscription := &extenderDirectorySubscription{
+		messages: make(chan *protocol.ExtenderGossipMessage, ExtenderDirectorySubscribeBufferCount),
+	}
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		self.subscriptions[subscription] = true
+	}()
+	unsubscribe := func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		delete(self.subscriptions, subscription)
+		if !subscription.closed {
+			subscription.closed = true
+			close(subscription.messages)
+		}
+	}
+	return subscription.messages, unsubscribe
+}
+
+// Hands one applied message to every subscriber with a zero-wait send. This
+// runs under the state lock because a buffered send that never waits cannot
+// deadlock and cannot re-enter the directory, and doing it here keeps the
+// delivery in the same critical section as the apply, so no subscriber can see
+// two applies out of order.
+func (self *ExtenderDirectory) publishWithLock(message *protocol.ExtenderGossipMessage) {
+	for subscription := range self.subscriptions {
+		select {
+		case subscription.messages <- message:
+		default:
+			// The consumer fell behind its whole buffer. What it has queued is
+			// already an incomplete view -- this message is missing from it --
+			// so the queue is voided and the channel closed, which its
+			// consumer reads as a disconnect at once rather than after
+			// flushing a buffer of records that no longer describe the
+			// directory.
+			for draining := true; draining; {
+				select {
+				case <-subscription.messages:
+				default:
+					draining = false
+				}
+			}
+			subscription.closed = true
+			close(subscription.messages)
+			delete(self.subscriptions, subscription)
+		}
+	}
+}
+
+// SampleRecords returns up to `count` signed records of active verified
+// identities in random order, with the record of `ownPublicKey` first when the
+// directory holds one (D4). The messages carry the record exactly as it was
+// received, so a relayed sample is still verifiable under the root keys.
+func (self *ExtenderDirectory) SampleRecords(
+	count int,
+	ownPublicKey []byte,
+) []*protocol.ExtenderGossipMessage {
+	if count <= 0 {
+		return []*protocol.ExtenderGossipMessage{}
+	}
+	ownKeyHex := hex.EncodeToString(ownPublicKey)
+	now := self.settings.Now()
+
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	var ownRecord *protocol.ExtenderRecord
+	records := []*protocol.ExtenderRecord{}
+	for keyHex, keyRecord := range self.keyHexRecords {
+		if keyRecord.record == nil || keyRecord.recordBody == nil {
+			continue
+		}
+		if self.keyRecordRevokedWithLock(keyRecord) || self.keyRecordExpiredWithLock(keyRecord, now) {
+			continue
+		}
+		if 0 < len(ownPublicKey) && keyHex == ownKeyHex {
+			ownRecord = keyRecord.record
+			continue
+		}
+		records = append(records, keyRecord.record)
+	}
+	mathrand.Shuffle(len(records), func(i int, j int) {
+		records[i], records[j] = records[j], records[i]
+	})
+	if ownRecord != nil {
+		records = append([]*protocol.ExtenderRecord{ownRecord}, records...)
+	}
+
+	messages := []*protocol.ExtenderGossipMessage{}
+	for _, record := range records {
+		if count <= len(messages) {
+			break
+		}
+		messages = append(messages, &protocol.ExtenderGossipMessage{
+			Message: &protocol.ExtenderGossipMessage_Record{Record: record},
+		})
+	}
+	return messages
 }
 
 // Adds an address learned outside the signed path: a dns bootstrap answer or a

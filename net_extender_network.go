@@ -28,11 +28,21 @@ import (
 // Every clock and every side effect is a settings seam -- `Now`, `ResolveDns`,
 // `Hello` -- so the whole loop is deterministic in tests.
 
-// The hello answer this client reads. The field is additive (B4, C7); an
+// The hello answer this client reads. Both fields are additive (B4, C7): an
 // operator that has not configured root keys answers with none, which leaves
-// the stored anchor alone.
-type extenderRootKeysHelloResult struct {
+// the stored anchor alone, and one that does not serve a gossip identity yet
+// answers with an empty id, which means there is no operator to dial (D3).
+type ExtenderHelloResult struct {
+	// Hex ed25519 root public keys, the trust anchor of every record (B4).
+	RootPublicKeyHexes []string
+	// The operator gossip node's libp2p peer id, empty when it has none (C6).
+	GossipPeerId string
+}
+
+// The json shape of the hello fields this client reads.
+type extenderHelloResultJson struct {
 	ExtenderRootPublicKeys []string `json:"extender_root_public_keys"`
+	GossipPeerId           string   `json:"gossip_peer_id"`
 }
 
 type ExtenderNetworkClientSettings struct {
@@ -77,9 +87,9 @@ type ExtenderNetworkClientSettings struct {
 	// ResolveDns, when set, replaces the bootstrap resolution. Nil resolves A
 	// and AAAA over DoH with the system resolver as the fallback (E3).
 	ResolveDns func(ctx context.Context, name string) ([]netip.Addr, error)
-	// Hello, when set, replaces the root key fetch. Nil reads /hello through
-	// the client strategy.
-	Hello func(ctx context.Context) ([]string, error)
+	// Hello, when set, replaces the hello fetch. Nil reads /hello through the
+	// client strategy.
+	Hello func(ctx context.Context) (*ExtenderHelloResult, error)
 	// IpVersionSupported, when set, replaces the host family probe. Nil uses
 	// probeFamilySupport, which is what the strategy also dials by.
 	IpVersionSupported func(ipVersion int) bool
@@ -111,6 +121,10 @@ type ExtenderNetworkClientStatus struct {
 	// True once the first attempt has finished, whether or not it produced a
 	// sample. The startup gate reads the same fact from the directory.
 	InitialAttemptDone bool
+	// The operator gossip node's peer id as hello last carried it, empty until
+	// the operator serves one (C6, D3). The member role's node dials the
+	// operator only once this is known.
+	GossipPeerId string
 }
 
 type ExtenderNetworkClient struct {
@@ -314,28 +328,36 @@ func (self *ExtenderNetworkClient) run() {
 	}
 }
 
-// Reads the root keys from hello and replaces the anchor when the answer
-// carries any (B4). An empty list leaves the stored anchor alone, which is
-// what an operator that has not configured keys yet answers.
+// Reads hello and applies what it carries (B4, C7). An empty root key list
+// leaves the stored anchor alone, which is what an operator that has not
+// configured keys yet answers; the gossip peer id is published on the status
+// either way, so the member role's node learns the operator as soon as the
+// operator serves one.
 func (self *ExtenderNetworkClient) refreshRootKeys() bool {
 	hello := self.settings.Hello
 	if hello == nil {
 		if self.settings.ApiUrl == "" || self.clientStrategy == nil {
 			return false
 		}
-		hello = self.helloRootPublicKeys
+		hello = self.hello
 	}
 	ctx, cancel := context.WithTimeout(self.ctx, self.settings.HelloTimeout)
 	defer cancel()
-	rootPublicKeyHexes, err := hello(ctx)
+	helloResult, err := hello(ctx)
 	if err != nil {
 		self.log.Infof("[extender]hello err = %s\n", err)
 		return false
 	}
-	if len(rootPublicKeyHexes) == 0 {
+	if helloResult == nil {
 		return true
 	}
-	keySet, err := NewExtenderRootKeySetFromHex(rootPublicKeyHexes...)
+	self.updateStatus(func(status *ExtenderNetworkClientStatus) {
+		status.GossipPeerId = helloResult.GossipPeerId
+	})
+	if len(helloResult.RootPublicKeyHexes) == 0 {
+		return true
+	}
+	keySet, err := NewExtenderRootKeySetFromHex(helloResult.RootPublicKeyHexes...)
 	if err != nil {
 		self.log.Infof("[extender]hello root keys err = %s\n", err)
 		return false
@@ -344,7 +366,7 @@ func (self *ExtenderNetworkClient) refreshRootKeys() bool {
 	return true
 }
 
-func (self *ExtenderNetworkClient) helloRootPublicKeys(ctx context.Context) ([]string, error) {
+func (self *ExtenderNetworkClient) hello(ctx context.Context) (*ExtenderHelloResult, error) {
 	request, err := HelloRequestFromUrl(ctx, self.settings.ApiUrl, "")
 	if err != nil {
 		return nil, err
@@ -353,11 +375,14 @@ func (self *ExtenderNetworkClient) helloRootPublicKeys(ctx context.Context) ([]s
 	if err != nil {
 		return nil, err
 	}
-	helloResult := &extenderRootKeysHelloResult{}
-	if err := json.Unmarshal(bodyBytes, helloResult); err != nil {
+	helloResultJson := &extenderHelloResultJson{}
+	if err := json.Unmarshal(bodyBytes, helloResultJson); err != nil {
 		return nil, err
 	}
-	return helloResult.ExtenderRootPublicKeys, nil
+	return &ExtenderHelloResult{
+		RootPublicKeyHexes: helloResultJson.ExtenderRootPublicKeys,
+		GossipPeerId:       helloResultJson.GossipPeerId,
+	}, nil
 }
 
 // Resolves the extender dns name and adds every answer as an unverified

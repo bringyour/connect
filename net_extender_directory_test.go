@@ -897,3 +897,163 @@ func testDirectoryKnown(directory *ExtenderDirectory, ip netip.Addr) bool {
 	}
 	return false
 }
+
+// SampleRecords serves only active verified identities, with the node's own
+// record first (D4).
+func TestExtenderDirectorySampleRecordsOwnFirst(t *testing.T) {
+	clock := newTestClock()
+	directory, rootPrivateKey := newTestExtenderDirectory(t, clock, nil)
+
+	ownKey := newTestExtenderKey(t)
+	otherKey := newTestExtenderKey(t)
+	revokedKey := newTestExtenderKey(t)
+	expiredKey := newTestExtenderKey(t)
+
+	now := clock.Now()
+	for _, c := range []struct {
+		publicKey  ed25519.PublicKey
+		ip         string
+		expireTime time.Time
+	}{
+		{publicKey: ownKey, ip: "192.0.2.1", expireTime: now.Add(time.Hour)},
+		{publicKey: otherKey, ip: "192.0.2.2", expireTime: now.Add(time.Hour)},
+		{publicKey: revokedKey, ip: "192.0.2.3", expireTime: now.Add(time.Hour)},
+		{publicKey: expiredKey, ip: "192.0.2.4", expireTime: now.Add(-time.Hour)},
+	} {
+		record := signTestRecord(
+			t,
+			rootPrivateKey,
+			c.publicKey,
+			now,
+			c.expireTime,
+			testExtenderAddress(c.ip),
+		)
+		if _, err := directory.ApplyRecord(record, ExtenderSourceGossip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	revocation := signTestRevocation(t, rootPrivateKey, revokedKey, now)
+	if _, err := directory.ApplyRevocation(revocation); err != nil {
+		t.Fatal(err)
+	}
+
+	messages := directory.SampleRecords(8, ownKey)
+	if len(messages) != 2 {
+		t.Fatalf("sample = %d records, expected the two active ones", len(messages))
+	}
+	firstBody, err := directory.RootKeys().VerifyRecord(messages[0].GetRecord())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.PublicKey(firstBody.PublicKey).Equal(ownKey) {
+		t.Fatalf("the first sampled record is not the node's own")
+	}
+
+	// the cap is honored, and the node's own record is the one that survives it
+	capped := directory.SampleRecords(1, ownKey)
+	if len(capped) != 1 {
+		t.Fatalf("sample = %d records, expected 1", len(capped))
+	}
+	cappedBody, err := directory.RootKeys().VerifyRecord(capped[0].GetRecord())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.PublicKey(cappedBody.PublicKey).Equal(ownKey) {
+		t.Fatalf("the capped sample dropped the node's own record")
+	}
+
+	// a node with no record of its own simply samples the others
+	if messages := directory.SampleRecords(8, nil); len(messages) != 2 {
+		t.Fatalf("sample = %d records, expected the two active ones", len(messages))
+	}
+}
+
+// Subscribe delivers every applied message and closes when the consumer falls
+// a whole buffer behind (D4).
+func TestExtenderDirectorySubscribeDeliversAndCutsOff(t *testing.T) {
+	clock := newTestClock()
+	directory, rootPrivateKey := newTestExtenderDirectory(t, clock, nil)
+
+	messages, unsubscribe := directory.Subscribe()
+	now := clock.Now()
+
+	extenderKey := newTestExtenderKey(t)
+	record := signTestRecord(
+		t,
+		rootPrivateKey,
+		extenderKey,
+		now,
+		now.Add(time.Hour),
+		testExtenderAddress("192.0.2.10"),
+	)
+	if _, err := directory.ApplyRecord(record, ExtenderSourceGossip); err != nil {
+		t.Fatal(err)
+	}
+	message, ok := <-messages
+	if !ok || message.GetRecord() == nil {
+		t.Fatalf("the applied record was not delivered")
+	}
+	revocation := signTestRevocation(t, rootPrivateKey, extenderKey, now.Add(time.Second))
+	if _, err := directory.ApplyRevocation(revocation); err != nil {
+		t.Fatal(err)
+	}
+	message, ok = <-messages
+	if !ok || message.GetRevocation() == nil {
+		t.Fatalf("the applied revocation was not delivered")
+	}
+
+	// fill the buffer without reading: one message over it cuts the
+	// subscription off rather than holding the apply
+	for i := 0; i <= ExtenderDirectorySubscribeBufferCount; i += 1 {
+		overflowKey := newTestExtenderKey(t)
+		overflowRecord := signTestRecord(
+			t,
+			rootPrivateKey,
+			overflowKey,
+			now,
+			now.Add(time.Hour),
+			testExtenderAddress(fmt.Sprintf("198.51.100.%d", i)),
+		)
+		if _, err := directory.ApplyRecord(overflowRecord, ExtenderSourceGossip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closed := false
+	for range ExtenderDirectorySubscribeBufferCount + 2 {
+		if _, ok := <-messages; !ok {
+			closed = true
+			break
+		}
+	}
+	if !closed {
+		t.Fatalf("the overflowing subscription was not cut off")
+	}
+	// the unsubscribe is still safe after the overflow closed the channel
+	unsubscribe()
+	unsubscribe()
+}
+
+// An unsubscribed consumer stops receiving and never blocks an apply (D4).
+func TestExtenderDirectoryUnsubscribeStopsDelivery(t *testing.T) {
+	clock := newTestClock()
+	directory, rootPrivateKey := newTestExtenderDirectory(t, clock, nil)
+
+	messages, unsubscribe := directory.Subscribe()
+	unsubscribe()
+	if _, ok := <-messages; ok {
+		t.Fatalf("an unsubscribed channel delivered a message")
+	}
+
+	now := clock.Now()
+	record := signTestRecord(
+		t,
+		rootPrivateKey,
+		newTestExtenderKey(t),
+		now,
+		now.Add(time.Hour),
+		testExtenderAddress("192.0.2.20"),
+	)
+	if _, err := directory.ApplyRecord(record, ExtenderSourceGossip); err != nil {
+		t.Fatal(err)
+	}
+}

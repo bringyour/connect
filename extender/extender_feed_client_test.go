@@ -523,8 +523,10 @@ func (self *feedFixture) newNetworkClient(
 	settings.DialTimeout = 20 * time.Second
 	settings.HelloTimeout = 20 * time.Second
 	settings.IpVersionSupported = func(ipVersion int) bool { return true }
-	settings.Hello = func(ctx context.Context) ([]string, error) {
-		return []string{hex.EncodeToString(self.rootPublic)}, nil
+	settings.Hello = func(ctx context.Context) (*connect.ExtenderHelloResult, error) {
+		return &connect.ExtenderHelloResult{
+			RootPublicKeyHexes: []string{hex.EncodeToString(self.rootPublic)},
+		}, nil
 	}
 	if configure != nil {
 		configure(settings)
