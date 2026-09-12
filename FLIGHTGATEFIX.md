@@ -1849,3 +1849,117 @@ shows what it is worth).
    the landing is b0b04c8 plus the bound. If step 2 leaves a relay-only
    seed stalled with the wait count active, the residue is the connection
    layer and the transport logs of step 1 are where the next round starts.
+
+## 23. Assessment: what the residue is, what would settle it, and the honest landing
+
+Written 2026-09-12 after the §22 bound was built as specified and
+falsified in the instrument (landed off in 2a5997f, today's behaviour
+exactly, one boolean from any future test). This section answers the
+question asked rather than proposing a fourth candidate.
+
+### 23.1 What the bound taught
+
+The measure is right: the ring reads 465 KB over 300 ms and 1.72 MB over a
+second at 1.86 MB/s, and it follows a step down inside one window. The
+bound is wrong, twice over. One delivered-per-scaled-round-trip is one
+bandwidth-delay product, and holding the pipe at one BDP is stop-and-wait
+on the delivery clock: the deep arms doubled (12.9 to 24.5 s, 6.8 to
+19.8 s) with 22.9 and 18.1 s spent in the wait itself. And the floor is not
+inert: on the shallow arm the applied limit sat at 257 KB, the lane
+delivered 77 KB per scaled round trip after the step, and the arm slowed
+from 5.9 to 9.3 s with only 429 ms of waiting, so the gate changed what
+the loop sent and when in a way the design did not foresee. I accept the
+coordinator's reading in full. I do not propose a multiple of the BDP:
+the arms that got worse got worse on the floor, and any multiple keeps
+the floor; and the case the bound was for is two seeds in five on one
+cell, whose rate under merged is not known.
+
+### 23.2 Whether a design can clear the strict bar on the residue
+
+The residue on b0b04c8 is: six mixed cells behind merged on selective-gap
+resends by single digits, two of them also on goodput (loss-100bp and
+loss-300bp tcp-parallel, −2.7 and −2.0 Mbit/s on 1 and 2 of 5 seeds), and
+the relay-only queue-inflation cell bimodal with the defer on (2 of 5
+seeds). Against it: three forced-direct cells better or equal, six
+exchange cells indistinguishable, clean-lan latency-under-load better in
+every seed, and the defer's win, the largest this program has measured.
+
+My assessment, plainly: no mechanism I can name clears the strict bar as
+stated on that residue, and I would not stake a campaign on one. Three
+reasons.
+
+The bar cannot be met by any tree until it is calibrated. It asks for not
+worse on three primaries in seventeen cells from five paired seeds, on a
+rig whose paired spreads run −51 to +23 % on one cell and where merged's
+own arms differ by 20 % between campaigns on the same cell. Merged against
+itself, interleaved, would fail that bar in some cells by chance, and
+nothing in the record says how many. Without the null distribution, a
+single-digit deficit on 1 or 2 of 5 seeds is not distinguishable from the
+rig, and a candidate that removes a real mechanism can still be called
+worse by the same noise that called the last one better.
+
+The one systematic component with a source-traced mechanism is small and
+would be a narrowing, not a mechanism: F11b's grace is anchored on the
+item's send time plus the scaled round trip, which is exactly the timer's
+due time, so a deferral extends the timer and not the grace, and the
+scoreboard writes at the next round of direct-lane acks what the timer
+just declined to write. Making the two paths agree (a deferred item is
+late, not lost, for the scoreboard until its deferral expires) is a
+one-line change with a deterministic test. It would move gap resends, a
+secondary counter, toward merged's; whether it moves goodput I cannot say
+from the records, because the counters that would attribute the −2.7
+Mbit/s went with D4 to D7. It is worth building behind a flag and reading
+in one campaign after the calibration, and not before.
+
+The relay-only stall has a component no instrument in this program can
+produce (a route-generation change under the multi-client's 3 s send-stall
+bar) and a rate under merged that five runs cannot bound. It is a
+transport-layer question first, and a recovery-path question only if the
+rig reproduction ties the churn to the tunnel's queue delay.
+
+### 23.3 The evidence needed, in order, before any further candidate
+
+1. An A/A campaign: merged against merged, two builds of the same commit,
+   interleaved per repetition on the same five seeds, all seventeen cells.
+   It gives the null distribution of paired differences and seeds-better
+   on each primary. Not worse then means inside that band, and the
+   residue is measured against it rather than against zero.
+2. Two counters on the landed tree, read in the same campaign as the
+   candidate, no behaviour change: selective-gap writes of items whose
+   timeout was deferred, by hole carrier; and a route-generation change
+   count beside the carrier-change writes.
+3. The rig reproduction of §22.5 step 1, unchanged: seeds 20260912 and
+   20260913 three times each on b0b04c8 and 66a2130, defer on and off,
+   transport logging at V(1). It decides whether the removal set is
+   exonerated and whether the churn follows the send-stall bar.
+
+Only if 1 shows the residue outside the null band and 2 attributes it to
+deferred items is the narrowing in 23.2 worth its campaign; if 3 ties the
+churn to queue delay, that is the round in which a queue bound is worth
+revisiting, with a multiple and the floor removed, and not before.
+
+### 23.4 The honest landing
+
+2a5997f as it stands, bound off. Its claim, exactly: merged's recovery
+path and merged's reply path; plus the deferred retransmit, on
+(relay-only 13.5 to 15.8 Mbit/s median and 18,473 to 9,366 timeout
+resends on this tree, mixed queue-inflation 8.9 to 14.6 Mbit/s and 20 to 4
+dead windows, every on-seed ahead of every off-seed); plus §13.1's forget,
+an invariant with its test; plus §13.4's reentrancy fix with tests 11 and
+12; less the fast path's liveness reporter, which cost 13 to 57 % on every
+forced-direct repetition and whose removal cleared those three cells; less
+§13.6's admission caps, measured to lower goodput. Sizes and memory are
+merged's less the direct lane's window plus a 256-byte ring that is not
+read. The §22 bound stays in the tree off, with its counter, so that a
+future round can measure it by flipping one boolean, and the tests behind
+`flightgate_next` remain the specification of the affinity candidate.
+
+Documented as the residue, with what each is worth: the six mixed cells
+behind on gap resends by single digits (a secondary counter; the
+narrowing in 23.2 is its candidate, gated on 23.3); the two lossy
+tcp-parallel cells behind on goodput on 1 and 2 of 5 seeds (unattributed;
+gated on the A/A); the relay-only bimodality (2 of 5 seeds, a transport
+component; gated on the rig reproduction); the three route-readiness
+losses on the slowest forced-direct profile, which merged shares. None of
+these is a stall the user's device would meet that merged does not also
+meet at some rate; the reporter's cost was, and it is gone.
