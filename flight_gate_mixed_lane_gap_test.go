@@ -142,6 +142,11 @@ type mixedLaneOptions struct {
 	slowStepAfter              time.Duration
 	slowSerializationAfterStep time.Duration
 	slowQueueFrames            int
+	// reliableAdmissionUnbounded turns off FLIGHTGATEFIX §22's delivery
+	// bound, which is the arm the reproduction measured before it existed.
+	reliableAdmissionUnbounded bool
+	// resendBudget overrides ResendQueueMaxByteCount; zero keeps the default.
+	resendBudget ByteCount
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -180,6 +185,11 @@ func newMixedLaneHarnessWithOptions(
 		settings.ReceiveBufferSettings.IdleTimeout = 120 * time.Second
 		settings.SendBufferSettings.DeferTimeoutResendWhileCumulativeProgress =
 			options.deferTimeoutResend
+		settings.SendBufferSettings.ReliableAdmissionBoundedByDelivery =
+			!options.reliableAdmissionUnbounded
+		if 0 < options.resendBudget {
+			settings.SendBufferSettings.ResendQueueMaxByteCount = options.resendBudget
+		}
 		return settings
 	}
 	harness := &mixedLaneGapHarness{

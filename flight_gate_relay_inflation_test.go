@@ -28,6 +28,7 @@ func runRelayInflation(
 	messageCount int,
 	queueFrames int,
 	deferTimeoutResend bool,
+	boundOff bool,
 ) relayInflationResult {
 	t.Helper()
 	harness := newMixedLaneHarnessWithOptions(t, mixedLaneOptions{
@@ -38,6 +39,7 @@ func runRelayInflation(
 		slowQueueFrames:            queueFrames,
 		directLaneDisabled:         true,
 		deferTimeoutResend:         deferTimeoutResend,
+		reliableAdmissionUnbounded: boundOff,
 	})
 	start := time.Now()
 	var peakQueue ByteCount
@@ -115,11 +117,11 @@ func TestInflatedRelayQueueDepthDominatesTheStorm(t *testing.T) {
 			result.stats.CarrierChangeWriteCount,
 		)
 	}
-	shallow := runRelayInflation(t, messageCount, shallowQueue, true)
+	shallow := runRelayInflation(t, messageCount, shallowQueue, true, true)
 	report("shallow queue, defer on ", shallow)
-	deepOff := runRelayInflation(t, messageCount, deepQueue, false)
+	deepOff := runRelayInflation(t, messageCount, deepQueue, false, true)
 	report("deep queue,    defer off", deepOff)
-	deepOn := runRelayInflation(t, messageCount, deepQueue, true)
+	deepOn := runRelayInflation(t, messageCount, deepQueue, true, true)
 	report("deep queue,    defer on ", deepOn)
 
 	// the instrument still reproduces the storm it was built for

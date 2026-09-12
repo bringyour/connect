@@ -761,9 +761,16 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// borrow cap and the min as the guaranteed floor.
 		ResendQueueMaxByteCount: MemoryScaledByteCount(mib(2), kib(256)),
 		ResendQueueMinByteCount: kib(256),
-		ContractFillFraction:    0.8,
-		PrewarmOpeningContract:  true,
-		CompactContractHead:     true,
+		// Off by default: the bound is implemented to §22 and measured on
+		// the §21.5 instrument, where it holds the resend queue below the
+		// budget as designed but costs about twice the transfer time in
+		// every arm and acts on the shallow-queue arm the design calls
+		// inert. Landing it on awaits a shape where it pays
+		// (FLIGHTGATEFIX §22.4).
+		ReliableAdmissionBoundedByDelivery: false,
+		ContractFillFraction:               0.8,
+		PrewarmOpeningContract:             true,
+		CompactContractHead:                true,
 		// Disabled until the 1/4/8-lane low-bar campaign selects a measured
 		// default. Receivers always understand and advertise bounded lanes, so a
 		// rollout can enable senders independently without breaking legacy peers.
@@ -1434,6 +1441,16 @@ type ClientSendRecoveryStatsSnapshot struct {
 	// Ordinary RTO resends issued while the cumulative ack advanced within the
 	// last scaled RTT: the spurious whole-window timeout cascade (M4).
 	TimeoutResendWithRecentCumulativeProgress uint64
+	// ReliableAdmissionWaitCount and ReliableAdmissionWaitDuration are how
+	// often and how long a new Pack waited because the reliable lane
+	// already held what it had shown it could carry, and
+	// ReliableAdmissionByteLimitMinimum is the smallest bound that was
+	// applied (FLIGHTGATEFIX §22). All three read zero where the bound is
+	// inert, which is how the inertness claim is measured rather than
+	// asserted.
+	ReliableAdmissionWaitCount        uint64
+	ReliableAdmissionWaitDuration     time.Duration
+	ReliableAdmissionByteLimitMinimum uint64
 	// Age of the newest acknowledgement of an item carried by an unreliable
 	// lane; zero when none was ever acknowledged (feeds a lane watchdog, M6).
 	UnreliableCarrierLastAckAge time.Duration
@@ -1529,6 +1546,9 @@ type Client struct {
 	unreliableFlightBlockedWithReliableCapacity atomic.Uint64
 	unreliableFlightGapReorderSuspected         atomic.Uint64
 	timeoutResendWithRecentCumulativeProgress   atomic.Uint64
+	reliableAdmissionWaitCount                  atomic.Uint64
+	reliableAdmissionWaitNanos                  atomic.Uint64
+	reliableAdmissionByteLimitMinimum           atomic.Uint64
 	unreliableCarrierLastAckNanos               atomic.Int64
 	receiveAckRouteWriteCountByTransport        [ackTransportSlotCount]atomic.Uint64
 	receiveAckRouteWriteWaitNanosByTransport    [ackTransportSlotCount]atomic.Uint64
@@ -1898,6 +1918,9 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 		UnreliableFlightBlockedWithReliableCapacity: self.unreliableFlightBlockedWithReliableCapacity.Load(),
 		UnreliableFlightGapReorderSuspected:         self.unreliableFlightGapReorderSuspected.Load(),
 		TimeoutResendWithRecentCumulativeProgress:   self.timeoutResendWithRecentCumulativeProgress.Load(),
+		ReliableAdmissionWaitCount:                  self.reliableAdmissionWaitCount.Load(),
+		ReliableAdmissionWaitDuration:               time.Duration(self.reliableAdmissionWaitNanos.Load()),
+		ReliableAdmissionByteLimitMinimum:           self.reliableAdmissionByteLimitMinimum.Load(),
 		UnreliableCarrierLastAckAge:                 self.unreliableCarrierLastAckAge(),
 	}
 }
@@ -3907,6 +3930,17 @@ type SendBufferSettings struct {
 	// `ResendQueueBudget` is set: below it admission never consults the
 	// shared budget, so every sequence progresses on floor capacity alone
 	ResendQueueMinByteCount ByteCount
+	// ReliableAdmissionBoundedByDelivery bounds what a sequence may hold
+	// unacknowledged on a reliable lane by what that lane has shown it can
+	// carry: the bytes it acknowledged over the last scaled round trip,
+	// floored at ResendQueueMinByteCount (FLIGHTGATEFIX §22). Delivery is a
+	// count the sequence already has rather than a model, and no queue
+	// depth can inflate it, where the window's mean round trip lags an
+	// inflation by design and is what the retransmit timer already reads.
+	// Inert where the floor is the budget, which is the mobile envelope,
+	// and on any lane delivering more than the budget per scaled round
+	// trip.
+	ReliableAdmissionBoundedByDelivery bool
 	// ResendQueueBudget, when set, is a byte budget shared across sequences
 	// (typically all clients of one device): resend queue bytes above the
 	// floor reserve from it, and admission pauses above the floor while it
@@ -4887,6 +4921,16 @@ type SendSequence struct {
 	lastHeadAckTime time.Time
 
 	contractMultiRouteWriter MultiRouteWriter
+	// deliveredBytes is a short history of what this lane has acknowledged:
+	// sixteen samples of (time, running acknowledged total), advanced on a
+	// cumulative acknowledgement when the newest is older than a quarter of
+	// the retransmit pacing floor. It measures the drain by delivery rather
+	// than by the round-trip mean, which lags an inflation by design
+	// (FLIGHTGATEFIX §22). Allocated once with the sequence: 256 bytes.
+	deliveredBytes      [deliveredBytesRingSize]deliveredBytesSample
+	deliveredBytesHead  int
+	deliveredBytesCount int
+	deliveredByteTotal  ByteCount
 	// lastCumulativeAckTime is when the cumulative ack last advanced; an RTO
 	// inside one scaled RTT of it is counted as spurious (M4).
 	lastCumulativeAckTime               time.Time
@@ -5958,6 +6002,9 @@ func (self *SendSequence) Run() {
 	defer idleTimer.Stop()
 
 	scheduler := newSendPackScheduler()
+	// FLIGHTGATEFIX §22: when the reliable admission bound first blocks, this
+	// records the moment so the wait's duration is charged once.
+	reliableAdmissionWaitStart := time.Time{}
 	disposeScheduledPack := func(sendPack *SendPack) {
 		err := errors.New("Send sequence closed.")
 		sendPack.disposeUnsentGroup(err)
@@ -6265,6 +6312,23 @@ sendSequenceLoop:
 			0,
 			self.sendBufferSettings.ResendQueueMaxByteCount,
 		)
+		// FLIGHTGATEFIX §22: a reliable lane may hold what it has shown it
+		// can carry. Beyond that the queue only adds delay, the scaled timer
+		// fires on depth rather than on loss, and the whole window is
+		// rewritten against a lane that is still delivering.
+		reliableAdmission := self.reliableAdmissionAvailable(flightPolicy, sendTime)
+		if !reliableAdmission {
+			if reliableAdmissionWaitStart.IsZero() {
+				reliableAdmissionWaitStart = sendTime
+				self.client.reliableAdmissionWaitCount.Add(1)
+			}
+		} else if !reliableAdmissionWaitStart.IsZero() {
+			self.client.reliableAdmissionWaitNanos.Add(
+				uint64(sendTime.Sub(reliableAdmissionWaitStart)),
+			)
+			reliableAdmissionWaitStart = time.Time{}
+		}
+		resendCapacity = resendCapacity && reliableAdmission
 		// The unreliable flight only gates admission while no reliable carrier
 		// can take the overflow; otherwise a full flight is written reliable-only
 		// (see writeMaybeWrappedBytes) instead of stalling the sequence.
@@ -7589,6 +7653,127 @@ func (self *SendSequence) releaseUnreliableFlight(item *sendItem) {
 	self.client.observeUnreliableFlight(self.flightController)
 }
 
+// deliveredBytesRingSize is how many delivery samples a sequence keeps. At
+// one sample per quarter of the retransmit pacing floor, sixteen cover four
+// pacing floors, which is longer than any scaled round trip the bound reads
+// (FLIGHTGATEFIX §22).
+const deliveredBytesRingSize = 16
+
+// deliveredBytesSample is one running total of acknowledged bytes and when
+// it was taken.
+type deliveredBytesSample struct {
+	atNanos int64
+	total   ByteCount
+}
+
+// observeDeliveredBytes advances the ring on a cumulative acknowledgement.
+// The running total only grows, so a sample is a checkpoint rather than a
+// rate, and the ring is sized by time rather than by acknowledgement count.
+func (self *SendSequence) observeDeliveredBytes(byteCount ByteCount, at time.Time) {
+	if byteCount <= 0 {
+		return
+	}
+	self.deliveredByteTotal += byteCount
+	atNanos := at.UnixNano()
+	interval := (self.sendBufferSettings.RttMinResendInterval / 4).Nanoseconds()
+	if 0 < self.deliveredBytesCount {
+		newest := self.deliveredBytes[self.deliveredBytesHead]
+		if atNanos-newest.atNanos < interval {
+			// still inside the newest sample's interval: move its total up
+			self.deliveredBytes[self.deliveredBytesHead].total = self.deliveredByteTotal
+			return
+		}
+	}
+	self.deliveredBytesHead = (self.deliveredBytesHead + 1) % deliveredBytesRingSize
+	self.deliveredBytes[self.deliveredBytesHead] = deliveredBytesSample{
+		atNanos: atNanos,
+		total:   self.deliveredByteTotal,
+	}
+	if self.deliveredBytesCount < deliveredBytesRingSize {
+		self.deliveredBytesCount += 1
+	}
+}
+
+// deliveredBytesOver reports what this lane acknowledged in the last d: the
+// running total now, less the total at the newest sample older than d. A
+// scan of at most sixteen entries, allocation-free.
+func (self *SendSequence) deliveredBytesOver(d time.Duration, now time.Time) ByteCount {
+	if self.deliveredBytesCount == 0 || d <= 0 {
+		return 0
+	}
+	horizon := now.Add(-d).UnixNano()
+	base := ByteCount(0)
+	found := false
+	for offset := range self.deliveredBytesCount {
+		index := (self.deliveredBytesHead - offset + deliveredBytesRingSize) % deliveredBytesRingSize
+		sample := self.deliveredBytes[index]
+		if sample.atNanos <= horizon {
+			base = sample.total
+			found = true
+			break
+		}
+	}
+	if !found {
+		// the whole history is inside the window; the oldest sample is the
+		// earliest total this sequence can attribute
+		oldest := (self.deliveredBytesHead - self.deliveredBytesCount + 1 +
+			deliveredBytesRingSize) % deliveredBytesRingSize
+		base = self.deliveredBytes[oldest].total
+	}
+	return max(0, self.deliveredByteTotal-base)
+}
+
+// reliableAdmissionByteLimit is what this sequence may hold unacknowledged
+// on a reliable lane: what the lane delivered over one scaled round trip,
+// never below the per-sequence floor. A lane may hold what it has shown it
+// can carry, which is a statement about the lane rather than an estimate of
+// its rate (FLIGHTGATEFIX §22).
+func (self *SendSequence) reliableAdmissionByteLimit(now time.Time) ByteCount {
+	floor := self.sendBufferSettings.ResendQueueMinByteCount
+	delivered := self.deliveredBytesOver(self.rttWindow.ScaledRtt(), now)
+	return max(floor, delivered)
+}
+
+// reliableUnackedBytes is what the reliable lane holds: everything awaiting
+// acknowledgement less what the unreliable flight already bounds.
+func (self *SendSequence) reliableUnackedBytes() ByteCount {
+	_, queued := self.resendQueue.QueueSize()
+	if self.flightController == nil {
+		return queued
+	}
+	return max(0, queued-self.flightController.byteCount)
+}
+
+// reliableAdmissionAvailable reports whether a new Pack may be admitted to
+// a reliable lane now. It applies to a Pack whose write would be
+// reliable-only, and to every new Pack when no unreliable carrier is
+// active; retransmits, probes and gap recoveries are not admissions.
+func (self *SendSequence) reliableAdmissionAvailable(
+	policy transferFlightPolicySnapshot,
+	now time.Time,
+) bool {
+	if !self.sendBufferSettings.ReliableAdmissionBoundedByDelivery {
+		return true
+	}
+	if policy.limited && !self.reliableOnlyWrite(policy) {
+		// the unreliable flight admits this Pack and bounds it already
+		return true
+	}
+	limit := self.reliableAdmissionByteLimit(now)
+	if self.sendBufferSettings.ResendQueueMinByteCount < limit {
+		for {
+			current := self.client.reliableAdmissionByteLimitMinimum.Load()
+			if current != 0 && current <= uint64(limit) {
+				break
+			}
+			if self.client.reliableAdmissionByteLimitMinimum.CompareAndSwap(current, uint64(limit)) {
+				break
+			}
+		}
+	}
+	return self.reliableUnackedBytes() < limit
+}
+
 // unreliableFlightGates reports whether a full unreliable flight must stop
 // admitting packs. That is only the case when no reliable carrier is active:
 // with one, the overflow is written reliable-only instead of stalling the
@@ -7720,6 +7905,9 @@ func (self *SendSequence) receiveAck(
 	}
 
 	self.lastCumulativeAckTime = time.Now()
+	// FLIGHTGATEFIX §22: what this lane delivered, the measure the reliable
+	// admission bound reads.
+	cumulativeByteCount := ByteCount(0)
 	// acks are cumulative
 	// implicitly ack all earlier items in the sequence
 	i := 0
@@ -7745,6 +7933,7 @@ func (self *SendSequence) receiveAck(
 			panic(errors.New("Missing item"))
 		}
 
+		cumulativeByteCount += implicitItem.MessageByteCount()
 		if !implicitItem.selectiveAcked {
 			self.observeItemAck(implicitItem)
 			self.releaseUnreliableFlight(implicitItem)
@@ -7774,6 +7963,7 @@ func (self *SendSequence) receiveAck(
 		}
 	}
 	self.sendItems = self.sendItems[i:]
+	self.observeDeliveredBytes(cumulativeByteCount, self.lastCumulativeAckTime)
 	if self.log.V(2).Enabled() {
 		a, b := self.resendQueue.QueueSize()
 		self.log.Infof("[s]ack %d/%d (stop %d %dB %d) %s->%s...%s s(%s)\n", ackSequenceNumber, self.nextSequenceNumber-1, a, b, len(self.sendItems), self.client.ClientTag(), self.contractIntermediaryIds(), self.destination, self.contractMultiRouteWriterAlias.StreamId)
