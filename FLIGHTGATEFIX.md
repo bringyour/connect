@@ -1963,3 +1963,107 @@ component; gated on the rig reproduction); the three route-readiness
 losses on the slowest forced-direct profile, which merged shares. None of
 these is a stall the user's device would meet that merged does not also
 meet at some rate; the reporter's cost was, and it is gone.
+
+## 24. Fifth round: the residue is two storm runs, the deferral re-fires a stalled window without backoff, and the primary should be total recovery writes
+
+Written 2026-09-12 from the b0b-mixed records read run by run.
+
+### 24.1 The substitution is real, and the primary should follow it
+
+A deferred spurious timeout that the scoreboard later writes is one
+duplicate counted as a gap write; merged's whole-window rewrite of the same
+item is the same duplicate counted as a timeout. The implementation
+stream's split confirms it from the other end: 1,300 of 1,699
+deferred-item gap writes are relay-carried holes. Judged on the wire, the
+four latency-under-load cells write five to twenty times fewer recoveries
+than merged and burst-loss tcp-parallel fewer too. So yes: the harness
+should judge total recovery writes (selective-gap plus whole-window, both
+ends) as the primary beside dead windows and goodput, and the four strict
+verdicts against us on gap writes were verdicts against half of a
+substitution. The narrowing candidate's result is the same fact seen from
+inside: honouring the deferral in the scoreboard moves the write from the
+cheap counter to the expensive one and changes nothing on the wire. One
+caution on "spurious by definition": on a mixed route a whole-window
+timeout is a delay signal, not a loss signal, in both trees, because the
+receiver's holes come from cross-lane reorder; the relay leg is lossless,
+the direct lane is not.
+
+### 24.2 Why hundreds of timeouts, why only parallel flows
+
+They are one run in five in each cell. clean-lan run-01 wrote 498 and
+deferred 1,072; loss-100bp run-03 wrote 611 and deferred 3,125; the other
+eight runs of the two cells wrote zero and deferred zero, with 0 to 4 gap
+writes, merged-identical. `unreliable_flight_timeout_count` is zero in
+every run of both arms, so §13.1's forget never fires here.
+
+The storm runs are mid-transfer stalls of the relay path. loss-100bp
+run-03: delivery reached 2 MiB at 1.5 s and sat there for about 1.5 s
+(2,097 → 2,097 → 2,097 → 2,102 → 2,116 KB per 250 ms) while the provider
+deferred 3,125 times and wrote 611 and the device's own Packs timed out
+too (33 written, 37 deferred); the direct lane stayed healthy throughout
+(no unreliable-flight timeout, the device sent 710 fast-path messages).
+clean-lan run-01: ahead of every other run at 6 MiB by 2.0 s, then the
+last flow's tail sat at 7.4 MiB for 1.25 s at 8 to 20 KB per 250 ms
+before the final 936 KB landed in one step. Both directions stalling with
+the direct lane live is the relay path, not the recovery path. Merged's
+worst run on loss-100bp shows a comparable stall, 1.25 s of nothing, but
+at the transfer's start with a cold window and nothing in flight, so no
+timer fired and nothing was counted. Whether merged never stalls
+mid-transfer or merely did not in twenty-five runs the records cannot
+say; the instrument cannot produce the stall either.
+
+What the recovery path does with such a stall is where the trees differ,
+and ours is the more expensive by construction. A deferral sets
+`item.resendTime = sendTime.Add(scaledRtt)` and leaves `sendCount`
+unchanged, so a stalled window re-fires whole every scaled round trip:
+about 700 items in flight for four flows, four or five firings in 1.5 s,
+which is the 3,125 deferrals, and `TimeoutResendDeferLimit` then writes
+611 duplicates into the stall. Merged's rewrite doubles the interval per
+attempt, so the same stall fires it once, then at twice the interval.
+Parallel flows matter because the window is four times deeper, so every
+firing costs four times as much and the last flow's tail is the part of
+the window that waits longest.
+
+### 24.3 The one narrowing that follows
+
+A deferral backs off like the rewrite it replaces: `item.resendTime =
+sendTime.Add(resendIntervalForItem(item, item.sendCount +
+item.timeoutDeferCount))`, capped by `MaxResendInterval` as every interval
+is. Nothing else changes. On the relay-only queue-inflation cell the first
+deferral is unchanged and most items are acknowledged inside it; the
+second is longer, which only reduces the 111 to 9,366 writes the limit
+releases. On a mid-transfer stall of 1.5 s at a 400 ms scaled round trip
+the window fires at 0.4 s and 0.8 s and is deferred to 1.6 s, by which the
+stall is over and the acknowledgements arrive: about 1,400 deferrals and
+few writes against 3,125 and 611 today, and against merged's roughly a
+thousand rewrites for the same stall. The cost is a head hole with no
+later same-lane acknowledgement, which waits one extra scaled round trip
+on its second deferral; the gap rule covers every hole that is not at the
+tail. Behind `SendBufferSettings.DeferTimeoutResendBackoff`, default on,
+identity-bearing, so the A/B is one flag. Tests, red today:
+`TestDeferralBacksOffLikeARewrite` (the second deferral of an item is
+twice the first) and `TestStalledWindowReFiresLogarithmically` (a 1.5 s
+stall of a lane holding 700 items produces at most two firings per item
+and no written timeout before the stall ends); the relay-only storm test
+and test 7 stay green.
+
+### 24.4 Evidence and order
+
+1. The harness primary becomes total recovery writes, both ends, with the
+   per-run split kept; the A/A campaign of §23.3 stands, since a one-in-
+   five storm is a rate and the null band decides what a rate means.
+2. Export, no behaviour change: the reliable lane's longest gap between
+   consecutive acknowledgements per run, and the round trip the timer read
+   at each firing. The first tells a relay stall from a deep queue, which
+   the counters cannot; the second says whether the first firing was a
+   lagging mean or a dead leg.
+3. The backoff alone against b0b04c8 on all seventeen cells and both
+   A/Bs, judged on total recovery writes: the two storm cells at or below
+   merged on the total in every run, the relay-only cell with fewer
+   released writes and no new dead window, the forced-direct and exchange
+   cells unchanged (no reliable-lane deferral there, or none that reaches
+   a second firing).
+
+If a storm run still writes hundreds with the backoff on, the residue is
+the relay path's own stall and belongs with the route-churn question of
+§22.5, not with the recovery path.
