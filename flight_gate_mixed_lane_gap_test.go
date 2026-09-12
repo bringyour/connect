@@ -132,6 +132,16 @@ type mixedLaneOptions struct {
 	// two-state chain, each direction with its own state, the campaign's
 	// burst-loss shape.
 	fastBurstLoss *laneBurstLoss
+	// slowStepAfter and slowSerializationAfterStep model the campaign's
+	// mixed-relay-queue-inflation schedule: at slowStepAfter the relay's
+	// drain rate drops to slowSerializationAfterStep and stays there. The
+	// queue in front of it is slowQueueFrames deep, so the sender can push
+	// far past what the lane drains before any write blocks, which is the
+	// condition the accidental throttle of merged's rewrites hid
+	// (FLIGHTGATEFIX §21).
+	slowStepAfter              time.Duration
+	slowSerializationAfterStep time.Duration
+	slowQueueFrames            int
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -187,7 +197,11 @@ func newMixedLaneHarnessWithOptions(
 	// sender out: the direct lane is a small bounded channel like the
 	// production p2p route, so the flight overflow reaches the relay
 	senderOutFast := make(Route, 4)
-	senderOutSlow := make(Route, 64)
+	slowQueueFrames := options.slowQueueFrames
+	if slowQueueFrames <= 0 {
+		slowQueueFrames = 64
+	}
+	senderOutSlow := make(Route, slowQueueFrames)
 	senderIn := make(Route, 64)
 	receiverInFast := make(Route, 64)
 	receiverInSlow := make(Route, 64)
@@ -273,6 +287,15 @@ func newMixedLaneHarnessWithOptions(
 		fastReplyLoss = newLaneLossProcess(20260912, options.fastDropFraction, nil)
 	}
 	var dropLock sync.Mutex
+	// the relay's drain rate steps down once, at a known time
+	harnessStart := time.Now()
+	slowSerializationNow := func() time.Duration {
+		if 0 < options.slowStepAfter && 0 < options.slowSerializationAfterStep &&
+			options.slowStepAfter <= time.Since(harnessStart) {
+			return options.slowSerializationAfterStep
+		}
+		return options.slowSerialization
+	}
 	forward := func(
 		from Route,
 		to Route,
@@ -329,7 +352,11 @@ func newMixedLaneHarnessWithOptions(
 						}(transferFrameBytes)
 						continue
 					}
-					timer := time.NewTimer(serialization)
+					pace := serialization
+					if stepped := slowSerializationNow(); to == receiverInSlow && 0 < stepped {
+						pace = stepped
+					}
+					timer := time.NewTimer(pace)
 					select {
 					case <-ctx.Done():
 						timer.Stop()
