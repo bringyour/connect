@@ -6644,6 +6644,35 @@ sendSequenceLoop:
 						continue
 					}
 					self.client.laneProbeWriteCount.Add(1)
+				} else if laneVerdict == laneTimerDraining {
+					// §28.2: the item's own route has acknowledged within the
+					// last interval, so it is draining and this firing is
+					// early. The deferral is unconditional here: the limit and
+					// the since-last term exist to stop a hole nothing can
+					// acknowledge from being deferred forever, and under the
+					// lane rule every such case is caught elsewhere. An
+					// endpoint drop is proven by the next same-lane
+					// acknowledgement; a tail or a dead lane goes silent and
+					// is probed with backoff, with retirement moving the
+					// window; and on a FIFO lane a merely late item cannot
+					// stay behind items sent before it past its own position.
+					// Keeping the two rules here is what wrote a duplicate for
+					// every item that reached a stall with its deferrals
+					// already consumed, which is why the residue scaled with
+					// the outstanding count.
+					scaledRtt := self.rttWindow.ScaledRtt()
+					if !self.lastCumulativeAckTime.IsZero() &&
+						sendTime.Sub(self.lastCumulativeAckTime) < scaledRtt {
+						self.client.timeoutResendWithRecentCumulativeProgress.Add(1)
+					}
+					deferInterval := self.deferredResendInterval(item, scaledRtt)
+					item.timeoutDeferCount += 1
+					item.timeoutDeferAckTime = self.lastCumulativeAckTime
+					item.deferralOutstanding = true
+					item.resendTime = sendTime.Add(deferInterval)
+					self.resendQueue.Add(item)
+					self.client.timeoutResendDeferCount.Add(1)
+					continue
 				} else if recoveryKind == sendRecoveryNone && !self.lastCumulativeAckTime.IsZero() {
 					scaledRtt := self.rttWindow.ScaledRtt()
 					if sendTime.Sub(self.lastCumulativeAckTime) < scaledRtt {

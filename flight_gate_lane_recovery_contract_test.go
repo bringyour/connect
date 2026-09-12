@@ -65,6 +65,24 @@ var laneRecoveryLongestGapForTree = func(ClientSendRecoveryStatsSnapshot) (time.
 // log line.
 var laneRecoveryDetailForTree = func(ClientSendRecoveryStatsSnapshot) string { return "" }
 
+// laneRecoveryTimerVerdictForTree names what a tree's timer would make of
+// this item's firing. A tree without the lane rule reports "as today".
+var laneRecoveryTimerVerdictForTree = func(*SendSequence, *sendItem) string { return "as today" }
+
+func laneRecoveryTimerVerdict(sequence *SendSequence, item *sendItem) string {
+	return laneRecoveryTimerVerdictForTree(sequence, item)
+}
+
+// laneRecoveryRidesAndProbes reports the ride and probe counts where the
+// tree keeps them.
+var laneRecoveryRidesAndProbesForTree = func(ClientSendRecoveryStatsSnapshot) (uint64, uint64) {
+	return 0, 0
+}
+
+func laneRecoveryRidesAndProbes(stats ClientSendRecoveryStatsSnapshot) (uint64, uint64) {
+	return laneRecoveryRidesAndProbesForTree(stats)
+}
+
 func laneRecoveryReadsLanes(sequence *SendSequence) bool {
 	return laneRecoveryReadsLanesForTree(sequence)
 }
@@ -90,6 +108,8 @@ func newLaneRecoveryLink(
 	stallAfter time.Duration,
 	stallFor time.Duration,
 	queueFrames int,
+	stepAfter time.Duration,
+	stepSerialization time.Duration,
 	configure func(*SendBufferSettings),
 ) *laneRecoveryLink {
 	t.Helper()
@@ -150,6 +170,9 @@ func newLaneRecoveryLink(
 				}
 				if paced {
 					pace := serialization
+					if 0 < stepSerialization && stepAfter <= time.Since(start) {
+						pace = stepSerialization
+					}
 					if 0 < stallFor {
 						since := time.Since(start)
 						if stallAfter <= since && since < stallAfter+stallFor {
@@ -357,7 +380,8 @@ func TestLaneRecoveryRow3DrainingLaneIsNotRewritten(t *testing.T) {
 	}
 	const messageCount = 1200
 	for _, arm := range laneRecoveryArms() {
-		link := newLaneRecoveryLink(t, 20*time.Millisecond, 12*time.Millisecond, 0, 0, 64, arm.configure)
+		link := newLaneRecoveryLink(
+			t, 20*time.Millisecond, 12*time.Millisecond, 0, 0, 64, 0, 0, arm.configure)
 		stats := laneRecoverySend(t, link, messageCount)
 		t.Logf("%s: row 3: draining lane wrote %d whole-window retransmits, %d gap recoveries",
 			arm.name, stats.TimeoutResendWriteCount, stats.SelectiveGapWriteCount)
@@ -383,28 +407,27 @@ func TestLaneRecoveryRows1And2StallWritesAreLogarithmic(t *testing.T) {
 	if testing.Short() {
 		t.Skip("lane recovery contract, live link")
 	}
-	// §27.2 stated the bound as ten writes absolutely. That holds on row 2
-	// and not on row 1, where the residue is the firings inside the stall's
-	// first scaled round trip: those read as draining from the route's own
-	// clock, so §27.3 sends them to §13.5's deferral, whose since-last rule
-	// writes a second firing. The residue scales with the items outstanding
-	// at onset, so the row asserts the reduction, which holds on both, and
-	// the absolute bound only where it is met. The excess is recorded rather
-	// than hidden.
+	// §28 restated the bound: with the deferral's limit and since-last term
+	// removed for reliable-carried items, the writes are the route head's
+	// probes and nothing else, so the bound is absolute and independent of
+	// the items outstanding at onset, which is the quantity the parallel-flow
+	// cells and the collapsing seed scale with. The deferrals are
+	// irreducible and free, one per item outstanding at onset, since the
+	// stall's first interval is indistinguishable from slow draining by the
+	// route's own clock.
 	writesByRowAndArm := map[string]uint64{}
 	for _, row := range []struct {
 		name          string
 		serialization time.Duration
 		messageCount  int
-		absoluteBound bool
 	}{
-		{"row 1, tight pre-stall interval", 3 * time.Millisecond, 3000, false},
-		{"row 2, queue-inflated pre-stall interval", 12 * time.Millisecond, 1500, true},
+		{"row 1, tight pre-stall interval", 3 * time.Millisecond, 3000},
+		{"row 2, queue-inflated pre-stall interval", 12 * time.Millisecond, 1500},
 	} {
 		for _, arm := range laneRecoveryArms() {
 			link := newLaneRecoveryLink(
 				t, 100*time.Millisecond, row.serialization,
-				1500*time.Millisecond, 2750*time.Millisecond, 1024, arm.configure)
+				1500*time.Millisecond, 2750*time.Millisecond, 1024, 0, 0, arm.configure)
 			stats := laneRecoverySend(t, link, row.messageCount)
 			const bound = 10
 			t.Logf("%s: %s: wrote %d whole-window retransmits through the stall (bound %d)%s",
@@ -416,7 +439,7 @@ func TestLaneRecoveryRows1And2StallWritesAreLogarithmic(t *testing.T) {
 				continue
 			}
 			writesByRowAndArm[row.name+"/"+arm.name] = stats.TimeoutResendWriteCount
-			if arm.readsLanes && row.absoluteBound && bound < int(stats.TimeoutResendWriteCount) {
+			if arm.readsLanes && bound < int(stats.TimeoutResendWriteCount) {
 				t.Errorf("%s: %s: a tree that reads lanes wrote %d retransmits through the stall, "+
 					"want at most %d", arm.name, row.name, stats.TimeoutResendWriteCount, bound)
 			}
@@ -479,4 +502,138 @@ func laneRecoverySend(
 	}
 	time.Sleep(300 * time.Millisecond)
 	return link.sender.SendRecoveryStats()
+}
+
+// Row 1's other half, and the claim §28 rests on: the write bound does not
+// move with the items outstanding at onset, while the deferral count does,
+// being one per item the lane held.
+func TestLaneRecoveryRow1BoundIsIndependentOfOutstanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("lane recovery contract, live link")
+	}
+	for _, arm := range laneRecoveryArms() {
+		var smallest, largest uint64
+		for index, messageCount := range []int{1500, 5000} {
+			link := newLaneRecoveryLink(
+				t, 100*time.Millisecond, 3*time.Millisecond,
+				1500*time.Millisecond, 2750*time.Millisecond, 2048, 0, 0, arm.configure)
+			stats := laneRecoverySend(t, link, messageCount)
+			t.Logf("%s: row 1 at %d messages: wrote %d%s",
+				arm.name, messageCount, stats.TimeoutResendWriteCount,
+				laneRecoveryDetailForTree(stats))
+			if index == 0 {
+				smallest = stats.TimeoutResendWriteCount
+			} else {
+				largest = stats.TimeoutResendWriteCount
+			}
+		}
+		if !arm.readsLanes {
+			continue
+		}
+		if 4*max(smallest, 1) < largest {
+			t.Errorf(
+				"%s: row 1: the write count moved from %d to %d as the outstanding window grew; "+
+					"under §28 the writes are the route head's probes and nothing else, so the "+
+					"bound must not scale with it",
+				arm.name, smallest, largest,
+			)
+		}
+	}
+}
+
+// Row 8. A single reliable lane draining under deep queue inflation, no
+// drop anywhere: a late item must never be written while the lane keeps
+// acknowledging items sent before it. merged writes its whole window, and
+// the landed tree releases late items at the deferral limit, which is the
+// relay-only cell's own residue.
+func TestLaneRecoveryRow8LateItemOnADrainingLaneIsNeverWritten(t *testing.T) {
+	if testing.Short() {
+		t.Skip("lane recovery contract, live link")
+	}
+	const messageCount = 6000
+	for _, arm := range laneRecoveryArms() {
+		// the lane slows mid-transfer behind a queue deep enough that no
+		// write blocks, so every item's timer fires early while the lane is
+		// still delivering and never stops
+		link := newLaneRecoveryLink(
+			t, 50*time.Millisecond, 500*time.Microsecond, 0, 0, 4096,
+			time.Second, 12*time.Millisecond, arm.configure)
+		stats := laneRecoverySend(t, link, messageCount)
+		t.Logf("%s: row 8: draining under inflation wrote %d whole-window retransmits%s",
+			arm.name, stats.TimeoutResendWriteCount, laneRecoveryDetailForTree(stats))
+		const bound = 10
+		if arm.readsLanes && bound < int(stats.TimeoutResendWriteCount) {
+			t.Errorf(
+				"%s: row 8: a tree that reads lanes wrote %d retransmits of late items on a lane "+
+					"that never stopped acknowledging, want at most %d",
+				arm.name, stats.TimeoutResendWriteCount, bound,
+			)
+		}
+	}
+}
+
+// Row 9, the trade. One endpoint drop with exactly one later same-lane
+// item, which is below the gap rule's threshold, so the hole is proven
+// only by that item's acknowledgement moving the route's highest. It is
+// then written at its own next timer firing rather than at the moment of
+// proof, and the row states the bound: one interval past the proof.
+func TestLaneRecoveryRow9ProvenDropWaitsAtMostOneInterval(t *testing.T) {
+	for _, arm := range laneRecoveryArms() {
+		sequence, items, _ := laneRecoveryScoreboard(t, 3, arm.configure)
+		relay := make(Route, 4)
+		hole := items[0]
+		hole.reliableCarrierObserved = true
+		hole.carrierRoute = relay
+		hole.sequenceNumber = 1
+		// one later item on the same lane, acknowledged
+		proof := items[1]
+		proof.selectiveAcked = true
+		proof.carrierRoute = relay
+		proof.sequenceNumber = 2
+		laneRecoveryRecordAcks(sequence, items[1:2])
+
+		interval := sequence.resendIntervalForItem(hole, hole.sendCount)
+		verdict := laneRecoveryTimerVerdict(sequence, hole)
+		t.Logf("%s: row 9: one same-lane proof, timer verdict=%s, its own interval %s",
+			arm.name, verdict, interval.Truncate(time.Millisecond))
+		if arm.readsLanes && verdict != "endpoint drop" {
+			t.Errorf("%s: row 9: a hole its own lane acknowledged past reads as %q, want an "+
+				"endpoint drop written at its next firing", arm.name, verdict)
+		}
+		// the bound: the wait is the item's own interval, never the cap
+		if max := sequence.sendBufferSettings.MaxResendInterval; max < interval {
+			t.Errorf("%s: row 9: the proven hole waits %s, past the overall maximum %s",
+				arm.name, interval, max)
+		}
+	}
+}
+
+// Row 10. The held-item re-arm: an item riding behind the route head must
+// never be re-armed to a time already past, which spins it through the
+// resend loop. The ratio of rides to probes is the check.
+func TestLaneRecoveryRow10HeldItemsDoNotSpin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("lane recovery contract, live link")
+	}
+	for _, arm := range laneRecoveryArms() {
+		if !arm.readsLanes {
+			continue
+		}
+		link := newLaneRecoveryLink(
+			t, 100*time.Millisecond, 3*time.Millisecond,
+			1500*time.Millisecond, 2750*time.Millisecond, 2048, 0, 0, arm.configure)
+		stats := laneRecoverySend(t, link, 3000)
+		rides, probes := laneRecoveryRidesAndProbes(stats)
+		t.Logf("%s: row 10: %d rides against %d probes", arm.name, rides, probes)
+		if probes == 0 {
+			t.Errorf("%s: row 10: no probe was written, so the row measured nothing", arm.name)
+			continue
+		}
+		// a ride costs one queue re-arm per item per probe interval; orders of
+		// magnitude more than that is the loop spinning
+		if 10_000*probes < rides {
+			t.Errorf("%s: row 10: %d rides against %d probes, so a held item is being re-armed "+
+				"into the past and spinning", arm.name, rides, probes)
+		}
+	}
 }

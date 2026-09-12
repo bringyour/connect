@@ -48,6 +48,22 @@ func init() {
 			stats.ReliableLaneStallOnsetOutstanding,
 		)
 	}
+	laneRecoveryTimerVerdictForTree = func(sequence *SendSequence, item *sendItem) string {
+		switch sequence.laneTimerVerdictFor(item, time.Now()) {
+		case laneTimerEndpointDrop:
+			return "endpoint drop"
+		case laneTimerDraining:
+			return "draining"
+		case laneTimerSilent:
+			return "silent"
+		}
+		return "as today"
+	}
+	laneRecoveryRidesAndProbesForTree = func(
+		stats ClientSendRecoveryStatsSnapshot,
+	) (uint64, uint64) {
+		return stats.LaneProbeRideCount, stats.LaneProbeWriteCount
+	}
 	laneRecoveryReadsLanesForTree = func(sequence *SendSequence) bool {
 		if sequence != nil {
 			return sequence.sendBufferSettings.ReliableLaneProvenRecovery
