@@ -1377,3 +1377,48 @@ lengthened is gone.
 
 Out of scope, flagged: the §13.3 progress report costs about 10 kbit/s of a
 64 kbit/s uplink in the download direction, which no low-bar cell has run.
+
+### 19.7 Device evidence of 2026-09-11: D2 withdrawn, D4 bounded
+
+Two shapes from the Wi-Fi-to-Wi-Fi run of the tree this section replaces
+(initial writes down four-fold, timeouts per write up to 2.7, the direct
+lane flapping between one and two routes two or three times a run) were
+checked against D1 to D7. Neither is closed as written.
+
+Route churn. `RttWindow` has no generation and no reset; samples leave only
+by displacement (128) or the 60 s timeout. D2 therefore leaves a flapping
+route's direct-lane samples in the sequence window after the relay returns,
+so the relay's clock reads the direct lane's for up to 128 acks or 60 s
+while F10 stops the relay's own samples from displacing them faster: the
+19.2 (a) cascade, transiently, on every flap. D2 is withdrawn: F10 stays
+whole, the one condition in `observeAckRtt` goes, and a forced direct
+route keeps merged's cold floor for the timer and for probe pacing,
+deliberately: on the only carrier every ack is conclusive and gap recovery
+is immediate, the timer is the last resort, and a sampled one on a
+serialising lane fires early. Finding A's fix is D1 with D3, and it is
+merged-identical on that route by construction. The LAN-like lane's 2 s
+tail wait is merged's; a lane-tagged window is the mechanism that would buy
+both and is not taken without a measurement asking for it. The two D2 tests
+become one: on a forced direct route the timer and the probe clock equal
+merged's cold floor and the sequence window stays unsampled.
+
+Starvation. A deferral holds the receiver's ordered stream at the hole, and
+the sender's resend queue fills with selectively acknowledged items behind
+it until `ResendQueueMaxByteCount` starves admission. D4 defers only a hole
+proven by fast-lane acks while the sender has a reliable route (a
+fall-through, or a receiver that lost its relay before the sender did), but
+its clock is `rttWindow.ScaledRtt()`, which is the 2 s cold floor whenever
+the relay has carried no data: a stall with no evidence behind it. Bound:
+the deferral is the relay's scaled RTT when `rttWindow` holds samples and
+exactly `RttMinResendInterval` when it does not, never `MinResendInterval`.
+After the first expired deferral the latch makes the next holes immediate
+for 64 clean acks, so a flap with real loss pays the bound once. F11b's
+grace for relay-carried holes keeps merged's clock unchanged. Test:
+`TestGapDeferralNeverWaitsTheColdFloor`: unsampled window and
+non-conclusive proving acks defer by 300 ms, not 2 s; sampled at 300 ms,
+by 600 ms. The contract's rows stay green under the bound.
+
+The 9 % exchange-path regression of the merged PRs on radios is finding 3
+(§13.7), which the low-bar guard already returned as REGRESSION on
+`exchange-auto`; this design does not touch it, and G1's narrower rule
+remains the named answer.
