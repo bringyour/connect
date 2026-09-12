@@ -28,11 +28,38 @@ func metricArms() []laneRecoveryArm { return laneRecoveryArms() }
 // the receive stream is ordered and nothing past the stalled head can be
 // delivered however much is rewritten. merged rewrites its window each
 // interval.
+//
+// The row carries two different kinds of number, and a later reader must
+// not confuse them.
+//
+// The landed default's figure is a CEILING, a ratchet on behaviour that is
+// already known to be wrong: this tree's default writes hundreds of
+// duplicates into a lossless stall, which is not correct and is not
+// claimed to be. The assertion exists only so that a future change cannot
+// raise it without failing. Nothing about it says the current number is
+// right.
+//
+// The lane rule's figure is a BOUND, a property the rule claims and must
+// meet: a silent lane is probed, so the writes are the route head's probes
+// and nothing else, single digits at any window depth.
+//
+// The gap between them is the clearest single argument for the rule
+// becoming the default if the rig agrees, so the row logs both and the
+// ratio between them.
+const (
+	// the landed default's ratchet, generous against its measured 394 so
+	// that ordinary timing variation does not fail the suite
+	metricLosslessStallDefaultCeiling = 700
+	// the lane rule's own bound
+	metricLosslessStallLaneRuleBound = 20
+)
+
 func TestMetricTotalRecoveryWritesOnALosslessStall(t *testing.T) {
 	if testing.Short() {
 		t.Skip("metric contract, live link")
 	}
 	const messageCount = 4000
+	writes := map[string]uint64{}
 	for _, arm := range metricArms() {
 		link := newLaneRecoveryLink(
 			t, 100*time.Millisecond, 3*time.Millisecond,
@@ -40,21 +67,55 @@ func TestMetricTotalRecoveryWritesOnALosslessStall(t *testing.T) {
 		stats := laneRecoverySend(t, link, messageCount)
 		total := stats.TimeoutResendWriteCount + stats.SelectiveGapWriteCount +
 			stats.AckTailProbeWriteCount + stats.CumulativeProbeWriteCount
+		writes[arm.name] = stats.TimeoutResendWriteCount
 		t.Logf(
 			"%s: M1 total recovery writes %d (whole-window %d, gap %d, tail probe %d, cumulative probe %d) "+
 				"over %d messages on a link that drops nothing",
 			arm.name, total, stats.TimeoutResendWriteCount, stats.SelectiveGapWriteCount,
 			stats.AckTailProbeWriteCount, stats.CumulativeProbeWriteCount, messageCount,
 		)
-		// M2: a lossless link must not need whole-window rewrites at all
-		const bound = 20
-		if arm.readsLanes && bound < int(stats.TimeoutResendWriteCount) {
+		if arm.readsLanes {
+			// a bound: the rule claims this and must meet it
+			if metricLosslessStallLaneRuleBound < int(stats.TimeoutResendWriteCount) {
+				t.Errorf(
+					"%s: M2 bound: %d whole-window retransmits on a link that dropped nothing, "+
+						"want at most %d; a silent lane is probed, so the writes are the route "+
+						"head's probes and nothing else",
+					arm.name, stats.TimeoutResendWriteCount, metricLosslessStallLaneRuleBound,
+				)
+			}
+			continue
+		}
+		// a ceiling: this number is not correct, it is only not to grow
+		if metricLosslessStallDefaultCeiling < int(stats.TimeoutResendWriteCount) {
 			t.Errorf(
-				"%s: M2: %d whole-window retransmits on a link that dropped nothing, want at "+
-					"most %d; each one is a duplicate the ordered stream cannot use",
-				arm.name, stats.TimeoutResendWriteCount, bound,
+				"%s: M2 ceiling: %d whole-window retransmits on a link that dropped nothing, "+
+					"past the ratchet of %d. This ceiling is not a claim that the current number "+
+					"is right; it writes hundreds of duplicates into a lossless stall and that is "+
+					"the cost of the default. It exists so the cost cannot rise unnoticed",
+				arm.name, stats.TimeoutResendWriteCount, metricLosslessStallDefaultCeiling,
 			)
 		}
+	}
+	// the gap, which is the argument for the rule becoming the default
+	var ceilingArm, boundArm uint64
+	var haveBoth bool
+	for _, arm := range metricArms() {
+		if written, ok := writes[arm.name]; ok {
+			if arm.readsLanes {
+				boundArm, haveBoth = written, true
+			} else {
+				ceilingArm = written
+			}
+		}
+	}
+	if haveBoth {
+		t.Logf(
+			"M2: the default writes %d into this lossless stall and the lane rule writes %d on "+
+				"the same shape, a factor of %.0f. The first is a ceiling on behaviour known to "+
+				"be wrong; the second is the rule's own bound",
+			ceilingArm, boundArm, float64(ceilingArm)/float64(max(boundArm, 1)),
+		)
 	}
 }
 
