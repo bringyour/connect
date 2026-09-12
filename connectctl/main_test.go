@@ -49,30 +49,33 @@ func TestEnqueueSinkReceiveDropsWhenFull(t *testing.T) {
 	}
 }
 
-// The cli provider derives its family-pinned urls from --connect_url by the
-// sdk's rule: suffix the service label, keep scheme, port and path, and give
-// up on anything with no label to suffix.
-func TestFamilyConnectUrl(t *testing.T) {
+// The cli provider derives its family-pinned urls from --connect_url, and the
+// extender activation derives its family api urls from --api_url, by the same
+// sdk rule: suffix the service label, keep scheme, port and path, and give up
+// on anything with no label to suffix.
+func TestFamilyServiceUrl(t *testing.T) {
 	cases := []struct {
-		connectUrl string
+		serviceUrl string
 		ipVersion  int
 		want       string
 	}{
-		{"wss://connect.bringyour.com/", 4, "wss://connect-v4.bringyour.com/"},
-		{"wss://connect.bringyour.com/", 6, "wss://connect-v6.bringyour.com/"},
-		{"wss://g2-connect.bringyour.com/secret", 4, "wss://g2-connect-v4.bringyour.com/secret"},
-		{"wss://connect.ur.network:8443/", 6, "wss://connect-v6.ur.network:8443/"},
+		{"wss://connect.example.com/", 4, "wss://connect-v4.example.com/"},
+		{"wss://connect.example.com/", 6, "wss://connect-v6.example.com/"},
+		{"wss://g2-connect.example.com/secret", 4, "wss://g2-connect-v4.example.com/secret"},
+		{"wss://connect.space.example:8443/", 6, "wss://connect-v6.space.example:8443/"},
+		{"https://api.example.com", 4, "https://api-v4.example.com"},
+		{"https://beta-api.example.com/secret", 6, "https://beta-api-v6.example.com/secret"},
 		{"ws://127.0.0.1:8080/", 4, ""},
 		{"wss://[::1]:8080/", 6, ""},
 		{"wss://localhost/", 4, ""},
-		{"wss://connect-v4.bringyour.com/", 6, ""},
-		{"wss://connect.bringyour.com/", 5, ""},
+		{"wss://connect-v4.example.com/", 6, ""},
+		{"wss://connect.example.com/", 5, ""},
 		{"", 4, ""},
 		{"not a url", 4, ""},
 	}
 	for _, c := range cases {
-		if got := familyConnectUrl(c.connectUrl, c.ipVersion); got != c.want {
-			t.Errorf("familyConnectUrl(%q, %d) = %q, want %q", c.connectUrl, c.ipVersion, got, c.want)
+		if got := familyServiceUrl(c.serviceUrl, c.ipVersion); got != c.want {
+			t.Errorf("familyServiceUrl(%q, %d) = %q, want %q", c.serviceUrl, c.ipVersion, got, c.want)
 		}
 	}
 }

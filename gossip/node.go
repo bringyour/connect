@@ -533,6 +533,41 @@ func (self *Node) ListenAddrs() []ma.Multiaddr {
 	return self.host.Network().ListenAddresses()
 }
 
+// The role this node runs in (D1, D5).
+func (self *Node) Role() string {
+	return self.settings.Role
+}
+
+// Listen adds addresses this node is reachable at, on top of whatever it was
+// constructed with. An extender learns its public addresses from its
+// activation result, which arrives after the node is already up (D2, G3), so
+// the mesh address of a family is published when that family activates.
+// Addresses already listened on are skipped, and listening on none is not an
+// error.
+func (self *Node) Listen(listenAddrs ...ma.Multiaddr) error {
+	existingAddrs := self.host.Network().ListenAddresses()
+	newAddrs := []ma.Multiaddr{}
+	for _, listenAddr := range listenAddrs {
+		if slices.ContainsFunc(existingAddrs, listenAddr.Equal) {
+			continue
+		}
+		if slices.ContainsFunc(newAddrs, listenAddr.Equal) {
+			continue
+		}
+		newAddrs = append(newAddrs, listenAddr)
+	}
+	if len(newAddrs) == 0 {
+		return nil
+	}
+	if err := self.host.Network().Listen(newAddrs...); err != nil {
+		return err
+	}
+	// a node that has just become reachable should peer now rather than at the
+	// end of the round
+	self.wakeMonitor.NotifyAll()
+	return nil
+}
+
 func (self *Node) Status() NodeStatus {
 	return self.statusMonitor.Value()
 }

@@ -119,6 +119,13 @@ Usage:
     connectctl sink [--connect_url=<connect_url>] [--api_url=<api_url>] --jwt=<jwt>
         [--message_count=<message_count>]
         [--instance_id=<instance_id>]
+    connectctl extender --jwt=<jwt> [--api_url=<api_url>]
+        [--extender_key_file=<path>]
+        [--listen_tcp=<port>]
+        [--listen_udp=<port>]
+        [--listen_dns=<port>]
+        [--allowed_host=<host>]...
+        [--state_dir=<dir>]
     
 Options:
     -h --help                        Show this screen.
@@ -133,7 +140,13 @@ Options:
     --jwt=<jwt>                      Your platform JWT.
     --destination_id=<destination_id>   Destination client_id
     --message_count=<message_count>  Print this many messages then exit.
-    --instance_id=<instance_id>      Set the client instance id.`,
+    --instance_id=<instance_id>      Set the client instance id.
+    --extender_key_file=<path>       Extender identity key file (hex seed), created when absent.
+    --listen_tcp=<port>              Extender tcp carrier port (default 443).
+    --listen_udp=<port>              Extender quic carrier port (default 443).
+    --listen_dns=<port>              Extender dns carrier port (default 53).
+    --allowed_host=<host>            Extra host the extender may forward to. Repeatable.
+    --state_dir=<dir>                Directory for the extender key and the known extenders.`,
 		DefaultApiUrl,
 		DefaultConnectUrl,
 	)
@@ -157,6 +170,8 @@ Options:
 		send(opts)
 	} else if sink_, _ := opts.Bool("sink"); sink_ {
 		sink(opts)
+	} else if extender_, _ := opts.Bool("extender"); extender_ {
+		extenderCommand(opts)
 	}
 }
 
@@ -774,8 +789,8 @@ func newFamilyPlatformTransportGroup(
 		clientStrategy,
 		routeManager,
 		platformUrl,
-		familyConnectUrl(platformUrl, 4),
-		familyConnectUrl(platformUrl, 6),
+		familyServiceUrl(platformUrl, 4),
+		familyServiceUrl(platformUrl, 6),
 		auth,
 		connect.TransportModeAuto,
 		connect.DefaultPlatformTransportSettings(),
@@ -783,21 +798,25 @@ func newFamilyPlatformTransportGroup(
 	)
 }
 
-// familyConnectUrl derives the family-pinned form of a connect url for ip
+// familyServiceUrl derives the family-pinned form of a service url for ip
 // version 4 or 6 by inserting the suffix on the service label, so
-// `wss://connect.bringyour.com/` becomes `wss://connect-v4.bringyour.com/`
-// and `g2-connect` becomes `g2-connect-v4`. Scheme, port and path are kept.
-// "" when there is no label to suffix: an ip literal, a single-label host,
-// or a label the operator already pinned with -v4/-v6.
-func familyConnectUrl(connectUrl string, ipVersion int) string {
+// `wss://connect.example.com/` becomes `wss://connect-v4.example.com/` and
+// `g2-connect` becomes `g2-connect-v4`. Scheme, port and path are kept. "" when
+// there is no label to suffix: an ip literal, a single-label host, or a label
+// the operator already pinned with -v4/-v6.
+//
+// The platform transport group (IPV6.md A1, A4) and the extender activation
+// (EXTENDER.md C2) derive their urls the same way, from --connect_url and
+// --api_url respectively, which is the sdk's own rule.
+func familyServiceUrl(serviceUrl string, ipVersion int) string {
 	if ipVersion != 4 && ipVersion != 6 {
 		return ""
 	}
-	connectUrl = strings.TrimSpace(connectUrl)
-	if connectUrl == "" {
+	serviceUrl = strings.TrimSpace(serviceUrl)
+	if serviceUrl == "" {
 		return ""
 	}
-	parsedUrl, err := url.Parse(connectUrl)
+	parsedUrl, err := url.Parse(serviceUrl)
 	if err != nil || parsedUrl.Host == "" {
 		return ""
 	}

@@ -526,6 +526,25 @@ func probeFamilySupport(family int) bool {
 	return false
 }
 
+// FamilySupported reports whether this device has a usable path of ip version
+// 4 or 6 that is not this product's own tunnel. It is probeFamilySupport under
+// an exported name, for the callers outside this file that must skip a family
+// the host cannot prove an address for: the extender activation loop
+// (EXTENDER.md G3) in the sdk and in connectctl.
+//
+// Deliberately the raw probe and not the ledger's view (controlFamilyProbe): an
+// activation asks whether this host HAS an address of the family, and a learned
+// control-plane demotion is evidence about a path, not about an address. Fails
+// closed on an unreadable interface table, like the probe it wraps.
+func FamilySupported(ipVersion int) bool {
+	switch ipVersion {
+	case 4, 6:
+		return probeFamilySupport(ipVersion)
+	default:
+		return false
+	}
+}
+
 // controlFamilyProbe is probeFamilySupport through the ledger's test seam, so
 // a pinned transport's hold and a demotion's guard answer from the same source.
 func controlFamilyProbe(family int) bool {

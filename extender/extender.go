@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -187,6 +188,13 @@ type ExtenderSettings struct {
 	// It runs synchronously and must not block. Nil retains the silent
 	// production behavior.
 	ErrorHandler func(stage string, err error)
+	// ListenErrorHandler, when set, receives the bind failure of one carrier
+	// (G2). Each carrier is bound independently: a failure disables that
+	// carrier and is reported here once, and only a failure of every carrier
+	// ends ListenAndServe with an error. The provider role logs it once and
+	// retries on the activation cadence, never as a user-visible error. It
+	// runs synchronously and must not block.
+	ListenErrorHandler func(carrier string, err error)
 	// CertificateHandler, when set, receives the outer sni of every handshake
 	// as its certificate is selected, on every carrier. Tests use it to observe
 	// what a dial presented; an empty name is a ClientHello that carried no sni
@@ -211,10 +219,20 @@ type ExtenderServer struct {
 	allowedSecrets []string
 	// exact (x) or wildcard (*.x)
 	// wildcard *.x does not match exact x
-	allowedHosts  []string
-	ports         map[int][]connect.ExtenderConnectMode
+	allowedHosts []string
+	ports        map[int][]connect.ExtenderConnectMode
+	// the carriers whose bind succeeded, in wire order. Empty until
+	// ListenAndServe has bound them, because a carrier that did not bind must
+	// not be offered to a client or to an activation (G2).
 	carriers      []string
 	forwardDialer *net.Dialer
+
+	// closed once every carrier bind has been attempted, and at the latest
+	// when serving ends. A caller that reports the carriers -- the activation
+	// loop of G3 -- waits on it rather than announcing a list still being
+	// bound.
+	listening     chan struct{}
+	listeningOnce sync.Once
 
 	certificates    *extenderCertificates
 	certificatesErr error
@@ -282,8 +300,9 @@ func NewExtenderServer(
 		allowedSecrets:         allowedSecrets,
 		allowedHosts:           allowedHosts,
 		ports:                  ports,
-		carriers:               carriersForPorts(ports),
+		carriers:               []string{},
 		forwardDialer:          forwardDialer,
+		listening:              make(chan struct{}),
 		settings:               settings,
 	}
 
@@ -338,24 +357,11 @@ func NewExtenderServer(
 	return self
 }
 
-// The carrier names this extender serves, in wire order (A4).
-func carriersForPorts(ports map[int][]connect.ExtenderConnectMode) []string {
-	carriers := []string{}
-	for _, carrier := range []string{
-		connect.ExtenderCarrierTcp,
-		connect.ExtenderCarrierQuic,
-		connect.ExtenderCarrierDns,
-	} {
-		for _, connectModes := range ports {
-			if slices.ContainsFunc(connectModes, func(connectMode connect.ExtenderConnectMode) bool {
-				return connect.ExtenderCarrierForConnectMode(connectMode) == carrier
-			}) {
-				carriers = append(carriers, carrier)
-				break
-			}
-		}
-	}
-	return carriers
+// The carrier names in wire order, which is the order Carriers reports (A4).
+var extenderCarrierOrder = []string{
+	connect.ExtenderCarrierTcp,
+	connect.ExtenderCarrierQuic,
+	connect.ExtenderCarrierDns,
 }
 
 // extenderLogWriter keeps the http server's internal errors on the same log as
@@ -519,26 +525,72 @@ func (self *ExtenderServer) startConnection(connection net.Conn) {
 }
 
 // ListenAndServe owns every accepted listener and connection until shutdown.
-// It reports a bind failure and nothing else: a Close that lands while a
-// carrier is still binding ends the call with no error, as a Close after the
-// carriers are up does.
+//
+// Each carrier is bound independently (G2): a bind that fails is reported
+// through ListenErrorHandler, disables that carrier, and leaves the others
+// serving, because an extender that cannot take udp 443 is still a working
+// extender on tcp 443. Only a failure of every carrier is an error. A
+// configuration mistake -- two udp carriers on one port -- is not a bind
+// failure and is reported before anything is bound.
+//
+// Nothing is served until every bind has been attempted, so a client that
+// reaches the first carrier up can never be told a carrier list that is still
+// being assembled. A Close that lands while a carrier is binding ends the call
+// with no error, as a Close after the carriers are up does.
 func (self *ExtenderServer) ListenAndServe() error {
 	if !self.beginWorker() {
 		// shutdown started before serving, which is not a bind failure
+		self.markListening()
 		return nil
 	}
 	defer self.endWorker()
 	defer self.Close()
+	// a caller waiting to report the carriers must be released on every exit,
+	// including the failures below
+	defer self.markListening()
 
 	if self.certificatesErr != nil {
 		return self.certificatesErr
 	}
 
-	listeners := map[int]*extenderOwnedListener{}
+	// one udp carrier per port: the two cannot share a socket, and binding
+	// the port once and dropping a carrier silently would hide the mistake
+	for port, connectModes := range self.ports {
+		udpCarrierCount := 0
+		for _, connectMode := range connectModes {
+			switch connectMode {
+			case connect.ExtenderConnectModeQuic, connect.ExtenderConnectModeDns:
+				udpCarrierCount += 1
+			}
+		}
+		if 1 < udpCarrierCount {
+			return fmt.Errorf("port %d lists more than one udp carrier: %v", port, connectModes)
+		}
+	}
+
+	// one bound tcp listener, accepted only after every carrier has bound
+	type boundListener struct {
+		listener      net.Listener
+		ownedListener *extenderOwnedListener
+	}
+	// one bound udp endpoint and the carrier it serves
+	type boundPacketConn struct {
+		connectMode connect.ExtenderConnectMode
+		packetConn  net.PacketConn
+		ownedCloser *extenderOwnedCloser
+	}
+
+	boundListeners := []*boundListener{}
+	boundPacketConns := []*boundPacketConn{}
+	bindErrs := []error{}
 	defer func() {
-		for _, ownedListener := range listeners {
-			ownedListener.listener.Close()
-			self.removeListener(ownedListener)
+		for _, bound := range boundListeners {
+			bound.listener.Close()
+			self.removeListener(bound.ownedListener)
+		}
+		for _, bound := range boundPacketConns {
+			bound.ownedCloser.close()
+			self.removeCloser(bound.ownedCloser)
 		}
 	}()
 
@@ -559,18 +611,87 @@ func (self *ExtenderServer) ListenAndServe() error {
 			if listener != nil {
 				listener.Close()
 			}
-			log.Printf("[extender] listen error: %s", err)
-			return err
+			self.reportListenError(connect.ExtenderCarrierTcp, err)
+			bindErrs = append(bindErrs, err)
+			continue
 		}
 		if listener == nil {
-			return fmt.Errorf("extender listener factory returned nil")
+			err := fmt.Errorf("extender listener factory returned nil")
+			self.reportListenError(connect.ExtenderCarrierTcp, err)
+			bindErrs = append(bindErrs, err)
+			continue
 		}
 		ownedListener, ok := self.addListener(listener)
 		if !ok {
 			// shutdown started while binding, which is not a bind failure
 			return nil
 		}
-		listeners[port] = ownedListener
+		boundListeners = append(boundListeners, &boundListener{
+			listener:      listener,
+			ownedListener: ownedListener,
+		})
+		self.addCarrier(connect.ExtenderCarrierTcp)
+	}
+
+	for port, connectModes := range self.ports {
+		connectMode := connect.ExtenderConnectMode("")
+		for _, portConnectMode := range connectModes {
+			switch portConnectMode {
+			case connect.ExtenderConnectModeQuic, connect.ExtenderConnectModeDns:
+				connectMode = portConnectMode
+			}
+		}
+		if connectMode == "" {
+			continue
+		}
+		carrier := connect.ExtenderCarrierForConnectMode(connectMode)
+
+		log.Printf("[extender] listen udp %d (%s)", port, connectMode)
+		listenPacket := net.ListenPacket
+		if self.settings.ListenPacket != nil {
+			listenPacket = self.settings.ListenPacket
+		}
+		packetConn, err := listenPacket("udp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			if packetConn != nil {
+				packetConn.Close()
+			}
+			self.reportListenError(carrier, err)
+			bindErrs = append(bindErrs, err)
+			continue
+		}
+		if packetConn == nil {
+			err := fmt.Errorf("extender packet listener factory returned nil")
+			self.reportListenError(carrier, err)
+			bindErrs = append(bindErrs, err)
+			continue
+		}
+		ownedCloser, ok := self.addCloser(func() { packetConn.Close() })
+		if !ok {
+			// shutdown started while binding, which is not a bind failure
+			return nil
+		}
+		boundPacketConns = append(boundPacketConns, &boundPacketConn{
+			connectMode: connectMode,
+			packetConn:  packetConn,
+			ownedCloser: ownedCloser,
+		})
+		self.addCarrier(carrier)
+	}
+
+	if len(boundListeners) == 0 && len(boundPacketConns) == 0 {
+		if 0 < len(bindErrs) {
+			return errors.Join(bindErrs...)
+		}
+		// nothing was configured to bind; there is nothing to serve
+		return fmt.Errorf("extender has no carrier to listen on")
+	}
+	// the carrier list is complete, so nothing served below can report a
+	// partial one
+	self.markListening()
+
+	for _, bound := range boundListeners {
+		listener := bound.listener
 		if !self.beginWorker() {
 			// shutdown started while binding, which is not a bind failure
 			return nil
@@ -598,53 +719,9 @@ func (self *ExtenderServer) ListenAndServe() error {
 		}()
 	}
 
-	packetConns := []*extenderOwnedCloser{}
-	defer func() {
-		for _, ownedCloser := range packetConns {
-			ownedCloser.close()
-			self.removeCloser(ownedCloser)
-		}
-	}()
-
-	for port, connectModes := range self.ports {
-		udpConnectModes := []connect.ExtenderConnectMode{}
-		for _, connectMode := range connectModes {
-			switch connectMode {
-			case connect.ExtenderConnectModeQuic, connect.ExtenderConnectModeDns:
-				udpConnectModes = append(udpConnectModes, connectMode)
-			}
-		}
-		if len(udpConnectModes) == 0 {
-			continue
-		}
-		if 1 < len(udpConnectModes) {
-			return fmt.Errorf("port %d lists more than one udp carrier: %v", port, udpConnectModes)
-		}
-		connectMode := udpConnectModes[0]
-
-		log.Printf("[extender] listen udp %d (%s)", port, connectMode)
-		listenPacket := net.ListenPacket
-		if self.settings.ListenPacket != nil {
-			listenPacket = self.settings.ListenPacket
-		}
-		packetConn, err := listenPacket("udp", fmt.Sprintf(":%d", port))
-		if err != nil {
-			if packetConn != nil {
-				packetConn.Close()
-			}
-			log.Printf("[extender] listen packet error: %s", err)
-			return err
-		}
-		if packetConn == nil {
-			return fmt.Errorf("extender packet listener factory returned nil")
-		}
-		ownedCloser, ok := self.addCloser(func() { packetConn.Close() })
-		if !ok {
-			// shutdown started while binding, which is not a bind failure
-			return nil
-		}
-		packetConns = append(packetConns, ownedCloser)
-
+	for _, bound := range boundPacketConns {
+		connectMode := bound.connectMode
+		packetConn := bound.packetConn
 		if !self.beginWorker() {
 			// shutdown started while binding, which is not a bind failure
 			return nil
@@ -665,6 +742,47 @@ func (self *ExtenderServer) ListenAndServe() error {
 	}
 
 	return nil
+}
+
+// Listening closes once every carrier bind has been attempted, and at the
+// latest when serving ends. Carriers is complete from that point, so the
+// activation loop waits here before it reports what this extender serves (G2,
+// G3). A caller must also watch its own cancellation: an extender that is never
+// served never binds.
+func (self *ExtenderServer) Listening() <-chan struct{} {
+	return self.listening
+}
+
+// Releases whoever waits on Listening. Idempotent, because both the successful
+// bind path and every failure path reach it.
+func (self *ExtenderServer) markListening() {
+	self.listeningOnce.Do(func() {
+		close(self.listening)
+	})
+}
+
+// Adds one carrier to what this extender serves, keeping wire order (A4). Only
+// a bind that succeeded reaches this.
+func (self *ExtenderServer) addCarrier(carrier string) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if slices.Contains(self.carriers, carrier) {
+		return
+	}
+	self.carriers = append(self.carriers, carrier)
+	slices.SortFunc(self.carriers, func(a string, b string) int {
+		return slices.Index(extenderCarrierOrder, a) - slices.Index(extenderCarrierOrder, b)
+	})
+}
+
+// Reports one carrier bind failure (G2). The carrier is disabled; the log line
+// is unconditional because a bind that failed is a configuration fact an
+// operator needs, and the handler is what the sdk provider role reads.
+func (self *ExtenderServer) reportListenError(carrier string, err error) {
+	log.Printf("[extender] listen error (%s): %s", carrier, err)
+	if self.settings.ListenErrorHandler != nil {
+		self.settings.ListenErrorHandler(carrier, err)
+	}
 }
 
 // Serves one udp carrier. The dns carrier is the same quic server over the
@@ -881,8 +999,11 @@ func (self *ExtenderServer) SignChallenge(challenge []byte) []byte {
 	return self.certificates.SignChallenge(challenge)
 }
 
-// The carrier names this extender serves (A4).
+// The carrier names this extender is listening on (A4, G2). Empty until the
+// binds have been attempted, which Listening reports.
 func (self *ExtenderServer) Carriers() []string {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
 	return slices.Clone(self.carriers)
 }
 
