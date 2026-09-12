@@ -2523,3 +2523,111 @@ to be judged (the instrument's row 1 and the relay-only cell's 111 are its
 two numbers), and it is what makes the bound independent of the
 outstanding count, which is the quantity the parallel-flow cells and the
 collapsing seed scale with. I would take it.
+
+## 29. Tenth round: the exhaustion of row 7, its closure by the lone-tail probe, and the irreducible columns of the metric matrix
+
+Written 2026-09-12 under the user's rule that a concession is allowed only
+after every angle is examined.
+
+### 29.1 The case
+
+Mixed route. Item X was the last item written to the relay, the relay has
+nothing outstanding after it, X was dropped at an endpoint, and at least
+three later items reached the receiver on the direct lane and were
+acknowledged. Merged writes X at the first ack round after F11b's grace,
+`sendTime + scaledRtt`. The lane rule finds no later same-lane
+acknowledgement, so X waits for its own timer and the head probe, at most
+one interval later, measured at 600 ms. The row asserts that bound.
+
+### 29.2 Every angle, with the argument
+
+| Angle | Works? | Why, from the source and the invariants |
+|---|---|---|
+| Tell a dropped tail from a stalled head by the sender's evidence | No | Both leave the relay with X unacknowledged and nothing after it to acknowledge; the lane's behaviour is identical until it either delivers X or never does, which is what a timer measures. Structural. |
+| The receiver knows more | No | The receiver knows X is missing, not where it is: it cannot tell a Pack in the relay's queue from one that is gone, and it does not know X's lane at all, only that X+1 arrived direct. What it could add to an acknowledgement without a wire change is nothing it does not already imply; with a wire change, "highest relay-received sequence" is precedence 1's evidence, which is below X in the tail case by definition. The information does not exist at either end. |
+| The direct lane's acknowledgements say something about the relay | Only that the peer is alive | They travel the relay's reverse leg under merged's reply rule, so they prove that leg and the peer's receive path; the campaign's stalls held the data leg while the reverse leg flowed, so reverse-leg liveness is not data-leg delivery. They rule out a dead peer, which retirement already covers. |
+| A shorter probe for a lane with one item outstanding | Yes | The storm was per-item writes across a deep window; a lane has exactly one tail, so a probe conditioned on the lane holding one outstanding item costs at most `AckTailProbeLimit` duplicates per lane per idle period and cannot storm. The path exists: the tail probe paced by `probeRtt`, the window's minimum times `RttScale`, floored at 300 ms, which is never later than the mean-based `scaledRtt` merged's grace waits for. |
+| Retirement covers the dead lane | Yes, that subcase only | A retired route moves X through `scheduleRetiredReliableCarrierRecovery` at once; a silently dead route is probed with backoff until its transport's own liveness retires it, and merged's rewrite of X is no sooner. Not the drop. |
+| Reachable in production? | Barely as built, yes as a stall | It needs an endpoint drop on the relay: reliable-received Packs wait unbounded at the handoff (`ReliablePackHandoffTimeout −1`), `pack_handoff_drop_count` is zero in every record, and relay drops were refuted on the rig (§9). The instrument makes it by dropping a Pack. The same shape with X stuck in a stalled leg is reachable in every run, and there the probe heals it through the direct lane. |
+| Avoid lone tails, or duplicate them at send time | No | The sender does not know an overflow item is the last until the flight has room again, at which point the next item goes direct anyway. |
+| Route-level state rather than per-item | Yes, and it is what the probe needs | "X is the oldest outstanding on its route and its sequence number is the route's highest sent" is "the route holds one item", from one more word per route, `highestSentSequenceNumber`, set on write. |
+
+### 29.3 The mechanism, and why it is not a fourth flag
+
+The lone-tail probe, inside the lane rule. At the scoreboard pass, a
+reliable-carried hole X that is the oldest outstanding item on its route
+and the route's highest sent item, with at least `SelectiveAckGapThreshold`
+later selective acknowledgements from any lane, is scheduled as
+`sendRecoveryAckTailProbe` at `max(now, X.sendTime + rttWindow.probeRtt())`,
+`ackTailProbeCount` bounding it to `AckTailProbeLimit` as today. The
+existing tail-probe branch is the same rule gated on
+`selectiveGapRecoveryActive`, which the lane rule no longer sets for such
+a hole; this re-enables it under the one-item condition. The probe is
+written p2p-first, so with room in the direct flight it takes the direct
+lane, which is the heal; with none it takes the relay, one duplicate.
+Precedence 3's head probe stands behind it unchanged.
+
+Bound, stated so the row can assert it: X is written at
+`max(sendTime + probeRtt, third later acknowledgement)`, against merged's
+`max(sendTime + scaledRtt, third later acknowledgement)`, and `probeRtt ≤
+scaledRtt` in every state of the window (same scale, floor and maximum,
+minimum against mean; both the cold floor when unsampled). So the lane
+rule with the probe is never later than merged on this row, and earlier
+whenever the relay's minimum is under its mean. Storm safety by
+construction: the condition holds for one item per route; a stalled lane
+with a deep window has no such item, and its head is probed
+logarithmically as before. State: one uint64 per route in the existing
+fixed array. Cost when X is a stalled lone item rather than a dropped one:
+one duplicate, through the direct lane, which delivers it.
+
+Row 7 restated: held, with ours at or before merged, and the trade column
+gone. Red today on the built tree, since it waits the head probe.
+
+### 29.4 The two columns I expect to be irreducible, before the matrix is built
+
+1. The relay stall's length. It is the relay's, every tree reads 2.75 s,
+   and no recovery-path test should be written against it; the tests are
+   against the response (rows 1 to 3, 8).
+2. A proven-by-one hole waits its own timer. Precedence 1 at a timer
+   firing takes one later same-lane acknowledgement; the gap rule keeps
+   three, because acknowledgements for relay-received Packs travel
+   p2p-first and a single later acknowledgement cannot be told from X's
+   own acknowledgement lost on that lane, which at one per cent would
+   write one duplicate per hundred relay items. The wait is at most one
+   interval, asserted by row 9, and it is the ack-loss ambiguity that
+   makes it irreducible without acknowledgement retransmission, which is
+   a wire change. Keep the row as the asserted, bounded trade.
+
+One column where the lane rule as built is behind and should not be
+conceded: bytes delivered during a mixed-route relay stall. Merged's
+whole-window rewrite goes p2p-first, so as much of the stuck window as the
+direct flight admits is delivered through the direct lane within one
+interval, at the price of the rest being written into the stalled relay;
+the lane rule probes one item per interval. The closure is a bound, not a
+mechanism: during silence the probe set is the oldest items on the silent
+route up to what the unreliable flight admits, never more, so nothing is
+written into the stalled lane and the direct lane's spare room does the
+healing. Contract row 10: "during a relay stall with the direct lane live,
+the stuck window is delivered through the direct lane at the flight's
+rate and nothing is written into the stalled lane"; merged fails the
+second half, 175d82a and the lane rule as built fail the first, the
+flight-bounded probe set holds both. I recommend building it with 29.3;
+together they make every column of the matrix equal or better except the
+two above.
+
+Everything else, by construction: the unreliable lane is merged's rules
+whole, so no column there; the forced-direct route is merged's less the
+reporter; the exchange cells carry no deferral that reaches a second
+firing; memory is merged's less the window plus a few words per route,
+with the §22 ring to be allocated only when its flag is on, since an off
+flag must not retain bytes.
+
+### 29.5 Verdict
+
+Row 7 is not structurally irreducible. The concession §26.2 made was
+premature: the information to tell a dropped tail from a stalled one does
+not exist at either end, but the response does not need it, because a
+lane with one item cannot storm, and a probe paced by the lane's minimum
+is never later than merged's grace. Build 29.3 inside the lane rule, keep
+row 7 as a held row with the bound above, keep row 9 as the asserted
+trade, and write no test against the stall's length.
