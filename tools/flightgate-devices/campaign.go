@@ -646,6 +646,53 @@ func report(args []string) error {
 // starts from a fresh tunnel (disconnect, settle, reconnect to the peer,
 // settle) so the direct-path negotiation is exercised each time, as the
 // reporter's per-run provider restart did.
+// armList collects repeatable --arm values.
+type armList []string
+
+func (self *armList) String() string { return strings.Join(*self, ",") }
+
+func (self *armList) Set(value string) error {
+	*self = append(*self, value)
+	return nil
+}
+
+// armSpec is one arm of a series: a build to install and, optionally, a
+// runtime setting to apply before the run. Two arms may share a build and
+// differ only by the setting.
+type armSpec struct {
+	label    string
+	apk      string
+	laneRule string
+}
+
+func parseArmSpec(value string) (armSpec, error) {
+	label, rest, ok := strings.Cut(value, "=")
+	if !ok {
+		return armSpec{}, fmt.Errorf("bad --arm %q, want label=apk[:lane=on|off]", value)
+	}
+	spec := armSpec{label: label}
+	apk, settings, hasSettings := strings.Cut(rest, ":")
+	spec.apk = apk
+	if hasSettings {
+		for _, setting := range strings.Split(settings, ";") {
+			key, v, ok := strings.Cut(setting, "=")
+			if !ok {
+				return armSpec{}, fmt.Errorf("bad --arm setting %q", setting)
+			}
+			switch key {
+			case "lane":
+				if v != "on" && v != "off" {
+					return armSpec{}, fmt.Errorf("lane must be on or off, got %q", v)
+				}
+				spec.laneRule = v
+			default:
+				return armSpec{}, fmt.Errorf("unknown --arm setting %q", key)
+			}
+		}
+	}
+	return spec, nil
+}
+
 func runSeries(args []string) error {
 	fs := flag.NewFlagSet("campaign", flag.ExitOnError)
 	client := fs.String("client", "", "client device serial")
@@ -662,11 +709,24 @@ func runSeries(args []string) error {
 	alternateApk := fs.String("alternate-apk", "", "label=apk,label=apk: alternate two builds run by run, reinstalling in place before each; --runs counts each build")
 	buildLabel := fs.String("build", "", "build label recorded on every run when not alternating")
 	relayOnly := fs.Bool("relay-only", false, "force direct mode off for every run, so the series measures the exchange path alone")
+	var armValues armList
+	fs.Var(&armValues, "arm", "repeatable: label=apk[:lane=on|off]; arms rotate run by run and --runs counts each arm")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	type arm struct{ label, apk string }
 	arms := []arm{}
+	specs := []armSpec{}
+	for _, value := range armValues {
+		spec, err := parseArmSpec(value)
+		if err != nil {
+			return err
+		}
+		specs = append(specs, spec)
+	}
+	if len(specs) != 0 && *alternateApk != "" {
+		return errors.New("--arm and --alternate-apk do not combine")
+	}
 	if *alternateApk != "" {
 		if *interleaveRelay {
 			return errors.New("--alternate-apk and --interleave-relay do not combine")
@@ -694,9 +754,14 @@ func runSeries(args []string) error {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return err
 	}
+	for _, spec := range specs {
+		arms = append(arms, arm{spec.label, spec.apk})
+	}
 	total := *runs
-	if *interleaveRelay || len(arms) == 2 {
+	if *interleaveRelay {
 		total = 2 * *runs
+	} else if 0 < len(arms) {
+		total = len(arms) * *runs
 	}
 	installed := ""
 	for i := 0; i < total; i++ {
@@ -706,8 +771,8 @@ func runSeries(args []string) error {
 			directMode = "relay-only"
 		}
 		build := *buildLabel
-		if len(arms) == 2 {
-			current := arms[i%2]
+		if 0 < len(arms) {
+			current := arms[i%len(arms)]
 			build = current.label
 			runTag += "-" + current.label
 			if installed != current.apk {
@@ -722,6 +787,19 @@ func runSeries(args []string) error {
 				// the provider re-registers after its restart; connect-peer
 				// below retries until it is visible again
 				time.Sleep(20 * time.Second)
+			}
+			if index := i % len(arms); index < len(specs) && specs[index].laneRule != "" {
+				for _, serial := range []string{*client, *provider} {
+					if err := laneRule([]string{"--serial", serial, "--mode", specs[index].laneRule}); err != nil {
+						return fmt.Errorf("%s: lane-rule: %w", runTag, err)
+					}
+				}
+			} else if 0 < len(specs) {
+				// an arm without the setting must not inherit the previous
+				// arm's override
+				for _, serial := range []string{*client, *provider} {
+					_ = laneRule([]string{"--serial", serial, "--mode", "off"})
+				}
 			}
 		}
 		if *interleaveRelay {

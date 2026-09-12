@@ -65,6 +65,8 @@ func main() {
 		err = allowDirect(args)
 	case "defer-timeout-resend":
 		err = deferTimeoutResend(args)
+	case "lane-rule":
+		err = laneRule(args)
 	case "heap-profile":
 		err = heapProfile(args)
 	case "run":
@@ -94,7 +96,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|defer-timeout-resend|heap-profile|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|defer-timeout-resend|lane-rule|heap-profile|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
 }
 
 // role maps a serial to its opaque role, refusing anything off the allowlist.
@@ -559,5 +561,29 @@ func heapProfile(args []string) error {
 		return err
 	}
 	fmt.Println(path)
+	return nil
+}
+
+// laneRule turns the reliable-lane proven-recovery rule on or off for clients
+// built after the call.
+func laneRule(args []string) error {
+	fs := flag.NewFlagSet("lane-rule", flag.ExitOnError)
+	serial := fs.String("serial", "", "device serial")
+	mode := fs.String("mode", "", "on|off")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	r, err := role(*serial)
+	if err != nil {
+		return err
+	}
+	line, err := broadcast(*serial, "FG_LANE_RULE", map[string]string{"mode": *mode}, "action=lane-rule", 20*time.Second)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", r, tail(line))
+	if !strings.Contains(line, "ok=true") {
+		return errors.New("lane-rule failed")
+	}
 	return nil
 }
