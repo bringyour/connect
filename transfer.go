@@ -3226,6 +3226,9 @@ func (self *Client) run() {
 		var transferFrameBytes []byte
 		var transportType TransportType
 		var carrierReliability CarrierReliability
+		// the lane an acknowledgement arrived on, resolved for the send
+		// sequence's scoreboard (FLIGHTGATEFIX §19 D4)
+		var ackArrivalReliability CarrierReliability
 		var err error
 		c := func() error {
 			if carrierReader, ok := multiRouteReader.(transferCarrierMultiRouteReader); ok {
@@ -3236,16 +3239,19 @@ func (self *Client) run() {
 				)
 				transportType = disposition.transportType
 				carrierReliability = disposition.reliability
+				ackArrivalReliability = disposition.arrivalReliability
 			} else if transportReader, ok := multiRouteReader.(TransportMultiRouteReader); ok {
 				transferFrameBytes, transportType, err = transportReader.ReadWithTransport(
 					self.ctx,
 					self.settings.ReadTimeout,
 				)
 				carrierReliability = CarrierReliabilityUnknown
+				ackArrivalReliability = CarrierReliabilityUnknown
 			} else {
 				transferFrameBytes, err = multiRouteReader.Read(self.ctx, self.settings.ReadTimeout)
 				transportType = TransportTypeUnknown
 				carrierReliability = CarrierReliabilityUnknown
+				ackArrivalReliability = CarrierReliabilityUnknown
 			}
 			return err
 		}
@@ -3487,7 +3493,7 @@ func (self *Client) run() {
 						self.recordReceiveAckHandoffDrop()
 						return false
 					}
-					receiveAck.arrivalReliability = carrierReliability
+					receiveAck.arrivalReliability = ackArrivalReliability
 					ackHandoffTimeout := self.settings.ReceiveBufferSettings.
 						ackHandoffTimeout(transportType)
 					result := self.sendBuffer.ackMessageDetailed(

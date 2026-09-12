@@ -335,7 +335,17 @@ type TransportMultiRouteReader interface {
 // exact route lane into Client admission.
 type transferReceiveDisposition struct {
 	transportType TransportType
-	reliability   CarrierReliability
+	// reliability is the carrier's published receive reliability, left
+	// exactly as the carrier declared it. The receive Pack handoff reads it
+	// to decide whether a full handoff may block, so an unset value must
+	// keep meaning unset here.
+	reliability CarrierReliability
+	// arrivalReliability is the same question resolved for the send
+	// sequence's scoreboard: a carrier that publishes properties but no
+	// receive reliability still says whether it can drop. Only a reader
+	// with no carrier information at all stays Unknown, which the
+	// scoreboard counts as unreliable (FLIGHTGATEFIX §19 D4).
+	arrivalReliability CarrierReliability
 }
 
 type transferCarrierMultiRouteReader interface {
@@ -1882,21 +1892,18 @@ func (self *routeSnapshot) transportType(route Route) TransportType {
 
 func (self *routeSnapshot) receiveDisposition(route Route) transferReceiveDisposition {
 	properties := self.routeCarrierProperties[route]
-	reliability := properties.ReceiveReliability
-	if reliability == CarrierReliabilityUnknown {
-		// A carrier that publishes properties but no receive reliability
-		// still says whether it can drop. Only a reader with no carrier
-		// information stays Unknown, and Unknown counts as unreliable
-		// (FLIGHTGATEFIX §19 D4).
+	arrivalReliability := properties.ReceiveReliability
+	if arrivalReliability == CarrierReliabilityUnknown {
 		if properties.Unreliable {
-			reliability = CarrierReliabilityUnreliable
+			arrivalReliability = CarrierReliabilityUnreliable
 		} else {
-			reliability = CarrierReliabilityReliable
+			arrivalReliability = CarrierReliabilityReliable
 		}
 	}
 	return transferReceiveDisposition{
-		transportType: self.transportType(route),
-		reliability:   reliability,
+		transportType:      self.transportType(route),
+		reliability:        properties.ReceiveReliability,
+		arrivalReliability: arrivalReliability,
 	}
 }
 
