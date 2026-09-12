@@ -2185,3 +2185,127 @@ measured.
    windows, with the low-bar cells as the guard for the tail-loss cost.
 4. The relay stall as a product item on the exchange path, owned outside
    this tree.
+
+## 26. Seventh round: silence is a lane event the recovery path can read by lane, the landing, and the follow-up list
+
+Written 2026-09-12 after the deviation term was built, falsified on the
+new in-process stall (df81e98, off, with the negative finding as a test).
+
+### 26.1 What an estimator cannot see, and what the path already can
+
+The falsification is structural and stands: a 2.75 s stretch with no
+acknowledgement yields no sample, so any timer built from samples learns
+the tight pre-stall lane and tightens into the stall (411 and 425 writes
+against the scaled mean's 347). No ack-sampled estimator can see silence.
+
+But the campaign's stall is not silence of the sequence, and the counters
+say so. `unreliable_flight_timeout_count` is zero in every storm run, so
+direct-carried items were acknowledged within their 2 s cap throughout;
+under merged's reply rule their acks travel the relay's reverse leg, so
+that leg was flowing while the data leg held the head. The sender was
+receiving acknowledgements the whole time, for items on one route and for
+none on the other. That is the distinction that matters, and it needs no
+estimate: a reliable carrier retransmits below Transfer, so an item on it
+that is unacknowledged while later items on the same route are
+acknowledged has been dropped at an endpoint, and one that is
+unacknowledged while nothing sent after it on that route has been
+acknowledged is in a queue or a stall, never lost, unless the route is
+retired, which `scheduleRetiredReliableCarrierRecovery` already handles.
+Every item carries `carrierRoute`, every acknowledgement resolves to an
+item, and the sender can therefore attribute each acknowledgement to a
+lane. Today it does not: the gap rule counts later acknowledgements from
+any lane, so relay items overtaken by direct-lane acks are written (the
+1,300 of 1,699), and the whole-window timer fires per item, so a stalled
+lane fires its whole window and the deferral, even with backoff, is paid
+per item (346 to 647 deferrals per stall).
+
+So the honest conclusion has two halves. A relay that goes quiet for
+three times its mean is the relay's problem, and the localisation in §25.4
+stands. And the recovery path's correct response to it is not the backoff
+alone but the backoff applied to the lane rather than to every item on
+it, which is what TCP's timer does: on silence, retransmit the oldest
+unacknowledged item once with backoff and hold the rest behind it; on a
+later acknowledgement from the same lane, recover the hole. That is a
+narrowing of two mechanisms, the per-item whole-window timer and F11b's
+time grace, into one rule with evidence the sender holds, and the new
+instrument can falsify it in process before it costs a campaign. It is
+the round-3 lane-proven-loss rule with the piece that was missing then:
+the head probe.
+
+### 26.2 The rule, for the follow-up, stated so it can be built and falsified
+
+Per route, on the sequence, in a fixed array of at most the snapshot's
+route count, reset on a generation change: `highestAckedSequenceNumber`.
+Updated in `receiveAck` from the acknowledged item's `carrierRoute`, no
+allocation.
+
+- Gap recovery of a reliable-carried hole X needs `SelectiveAckGapThreshold`
+  later selective acknowledgements of items whose `carrierRoute` is X's;
+  acknowledgements from other lanes do not count and there is no time
+  grace. Unreliable-carried holes keep merged's rule: any three later
+  acknowledgements, since that lane does not retransmit below Transfer.
+  A single lane is unchanged by construction.
+- A reliable-carried item's timer firing while its route's
+  `highestAckedSequenceNumber` is below its sequence number is a lane
+  probe: if it is the oldest outstanding item on that route it is rewritten
+  with backoff as today; otherwise it is re-armed to that head's
+  `resendTime` and counts neither a send nor a deferral. A firing with the
+  route's highest acknowledged number above the item is the endpoint-drop
+  case and is written as today.
+- The deferral of §13.5 and its backoff stay as the response to a firing
+  the lane has answered around (cumulative progress); the probe is the
+  response to a firing it has not.
+
+Expected on the instrument's 2.75 s stall at an 800 ms first interval:
+two probes, at 0.8 and 2.4 s, no deferrals, against 347 writes and 346
+deferrals with the scaled mean and backoff. Cost: an endpoint drop at the
+tail of a reliable lane, with no later same-lane item to prove it, is
+recovered by the probe's backoff rather than its own timer, which is
+today's tail case; and a whole window lost at once on a live reliable
+route, which a reliable carrier does not do, would recover one interval at
+a time. Tests, red today: the stall instrument at those counts; a
+relay-carried hole overtaken by three direct-lane acks is not written; a
+relay-carried hole proven by three later relay-lane acks is; a stalled
+lane holding 700 items writes one probe per backoff interval; sizes and
+allocation unchanged.
+
+### 26.3 The landing
+
+175d82a as the head: merged's recovery and reply paths; the deferred
+retransmit on with its backoff (relay-only 13.5 to 15.8 Mbit/s and 18,473
+to 9,366 timeout writes on this tree, mixed queue-inflation 8.9 to 14.6
+Mbit/s and 20 to 4 dead windows, the storm cells 0 of 40 storms against 5
+of 40 and 27 of 40 paired at +1.0 and +2.7 Mbit/s); §13.1's forget and
+§13.4's reentrancy fix; the fast path's liveness reporter and §13.6's caps
+removed; three flags landed off with their negative findings as tests
+(`ReliableAdmissionBoundedByDelivery`, `DeferredItemIsLateForTheScoreboard`,
+the deviation timer). Pending only the definitive twenty-repetition
+campaign, judged on total recovery writes, goodput and dead windows
+against the A/A's band.
+
+What the user can be told it is: merged with the one mechanism that has
+beaten merged in every seed it was tried on, minus the one that cost every
+forced-direct repetition, with the recovery path otherwise merged's; and
+what it is not: a tree that clears an every-cell bar at five repetitions,
+which the calibration shows no tree can.
+
+### 26.4 The follow-up list, in order
+
+1. The relay stall on the exchange path: localise it with the gap's
+   offset and the head item's carrier on the relay-only and exchange cells;
+   if it is present relay-only it is the exchange's, and it is a product
+   item outside this tree.
+2. Lane-attributed recovery for reliable carriers (26.2), falsified or
+   confirmed on the stall instrument first, then twenty repetitions on the
+   storm cells against 175d82a on total recovery writes.
+3. Reply affinity (the tests behind `flightgate_next`), only after 2, since
+   2 is what makes striping safe: a relay item overtaken by direct acks is
+   no longer written.
+4. M6 as an ack-progress watchdog without wire cost, gated on the
+   forced-direct packet signature.
+5. Finding 3's G1 rule on `exchange-auto`, owed to the reporter.
+6. The §15.3 mobile message ceiling under MEMSTEADY, and the §17 idle
+   reclaimer, both product items.
+7. The instrument: repetitions from the A/A table as the rule (twenty for a
+   storm rate, thirty-three for a 10 % effect), the stall shape kept, and
+   every flag landed off re-read by its test rather than forgotten.
