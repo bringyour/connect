@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -261,6 +263,118 @@ func TestExtenderListenSeamIsUsedAndOwned(t *testing.T) {
 	}
 }
 
+// closeObservedPacketConn records the extender's release of an injected udp
+// carrier endpoint.
+type closeObservedPacketConn struct {
+	net.PacketConn
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+// Wraps a real endpoint and records its first close.
+func newCloseObservedPacketConn(packetConn net.PacketConn) *closeObservedPacketConn {
+	return &closeObservedPacketConn{
+		PacketConn: packetConn,
+		closed:     make(chan struct{}),
+	}
+}
+
+// Closing remains idempotent while notifying the owner test.
+func (self *closeObservedPacketConn) Close() error {
+	var err error
+	self.closeOnce.Do(func() {
+		err = self.PacketConn.Close()
+		close(self.closed)
+	})
+	return err
+}
+
+// ListenAndServe must bind a udp carrier through the callback and close the
+// returned endpoint when the extender is closed.
+func TestExtenderListenPacketSeamIsUsedAndOwned(t *testing.T) {
+	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedPacketConn := newCloseObservedPacketConn(packetConn)
+	port := packetConn.LocalAddr().(*net.UDPAddr).Port
+	settings := DefaultExtenderSettings()
+	listenPacketCalls := make(chan string, 1)
+	settings.ListenPacket = func(network string, address string) (net.PacketConn, error) {
+		listenPacketCalls <- network + " " + address
+		return observedPacketConn, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := NewExtenderServer(
+		ctx,
+		nil,
+		nil,
+		map[int][]connect.ExtenderConnectMode{
+			port: {connect.ExtenderConnectModeQuic},
+		},
+		&net.Dialer{},
+		settings,
+	)
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- server.ListenAndServe()
+	}()
+
+	select {
+	case call := <-listenPacketCalls:
+		if call != fmt.Sprintf("udp :%d", port) {
+			t.Fatalf("listen packet call = %q, expected udp :%d", call, port)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("extender did not use the injected packet listener factory")
+	}
+	server.CloseAndWait()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("extender did not stop after Close")
+	}
+	select {
+	case <-observedPacketConn.closed:
+	default:
+		t.Fatal("extender did not close its injected packet endpoint")
+	}
+}
+
+// A port that lists both udp carriers cannot be bound twice; the mistake is
+// reported rather than silently dropping one carrier.
+func TestExtenderRefusesTwoUdpCarriersOnOnePort(t *testing.T) {
+	settings := DefaultExtenderSettings()
+	settings.ListenPacket = func(network string, address string) (net.PacketConn, error) {
+		return nil, errors.New("the port should not have been bound")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := NewExtenderServer(
+		ctx,
+		nil,
+		nil,
+		map[int][]connect.ExtenderConnectMode{
+			18445: {connect.ExtenderConnectModeQuic, connect.ExtenderConnectModeDns},
+		},
+		&net.Dialer{},
+		settings,
+	)
+	defer server.Close()
+
+	err := server.ListenAndServe()
+	if err == nil {
+		t.Fatal("two udp carriers on one port were accepted")
+	}
+	if !strings.Contains(err.Error(), "more than one udp carrier") {
+		t.Fatalf("error = %v, expected the carrier conflict", err)
+	}
+}
+
 // CloseAndWait interrupts an accepted connection before its TLS handshake and
 // joins the listener, handler, and serving operations deterministically.
 func TestExtenderCloseAndWaitJoinsAcceptedConnection(t *testing.T) {
@@ -469,10 +583,18 @@ func TestExtenderForwardDialSeamOwnsConnectionReturnedWithError(t *testing.T) {
 	}
 }
 
-// Production defaults leave every test/measurement callback disabled.
+// Production defaults leave every test/measurement callback disabled, and the
+// service handlers unset, which refuses the reserved services (A8).
 func TestExtenderSeamDefaultsAreDisabled(t *testing.T) {
 	settings := DefaultExtenderSettings()
-	if settings.Listen != nil || settings.DialContext != nil || settings.ErrorHandler != nil {
+	if settings.Listen != nil || settings.ListenPacket != nil ||
+		settings.DialContext != nil || settings.ErrorHandler != nil {
 		t.Fatal("default extender settings unexpectedly enable a test seam")
+	}
+	if settings.GossipConnHandler != nil || settings.FeedConnHandler != nil {
+		t.Fatal("default extender settings unexpectedly enable a reserved service")
+	}
+	if settings.IdentityKeySeed != nil {
+		t.Fatal("default extender settings unexpectedly carry an identity key")
 	}
 }

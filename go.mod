@@ -39,6 +39,7 @@ require (
 	github.com/pion/srtp/v3 v3.0.13 // indirect
 	github.com/pion/stun/v3 v3.1.6 // indirect
 	github.com/pion/turn/v5 v5.0.12 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
 	golang.org/x/exp v0.0.0-20260727155853-b88d891fe743 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )

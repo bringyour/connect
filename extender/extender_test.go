@@ -4,15 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"time"
 
 	"testing"
@@ -30,19 +27,13 @@ func TestExtender(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	certPemBytes, keyPemBytes, err := selfSign([]string{"127.0.0.1"}, "Connect Test", settings.ValidFrom, settings.ValidFor)
+	certificate, err := selfSignedCertificate(
+		[]string{"127.0.0.1"},
+		"Connect Test",
+		settings.ValidFrom,
+		settings.ValidFor,
+	)
 	if err != nil {
-		t.Fatal(err)
-	}
-
-	tempDirPath := t.TempDir()
-
-	certFile := filepath.Join(tempDirPath, "localhost.pem")
-	keyFile := filepath.Join(tempDirPath, "localhost.key")
-	if err := os.WriteFile(certFile, certPemBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyFile, keyPemBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,10 +44,13 @@ func TestExtender(t *testing.T) {
 	contentPort := contentListener.Addr().(*net.TCPAddr).Port
 	server := &http.Server{
 		Handler: &testExtenderServer{},
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{*certificate},
+		},
 	}
 	contentDone := make(chan error, 1)
 	go func() {
-		contentDone <- server.ServeTLS(contentListener, certFile, keyFile)
+		contentDone <- server.ServeTLS(contentListener, "", "")
 	}()
 	t.Cleanup(func() {
 		server.Close()
@@ -116,9 +110,7 @@ func TestExtender(t *testing.T) {
 	}
 
 	rootCAs := x509.NewCertPool()
-	if !rootCAs.AppendCertsFromPEM(certPemBytes) {
-		t.Fatal("could not add content server certificate")
-	}
+	rootCAs.AddCert(certificate.Leaf)
 	connectSettings := connect.DefaultConnectSettings()
 	connectSettings.TlsConfig = &tls.Config{
 		RootCAs: rootCAs,
@@ -129,7 +121,7 @@ func TestExtender(t *testing.T) {
 		&connect.ExtenderConfig{
 			Profile: connect.ExtenderProfile{
 				ConnectMode: connect.ExtenderConnectModeTcpTls,
-				ServerName:  "bringyour.com",
+				ServerName:  "front.example",
 				Port:        extenderPort,
 			},
 			Ip:     localIp,
@@ -162,10 +154,12 @@ func TestExtender(t *testing.T) {
 
 }
 
-func TestSelfSignValiditySpansPresent(t *testing.T) {
+// The self-signed leaf spans the moment it was created: ValidFrom is the
+// tolerated history before creation and ValidFor the lifetime after it.
+func TestSelfSignedCertificateValiditySpansPresent(t *testing.T) {
 	before := time.Now()
-	certPemBytes, _, err := selfSign(
-		[]string{"localhost"},
+	certificate, err := selfSignedCertificate(
+		[]string{"leaf.example"},
 		"Connect Test",
 		2*time.Hour,
 		3*time.Hour,
@@ -173,23 +167,94 @@ func TestSelfSignValiditySpansPresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	block, _ := pem.Decode(certPemBytes)
-	if block == nil {
-		t.Fatal("selfSign returned no certificate PEM block")
+	after := time.Now()
+	if delta := certificate.Leaf.NotBefore.Sub(before.Add(-2 * time.Hour)); delta < -time.Second || time.Second < delta {
+		t.Fatalf("NotBefore = %s, expected about two hours before creation", certificate.Leaf.NotBefore)
 	}
-	certificate, err := x509.ParseCertificate(block.Bytes)
+	if delta := certificate.Leaf.NotAfter.Sub(after.Add(3 * time.Hour)); delta < -time.Second || time.Second < delta {
+		t.Fatalf("NotAfter = %s, expected about three hours after creation", certificate.Leaf.NotAfter)
+	}
+	if before.Before(certificate.Leaf.NotBefore) || certificate.Leaf.NotAfter.Before(after) {
+		t.Fatalf(
+			"certificate validity %s..%s does not span creation",
+			certificate.Leaf.NotBefore,
+			certificate.Leaf.NotAfter,
+		)
+	}
+}
+
+// A name is issued once and the cached leaf is reused, so a handshake never
+// generates a key (B3).
+func TestExtenderCertificatesCacheLeavesPerServerName(t *testing.T) {
+	settings := DefaultExtenderSettings()
+	certificates, err := newExtenderCertificates(nil, settings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	after := time.Now()
-	if delta := certificate.NotBefore.Sub(before.Add(-2 * time.Hour)); delta < -time.Second || time.Second < delta {
-		t.Fatalf("NotBefore = %s, expected about two hours before creation", certificate.NotBefore)
+	first, err := certificates.certificateForServerName("one.example")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if delta := certificate.NotAfter.Sub(after.Add(3 * time.Hour)); delta < -time.Second || time.Second < delta {
-		t.Fatalf("NotAfter = %s, expected about three hours after creation", certificate.NotAfter)
+	again, err := certificates.certificateForServerName("one.example")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if before.Before(certificate.NotBefore) || certificate.NotAfter.Before(after) {
-		t.Fatalf("certificate validity %s..%s does not span creation", certificate.NotBefore, certificate.NotAfter)
+	if first != again {
+		t.Fatal("the same server name was issued twice")
+	}
+	other, err := certificates.certificateForServerName("two.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == other {
+		t.Fatal("two server names share one certificate")
+	}
+	if first.Leaf.DNSNames[0] != "one.example" || other.Leaf.DNSNames[0] != "two.example" {
+		t.Fatalf("issued names = %v, %v", first.Leaf.DNSNames, other.Leaf.DNSNames)
+	}
+	if 1 < len(first.Certificate) {
+		t.Fatal("an extender without an identity key issued a chain")
+	}
+}
+
+// With an identity key the leaf is issued under the self-signed ed25519 ca,
+// and the leaf signature verifies under the identity key (B3).
+func TestExtenderCertificatesIssueUnderTheIdentityKey(t *testing.T) {
+	seed, err := connect.NewExtenderKeySeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := DefaultExtenderSettings()
+	certificates, err := newExtenderCertificates(seed, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, err := connect.ExtenderPublicKeyFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(certificates.PublicKey()) != string(publicKey) {
+		t.Fatal("the published key is not the identity key")
+	}
+	certificate, err := certificates.certificateForServerName("leaf.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certificate.Certificate) != 2 {
+		t.Fatalf("certificate chain has %d entries, expected the leaf and the ca", len(certificate.Certificate))
+	}
+	if certificate.Leaf.SignatureAlgorithm != x509.PureEd25519 {
+		t.Fatalf("leaf signature algorithm = %s, expected ed25519", certificate.Leaf.SignatureAlgorithm)
+	}
+	caCertificate, err := x509.ParseCertificate(certificate.Certificate[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !caCertificate.IsCA {
+		t.Fatal("the issuing certificate is not a ca")
+	}
+	if err := certificate.Leaf.CheckSignatureFrom(caCertificate); err != nil {
+		t.Fatalf("the leaf is not signed by the ca: %v", err)
 	}
 }
 

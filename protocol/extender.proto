@@ -10,4 +10,80 @@ message ExtenderHeader {
     uint64 Timestamp = 3;
     bytes Nonce = 4;
     bytes Signature = 5;
+    // 32 random bytes set by a prober; the response carries the signature over it
+    bytes Challenge = 6;
+    // 0 forward, 1 gossip, 2 feed
+    uint32 Service = 7;
+}
+
+message ExtenderResponse {
+    // the extender identity key, empty when the extender has none
+    bytes PublicKey = 1;
+    // over "ur-extender-challenge-v1" || Challenge, empty when no challenge was sent
+    bytes ChallengeSignature = 2;
+    // tcp, quic, dns
+    repeated string Carriers = 3;
+}
+
+message ExtenderAddress {
+    string Ip = 1;
+    uint32 IpVersion = 2;
+    repeated string Carriers = 3;
+}
+
+message ExtenderRecordBody {
+    bytes PublicKey = 1;
+    repeated ExtenderAddress Addresses = 2;
+    uint32 TcpPort = 3;
+    uint32 UdpPort = 4;
+    uint32 DnsPort = 5;
+    string DnsTld = 6;
+    string CountryCode = 7;
+    uint64 IssueTimeMs = 8;
+    uint64 ExpireTimeMs = 9;
+    string NetworkHost = 10;
+}
+
+message ExtenderRecord {
+    // serialized ExtenderRecordBody, signed opaquely to avoid serialization ambiguity
+    bytes Body = 1;
+    // over "ur-extender-record-v1" || Body
+    bytes RootSignature = 2;
+    // first 8 bytes of sha256 of the signing public key
+    bytes RootKeyId = 3;
+}
+
+message ExtenderRevocationBody {
+    bytes PublicKey = 1;
+    uint64 IssueTimeMs = 2;
+    string NetworkHost = 3;
+}
+
+message ExtenderRevocation {
+    // serialized ExtenderRevocationBody
+    bytes Body = 1;
+    // over "ur-extender-revocation-v1" || Body
+    bytes RootSignature = 2;
+    bytes RootKeyId = 3;
+}
+
+message ExtenderGossipMessage {
+    oneof Message {
+        ExtenderRecord Record = 1;
+        ExtenderRevocation Revocation = 2;
+    }
+}
+
+message ExtenderFeedRequest {
+    uint32 SampleCount = 1;
+    bool Subscribe = 2;
+}
+
+message ExtenderFeedFrame {
+    oneof Frame {
+        ExtenderRecord Record = 1;
+        ExtenderRevocation Revocation = 2;
+        bool EndOfSample = 3;
+        bool Keepalive = 4;
+    }
 }

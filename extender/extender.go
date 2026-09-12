@@ -2,67 +2,57 @@ package extender
 
 import (
 	"context"
-	"net"
-
-	// "net/http"
-
-	// "os"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/binary"
 	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/netip"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
-	// "strconv"
-	"slices"
-
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/tls"
-
-	// "crypto/elliptic"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-
-	// "encoding/json"
-	// "flag"
-	"log"
-	"math/big"
-	"sync"
-
-	// "crypto/md5"
-	"encoding/binary"
-	// "encoding/hex"
-	// "syscall"
-
-	// mathrand "math/rand"
-
-	// "golang.org/x/crypto/cryptobyte"
+	"golang.org/x/net/http2"
 	"golang.org/x/net/idna"
 
-	// quic "github.com/quic-go/quic-go"
-	"google.golang.org/protobuf/proto"
+	quic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 
-	// "src.agwa.name/tlshacks"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/urnetwork/connect"
 	"github.com/urnetwork/connect/protocol"
 )
 
-// server listens for a tls connect and replies with a self-signed cert
-// server set up to forward to only subdomains of a root domain
-// otherwise close connection
-
-// if the header is not detected, proxy the request
-// in this way the server looks like any CDN with misconfigured certs
-
-// note anyone can host an extender server on their IP
-// the IP can be manually entered into the app
-// the default is to not require signatures, to allow all users
-// signatures can be used to make the traffic private
+// The extender server (EXTENDER.md A1 to A4, A7 to A9, B3).
+//
+// Three carriers yield one reliable byte stream each and share one request
+// contract. tcp 443 terminates tls and serves http/1.1 or h2 on it; udp 443
+// runs quic with alpn h3; udp 53 runs the same quic server over the decode53
+// packet translation. Inside every carrier the client sends one
+// `POST /` with the serialized ExtenderHeader, and on acceptance the stream is
+// taken over and carries the inner bytes: the client's own tls to the
+// destination, which the extender never sees inside.
+//
+// The extender is deliberately indistinguishable from a misconfigured cdn on
+// the wire: it terminates tls for every server name with a certificate it
+// generates (B3), and the extender protocol lives inside that tls.
+//
+// One legacy shape is still accepted on tcp: a v1 client sends a four byte
+// big-endian length and a header, with no http and no response. No http method
+// and no tls record starts with a length of 1024 or less, so the first four
+// bytes tell the two apart. v1 acceptance is dropped one release later.
+//
+// What this phase does not do: the reverse proxy for non-extender requests
+// (A5) and the dns forwarder for non-translation queries (A6). Both are
+// refused here and land in phase 1b.
+//
+// The server is safe for concurrent use. Close interrupts every listener and
+// connection it owns; CloseAndWait also joins their goroutines.
 
 // https://go.dev/src/crypto/tls/generate_cert.go
 
@@ -72,6 +62,13 @@ func DefaultExtenderSettings() *ExtenderSettings {
 		WriteTimeout: 30 * time.Second,
 		ValidFrom:    180 * 24 * time.Hour,
 		ValidFor:     180 * 24 * time.Hour,
+
+		HeaderTimeout:               10 * time.Second,
+		QuicIdleTimeout:             30 * time.Second,
+		MaxConnectionCountPerSource: 64,
+		MaxConnectionCount:          4096,
+
+		DnsTlds: []string{connect.DefaultExtenderDnsTld},
 	}
 }
 
@@ -80,10 +77,44 @@ type ExtenderSettings struct {
 	WriteTimeout time.Duration
 	ValidFrom    time.Duration
 	ValidFor     time.Duration
+
+	// Budget for the outer handshake and the extender request of one
+	// connection (A9). A client that opens a connection and says nothing is
+	// dropped here.
+	HeaderTimeout time.Duration
+	// Idle quic connections close after this (A9).
+	QuicIdleTimeout time.Duration
+	// Concurrent connections from one source address (A9). <= 0 disables.
+	MaxConnectionCountPerSource int
+	// Concurrent connections over every carrier (A9). <= 0 disables.
+	MaxConnectionCount int
+
+	// Encoding tlds of the dns carrier. A query that does not use one of them
+	// is not part of the translation.
+	DnsTlds []string
+
+	// IdentityKeySeed, when set, is the ed25519 seed of the extender identity
+	// (B1). It signs the certificate authority the per-name leaves are issued
+	// under, and the challenge in an extender response. Empty leaves the
+	// extender without an identity, which a client cannot verify.
+	IdentityKeySeed []byte
+
+	// GossipConnHandler receives the taken-over stream of a gossip service
+	// request (A8). It owns the stream until it returns, and the extender
+	// closes the stream afterward, so a listener implementation should hand
+	// the stream on and wait for its consumer. Nil refuses the service.
+	GossipConnHandler func(conn net.Conn)
+	// FeedConnHandler is the same for the feed service (A8).
+	FeedConnHandler func(conn net.Conn)
+
 	// Listen, when set, binds the outer TLS listener. Userspace integration
 	// tests use it to place the production extender on a simulated TUN. Nil
 	// retains net.Listen. The extender owns and closes returned listeners.
 	Listen func(network string, address string) (net.Listener, error)
+	// ListenPacket, when set, binds the udp carriers. Tests use it to inject
+	// a socket without binding a privileged port. Nil retains
+	// net.ListenPacket. The extender owns and closes returned endpoints.
+	ListenPacket func(network string, address string) (net.PacketConn, error)
 	// DialContext, when set, creates the forwarded inner connection. Userspace
 	// integration tests use it for the extender-to-connect segment. Nil
 	// retains forwardDialer. The extender owns and closes returned connections.
@@ -103,15 +134,26 @@ type ExtenderServer struct {
 	closing     bool
 	listeners   map[*extenderOwnedListener]bool
 	connections map[*extenderOwnedConnection]bool
+	closers     map[*extenderOwnedCloser]bool
 	workers     sync.WaitGroup
 
-	requireSignature bool
-	allowedSecrets   []string
+	connectionCount        int
+	sourceConnectionCounts map[string]int
+
+	allowedSecrets []string
 	// exact (x) or wildcard (*.x)
 	// wildcard *.x does not match exact x
 	allowedHosts  []string
 	ports         map[int][]connect.ExtenderConnectMode
+	carriers      []string
 	forwardDialer *net.Dialer
+
+	certificates    *extenderCertificates
+	certificatesErr error
+
+	httpServer  *http.Server
+	http2Server *http2.Server
+	h3Server    *http3.Server
 
 	settings *ExtenderSettings
 }
@@ -124,6 +166,13 @@ type extenderOwnedListener struct {
 // An extenderOwnedConnection identifies one connection in the shutdown set.
 type extenderOwnedConnection struct {
 	connection net.Conn
+}
+
+// An extenderOwnedCloser identifies one endpoint, quic transport, quic
+// listener or quic connection in the shutdown set. These have no common
+// interface, so the release is carried as a closure.
+type extenderOwnedCloser struct {
+	close func()
 }
 
 func NewExtenderServerWithDefaults(
@@ -153,18 +202,78 @@ func NewExtenderServer(
 ) *ExtenderServer {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
-	return &ExtenderServer{
-		ctx:            cancelCtx,
-		cancel:         cancel,
-		listeners:      map[*extenderOwnedListener]bool{},
-		connections:    map[*extenderOwnedConnection]bool{},
-		allowedSecrets: allowedSecrets,
-		allowedHosts:   allowedHosts,
-		ports:          ports,
-		forwardDialer:  forwardDialer,
-		settings:       settings,
+	self := &ExtenderServer{
+		ctx:                    cancelCtx,
+		cancel:                 cancel,
+		listeners:              map[*extenderOwnedListener]bool{},
+		connections:            map[*extenderOwnedConnection]bool{},
+		closers:                map[*extenderOwnedCloser]bool{},
+		sourceConnectionCounts: map[string]int{},
+		allowedSecrets:         allowedSecrets,
+		allowedHosts:           allowedHosts,
+		ports:                  ports,
+		carriers:               carriersForPorts(ports),
+		forwardDialer:          forwardDialer,
+		settings:               settings,
 	}
 
+	// A certificate failure is reported when serving starts, so the
+	// constructor keeps its shape for callers that cannot handle an error.
+	self.certificates, self.certificatesErr = newExtenderCertificates(settings.IdentityKeySeed, settings)
+
+	handler := &extenderHandler{server: self}
+	// an h2 connection only ever gets refusals in this phase, so it is
+	// reclaimed on the same budget a connection has to make its request
+	self.http2Server = &http2.Server{
+		IdleTimeout: settings.HeaderTimeout,
+	}
+	self.httpServer = &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: settings.HeaderTimeout,
+		ErrorLog:          log.New(extenderLogWriter{}, "", 0),
+	}
+	// h2 support is configured through the standard path even though the
+	// extender dispatches the protocol itself: it has already read the first
+	// bytes of the stream to tell v1 from http, so the connection it serves is
+	// no longer the *tls.Conn the alpn hook requires.
+	if err := http2.ConfigureServer(self.httpServer, self.http2Server); err != nil && self.certificatesErr == nil {
+		self.certificatesErr = err
+	}
+	self.h3Server = &http3.Server{
+		Handler:     handler,
+		IdleTimeout: settings.QuicIdleTimeout,
+	}
+
+	return self
+}
+
+// The carrier names this extender serves, in wire order (A4).
+func carriersForPorts(ports map[int][]connect.ExtenderConnectMode) []string {
+	carriers := []string{}
+	for _, carrier := range []string{
+		connect.ExtenderCarrierTcp,
+		connect.ExtenderCarrierQuic,
+		connect.ExtenderCarrierDns,
+	} {
+		for _, connectModes := range ports {
+			if slices.ContainsFunc(connectModes, func(connectMode connect.ExtenderConnectMode) bool {
+				return connect.ExtenderCarrierForConnectMode(connectMode) == carrier
+			}) {
+				carriers = append(carriers, carrier)
+				break
+			}
+		}
+	}
+	return carriers
+}
+
+// extenderLogWriter keeps the http server's internal errors on the same log as
+// the rest of the extender without exposing a writer to callers.
+type extenderLogWriter struct{}
+
+func (self extenderLogWriter) Write(b []byte) (int, error) {
+	log.Printf("[extender] http: %s", strings.TrimSpace(string(b)))
+	return len(b), nil
 }
 
 // Begins one owned server operation unless shutdown has already started.
@@ -204,12 +313,96 @@ func (self *ExtenderServer) removeListener(ownedListener *extenderOwnedListener)
 	self.stateLock.Unlock()
 }
 
+// Adds an endpoint, transport, quic listener or quic connection to the
+// resources interrupted by Close. A closer added during shutdown is released
+// immediately.
+func (self *ExtenderServer) addCloser(closeCloser func()) (*extenderOwnedCloser, bool) {
+	ownedCloser := &extenderOwnedCloser{close: closeCloser}
+	self.stateLock.Lock()
+	if self.closing {
+		self.stateLock.Unlock()
+		closeCloser()
+		return nil, false
+	}
+	self.closers[ownedCloser] = true
+	self.stateLock.Unlock()
+	return ownedCloser, true
+}
+
+// Removes a closer after its owner has released it.
+func (self *ExtenderServer) removeCloser(ownedCloser *extenderOwnedCloser) {
+	if ownedCloser == nil {
+		return
+	}
+	self.stateLock.Lock()
+	delete(self.closers, ownedCloser)
+	self.stateLock.Unlock()
+}
+
+// Reserves one connection slot for a source address (A9). A refused
+// connection is closed by the caller without a response, so a flood costs the
+// extender only an accept.
+func (self *ExtenderServer) beginConnection(remoteAddr net.Addr) bool {
+	source := connectionSource(remoteAddr)
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if self.closing {
+		return false
+	}
+	if 0 < self.settings.MaxConnectionCount && self.settings.MaxConnectionCount <= self.connectionCount {
+		return false
+	}
+	if 0 < self.settings.MaxConnectionCountPerSource &&
+		self.settings.MaxConnectionCountPerSource <= self.sourceConnectionCounts[source] {
+		return false
+	}
+	self.connectionCount += 1
+	self.sourceConnectionCounts[source] += 1
+	return true
+}
+
+// Releases one connection slot.
+func (self *ExtenderServer) endConnection(remoteAddr net.Addr) {
+	source := connectionSource(remoteAddr)
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.connectionCount -= 1
+	if count := self.sourceConnectionCounts[source] - 1; 0 < count {
+		self.sourceConnectionCounts[source] = count
+	} else {
+		delete(self.sourceConnectionCounts, source)
+	}
+}
+
+// The address of a peer, or the empty string when there is none.
+func remoteAddressString(remoteAddr net.Addr) string {
+	if remoteAddr == nil {
+		return ""
+	}
+	return remoteAddr.String()
+}
+
+// The limit key of a connection: the address without the port, so a source
+// cannot multiply its budget by using more ports.
+func connectionSource(remoteAddr net.Addr) string {
+	address := remoteAddressString(remoteAddr)
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		return host
+	}
+	return address
+}
+
 // Runs a connection handler whose socket is interrupted and joined at Close.
 func (self *ExtenderServer) startConnection(connection net.Conn) {
+	if !self.beginConnection(connection.RemoteAddr()) {
+		connection.Close()
+		return
+	}
 	ownedConnection := &extenderOwnedConnection{connection: connection}
 	self.stateLock.Lock()
 	if self.closing {
 		self.stateLock.Unlock()
+		self.endConnection(connection.RemoteAddr())
 		connection.Close()
 		return
 	}
@@ -222,6 +415,7 @@ func (self *ExtenderServer) startConnection(connection net.Conn) {
 			self.stateLock.Lock()
 			delete(self.connections, ownedConnection)
 			self.stateLock.Unlock()
+			self.endConnection(connection.RemoteAddr())
 			self.workers.Done()
 		}()
 		self.HandleExtenderConnection(self.ctx, connection)
@@ -236,6 +430,10 @@ func (self *ExtenderServer) ListenAndServe() error {
 	defer self.endWorker()
 	defer self.Close()
 
+	if self.certificatesErr != nil {
+		return self.certificatesErr
+	}
+
 	listeners := map[int]*extenderOwnedListener{}
 	defer func() {
 		for _, ownedListener := range listeners {
@@ -243,7 +441,6 @@ func (self *ExtenderServer) ListenAndServe() error {
 			self.removeListener(ownedListener)
 		}
 	}()
-	// quicListeners := map[int]*quic.Listener{}
 
 	for port, connectModes := range self.ports {
 		if !slices.Contains(connectModes, connect.ExtenderConnectModeTcpTls) {
@@ -299,130 +496,180 @@ func (self *ExtenderServer) ListenAndServe() error {
 		}()
 	}
 
-	/*
-		for port, connectModes := range self.ports {
-			if !slices.Contains(connectModes, connect.ExtenderConnectModeQuic) {
-				continue
-			}
-
-			fmt.Printf("listen quic %d\n", port)
-			// certPemBytes, keyPemBytes, err := selfSign(
-			//     []string{"example.org"},
-			//     guessOrganizationName("example.org"),
-			// )
-			// if err != nil {
-			//     return err
-			// }
-			// // X509KeyPair
-			// cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
-			// if err != nil {
-			//     return err
-			// }
-
-			tlsConfig := &tls.Config{
-				GetConfigForClient: func(clientHello *tls.ClientHelloInfo) (*tls.Config, error) {
-					certPemBytes, keyPemBytes, err := selfSign(
-						[]string{clientHello.ServerName},
-						guessOrganizationName(clientHello.ServerName),
-						self.settings.ValidFrom,
-						self.settings.ValidFor,
-					)
-					if err != nil {
-						return nil, err
-					}
-					// X509KeyPair
-					cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
-					return &tls.Config{
-						Certificates: []tls.Certificate{cert},
-					}, err
-				},
-			}
-			quicConfig := &quic.Config{}
-			listener, err := quic.ListenAddr(fmt.Sprintf(":%d", port), tlsConfig, quicConfig)
-			if err != nil {
-				fmt.Printf("%s\n", err)
-				return err
-			}
-			quicListeners[port] = listener
-			go func() {
-				defer self.cancel()
-
-				for {
-					select {
-					case <-self.ctx.Done():
-						return
-					default:
-					}
-
-					conn, err := listener.Accept(self.ctx)
-					if err != nil {
-						fmt.Printf("%s\n", err)
-						return
-					}
-					// fmt.Printf("Extender pre\n")
-					go self.HandleQuicExtenderConnection(self.ctx, conn)
-				}
-			}()
+	packetConns := []*extenderOwnedCloser{}
+	defer func() {
+		for _, ownedCloser := range packetConns {
+			ownedCloser.close()
+			self.removeCloser(ownedCloser)
 		}
-	*/
+	}()
 
-	// TODO
-	/*
-	   for _, port := range self.ports {
-	       fmt.Printf("listen udp %d\n", port)
-	       packetConn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
-	       go func() {
-	           defer self.cancel()
+	for port, connectModes := range self.ports {
+		udpConnectModes := []connect.ExtenderConnectMode{}
+		for _, connectMode := range connectModes {
+			switch connectMode {
+			case connect.ExtenderConnectModeQuic, connect.ExtenderConnectModeDns:
+				udpConnectModes = append(udpConnectModes, connectMode)
+			}
+		}
+		if len(udpConnectModes) == 0 {
+			continue
+		}
+		if 1 < len(udpConnectModes) {
+			return fmt.Errorf("port %d lists more than one udp carrier: %v", port, udpConnectModes)
+		}
+		connectMode := udpConnectModes[0]
 
-	           packetStreams := map[src]*packetStream{}
+		log.Printf("[extender] listen udp %d (%s)", port, connectMode)
+		listenPacket := net.ListenPacket
+		if self.settings.ListenPacket != nil {
+			listenPacket = self.settings.ListenPacket
+		}
+		packetConn, err := listenPacket("udp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			if packetConn != nil {
+				packetConn.Close()
+			}
+			log.Printf("[extender] listen packet error: %s", err)
+			return err
+		}
+		if packetConn == nil {
+			return fmt.Errorf("extender packet listener factory returned nil")
+		}
+		ownedCloser, ok := self.addCloser(func() { packetConn.Close() })
+		if !ok {
+			return self.ctx.Err()
+		}
+		packetConns = append(packetConns, ownedCloser)
 
-	           buffer := make([]byte, 4096)
-
-	           for {
-	               select {
-	               case <- self.ctx.Done():
-	                   return
-	               default:
-	               }
-
-
-
-	               n, addr, err := packetConn.ReadFrom(buffer)
-	               if err != nil {
-	                   fmt.Printf("%s\n", err)
-	                   return
-	               }
-
-	               address := addr.String()
-
-	               packetSteam, ok := packetStreams[address]
-	               if !ok {
-	                   packetStream = newServerPacketStream(packetConn, addr, UdpMtu)
-	                   // fixme clean up packet stream
-	                   // go func() {
-	                   //     select {
-	                   //     case <- packetStream.Done():
-	                   //     }
-
-	                   // }()
-	                   go HandleExtenderConnection(self.ctx, packetStream)
-	               }
-
-	               packetStream.AddPacket(buffer[0:n])
-	           }
-
-	       }()
-	   }
-	*/
+		if !self.beginWorker() {
+			return self.ctx.Err()
+		}
+		go func() {
+			defer self.endWorker()
+			connect.HandleError(func() {
+				defer self.Close()
+				if err := self.serveQuicCarrier(connectMode, packetConn); err != nil {
+					log.Printf("[extender] udp carrier %s exited: %s", connectMode, err)
+				}
+			}, self.cancel)
+		}()
+	}
 
 	select {
 	case <-self.ctx.Done():
 	}
-	// for _, listener := range quicListeners {
-	// 	listener.Close()
-	// }
 
 	return nil
+}
+
+// Serves one udp carrier. The dns carrier is the same quic server over the
+// decode53 packet translation, so both carriers share this loop (A1).
+func (self *ExtenderServer) serveQuicCarrier(
+	connectMode connect.ExtenderConnectMode,
+	packetConn net.PacketConn,
+) error {
+	carrierPacketConn := packetConn
+	if connectMode == connect.ExtenderConnectModeDns {
+		ptSettings := connect.DefaultPacketTranslationSettings()
+		dnsTlds := [][]byte{}
+		for _, dnsTld := range self.settings.DnsTlds {
+			dnsTlds = append(dnsTlds, []byte(dnsTld))
+		}
+		if len(dnsTlds) == 0 {
+			dnsTlds = append(dnsTlds, []byte(connect.DefaultExtenderDnsTld))
+		}
+		ptSettings.DnsTlds = dnsTlds
+		translation, err := connect.NewPacketTranslation(
+			self.ctx,
+			connect.PacketTranslationModeDecode53,
+			packetConn,
+			ptSettings,
+		)
+		if err != nil {
+			return err
+		}
+		ownedCloser, ok := self.addCloser(func() { translation.Close() })
+		if !ok {
+			translation.Close()
+			return self.ctx.Err()
+		}
+		defer func() {
+			translation.Close()
+			self.removeCloser(ownedCloser)
+		}()
+		carrierPacketConn = translation
+	}
+
+	quicTransport := &quic.Transport{
+		Conn: carrierPacketConn,
+	}
+	transportCloser, ok := self.addCloser(func() { quicTransport.Close() })
+	if !ok {
+		quicTransport.Close()
+		return self.ctx.Err()
+	}
+	defer func() {
+		quicTransport.Close()
+		self.removeCloser(transportCloser)
+	}()
+
+	tlsConfig := &tls.Config{
+		GetCertificate: self.certificates.GetCertificate,
+		NextProtos:     []string{http3.NextProtoH3},
+	}
+	quicConfig := &quic.Config{
+		MaxIdleTimeout: self.settings.QuicIdleTimeout,
+	}
+	listener, err := quicTransport.Listen(tlsConfig, quicConfig)
+	if err != nil {
+		return err
+	}
+	listenerCloser, ok := self.addCloser(func() { listener.Close() })
+	if !ok {
+		listener.Close()
+		return self.ctx.Err()
+	}
+	defer func() {
+		listener.Close()
+		self.removeCloser(listenerCloser)
+	}()
+
+	for {
+		quicConn, err := listener.Accept(self.ctx)
+		if err != nil {
+			return err
+		}
+		if !self.beginConnection(quicConn.RemoteAddr()) {
+			quicConn.CloseWithError(0, "")
+			continue
+		}
+		connCloser, ok := self.addCloser(func() { quicConn.CloseWithError(0, "") })
+		if !ok {
+			quicConn.CloseWithError(0, "")
+			self.endConnection(quicConn.RemoteAddr())
+			return self.ctx.Err()
+		}
+		if !self.beginWorker() {
+			quicConn.CloseWithError(0, "")
+			self.removeCloser(connCloser)
+			self.endConnection(quicConn.RemoteAddr())
+			return self.ctx.Err()
+		}
+		go func() {
+			defer func() {
+				quicConn.CloseWithError(0, "")
+				self.removeCloser(connCloser)
+				self.endConnection(quicConn.RemoteAddr())
+				self.endWorker()
+			}()
+			connect.HandleError(func() {
+				if err := self.h3Server.ServeQUICConn(quicConn); err != nil {
+					self.reportError("h3 serve", err)
+				}
+			})
+		}()
+	}
 }
 
 func (self *ExtenderServer) Close() {
@@ -441,6 +688,10 @@ func (self *ExtenderServer) Close() {
 	for ownedConnection := range self.connections {
 		connections = append(connections, ownedConnection.connection)
 	}
+	closers := make([]func(), 0, len(self.closers))
+	for ownedCloser := range self.closers {
+		closers = append(closers, ownedCloser.close)
+	}
 	self.stateLock.Unlock()
 
 	for _, listener := range listeners {
@@ -449,6 +700,10 @@ func (self *ExtenderServer) Close() {
 	for _, connection := range connections {
 		connection.Close()
 	}
+	for _, closeCloser := range closers {
+		closeCloser()
+	}
+	self.httpServer.Close()
 }
 
 // CloseAndWait interrupts and joins every listener and connection worker.
@@ -491,6 +746,29 @@ func (self *ExtenderServer) IsAllowedHost(host string) bool {
 	return false
 }
 
+// The identity key this extender publishes in a response, or nil when it has
+// none (B3).
+func (self *ExtenderServer) PublicKey() []byte {
+	if self.certificates == nil {
+		return nil
+	}
+	return self.certificates.PublicKey()
+}
+
+// Signs a probe challenge with the identity key, or returns nil when the
+// extender has none (A4).
+func (self *ExtenderServer) SignChallenge(challenge []byte) []byte {
+	if self.certificates == nil {
+		return nil
+	}
+	return self.certificates.SignChallenge(challenge)
+}
+
+// The carrier names this extender serves (A4).
+func (self *ExtenderServer) Carriers() []string {
+	return slices.Clone(self.carriers)
+}
+
 // Connection errors are observable only when a caller installs the test seam.
 func (self *ExtenderServer) reportError(stage string, err error) {
 	if self.settings.ErrorHandler != nil {
@@ -498,154 +776,103 @@ func (self *ExtenderServer) reportError(stage string, err error) {
 	}
 }
 
+// HandleExtenderConnection terminates the outer tls of one tcp connection and
+// serves whatever is inside: the v1 framing, or an http request that carries
+// the extender header. The connection is closed when this returns.
 func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn net.Conn) {
-
 	handleCtx, handleCancel := context.WithCancel(ctx)
 	defer handleCancel()
 
 	defer conn.Close()
 
-	// fmt.Printf("Extender 1\n")
-
-	// FIXME switch to normal proxy if there are no tls fragments
-
-	/*
-	   handshakeBytes, clientHello, err := func()([]byte, *tlshacks.ClientHelloInfo, error) {
-	       handshakeBytes := make([]byte, 8192)
-	       handshakeBytesCount := 0
-	       for handshakeBytesCount < len(handshakeBytes) {
-	           // wait a short time for fragmented packets
-	           conn.SetReadDeadline(time.Now().Add(ReadTimeout))
-	           n, err := conn.Read(handshakeBytes[handshakeBytesCount:])
-	           if err != nil {
-	               return nil, nil, err
-	           }
-	           handshakeBytesCount += n
-
-	           fmt.Printf("Extender handshake 1: %s\n", string(handshakeBytes[0:handshakeBytesCount]))
-	           clientHello := UnmarshalClientHello(handshakeBytes[0:handshakeBytesCount])
-	           if clientHello != nil {
-	               return handshakeBytes[0:handshakeBytesCount], clientHello, nil
-	           }
-	           fmt.Printf("Extender handshake deepen\n")
-	       }
-	       return nil, nil, fmt.Errorf("Did not read complete handshake after %d bytes.", len(handshakeBytes))
-	   }()
-	   if err != nil {
-	       return
-	   }
-	*/
-	/*
-		    recordReader := newReaderRecordInitialBytes(conn)
-		    handshakeReader := tlshacks.NewHandshakeReader(recordReader)
-		    handshakeBytes, err := handshakeReader.ReadMessage()
-		    if err != nil {
-		        return
-		    }
-
-		    clientHello := UnmarshalClientHello(handshakeBytes)
-		    if clientHello == nil {
-		        return
-		    }
-
-
-
-		    fmt.Printf("Extender 2\n")
-
-		    if clientHello.Info.ServerName == nil {
-		        return
-		    }
-
-
-		    fmt.Printf("Extender 3: %s\n", *clientHello.Info.ServerName)
-
-			// generate a cert for that server name
-
-			// start a tls server connection using the cert and pass in the hello bytes
-			// pass in future bytes to the connection
-
-		    certPemBytes, keyPemBytes, err := selfSign(
-		        []string{*clientHello.Info.ServerName},
-		        guessOrganizationName(*clientHello.Info.ServerName),
-		    )
-		    if err != nil {
-		        return
-		    }
-		    // X509KeyPair
-		    cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
-		    if err != nil {
-		        return
-		    }
-
-		    fmt.Printf("Extender 4 with initial bytes: %s\n", string(recordReader.InitialBytes()))
-		    fmt.Printf("Cert: %s\n\n", string(certPemBytes))
-		    fmt.Printf("Key: %s\n\n", string(keyPemBytes))
-
-
-
-			// todo need a net.COnn implementation that allows inserting bytes back at the front
-
-
-		    tlsConfig := &tls.Config{
-		        Certificates: []tls.Certificate{cert},
-		        ServerName: *clientHello.Info.ServerName,
-		    }
-		    // put the handshake bytes back in front
-		    rewindConn := newConnWithInitialBytes(conn, recordReader.InitialBytes())
-			clientConn := tls.Server(rewindConn, tlsConfig)
-		    defer clientConn.Close()
-	*/
+	if self.certificatesErr != nil {
+		self.reportError("certificates", self.certificatesErr)
+		return
+	}
 
 	tlsConfig := &tls.Config{
-		GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			certPemBytes, keyPemBytes, err := selfSign(
-				[]string{clientHello.ServerName},
-				guessOrganizationName(clientHello.ServerName),
-				self.settings.ValidFrom,
-				self.settings.ValidFor,
-			)
-			if err != nil {
-				return nil, err
-			}
-			// X509KeyPair
-			cert, err := tls.X509KeyPair(certPemBytes, keyPemBytes)
-			return &cert, err
-		},
+		GetCertificate: self.certificates.GetCertificate,
+		// a prober that asks for h2 gets it (A3); the extender's own client
+		// offers no alpn, so it negotiates http/1.1
+		NextProtos: []string{"h2", "http/1.1"},
 	}
 	clientConn := tls.Server(conn, tlsConfig)
 	defer clientConn.Close()
 
-	// fmt.Printf("Extender 5\n")
-
+	// one budget covers the handshake and the request that follows (A9)
+	clientConn.SetDeadline(time.Now().Add(self.settings.HeaderTimeout))
 	err := clientConn.HandshakeContext(handleCtx)
 	if err != nil {
 		self.reportError("outer TLS handshake", err)
 		return
 	}
 
-	// fmt.Printf("Extender 6\n")
-
-	// read extender header
-	headerBytes := make([]byte, 1024)
-
-	// TODO is header parsing doesn't work, forward the traffic to the SNI site and write the header bytes
-
-	clientConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
-	for i := 0; i < 4; {
-		n, err := clientConn.Read(headerBytes[i:4])
+	initialBytes := make([]byte, 4)
+	for i := 0; i < len(initialBytes); {
+		n, err := clientConn.Read(initialBytes[i:])
 		i += n
 		if err != nil {
 			self.reportError("header length", err)
 			return
 		}
 	}
-	headerByteCount := int(binary.BigEndian.Uint32(headerBytes[0:4]))
-	if 1024 < headerByteCount {
-		// bad data
-		self.reportError("header length", fmt.Errorf("header has %d bytes", headerByteCount))
+
+	headerByteCount := int(binary.BigEndian.Uint32(initialBytes))
+	if headerByteCount <= connect.ExtenderMaxHeaderByteCount {
+		// v1: a length-prefixed header and no response frame. No http method
+		// and no tls record begins with such a length.
+		self.handleV1Connection(handleCtx, handleCancel, clientConn, headerByteCount)
 		return
 	}
-	// fmt.Printf("Extender 6: %d\n", headerByteCount)
+
+	if err := clientConn.SetDeadline(time.Time{}); err != nil {
+		self.reportError("header length", err)
+		return
+	}
+	requestConn := newConnWithInitialBytes(clientConn, initialBytes)
+	self.serveHttpConnection(handleCtx, requestConn, clientConn.ConnectionState().NegotiatedProtocol)
+}
+
+// Serves one terminated connection with the http server. h2 is dispatched
+// directly because the connection is no longer the *tls.Conn the alpn hook of
+// net/http requires: the carrier has already read its first bytes.
+func (self *ExtenderServer) serveHttpConnection(
+	ctx context.Context,
+	requestConn *connWithInitialBytes,
+	negotiatedProtocol string,
+) {
+	if negotiatedProtocol == http2.NextProtoTLS {
+		self.http2Server.ServeConn(requestConn, &http2.ServeConnOpts{
+			Context:    ctx,
+			BaseConfig: self.httpServer,
+			Handler:    self.httpServer.Handler,
+		})
+		return
+	}
+
+	listener := newSingleConnListener(requestConn, requestConn.LocalAddr())
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		self.httpServer.Serve(listener)
+	}()
+	select {
+	case <-requestConn.Closed():
+	case <-ctx.Done():
+	}
+	listener.Close()
+	<-serveDone
+}
+
+// The v1 path: the header length has already been read. There is no response
+// frame and no service, exactly as the first release.
+func (self *ExtenderServer) handleV1Connection(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	clientConn net.Conn,
+	headerByteCount int,
+) {
+	headerBytes := make([]byte, headerByteCount)
 	for i := 0; i < headerByteCount; {
 		clientConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 		n, err := clientConn.Read(headerBytes[i:headerByteCount])
@@ -655,32 +882,48 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 			return
 		}
 	}
-	// fmt.Printf("Extender 7\n")
 
 	header := &protocol.ExtenderHeader{}
-	err = proto.Unmarshal(headerBytes[0:headerByteCount], header)
-	if err != nil {
+	if err := proto.Unmarshal(headerBytes, header); err != nil {
 		self.reportError("header decode", err)
 		return
 	}
 
 	if !self.IsAllowedSecret(header) {
-		// fmt.Printf("Extender secret failed: %s\n", header.Secret)
 		self.reportError("header authorization", fmt.Errorf("secret signature is not allowed"))
 		return
 	}
-
 	if !self.IsAllowedHost(header.DestinationHost) {
-		// fmt.Printf("Extender destination failed: %s\n", header.DestinationHost)
 		self.reportError("destination authorization", fmt.Errorf("host %q is not allowed", header.DestinationHost))
 		return
 	}
 
+	forwardConn, err := self.dialForward(ctx, remoteAddressString(clientConn.RemoteAddr()), header)
+	if err != nil {
+		return
+	}
+	defer forwardConn.Close()
+
+	if err := clientConn.SetDeadline(time.Time{}); err != nil {
+		self.reportError("relay", err)
+		return
+	}
+	self.relay(ctx, cancel, clientConn, forwardConn)
+}
+
+// Dials the destination on the family of the client's outer socket (A7), so
+// name resolution yields only that family and a destination without an
+// address of it fails here rather than crossing families.
+func (self *ExtenderServer) dialForward(
+	ctx context.Context,
+	clientAddress string,
+	header *protocol.ExtenderHeader,
+) (net.Conn, error) {
 	dialContext := self.forwardDialer.DialContext
 	if self.settings.DialContext != nil {
 		dialContext = self.settings.DialContext
 	}
-	forwardConn, err := dialContext(handleCtx, "tcp", net.JoinHostPort(
+	forwardConn, err := dialContext(ctx, forwardNetwork(clientAddress), net.JoinHostPort(
 		header.DestinationHost,
 		fmt.Sprintf("%d", header.DestinationPort),
 	))
@@ -691,26 +934,52 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 			forwardConn.Close()
 		}
 		self.reportError("forward dial", err)
-		return
+		return nil, err
 	}
 	if forwardConn == nil {
-		self.reportError("forward dial", fmt.Errorf("forward dial returned nil connection"))
-		return
+		err = fmt.Errorf("forward dial returned nil connection")
+		self.reportError("forward dial", err)
+		return nil, err
 	}
-	defer forwardConn.Close()
+	return forwardConn, nil
+}
 
+// The dial network of the family of the client's outer socket. An address with
+// no family, such as an in-memory pipe, keeps the unnarrowed network.
+func forwardNetwork(clientAddress string) string {
+	host := clientAddress
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return "tcp"
+	}
+	if addr.Is4() || addr.Is4In6() {
+		return "tcp4"
+	}
+	return "tcp6"
+}
+
+// Copies both directions until either ends, then releases both connections.
+func (self *ExtenderServer) relay(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	clientConn net.Conn,
+	forwardConn net.Conn,
+) {
 	var relayWorkers sync.WaitGroup
 	relayWorkers.Add(2)
 	go connect.HandleError(func() {
 		defer relayWorkers.Done()
 		// read packet from clientConn, write to forwardConn
-		defer handleCancel()
+		defer cancel()
 
 		buffer := make([]byte, 4096)
 
 		for {
 			select {
-			case <-handleCtx.Done():
+			case <-ctx.Done():
 				return
 			default:
 			}
@@ -734,18 +1003,18 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 				return
 			}
 		}
-	}, handleCancel)
+	}, cancel)
 
 	go connect.HandleError(func() {
 		defer relayWorkers.Done()
 		// read packet from forwardConn, write to clientConn
-		defer handleCancel()
+		defer cancel()
 
 		buffer := make([]byte, 4096)
 
 		for {
 			select {
-			case <-handleCtx.Done():
+			case <-ctx.Done():
 				return
 			default:
 			}
@@ -769,168 +1038,15 @@ func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn n
 				return
 			}
 		}
-	}, handleCancel)
+	}, cancel)
 
 	select {
-	case <-handleCtx.Done():
+	case <-ctx.Done():
 	}
 	clientConn.Close()
 	forwardConn.Close()
 	relayWorkers.Wait()
 }
-
-/*
-func (self *ExtenderServer) HandleQuicExtenderConnection(ctx context.Context, conn quic.Connection) {
-
-	fmt.Printf("quic conn\n")
-
-	handleCtx, handleCancel := context.WithCancel(ctx)
-	defer handleCancel()
-
-	clientStream, err := conn.AcceptStream(ctx)
-	if err != nil {
-		return
-	}
-	defer clientStream.Close()
-
-	fmt.Printf("quic stream\n")
-
-	// read extender header
-	headerBytes := make([]byte, 1024)
-
-	fmt.Printf("q 1\n")
-
-	clientStream.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
-	for i := 0; i < 4; {
-		n, err := clientStream.Read(headerBytes[i:4])
-		if err != nil {
-			return
-		}
-		i += n
-	}
-	fmt.Printf("q 2\n")
-	headerByteCount := int(binary.BigEndian.Uint32(headerBytes[0:4]))
-	if 1024 < headerByteCount {
-		// bad data
-		return
-	}
-	fmt.Printf("q 3\n")
-	// fmt.Printf("Extender 6: %d\n", headerByteCount)
-	for i := 0; i < headerByteCount; {
-		clientStream.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
-		n, err := clientStream.Read(headerBytes[i:headerByteCount])
-		if err != nil {
-			return
-		}
-		i += n
-	}
-	// fmt.Printf("Extender 7\n")
-	fmt.Printf("q 4\n")
-
-	header := &protocol.ExtenderHeader{}
-	err = proto.Unmarshal(headerBytes[0:headerByteCount], header)
-	if err != nil {
-		return
-	}
-
-	fmt.Printf("q 5\n")
-
-	if !self.IsAllowedSecret(header) {
-		// fmt.Printf("Extender secret failed: %s\n", header.Secret)
-		return
-	}
-
-	fmt.Printf("q 6\n")
-
-	if !self.IsAllowedHost(header.DestinationHost) {
-		// fmt.Printf("Extender destination failed: %s\n", header.DestinationHost)
-		return
-	}
-
-	fmt.Printf("q 7: %s %d\n", header.DestinationHost, header.DestinationPort)
-
-	var resolvedHost string
-	if header.DestinationHost == "api.bringyour.com" {
-		resolvedHost = "65.19.157.41"
-	} else if header.DestinationHost == "connect.bringyour.com" {
-		resolvedHost = "65.49.70.71"
-	} else {
-		resolvedHost = header.DestinationHost
-	}
-
-	forwardConn, err := self.forwardDialer.Dial("tcp", net.JoinHostPort(
-		// header.DestinationHost,
-		resolvedHost,
-		fmt.Sprintf("%d", header.DestinationPort),
-	))
-	if err != nil {
-		return
-	}
-	defer forwardConn.Close()
-
-	fmt.Printf("q 8\n")
-
-	go func() {
-		// read packet from clientConn, write to forwardConn
-		defer handleCancel()
-
-		buffer := make([]byte, 4096)
-
-		for {
-			select {
-			case <-handleCtx.Done():
-				return
-			default:
-			}
-
-			clientStream.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
-			n, err := clientStream.Read(buffer)
-			if err != nil {
-				return
-			}
-			forwardConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
-			_, err = forwardConn.Write(buffer[0:n])
-			if err != nil {
-				fmt.Printf("q r end\n")
-				return
-			}
-		}
-	}()
-
-	go func() {
-		// read packet from forwardConn, write to clientConn
-		defer handleCancel()
-
-		buffer := make([]byte, 4096)
-
-		for {
-			select {
-			case <-handleCtx.Done():
-				return
-			default:
-			}
-
-			forwardConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
-			n, err := forwardConn.Read(buffer)
-			if err != nil {
-				return
-			}
-			clientStream.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
-			_, err = clientStream.Write(buffer[0:n])
-			if err != nil {
-				fmt.Printf("q w end\n")
-				return
-			}
-		}
-	}()
-
-	select {
-	case <-handleCtx.Done():
-	}
-
-	fmt.Printf("q end\n")
-}
-*/
 
 func guessOrganizationName(host string) string {
 
@@ -942,88 +1058,6 @@ func guessOrganizationName(host string) string {
 	return host
 }
 
-/*
-type readerRecordInitialBytes struct {
-    conn net.Conn
-    initialBytes []byte
-}
-
-func newReaderRecordInitialBytes(conn net.Conn) *readerRecordInitialBytes {
-    return &readerRecordInitialBytes{
-        conn: conn,
-    }
-}
-
-func (self *readerRecordInitialBytes) InitialBytes() []byte {
-    return slices.Clone(self.initialBytes)
-}
-
-func (self *readerRecordInitialBytes) Read(b []byte) (int, error) {
-    n, err := self.conn.Read(b)
-    if 0 < n {
-    	// FIXME need to make a copy
-        self.initialBytes = append(self.initialBytes, COPY(b[0:n])...)
-    }
-    return n, err
-}
-
-
-
-
-type connWithInitialBytes struct {
-    conn net.Conn
-    initialBytes []byte
-}
-
-func newConnWithInitialBytes(conn net.Conn, initialBytes []byte) *connWithInitialBytes {
-    return &connWithInitialBytes{
-        conn: conn,
-        initialBytes: initialBytes,
-    }
-}
-
-func (self *connWithInitialBytes) Read(b []byte) (int, error) {
-    m := min(len(self.initialBytes), len(b))
-    if 0 < m {
-        copy(b[0:m], self.initialBytes[0:m])
-        self.initialBytes = self.initialBytes[m:]
-    }
-    if len(b) <= m {
-        return m, nil
-    }
-    n, err := self.conn.Read(b[m:])
-    return m + n, err
-}
-
-func (self *connWithInitialBytes) Write(b []byte) (int, error) {
-    return self.conn.Write(b)
-}
-
-func (self *connWithInitialBytes) Close() error {
-    return self.conn.Close()
-}
-
-func (self *connWithInitialBytes) LocalAddr() net.Addr {
-    return self.conn.LocalAddr()
-}
-
-func (self *connWithInitialBytes) RemoteAddr() net.Addr {
-    return self.conn.RemoteAddr()
-}
-
-func (self *connWithInitialBytes) SetDeadline(t time.Time) error {
-    return self.conn.SetDeadline(t)
-}
-
-func (self *connWithInitialBytes) SetReadDeadline(t time.Time) error {
-    return self.conn.SetReadDeadline(t)
-}
-
-func (self *connWithInitialBytes) SetWriteDeadline(t time.Time) error {
-    return self.conn.SetWriteDeadline(t)
-}
-*/
-
 // https://github.com/AGWA/tlshacks/blob/main/client_hello.go
 // https://pkg.go.dev/crypto/tls#ClientHelloInfo
 // https://www.agwa.name/blog/post/parsing_tls_client_hello_with_cryptobyte
@@ -1031,95 +1065,3 @@ func (self *connWithInitialBytes) SetWriteDeadline(t time.Time) error {
 // client issues tls connect to for a spoof name and ip:port, and does not check the tls cert
 // on top of that connection, sends a header (protocol/extender) that lists the upstream host
 // and then makes a tls connection through that
-
-// https://go.dev/src/crypto/tls/generate_cert.go
-
-func selfSign(hosts []string, organization string, validFrom time.Duration, validFor time.Duration) (certPemBytes []byte, keyPemBytes []byte, returnErr error) {
-
-	var priv any
-	var err error
-
-	priv, err = rsa.GenerateKey(rand.Reader, 2048)
-	// priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		returnErr = err
-		return
-	}
-
-	publicKey := func(priv any) any {
-		switch k := priv.(type) {
-		case *rsa.PrivateKey:
-			return &k.PublicKey
-		case *ecdsa.PrivateKey:
-			return &k.PublicKey
-		case ed25519.PrivateKey:
-			return k.Public().(ed25519.PublicKey)
-		default:
-			return nil
-		}
-	}
-
-	// ECDSA, ED25519 and RSA subject keys should have the DigitalSignature
-	// KeyUsage bits set in the x509.Certificate template
-	keyUsage := x509.KeyUsageDigitalSignature
-	// Only RSA subject keys should have the KeyEncipherment KeyUsage bits set. In
-	// the context of TLS this KeyUsage is particular to RSA key exchange and
-	// authentication.
-	if _, isRSA := priv.(*rsa.PrivateKey); isRSA {
-		keyUsage |= x509.KeyUsageKeyEncipherment
-	}
-
-	notBefore := time.Now().Add(-validFrom)
-	// ValidFrom is the tolerated clock-skew/history window before creation;
-	// ValidFor is the future lifetime after creation. Adding both durations
-	// to notBefore made the default 180d/180d certificate expire at the
-	// instant it was generated.
-	notAfter := time.Now().Add(validFor)
-
-	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
-	if err != nil {
-		log.Fatalf("Failed to generate serial number: %v", err)
-	}
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization: []string{organization},
-		},
-		NotBefore: notBefore,
-		NotAfter:  notAfter,
-
-		KeyUsage:              keyUsage,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-
-	for _, h := range hosts {
-		if ip := net.ParseIP(h); ip != nil {
-			template.IPAddresses = append(template.IPAddresses, ip)
-		} else {
-			template.DNSNames = append(template.DNSNames, h)
-		}
-	}
-
-	// we hope the client is using tls1.3 which hides the self signed cert
-	template.IsCA = true
-	template.KeyUsage |= x509.KeyUsageCertSign
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, publicKey(priv), priv)
-	if err != nil {
-		returnErr = err
-		return
-	}
-	certPemBytes = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-
-	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		returnErr = err
-		return
-	}
-	keyPemBytes = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
-
-	return
-}
