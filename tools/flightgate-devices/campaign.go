@@ -661,6 +661,7 @@ func runSeries(args []string) error {
 	interleaveRelay := fs.Bool("interleave-relay", false, "alternate relay-only (direct mode forced off) and stock runs; --runs counts each kind")
 	alternateApk := fs.String("alternate-apk", "", "label=apk,label=apk: alternate two builds run by run, reinstalling in place before each; --runs counts each build")
 	buildLabel := fs.String("build", "", "build label recorded on every run when not alternating")
+	relayOnly := fs.Bool("relay-only", false, "force direct mode off for every run, so the series measures the exchange path alone")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -701,6 +702,9 @@ func runSeries(args []string) error {
 	for i := 0; i < total; i++ {
 		runTag := fmt.Sprintf("%s-%02d", *tag, i)
 		directMode := "stock"
+		if *relayOnly {
+			directMode = "relay-only"
+		}
 		build := *buildLabel
 		if len(arms) == 2 {
 			current := arms[i%2]
@@ -737,7 +741,7 @@ func runSeries(args []string) error {
 		if err := disconnect([]string{"--serial", *provider}); err != nil {
 			fmt.Printf("%s: provider disconnect: %v\n", runTag, err)
 		}
-		if *interleaveRelay {
+		if *interleaveRelay || *relayOnly {
 			mode := "clear"
 			if directMode == "relay-only" {
 				mode = "off"
