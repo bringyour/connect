@@ -491,32 +491,6 @@ func TestReceiveSequenceAckFallsThroughWhenUnreliableIsFull(t *testing.T) {
 	}
 }
 
-// M2 guard (review finding 2 of FLIGHTGATEFIX §4). With H1 and a hybrid H3
-// carrier both active and H3 healthy, an ACK for a Pack received over H3
-// keeps its H3 affinity. Passes today; a fall-through scoped to "any
-// potentially unreliable carrier" would break it.
-func TestReceiveSequenceAckKeepsHybridH3Affinity(t *testing.T) {
-	pair := newFlightGatePeerPair(t, 3*time.Second)
-	inH3 := pair.receiveRoute(t, TransportTypeH3)
-	outH3 := pair.ackRoute(t, TransportTypeH3, 16, TransferCarrierProperties{
-		Unreliable: true,
-		unreliableForMessageByteCount: func(int) bool {
-			return false
-		},
-	})
-	outH1 := pair.ackRoute(t, TransportTypeH1, 16, TransferCarrierProperties{})
-
-	first := pair.deliver(t, 0, inH3)
-	start := time.Now()
-	if !awaitFlightGateAck(t, outH3, first, 5*time.Second) {
-		t.Fatal("ACK for the H3-received Pack left the healthy H3 carrier")
-	}
-	t.Logf("H3 ACK latency %s", time.Since(start))
-	if awaitFlightGateAck(t, outH1, first, 200*time.Millisecond) {
-		t.Fatal("ACK also appeared on H1")
-	}
-}
-
 // M3. Pack 0 rides the reliable lane, Packs 1..3 the unreliable lane and are
 // acknowledged first. That is reordering across carriers, not loss: no gap
 // resend may be written for Pack 0. A real drop on the unreliable lane must

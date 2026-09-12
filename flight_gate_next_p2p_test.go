@@ -175,3 +175,107 @@ func TestFastPathProgressReportAllocatesLikeWarmup(t *testing.T) {
 		t.Fatalf("a progress report allocates %.1f per packet, the warmup marker %.1f", report, warmup)
 	}
 }
+
+// FLIGHTGATEFIX §20.3. This is merged's own test and it is red on merged:
+// merged records FastPathNoProgressTimeout and acts on nothing, so no
+// watchdog retires a blackholed association. §13.3's reporter was the
+// mechanism that made it pass, and it cost 13 to 57 per cent on every
+// forced-direct repetition. It stays here as the specification of §20.5's
+// follow-up (2), an ack-progress watchdog with no wire cost.
+// M6. After the fast path is ready, its RTP packets are blackholed in the
+// active-to-passive direction while STUN consent and DTLS keep flowing. The
+// association must be retired within the configured no-progress bound so the
+// route generation changes and the sender's flight resets. Expected red on
+// the tree this was written against: nothing observes fast-path delivery.
+func TestFastPathBlackholeRetiresRouteAndResetsFlight(t *testing.T) {
+	if testing.Short() {
+		t.Skip("vnet fast path blackhole")
+	}
+	const noProgressTimeout = 300 * time.Millisecond
+	var blackhole atomic.Bool
+	activeIp := net.ParseIP("10.3.0.1")
+	filter := func(chunk vnet.Chunk) bool {
+		if !blackhole.Load() || !rtpUdpPayload(chunk.UserData()) {
+			return true
+		}
+		source, ok := chunk.SourceAddr().(*net.UDPAddr)
+		return !ok || !source.IP.Equal(activeIp)
+	}
+	pair := newFlightGateVnetPair(t, filter, func(active, passive *WebRtcSettings) {
+		active.FastPathNoProgressTimeout = noProgressTimeout
+	})
+	// a healthy lane delivers and is never retired by the bound
+	if loss := measureFastPathMessageLoss(t, pair, 1000, 20); loss != 0 {
+		t.Fatalf("healthy fast path lost %.2f of its messages", loss)
+	}
+	select {
+	case <-pair.active.ctx.Done():
+		t.Fatalf("healthy association was retired: %v", context.Cause(pair.active.ctx))
+	case <-time.After(2 * noProgressTimeout):
+	}
+
+	blackhole.Store(true)
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		message := bytes.Repeat([]byte{0x3c}, 1000)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pair.active.ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := pair.activeFast.WriteFastPathMessage(message); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	// ICE consent is still flowing: this is not the ordinary ICE failure path
+	time.Sleep(noProgressTimeout / 2)
+	if state := pair.active.pc.ICEConnectionState(); state != webrtc.ICEConnectionStateConnected &&
+		state != webrtc.ICEConnectionStateCompleted {
+		t.Fatalf("ICE did not stay connected through the RTP blackhole: %s", state)
+	}
+	select {
+	case <-pair.active.ctx.Done():
+	case <-time.After(3 * noProgressTimeout):
+		t.Fatalf("fast path blackhole did not retire the association within %s", 3*noProgressTimeout)
+	}
+	<-writeDone
+	cause := context.Cause(pair.active.ctx)
+	if cause == nil || !strings.Contains(cause.Error(), "fast path no progress") {
+		t.Fatalf("retirement cause = %v, want fast path no progress", cause)
+	}
+}
+
+// FLIGHTGATEFIX §20.3. §13.2's hybrid H3 parity: a hybrid carrier keeps
+// its reply affinity where a datagram-only one does not. The landing has
+// merged's blanket reply rule, so this is the specification of §20.5's
+// follow-up (1), reply affinity with a storm guard.
+// M2 guard (review finding 2 of FLIGHTGATEFIX §4). With H1 and a hybrid H3
+// carrier both active and H3 healthy, an ACK for a Pack received over H3
+// keeps its H3 affinity. Passes today; a fall-through scoped to "any
+// potentially unreliable carrier" would break it.
+func TestReceiveSequenceAckKeepsHybridH3Affinity(t *testing.T) {
+	pair := newFlightGatePeerPair(t, 3*time.Second)
+	inH3 := pair.receiveRoute(t, TransportTypeH3)
+	outH3 := pair.ackRoute(t, TransportTypeH3, 16, TransferCarrierProperties{
+		Unreliable: true,
+		unreliableForMessageByteCount: func(int) bool {
+			return false
+		},
+	})
+	outH1 := pair.ackRoute(t, TransportTypeH1, 16, TransferCarrierProperties{})
+
+	first := pair.deliver(t, 0, inH3)
+	start := time.Now()
+	if !awaitFlightGateAck(t, outH3, first, 5*time.Second) {
+		t.Fatal("ACK for the H3-received Pack left the healthy H3 carrier")
+	}
+	t.Logf("H3 ACK latency %s", time.Since(start))
+	if awaitFlightGateAck(t, outH1, first, 200*time.Millisecond) {
+		t.Fatal("ACK also appeared on H1")
+	}
+}

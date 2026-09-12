@@ -11,7 +11,6 @@ import (
 	"math"
 	"math/rand"
 	"net"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -247,74 +246,6 @@ func TestFastPathMessageLossFollowsFragmentCount(t *testing.T) {
 			}
 		}
 		enabled.Store(false)
-	}
-}
-
-// M6. After the fast path is ready, its RTP packets are blackholed in the
-// active-to-passive direction while STUN consent and DTLS keep flowing. The
-// association must be retired within the configured no-progress bound so the
-// route generation changes and the sender's flight resets. Expected red on
-// the tree this was written against: nothing observes fast-path delivery.
-func TestFastPathBlackholeRetiresRouteAndResetsFlight(t *testing.T) {
-	if testing.Short() {
-		t.Skip("vnet fast path blackhole")
-	}
-	const noProgressTimeout = 300 * time.Millisecond
-	var blackhole atomic.Bool
-	activeIp := net.ParseIP("10.3.0.1")
-	filter := func(chunk vnet.Chunk) bool {
-		if !blackhole.Load() || !rtpUdpPayload(chunk.UserData()) {
-			return true
-		}
-		source, ok := chunk.SourceAddr().(*net.UDPAddr)
-		return !ok || !source.IP.Equal(activeIp)
-	}
-	pair := newFlightGateVnetPair(t, filter, func(active, passive *WebRtcSettings) {
-		active.FastPathNoProgressTimeout = noProgressTimeout
-	})
-	// a healthy lane delivers and is never retired by the bound
-	if loss := measureFastPathMessageLoss(t, pair, 1000, 20); loss != 0 {
-		t.Fatalf("healthy fast path lost %.2f of its messages", loss)
-	}
-	select {
-	case <-pair.active.ctx.Done():
-		t.Fatalf("healthy association was retired: %v", context.Cause(pair.active.ctx))
-	case <-time.After(2 * noProgressTimeout):
-	}
-
-	blackhole.Store(true)
-	writeDone := make(chan struct{})
-	go func() {
-		defer close(writeDone)
-		message := bytes.Repeat([]byte{0x3c}, 1000)
-		ticker := time.NewTicker(20 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-pair.active.ctx.Done():
-				return
-			case <-ticker.C:
-				if _, err := pair.activeFast.WriteFastPathMessage(message); err != nil {
-					return
-				}
-			}
-		}
-	}()
-	// ICE consent is still flowing: this is not the ordinary ICE failure path
-	time.Sleep(noProgressTimeout / 2)
-	if state := pair.active.pc.ICEConnectionState(); state != webrtc.ICEConnectionStateConnected &&
-		state != webrtc.ICEConnectionStateCompleted {
-		t.Fatalf("ICE did not stay connected through the RTP blackhole: %s", state)
-	}
-	select {
-	case <-pair.active.ctx.Done():
-	case <-time.After(3 * noProgressTimeout):
-		t.Fatalf("fast path blackhole did not retire the association within %s", 3*noProgressTimeout)
-	}
-	<-writeDone
-	cause := context.Cause(pair.active.ctx)
-	if cause == nil || !strings.Contains(cause.Error(), "fast path no progress") {
-		t.Fatalf("retirement cause = %v, want fast path no progress", cause)
 	}
 }
 
