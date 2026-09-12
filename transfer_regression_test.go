@@ -310,15 +310,6 @@ func newSelectiveAckRecoveryTestSequence(
 			settings.RttMinResendInterval,
 			settings.MaxResendInterval,
 		),
-		unreliableRttWindow: NewRttWindow(
-			NewNoopLogger(),
-			settings.UnreliableRttWindowSize,
-			settings.RttWindowTimeout,
-			settings.RttScale,
-			settings.MinResendInterval,
-			settings.RttMinResendInterval,
-			settings.MaxResendInterval,
-		),
 	}
 	items := make([]*sendItem, 0, itemCount)
 	for i := range itemCount {

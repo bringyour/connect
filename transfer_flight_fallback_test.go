@@ -441,12 +441,12 @@ func TestSelectiveAckGapSkipsUnreliableItemsWhileBothLanesCarryAcks(t *testing.T
 	}
 }
 
-// FLIGHTGATEFIX §14. The grace is a trade: a Pack the direct lane really
-// dropped waits for it before its recovery is written. The delay is
-// asserted here so no later change can quietly lengthen it, and it must
-// stay at or under the unreliable lane's own resend ceiling, which is what
-// the item would otherwise wait for.
-func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
+// FLIGHTGATEFIX §19 D1/D3. The deferral of a hole is to the slowest lane an
+// acknowledgement can take, which is the sequence window's clock. The
+// direct lane's own estimate cannot bound a wait for a reply the receiver
+// may choose to send by the relay, so the per-carrier grace is gone with
+// the per-carrier window.
+func TestMixedLaneHoleWaitsForTheSequenceClock(t *testing.T) {
 	sendTime := time.Unix(1_700_000_000, 0)
 	currentTime := sendTime.Add(10 * time.Millisecond)
 	sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
@@ -457,71 +457,31 @@ func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
 		limited:                true,
 		reliableRouteAvailable: true,
 	})
-	// item 0 is a real drop on the direct lane
+	// item 0 is a hole the direct lane carried
 	items[0].unreliableCarrierObserved = true
 	items[0].unreliableFlightTracked = true
 	for _, index := range []int{1, 2, 3, 5, 6, 7} {
 		items[index].selectiveAcked = true
 	}
-	// both lanes have answered: the relay at 300 ms, the device rig's figure,
-	// and the direct lane at 20 ms
+	// the relay has answered at 300 ms, the device rig's figure
 	now := time.Now()
 	sequence.rttWindow.CloseSendTime(uint64(now.Add(-300 * time.Millisecond).UnixMilli()))
-	sequence.unreliableRttWindow.CloseSendTime(uint64(now.Add(-20 * time.Millisecond).UnixMilli()))
-	relayGrace := sequence.rttWindow.ScaledRtt()
-	laneGrace, sampled := sequence.unreliableGraceRtt()
-	if !sampled {
-		t.Fatal("the direct lane's own round trip was not measured")
-	}
-	if pacing, _ := sequence.unreliableScaledRtt(); pacing <= laneGrace {
-		t.Fatalf(
-			"the grace %s is not shorter than the lane's retransmit pacing interval %s, so the "+
-				"pacing floor is still setting it",
-			laneGrace, pacing,
-		)
-	}
-	t.Logf(
-		"grace for a direct-lane drop: %s from the direct lane's own estimate, against %s from the relay's "+
-			"and %s if the retransmit pacing floor applied",
-		laneGrace, relayGrace, sequence.sendBufferSettings.RttMinResendInterval,
-	)
-	// §16: the grace is what the lane could still deliver, so the window's
-	// own scale carries the jitter margin and the minimum covers only timer
-	// granularity. The retransmit pacing floor must not apply: on this lane
-	// it is fifteen times the round trip and every real loss would stall the
-	// ordered stream for it.
-	if sequence.sendBufferSettings.RttMinResendInterval <= laneGrace {
-		t.Fatalf(
-			"the direct lane's grace is %s, at or past the retransmit pacing floor %s: a %s lane "+
-				"would stall the ordered stream for the floor on every lost Pack",
-			laneGrace, sequence.sendBufferSettings.RttMinResendInterval, 20*time.Millisecond,
-		)
-	}
-	if laneGrace < sequence.sendBufferSettings.UnreliableGraceMinimum {
-		t.Fatalf("the direct lane's grace %s is under UnreliableGraceMinimum %s",
-			laneGrace, sequence.sendBufferSettings.UnreliableGraceMinimum)
-	}
-	// the measured margin: twice the lane's round trip, from RttScale
-	if wantMargin := 2 * 20 * time.Millisecond; laneGrace != wantMargin {
-		t.Fatalf("the direct lane's grace is %s, want RttScale %v times its %s round trip",
-			laneGrace, sequence.sendBufferSettings.RttScale, 20*time.Millisecond)
-	}
-	if relayGrace <= laneGrace {
-		t.Fatalf("the direct lane's grace %s is not shorter than the relay's %s", laneGrace, relayGrace)
-	}
+	sequenceGrace := sequence.rttWindow.ScaledRtt()
+
 	sequence.scheduleSelectiveAckRecovery(currentTime)
 	if !items[0].selectiveGapRecovered || items[0].recoveryKind != sendRecoverySelectiveGap {
-		t.Fatalf("a dropped direct-lane Pack was not scheduled for recovery: recovered=%t kind=%d",
+		t.Fatalf("a direct-lane hole was not scheduled for recovery: recovered=%t kind=%d",
 			items[0].selectiveGapRecovered, items[0].recoveryKind)
 	}
-	// §15.2: the grace is the carrying lane's own estimate, not the relay's
-	if due := items[0].resendTime.Sub(sendTime); due != laneGrace {
+	if due := items[0].resendTime.Sub(sendTime); due != sequenceGrace {
 		t.Fatalf(
-			"recovery of a dropped direct-lane Pack is due %s after the send, want the direct lane's grace %s, not the relay's %s",
-			due, laneGrace, relayGrace,
+			"recovery of a direct-lane hole is due %s after the send, want the sequence clock %s: "+
+				"the reply may take the relay, so no carrier's own estimate bounds the wait",
+			due, sequenceGrace,
 		)
 	}
-	// a relay-carried hole keeps the relay's grace
+
+	// a relay-carried hole waits the same clock
 	relayItem := items[4]
 	relayItem.sendTime = sendTime
 	relayItem.reliableCarrierObserved = true
@@ -529,24 +489,18 @@ func TestMixedLaneDirectLaneLossIsRecoveredByTheGrace(t *testing.T) {
 	relayItem.recoveryKind = sendRecoveryNone
 	relayItem.resendTime = sendTime.Add(sequence.sendBufferSettings.SelectiveAckTimeout)
 	sequence.scheduleSelectiveAckRecovery(currentTime)
-	if due := relayItem.resendTime.Sub(sendTime); due != relayGrace {
-		t.Fatalf("a relay-carried hole is due %s after the send, want the relay's grace %s", due, relayGrace)
+	if due := relayItem.resendTime.Sub(sendTime); due != sequenceGrace {
+		t.Fatalf("a relay-carried hole is due %s after the send, want the sequence clock %s",
+			due, sequenceGrace)
 	}
-	grace := laneGrace
-	// the grace is the sequence RTT, which describes the relay while both
-	// lanes carry acks; it must never exceed what the item's own timeout
-	// would have cost, or the trade stops paying
-	if ceiling := sequence.sendBufferSettings.UnreliableMaxResendInterval; 0 < ceiling && ceiling < grace {
-		t.Fatalf("the grace %s is longer than the unreliable lane's own resend ceiling %s", grace, ceiling)
+	// the wait must never exceed what the item's own timeout would have cost,
+	// or the trade stops paying
+	if ceiling := sequence.sendBufferSettings.UnreliableMaxResendInterval; 0 < ceiling && ceiling < sequenceGrace {
+		t.Fatalf("the wait %s is longer than the unreliable lane's own resend ceiling %s",
+			sequenceGrace, ceiling)
 	}
 }
 
-// FLIGHTGATEFIX §16. The grace is insurance against reordering. A lane
-// whose own recent evidence says it is dropping gets none: waiting for it
-// only stalls the ordered stream, which is what the lossy campaign cells
-// measured. The evidence is the outcome of the deferrals themselves, an
-// acknowledgement that cancelled one against a recovery that had to be
-// written.
 func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
 	sendTime := time.Unix(1_700_000_000, 0)
 	currentTime := sendTime.Add(10 * time.Millisecond)
@@ -560,7 +514,6 @@ func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
 			reliableRouteAvailable: true,
 		})
 		sequence.rttWindow.CloseSendTime(uint64(time.Now().Add(-300 * time.Millisecond).UnixMilli()))
-		sequence.unreliableRttWindow.CloseSendTime(uint64(time.Now().Add(-20 * time.Millisecond).UnixMilli()))
 		items[0].unreliableCarrierObserved = true
 		items[0].unreliableFlightTracked = true
 		for _, index := range []int{1, 2, 3, 5, 6, 7} {
