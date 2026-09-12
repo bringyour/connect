@@ -1201,3 +1201,179 @@ not the magnitude: it cannot yet separate two arms the way a campaign cell
 does, and above roughly three times this volume its synthetic forwarders
 and bounded reply route wedge on each other. It is a pre-flight check, not
 a substitute for stream B's arm.
+
+## 19. Fix design for the low-bar and mild-loss regressions
+
+Design for review, 2026-09-11, on c289a7e. Read against the source at
+c3fcef3, the seven-row contract, and the four PERFVAR entries of 2026-09-11
+(d381 lossy and complete, lowbar, features). Both findings have one root:
+the sender judges an item by the clock of the lane that carried it, but the
+acknowledgement's path is the receiver's choice, and the two disagree
+exactly when it matters. The fix keys every clock to the acknowledgement
+path, gives the lane-loss signal one job, and deletes the direct lane's
+window rather than adding anything beside it.
+
+### 19.1 Finding A, traced
+
+On a route with one unreliable carrier and no sibling, `routeSnapshot` puts
+a route in `reliableRoutes` only when its carrier properties are not
+`Unreliable`, so `reliableRouteAvailable` is false on the policy and on the
+controller. `scheduleSelectiveAckRecovery` then has `mixedAckLanes` false,
+and `lateNotLost` needs that or `reliableCarrierObserved`, which no item on
+this route has: the §14 grace is unreachable and every gap recovers at once.
+The §13.5 defer requires `!item.unreliableCarrierObserved`, which every item
+fails. The latch is read only in those two places, so it is inert, and
+`reduceForLoss` is asked on every gap and timeout in both trees and halves
+identically. The §18 claim is true in the code.
+
+The live difference is §15.2. Merged's `observeAckRtt` returns for every
+unreliable-carried item, so on this route its sequence window is never
+sampled and `scaledRtt` answers with the cold floor `MinResendInterval`,
+2 s, which `UnreliableMaxResendInterval` also caps at 2 s. Ours feeds the
+sixteen-sample `unreliableRttWindow`, and `resendIntervalForPolicy` takes
+`unreliableScaledRtt()` once it is sampled: twice a sixteen-frame mean,
+floored at 300 ms. Same route and policy, first retransmit: merged 2 s
+throughout, ours 700 ms, 1.4 s, 2 s, 2 s. The low-bar cells are the upload
+direction, so the mobile surrogate sends over a 64 to 1,000 kbit/s uplink
+whose round trip is its own serialisation queue, and that queue moves faster
+than a sixteen-frame mean follows it. Each early timeout runs
+`observeUnreliableResendTimeout`: the flight halves toward its 8 KiB floor,
+the lane latches, and the frame is rewritten onto the bottleneck, where the
+13-packet cell-edge queue turns the duplicate into real loss: gap resends
+859 vs 672, transfer time 44.5 vs 38.3 s. Two facts bound the fix. Stock,
+whose single 128-sample window took every ack and floored at 300 ms,
+measured INDISTINGUISHABLE from merged on these cells (merged minus stock
+−3.7 to +0.9 %, 1 of 5 seeds), so a sampled timer is not the harm here; a
+sixteen-sample one is. And `probeRtt` reads the sequence window, starved on
+this route in both trees, so both probe at the 2 s floor.
+
+### 19.2 Finding B, traced: the acknowledgement path is the receiver's
+
+The flap hypothesis does not survive the records. The complete campaign has
+the 1 % cell at 16.7 vs 18.9 Mbit/s (the 4.6 vs 15.5 figure does not occur
+in the run records) with gap resends 569 vs 70; gap resends are above
+merged in seven of eight cells including clean-lan, 184 vs 3, where nothing
+is lost; the receiver wrote 74 to 91 % of its replies on the relay even on
+clean-lan; and the grace cancelled 1,448 to 3,139 recoveries per run against
+merged's 0 to 6. Reorder at the sender is rampant, and it is not loss.
+
+On a loaded mixed route the receiver holds a selective ack most of the time:
+a relay-carried Pack lands about 180 ms after the direct-carried Packs
+numbered above it, and the §18 reply rule (`replyLaneLosing = 0 <
+len(ackSnapshot.selectiveAcks)`, reliable-first) reads that delivery reorder
+as a dropping lane. So under load the acks for direct-carried items travel
+the relay, in order, while both clocks that judge those items are the
+direct lane's. (a) The timer (§15.2) floors at 300 ms while the ack takes
+200 ms plus the relay's queue: every direct item sent around a hole times
+out early, halves the flight, is forgotten (§13.1) and rewritten
+reliable-only onto the relay whose queue it deepens, and latches the lane.
+At 3 % the holes are continuous, the direct window fills with relay-path
+samples and converges to the relay's clock, which is the parity; at 1 % it
+alternates between 20 ms and 200 ms samples and the cascade fires at every
+hole; under burst loss the clean stretches dominate. (b) The latch withholds
+the defer. Relay-only, the defer removed 99 % of timeout resends (19,966 to
+201), 6 dead windows to 0, +2.6 Mbit/s; on the mixed route it deferred a
+third as many, and the mixed queue-inflation cell kept 22,526 timeout
+resends and 16 dead windows in both defer states. A spurious relay RTO is
+written p2p-first whenever the flight has room, so while latched the
+storm lands on the direct lane:
+that is the doubled direct carriage and the stall of the instrument's
+1,024-packet arm, which holds the latch and therefore the coupling longer.
+(c) The deferred-expiry branch of the RTO loop calls
+`noteUnreliableLaneLoss()` for any carrier, so a relay-carried hole whose
+delivery outran F11b's grace latches the direct lane, and it halves once
+per expired item where a selective-ack round halves once. The §16 grace is
+not the cost: the proving acks for a direct hole arrive via the relay
+200 ms after it, past any 40 ms grace, so recovery is immediate in both
+regimes and a latch transition costs at most one 40 ms deferral. The
+clean-lan residual, relay-carried holes overtaken by direct acks past
+F11b's grace under 2.4 to 7.5 times merged's striping, is sized by D7.
+
+### 19.3 The design
+
+| | Change | Where |
+|---|---|---|
+| D1 | The retransmit timer of an unreliable-carried item is the sequence window's clock, merged's form: `resendIntervalForPolicy` drops its `unreliableScaledRtt()` branch. With a reliable sibling that is the relay's clock, the lane the acks travel; a direct item resent reliable-only after §13.1's forget is judged by it too. Cost accepted: a tail loss on a healthy 20 ms lane waits the relay's 400 to 600 ms instead of 300 ms, merged's cost. | `resendIntervalForPolicy` |
+| D2 | F10 narrowed to the route it was built for: `observeAckRtt` skips an unreliable-carried ack only while `flightController.reliableRouteAvailable`. On a forced direct route the sequence window is the lane's own 128-sample clock, stock's rule: twice the mean, floored at `RttMinResendInterval`, capped at `UnreliableMaxResendInterval`; 300 ms on a LAN-like lane, the queue on a cell-edge uplink. Probe pacing follows: the sampled minimum times `RttScale` floored at 300 ms instead of the 2 s cold floor, also stock's. When a sibling appears the direct samples age out of the window at the relay's ack rate and the defer covers the interim. Fallback if the guard below is not INDISTINGUISHABLE: keep F10 whole and let the route stay at merged's cold floor, one condition removed. | `observeAckRtt` |
+| D3 | The direct lane's window goes: `unreliableRttWindow`, `UnreliableRttWindowSize`, `UnreliableGraceMinimum`, `unreliableGraceRtt`, `unreliableScaledRtt`, `ScaledRttWithFloorSampled`, and `MixedLaneAckReorderGrace`, since the deferral is now a sound rule rather than optional insurance. About 640 bytes per sequence returned; the sdk envelope test re-baselined and `TestMobileDirectLaneRttWindowStaysSmall` retired. | transfer.go, transfer_rtt.go, sdk |
+| D4 | The arrival lane of every ack reaches the scoreboard. `Client.run` already holds `carrierReliability` per frame at the ack handoff; it rides `receiveAckMessage.arrivalReliability` and `sequenceAck.arrivalReliability` (one byte each, by value) into `receiveAck(..., arrivalReliability)`. `routeSnapshot.receiveDisposition` resolves `CarrierReliabilityUnknown` from the route's `Unreliable` flag, so every route with published properties answers and only a reader without carrier information stays Unknown, which counts as unreliable. On an item's first selective ack, `item.selectiveAckConclusive = arrivalReliability == CarrierReliabilityReliable || !reliableRouteAvailable`; the zero value means not conclusive, which is what a hand-built scoreboard must read. The pass keeps two counts of later selective acks, all and conclusive. A reliable-carried hole keeps F11b unchanged. An unreliable-carried hole is proven when the conclusive count reaches `SelectiveAckGapThreshold` or the lane is latched; otherwise, when the full count reaches it, it is deferred to `sendTime + rttWindow.ScaledRtt()`, the slowest lane an acknowledgement can take, or proven if already older. Single lane: everything conclusive, merged's ordering rule untouched. Hybrid H3 answers on its stream lane, whose sibling publishes Reliable, so its acks are conclusive for its own items. | `Client.run`, `SendBuffer`, `receiveAck`, `scheduleSelectiveAckRecovery` |
+| D5 | The latch drives one behaviour, D4's conclusiveness. It is set only by proven loss of an unreliable-carried item, so the deferred-expiry branch gates `noteUnreliableLaneLoss` on `item.unreliableCarrierObserved`; it decays over `unreliableLaneLossHold` 64 clean acks as today; and `!self.unreliableLaneLosing()` leaves the defer condition, which already excludes unreliable-carried items. No loss-rate estimate: the hold is not the lever once a transition costs one deferral, and the contract's row 1 needs a tip on one event. | RTO branch |
+| D6 | Expired deferrals reduce the flight once per pass of the RTO loop, a local flag reset per outer iteration; each still counts a gap. Merged's per-round cadence. | RTO branch |
+| D7 | Counters in fixed arrays: gap recoveries written by hole carrier, deferred recoveries expired by hole carrier, holes proven under the latch alone. They split the clean-lan residual next campaign. | Client stats |
+
+Unchanged: the receiver's reply rule (rows 5 to 7), §13.1 to §13.4, the
+defer on with limit 2, the controller, size-aware admission off. Memory:
+about 640 bytes per sequence returned; the item's bool sits in existing
+padding, asserted; nothing new retained, nothing allocated on the ack or
+packet paths; the pass carries one more integer and one policy read.
+
+### 19.4 Why this shape, and what was rejected
+
+Every rejected option keeps a carrier-keyed clock or adds a signal. A longer
+hold or hysteresis on the latch: transitions cost one 40 ms deferral today
+and one bounded deferral after D4, and the 1,024-packet arm shows a longer
+hold multiplying (b) instead. A loss-rate estimate: needs hundreds of
+samples, converges at 3 % to merged's behaviour, and cannot tip on one
+event as row 1 requires. A max-based or per-carrier timer kept for the
+mixed route: no clock keyed to the carrier can cover a path the receiver
+picks per snapshot; on the single lane the 128-sample window is the shape
+stock measured. Dropping the grace: rows 1 and 2 require a fresh hole with
+no proven loss to be postponed, and the rule is sound, since fast-lane
+proving acks can overtake a relay-borne one. Changing the reply rule: rows
+5 to 7 are green and the 74 to 91 % relay share on clean-lan is delivery
+reorder the rule cannot see; a trigger that tells a hole below a
+direct-carried Pack from one below a relay-carried Pack is a follow-up
+once D7 has sized it. Recovering reliable-carried holes by RTO alone (no
+gap recovery while the route is active) is the named fallback if clean-lan
+gap resends stay above merged's 3 after D4 to D7, with its own test. The
+defer stays because of its relay-only result; D5 is what makes it act in
+the lossy mixed cells, where the latch withheld it (deferred 0 to 512
+against c644's 456 to 8,490).
+
+### 19.5 Tests, each red without its change, all under `-race`
+
+| Test | Regime | Asserts |
+|---|---|---|
+| `TestUnreliableItemTimerIsTheSequenceClock` (D1) | mixed | sequence window at 300 ms, direct acks at 20 ms: `resendIntervalForItem(direct, 1) == rttWindow.ScaledRtt()`, not 300 ms |
+| `TestForcedDirectRouteFeedsTheSequenceWindow` (D2) | single lane | an unreliable-carried ack moves `rttWindow.ScaledRtt()` and `ProbeRtt()` with no reliable route and not with one; `TestSendSequenceAckRttIgnoresUnreliableCarrier` stays as the mixed guard |
+| `TestForcedDirectRouteFirstRetransmitMatchesStock` (D2, the trade) | single lane | cold 2 s before any ack; 700 ms after 128 acks at 350 ms; the cap at `UnreliableMaxResendInterval`; the clock is never a sixteen-sample mean |
+| `TestAckArrivalLaneReachesTheScoreboard` (D4) | both | through `SendBuffer.ackMessageDetailed`: a Reliable arrival marks the item conclusive, an Unreliable or Unknown one does not, and with no reliable route every arrival does |
+| `TestGapProvenByRelayLaneAcksRecoversAtOnce` (D4) | mixed, clean | fresh direct hole, three conclusive later acks: recovered now, lane latched, reduce asked |
+| `TestGapProvenOnlyByFastLaneAcksWaitsForTheRelayClock` (D4) | mixed, reorder | non-conclusive proving acks: deferred to `sendTime + rttWindow.ScaledRtt()`, no reduce, cancelled without a write by the item's ack |
+| `TestTimeoutDeferIsNotWithheldByTheLaneLatch` (D5) | mixed, losing | latched, a reliable-carried RTO with cumulative progress since its send is deferred, `TimeoutResendDeferCount` +1 |
+| `TestRelayHoleGraceExpiryDoesNotLatchTheDirectLane` (D5) | mixed | a reliable-carried deferral expiring is written, `unreliableLaneLosing()` stays false, no reduce |
+| `TestDeferredExpiriesReduceOncePerPass` (D6) | burst | four expired unreliable deferrals in one pass: one halving, four gaps counted |
+| `TestAckStructsGainNoBytes` (memory) | | `unsafe.Sizeof` of `sendItem` and `sequenceAck` unchanged; the sdk retained-budget test re-baselined lower by the window |
+
+Rewritten: `TestMixedLaneDirectLaneLossIsRecoveredByTheGrace` becomes the
+two D4 tests, and the fallback tests and `newSelectiveAckRecoveryTestSequence`
+drop the window they build; `TestLaneClassificationHoldsSteadyUnderSustainedLoss` asserts
+the cost of a transition (one deferral bounded by the relay's clock) rather
+than a transition count, which no decaying counter meets at 0.5 % and which
+the design makes pointless; test 7 gains a latched variant. The contract
+file is untouched and its merged verdicts cannot move: its rows read
+behaviour only, and merged has no arrival lane.
+
+### 19.6 Measurements that call each finding fixed
+
+Finding A: the low-bar matrix, `p2p-fast` on the three cells, upload,
+mobile surrogate, five repetitions interleaved with merged: median goodput
+INDISTINGUISHABLE or better with no stable sign against us, selective-gap
+resends and median transfer time at or below merged's, timeout resends per
+run at or below merged's, and the six exchange cells unchanged. Any cell
+with a stable sign against us invokes D2's fallback and re-runs.
+
+Finding B: all eight mixed cells against merged, strictly: dead windows at
+or below, paired median goodput at or above, gap resends at or below in
+every cell including clean-lan's 3, timeout resends at or below in the
+lossy cells, and `TimeoutResendDeferCount` in the lossy mixed cells no
+longer a third of the relay-only cell's. The relay-only queue-inflation A/B
+is repeated with the tree: its 201 timeout resends, 0 dead windows and 15.7
+Mbit/s must survive, and the mixed queue-inflation cell must leave 16 of 37
+dead windows and 22,526 timeout resends behind. Memory not worse on the
+heap+stack direction check. The instrument's six-arm run is a pre-flight
+only: with D5 the 1,024-hold arm must complete, since the coupling it
+lengthened is gone.
+
+Out of scope, flagged: the §13.3 progress report costs about 10 kbit/s of a
+64 kbit/s uplink in the download direction, which no low-bar cell has run.
