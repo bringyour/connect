@@ -185,8 +185,14 @@ or H3, is answered by a reverse proxy to `https://<sni>` when the SNI is
 on the whitelist, using the extender's egress on the client's family with
 normal CA verification upstream, so a prober gets the real site behind a
 self-signed cert. A request whose SNI is not on the whitelist gets 403 and
-the connection closes. Reverse proxy bounds: request body 1 MiB, relayed
+the connection closes. A name is matched only when it is a syntactic host
+name, since TLS accepts any bytes as an SNI and the name becomes the
+upstream authority. Reverse proxy bounds: request body 1 MiB, relayed
 bytes per connection 8 MiB, per-source concurrent 8, total 256, idle 30 s.
+The body and concurrency bounds answer 503 before anything upstream is
+opened; the relayed-bytes bound cuts the body, whose upstream content
+length is therefore not relayed. `ExtenderSettings.SpoofDomains` overrides
+the bundled list for tests and private deployments.
 
 A6. udp 53. The decode53 translation carries the dns carrier. Every query
 that is not the translation reaches a new `PacketTranslationSettings.
@@ -196,8 +202,11 @@ the extender's own DoH cache (`DohCache.Forward` for the raw response, with
 the connect default DoH server list, overridable in `ExtenderSettings`),
 rewrite the message id, and write the answer on the udp 53 socket
 directly. Per-source limit 10 queries per second with burst 20, total 500
-per second, one in-flight query per source address, response cap 4096
-bytes with the TC bit set when exceeded. No recursion of its own.
+per second with the same burst, one in-flight query per source address, a
+bounded worker pool of 64 so the translation's read loop never blocks,
+a 5 s forward timeout, and a response cap of 4096 bytes with the TC bit
+set when exceeded. No recursion of its own. A TXT query outside every
+encoding tld is a forwarder query, not a translation query.
 
 A7. Family match. The forward dial and the reverse proxy transport use
 `tcp4` or `tcp6` by the family of the client's outer socket, so name
