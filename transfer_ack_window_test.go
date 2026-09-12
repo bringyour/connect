@@ -134,7 +134,6 @@ func TestInitialWritePublishesAckIdentityBeforePeerExposure(t *testing.T) {
 		false,
 		snapshot.headAck.tag,
 		snapshot.headAck.compactContractRecoverySupported,
-		snapshot.headAck.arrivalReliability,
 	)
 	if queueCount, _ := sequence.resendQueue.QueueSize(); queueCount != 0 {
 		t.Fatalf("synchronous Ack left %d resend items", queueCount)

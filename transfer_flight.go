@@ -28,10 +28,6 @@ type sendFlightController struct {
 	activeMaximumMessageCount int
 	policyMessageLimit        int
 	flowReserveEnabled        bool
-	// reliableRouteAvailable mirrors the route generation's reliable-carrier
-	// state so the sender can tell a mixed-lane route from a single-lane one
-	// without reading the snapshot again (FLIGHTGATEFIX §14).
-	reliableRouteAvailable bool
 
 	generation                 uint64
 	limited                    bool
@@ -112,8 +108,7 @@ func (self *sendFlightController) applyPolicy(policy transferFlightPolicySnapsho
 	if self.generation == policy.generation && self.limited == limited &&
 		self.policyByteLimit == policy.byteLimit &&
 		self.policyMessageLimit == policy.messageLimit &&
-		self.flowReserveEnabled == policy.flowReserve &&
-		self.reliableRouteAvailable == policy.reliableRouteAvailable {
+		self.flowReserveEnabled == policy.flowReserve {
 		return false
 	}
 	self.generation = policy.generation
@@ -121,7 +116,6 @@ func (self *sendFlightController) applyPolicy(policy transferFlightPolicySnapsho
 	self.policyByteLimit = policy.byteLimit
 	self.policyMessageLimit = policy.messageLimit
 	self.flowReserveEnabled = policy.flowReserve
-	self.reliableRouteAvailable = policy.reliableRouteAvailable
 	self.additiveIncreaseRemainder = 0
 	self.slowStartIncreaseRemainder = 0
 	self.additiveMessageRemainder = 0

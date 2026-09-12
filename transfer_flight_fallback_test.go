@@ -2,7 +2,6 @@ package connect
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -88,7 +87,7 @@ func TestSendSequenceFullUnreliableFlightWritesReliableOnlyInsteadOfStalling(t *
 	if sequence.unreliableFlightGates(withReliable) {
 		t.Fatal("open flight with a reliable route gated admission")
 	}
-	if sequence.reliableOnlyWrite(withReliable, 0) {
+	if sequence.reliableOnlyWrite(withReliable) {
 		t.Fatal("open flight forced reliable-only writes")
 	}
 
@@ -102,7 +101,7 @@ func TestSendSequenceFullUnreliableFlightWritesReliableOnlyInsteadOfStalling(t *
 	if sequence.unreliableFlightGates(withReliable) {
 		t.Fatal("full flight gated admission although a reliable route is available")
 	}
-	if !sequence.reliableOnlyWrite(withReliable, 0) {
+	if !sequence.reliableOnlyWrite(withReliable) {
 		t.Fatal("full flight did not force reliable-only writes")
 	}
 
@@ -113,7 +112,7 @@ func TestSendSequenceFullUnreliableFlightWritesReliableOnlyInsteadOfStalling(t *
 	if !sequence.unreliableFlightGates(unreliableOnly) {
 		t.Fatal("full flight without a reliable route did not gate admission")
 	}
-	if sequence.reliableOnlyWrite(unreliableOnly, 0) {
+	if sequence.reliableOnlyWrite(unreliableOnly) {
 		t.Fatal("reliable-only write requested without a reliable route")
 	}
 }
@@ -179,7 +178,7 @@ func TestSendSequenceFloorSingleFlightKeepsOneMessageOnLossyCarrier(t *testing.T
 	// healthy carrier (limit above the floor): the flight decides alone
 	first := &sendItem{transferFrameBytes: make([]byte, 512)}
 	sequence.observeCarrierWrite(first, transferWriteDisposition{unreliable: true})
-	if sequence.flightController.atFloor() || sequence.reliableOnlyWrite(policy, 0) {
+	if sequence.flightController.atFloor() || sequence.reliableOnlyWrite(policy) {
 		t.Fatalf("healthy carrier forced reliable-only: floor=%t", sequence.flightController.atFloor())
 	}
 
@@ -191,18 +190,18 @@ func TestSendSequenceFloorSingleFlightKeepsOneMessageOnLossyCarrier(t *testing.T
 	if !sequence.flightController.atFloor() {
 		t.Fatalf("flight not at floor after reductions: %d/%d", sequence.flightController.byteLimit, sequence.flightController.activeMinimumByteCount)
 	}
-	if !sequence.reliableOnlyWrite(policy, 0) {
+	if !sequence.reliableOnlyWrite(policy) {
 		t.Fatal("floor carrier with a message in flight did not force reliable-only")
 	}
 	sequence.releaseUnreliableFlight(first)
-	if sequence.reliableOnlyWrite(policy, 0) {
+	if sequence.reliableOnlyWrite(policy) {
 		t.Fatal("floor carrier with an empty flight refused its single probe message")
 	}
 
 	// the rule is opt-in: without it only a full flight forces reliable-only
 	settings.UnreliableFloorSingleFlight = false
 	sequence.observeCarrierWrite(first, transferWriteDisposition{unreliable: true})
-	if sequence.reliableOnlyWrite(policy, 0) {
+	if sequence.reliableOnlyWrite(policy) {
 		t.Fatal("floor rule applied while disabled")
 	}
 	sequence.releaseUnreliableFlight(first)
@@ -211,11 +210,6 @@ func TestSendSequenceFloorSingleFlightKeepsOneMessageOnLossyCarrier(t *testing.T
 // A reply keeps its carrier affinity on reliable carriers but never rides a
 // potentially unreliable one while a reliable route is active.
 func TestMultiRouteSelectorReplyAvoidsUnreliableCarrier(t *testing.T) {
-	// FLIGHTGATEFIX §13.2 replaced the blanket rule this test first encoded
-	// ("never pin a reply to a potentially unreliable carrier while a
-	// reliable one is active") with a scoped one: the affine unreliable lane
-	// keeps the reply while it has channel room and its ack clock is fresh;
-	// a full or stale lane hands the reply to the reliable lanes.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -225,46 +219,28 @@ func TestMultiRouteSelectorReplyAvoidsUnreliableCarrier(t *testing.T) {
 	h1Route := make(Route, 16)
 	selector.updateTransportWithProperties(h1Transport, []Route{h1Route}, TransferCarrierProperties{})
 	p2pTransport := NewSendGatewayTransportWithType(TransportTypeP2p)
-	p2pRoute := make(Route, 2)
+	p2pRoute := make(Route, 16)
 	selector.updateTransportWithProperties(p2pTransport, []Route{p2pRoute}, TransferCarrierProperties{Unreliable: true})
-	const staleAfter = time.Second
 
-	// a healthy affine lane with room keeps the reply
-	for i := 0; i < 2; i++ {
-		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter, false)
-		if err != nil || !success || disposition.transportType != TransportTypeP2p {
-			t.Fatalf("reply %d with healthy p2p affinity: success=%t disposition=%+v err=%v; want p2p", i, success, disposition, err)
-		}
+	if !selector.transportPotentiallyUnreliable(TransportTypeP2p) || selector.transportPotentiallyUnreliable(TransportTypeH1) {
+		t.Fatal("carrier reliability classification is wrong")
 	}
-	// the affine lane is full: the reply leaves on the reliable lane at once
-	for i := 2; i < 6; i++ {
-		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p, staleAfter, false)
+	for i := 0; i < 6; i++ {
+		success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{byte(i)}, time.Second, TransportTypeP2p)
 		if err != nil || !success || disposition.transportType != TransportTypeH1 {
-			t.Fatalf("reply %d with full p2p affinity: success=%t disposition=%+v err=%v; want H1", i, success, disposition, err)
+			t.Fatalf("reply %d with p2p affinity: success=%t disposition=%+v err=%v; want H1", i, success, disposition, err)
 		}
 	}
-	if len(h1Route) != 4 || len(p2pRoute) != 2 {
-		t.Fatalf("routes after replies: h1=%d p2p=%d, want 4/2", len(h1Route), len(p2pRoute))
-	}
-	// room again, but the lane's ack clock is stale: reliable first
-	<-p2pRoute
-	<-p2pRoute
-	selector.observeRouteAckProgress(p2pRoute)
-	clock, _ := selector.routeAckProgress.Load(p2pRoute)
-	clock.(*atomic.Int64).Store(time.Now().Add(-2 * staleAfter).UnixNano())
-	success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{6}, time.Second, TransportTypeP2p, staleAfter, false)
-	if err != nil || !success || disposition.transportType != TransportTypeH1 {
-		t.Fatalf("reply with stale p2p affinity: success=%t disposition=%+v err=%v; want H1", success, disposition, err)
-	}
-	// a zero stale bound disables the clock rule
-	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{7}, time.Second, TransportTypeP2p, 0, false)
-	if err != nil || !success || disposition.transportType != TransportTypeP2p {
-		t.Fatalf("reply with the clock rule off: success=%t disposition=%+v err=%v; want p2p", success, disposition, err)
+	if len(h1Route) != 6 || len(p2pRoute) != 0 {
+		t.Fatalf("routes after replies: h1=%d p2p=%d, want 6/0", len(h1Route), len(p2pRoute))
 	}
 
 	// with only the unreliable carrier the reply keeps using it
 	selector.updateTransport(h1Transport, nil)
-	success, disposition, err = selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{9}, time.Second, TransportTypeP2p, staleAfter, false)
+	if selector.transportPotentiallyUnreliable(TransportTypeP2p) {
+		t.Fatal("p2p flagged unreliable-replaceable without a reliable route")
+	}
+	success, disposition, err := selector.writeDetailedReplyWithCarrierPreference(ctx, []byte{9}, time.Second, TransportTypeP2p)
 	if err != nil || !success || disposition.transportType != TransportTypeP2p {
 		t.Fatalf("p2p-only reply: success=%t disposition=%+v err=%v", success, disposition, err)
 	}
@@ -312,14 +288,10 @@ func TestSelectiveAckGapSkipsReliableItemsNotYetLateInMixedLanes(t *testing.T) {
 		items[index].selectiveAcked = true
 	}
 	sequence.scheduleSelectiveAckRecovery(currentTime)
-	// §14: the fresh item's recovery is deferred to the moment the slowest
-	// ack lane has had its chance, so nothing is written now and an ack
-	// arriving first removes it; the stale item is written immediately.
-	if !items[0].resendTime.After(currentTime) {
-		t.Fatalf("fresh reliable-carried gap item was gap-resent behind fast-lane acks: due %s", items[0].resendTime.Sub(currentTime))
+	if items[0].selectiveGapRecovered {
+		t.Fatal("fresh reliable-carried gap item was gap-resent behind fast-lane acks")
 	}
-	if !items[4].selectiveGapRecovered || items[4].recoveryKind != sendRecoverySelectiveGap ||
-		items[4].resendTime.After(currentTime) {
+	if !items[4].selectiveGapRecovered || items[4].recoveryKind != sendRecoverySelectiveGap {
 		t.Fatalf("stale reliable-carried gap item was not gap-resent: recovered=%t kind=%d", items[4].selectiveGapRecovered, items[4].recoveryKind)
 	}
 
@@ -337,240 +309,57 @@ func TestSelectiveAckGapSkipsReliableItemsNotYetLateInMixedLanes(t *testing.T) {
 	}
 }
 
-// A timed-out reliable-carried item waits (at most twice) while cumulative
-// acks are still advancing; it is re-sent at once when acks have stalled or
-// when it rode the unreliable lane.
+// Main's TestSendSequenceDefersTimeoutResendWhileAcksProgress, rewritten
+// against this branch's implementation of the same rule. Main landed
+// deferTimeoutResend, keyed on the head-ack clock with a hardcoded limit of
+// two; this branch evolved the same design into shouldDeferTimeoutResend,
+// keyed on the cumulative-ack clock with the limit and the
+// since-last-deferral term as settings, and the backoff of §24. The
+// behaviour main asserted is preserved here: a timed-out reliable-carried
+// item waits while cumulative acknowledgements are still advancing, is
+// re-sent at once when they have stalled, and is never deferred when it
+// rode the unreliable lane.
 func TestSendSequenceDefersTimeoutResendWhileAcksProgress(t *testing.T) {
 	settings := DefaultSendBufferSettings()
 	sequence := testUnreliableRecoverySequence(settings)
 	sequence.client = &Client{}
 	sequence.flightController = newSendFlightController(settings)
 	now := time.Now()
+	scaledRtt := sequence.rttWindow.ScaledRtt()
 
-	item := &sendItem{transferFrameBytes: make([]byte, 64)}
+	item := &sendItem{transferFrameBytes: make([]byte, 64), sendTime: now}
 	sequence.observeCarrierWrite(item, transferWriteDisposition{reliable: true})
-	sequence.lastHeadAckTime = now.Add(-50 * time.Millisecond)
-	if !sequence.deferTimeoutResend(item, now) || item.timeoutDeferCount != 1 || !item.resendTime.After(now) {
-		t.Fatalf("first deferral: count=%d resendTime=%s", item.timeoutDeferCount, item.resendTime)
+	sequence.lastCumulativeAckTime = now.Add(-50 * time.Millisecond)
+	if !sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatal("first deferral was refused while the cumulative ack was still advancing")
 	}
-	if !sequence.deferTimeoutResend(item, now) || item.timeoutDeferCount != 2 {
-		t.Fatalf("second deferral: count=%d", item.timeoutDeferCount)
+	// each further deferral requires the ack to have advanced since the last
+	item.timeoutDeferCount = 1
+	item.timeoutDeferAckTime = sequence.lastCumulativeAckTime
+	if sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatal("a second deferral was granted with no cumulative progress since the first")
 	}
-	if sequence.deferTimeoutResend(item, now) {
-		t.Fatal("third deferral granted; must resend")
+	sequence.lastCumulativeAckTime = now.Add(-10 * time.Millisecond)
+	if !sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatal("a second deferral was refused though the cumulative ack had advanced")
 	}
-	if sequence.client.SendRecoveryStats().TimeoutResendDeferCount != 2 {
-		t.Fatalf("deferral stat = %d, want 2", sequence.client.SendRecoveryStats().TimeoutResendDeferCount)
+	item.timeoutDeferCount = settings.TimeoutResendDeferLimit
+	if sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatalf("a deferral was granted past the limit of %d", settings.TimeoutResendDeferLimit)
 	}
 
-	stalled := &sendItem{transferFrameBytes: make([]byte, 64)}
+	stalled := &sendItem{transferFrameBytes: make([]byte, 64), sendTime: now}
 	sequence.observeCarrierWrite(stalled, transferWriteDisposition{reliable: true})
-	sequence.lastHeadAckTime = now.Add(-30 * time.Second)
-	if sequence.deferTimeoutResend(stalled, now) {
+	sequence.lastCumulativeAckTime = now.Add(-30 * time.Second)
+	if sequence.shouldDeferTimeoutResend(stalled, scaledRtt) {
 		t.Fatal("deferred a timeout while acks were stalled")
 	}
 
-	unreliable := &sendItem{transferFrameBytes: make([]byte, 64)}
+	unreliable := &sendItem{transferFrameBytes: make([]byte, 64), sendTime: now}
 	sequence.observeCarrierWrite(unreliable, transferWriteDisposition{unreliable: true})
-	sequence.lastHeadAckTime = now
-	if sequence.deferTimeoutResend(unreliable, now) {
+	sequence.lastCumulativeAckTime = now
+	if sequence.shouldDeferTimeoutResend(unreliable, scaledRtt) {
 		t.Fatal("deferred a timeout of an unreliable-carried item")
 	}
 	sequence.releaseUnreliableFlight(unreliable)
-}
-
-// FLIGHTGATEFIX §14 (M3). While acknowledgements arrive over two lanes of
-// different latency, "three later selective acks" says nothing about this
-// item: the later acks may simply have taken the faster lane. The merged
-// rule granted that grace only to reliable-carried items, so an item the
-// direct lane carried whose ack took the relay (its bounded reply route was
-// full) was read as lost and resent. With a single ack lane the ordering
-// rule is unchanged, so datagram tail recovery keeps its pace.
-func TestSelectiveAckGapSkipsUnreliableItemsWhileBothLanesCarryAcks(t *testing.T) {
-	sendTime := time.Unix(1_700_000_000, 0)
-	currentTime := sendTime.Add(100 * time.Millisecond)
-	newMixed := func() (*SendSequence, []*sendItem) {
-		sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
-		sequence.client = &Client{}
-		sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
-		sequence.flightController.applyPolicy(transferFlightPolicySnapshot{
-			generation:             1,
-			limited:                true,
-			reliableRouteAvailable: true,
-		})
-		for _, index := range []int{1, 2, 3, 5, 6, 7} {
-			items[index].selectiveAcked = true
-		}
-		return sequence, items
-	}
-	// item 0 rode the direct lane 100 ms ago and its ack is still in the air
-	// on the relay; item 4 rode it long ago and is really missing
-	sequence, items := newMixed()
-	for _, index := range []int{0, 4} {
-		items[index].unreliableCarrierObserved = true
-		items[index].unreliableFlightTracked = true
-	}
-	items[4].sendTime = sendTime.Add(-5 * time.Second)
-	sequence.scheduleSelectiveAckRecovery(currentTime)
-	// nothing is written for the fresh item now: its recovery is due only
-	// once the relay could have delivered its ack, and an ack arriving
-	// first takes the item out of the queue
-	if !items[0].resendTime.After(currentTime) {
-		t.Fatalf("a fresh direct-lane item was gap-resent on ack-lane reordering: due %s",
-			items[0].resendTime.Sub(currentTime))
-	}
-	if !items[4].selectiveGapRecovered || items[4].recoveryKind != sendRecoverySelectiveGap ||
-		items[4].resendTime.After(currentTime) {
-		t.Fatalf("a stale direct-lane item was not gap-resent: recovered=%t kind=%d",
-			items[4].selectiveGapRecovered, items[4].recoveryKind)
-	}
-
-	// one ack lane only: the ordering rule is untouched, whichever lane.
-	// With no reliable sibling every acknowledgement travels the only lane
-	// there is, so every one is conclusive (FLIGHTGATEFIX §19 D4).
-	sequenceOne, itemsOne := newSelectiveAckRecoveryTestSequence(8, sendTime)
-	sequenceOne.client = &Client{}
-	sequenceOne.flightController = newSendFlightController(sequenceOne.sendBufferSettings)
-	sequenceOne.flightController.applyPolicy(transferFlightPolicySnapshot{generation: 1, limited: true})
-	itemsOne[0].unreliableCarrierObserved = true
-	itemsOne[0].unreliableFlightTracked = true
-	for _, index := range []int{1, 2, 3, 5, 6, 7} {
-		itemsOne[index].selectiveAcked = true
-		itemsOne[index].selectiveAckConclusive = true
-	}
-	sequenceOne.scheduleSelectiveAckRecovery(currentTime)
-	if !itemsOne[0].selectiveGapRecovered || itemsOne[0].resendTime.After(currentTime) {
-		t.Fatal("datagram tail recovery regressed on a single-lane route")
-	}
-}
-
-// FLIGHTGATEFIX §19 D1/D3. The deferral of a hole is to the slowest lane an
-// acknowledgement can take, which is the sequence window's clock. The
-// direct lane's own estimate cannot bound a wait for a reply the receiver
-// may choose to send by the relay, so the per-carrier grace is gone with
-// the per-carrier window.
-func TestMixedLaneHoleWaitsForTheSequenceClock(t *testing.T) {
-	sendTime := time.Unix(1_700_000_000, 0)
-	currentTime := sendTime.Add(10 * time.Millisecond)
-	sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
-	sequence.client = &Client{}
-	sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
-	sequence.flightController.applyPolicy(transferFlightPolicySnapshot{
-		generation:             1,
-		limited:                true,
-		reliableRouteAvailable: true,
-	})
-	// item 0 is a hole the direct lane carried
-	items[0].unreliableCarrierObserved = true
-	items[0].unreliableFlightTracked = true
-	for _, index := range []int{1, 2, 3, 5, 6, 7} {
-		items[index].selectiveAcked = true
-	}
-	// the relay has answered at 300 ms, the device rig's figure
-	now := time.Now()
-	sequence.rttWindow.CloseSendTime(uint64(now.Add(-300 * time.Millisecond).UnixMilli()))
-	sequenceGrace := sequence.rttWindow.ScaledRtt()
-
-	sequence.scheduleSelectiveAckRecovery(currentTime)
-	if !items[0].selectiveGapRecovered || items[0].recoveryKind != sendRecoverySelectiveGap {
-		t.Fatalf("a direct-lane hole was not scheduled for recovery: recovered=%t kind=%d",
-			items[0].selectiveGapRecovered, items[0].recoveryKind)
-	}
-	if due := items[0].resendTime.Sub(sendTime); due != sequenceGrace {
-		t.Fatalf(
-			"recovery of a direct-lane hole is due %s after the send, want the sequence clock %s: "+
-				"the reply may take the relay, so no carrier's own estimate bounds the wait",
-			due, sequenceGrace,
-		)
-	}
-
-	// a relay-carried hole waits the same clock
-	relayItem := items[4]
-	relayItem.sendTime = sendTime
-	relayItem.reliableCarrierObserved = true
-	relayItem.selectiveGapRecovered = false
-	relayItem.recoveryKind = sendRecoveryNone
-	relayItem.resendTime = sendTime.Add(sequence.sendBufferSettings.SelectiveAckTimeout)
-	sequence.scheduleSelectiveAckRecovery(currentTime)
-	if due := relayItem.resendTime.Sub(sendTime); due != sequenceGrace {
-		t.Fatalf("a relay-carried hole is due %s after the send, want the sequence clock %s",
-			due, sequenceGrace)
-	}
-	// the wait must never exceed what the item's own timeout would have cost,
-	// or the trade stops paying
-	if ceiling := sequence.sendBufferSettings.UnreliableMaxResendInterval; 0 < ceiling && ceiling < sequenceGrace {
-		t.Fatalf("the wait %s is longer than the unreliable lane's own resend ceiling %s",
-			sequenceGrace, ceiling)
-	}
-}
-
-func TestMixedLaneGraceIsWithdrawnFromALosingLane(t *testing.T) {
-	sendTime := time.Unix(1_700_000_000, 0)
-	currentTime := sendTime.Add(10 * time.Millisecond)
-	newSequence := func() (*SendSequence, []*sendItem) {
-		sequence, items := newSelectiveAckRecoveryTestSequence(8, sendTime)
-		sequence.client = &Client{}
-		sequence.flightController = newSendFlightController(sequence.sendBufferSettings)
-		sequence.flightController.applyPolicy(transferFlightPolicySnapshot{
-			generation:             1,
-			limited:                true,
-			reliableRouteAvailable: true,
-		})
-		sequence.rttWindow.CloseSendTime(uint64(time.Now().Add(-300 * time.Millisecond).UnixMilli()))
-		items[0].unreliableCarrierObserved = true
-		items[0].unreliableFlightTracked = true
-		for _, index := range []int{1, 2, 3, 5, 6, 7} {
-			items[index].selectiveAcked = true
-		}
-		return sequence, items
-	}
-	// nothing proven lost: the lane is reordering and the grace holds
-	reordering, reorderingItems := newSequence()
-	if reordering.unreliableLaneLosing() {
-		t.Fatal("a lane with no proven loss is classified losing")
-	}
-	reordering.scheduleSelectiveAckRecovery(currentTime)
-	if !reorderingItems[0].resendTime.After(currentTime) {
-		t.Fatal("the grace was withdrawn from a lane with no proven loss")
-	}
-	if !reorderingItems[0].gapRecoveryDeferred {
-		t.Fatal("a deferred recovery was not marked, so its outcome cannot be counted")
-	}
-
-	// one proven loss latches the lane, and the next hole waits for nothing
-	losing, losingItems := newSequence()
-	losing.noteUnreliableLaneLoss()
-	if !losing.unreliableLaneLosing() {
-		t.Fatal("one proven loss did not classify the lane as losing")
-	}
-	losing.scheduleSelectiveAckRecovery(currentTime)
-	if losingItems[0].resendTime.After(currentTime) {
-		t.Fatalf(
-			"a hole on a losing lane still waits %s for a grace: the ordered stream stalls for it",
-			losingItems[0].resendTime.Sub(currentTime),
-		)
-	}
-	if losingItems[0].gapRecoveryDeferred {
-		t.Fatal("an immediate recovery was marked deferred")
-	}
-
-	// hysteresis: the latch clears after a stated run of clean
-	// acknowledgements, so the signal neither flaps nor sticks
-	recovering, recoveringItems := newSequence()
-	recovering.noteUnreliableLaneLoss()
-	for range unreliableLaneLossHold - 1 {
-		recovering.noteUnreliableLaneProgress()
-	}
-	if !recovering.unreliableLaneLosing() {
-		t.Fatalf("the latch cleared in under %d clean acknowledgements", unreliableLaneLossHold)
-	}
-	recovering.noteUnreliableLaneProgress()
-	if recovering.unreliableLaneLosing() {
-		t.Fatalf("the latch did not clear after %d clean acknowledgements, so the signal sticks",
-			unreliableLaneLossHold)
-	}
-	recovering.scheduleSelectiveAckRecovery(currentTime)
-	if !recoveringItems[0].resendTime.After(currentTime) {
-		t.Fatal("a lane that stopped losing did not get the grace back")
-	}
 }

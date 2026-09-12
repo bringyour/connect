@@ -175,7 +175,7 @@ func TestPromotedHeadUsesNegotiatedCompactContract(t *testing.T) {
 	}
 	firstItem := sequence.sendItems[0]
 	secondItem := sequence.sendItems[1]
-	sequence.receiveAck(firstItem.messageId, false, sequenceTag{}, true, CarrierReliabilityReliable)
+	sequence.receiveAck(firstItem.messageId, false, sequenceTag{}, true)
 	if len(sequence.sendItems) != 1 || sequence.sendItems[0] != secondItem {
 		t.Fatalf("promoted-head remaining items=%+v", sequence.sendItems)
 	}
@@ -195,7 +195,7 @@ func TestPromotedHeadUsesNegotiatedCompactContract(t *testing.T) {
 		t.Fatalf("promoted compact head has %d bytes and missed DATAGRAM", len(promotedBytes))
 	}
 
-	sequence.receiveAck(secondItem.messageId, false, sequenceTag{}, true, CarrierReliabilityReliable)
+	sequence.receiveAck(secondItem.messageId, false, sequenceTag{}, true)
 }
 
 // A legacy receiver never advertises missing-contract recovery. Even after the
@@ -296,7 +296,7 @@ func TestFullContractDeliveryAckNegotiatesCompactRecovery(t *testing.T) {
 	if item == nil || !item.hasContractFrame {
 		t.Fatalf("negotiated full contract item=%+v", item)
 	}
-	sequence.receiveAck(item.messageId, false, sequenceTag{}, true, CarrierReliabilityReliable)
+	sequence.receiveAck(item.messageId, false, sequenceTag{}, true)
 	if !ackCallbackCalled || !sequence.sendContractAcked ||
 		!contract.compactContractRecoverySupported || len(sequence.sendItems) != 0 ||
 		sequence.resendQueue.Len() != 0 {

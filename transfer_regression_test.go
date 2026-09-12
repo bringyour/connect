@@ -300,7 +300,6 @@ func newSelectiveAckRecoveryTestSequence(
 	settings := DefaultSendBufferSettings()
 	sequence := &SendSequence{
 		sendBufferSettings: settings,
-		log:                NewNoopLogger(),
 		resendQueue:        newResendQueue(nil, 0),
 		rttWindow: NewRttWindow(
 			NewNoopLogger(),

@@ -1,3 +1,9 @@
+//go:build flightgate_next
+
+// FLIGHTGATEFIX §20.3. D4 to D6: the acknowledgement's arrival lane, the
+// conclusive count, the latch's one job and the per-pass reduce. Removed
+// from the landing; kept as the next candidate's specification.
+
 package connect
 
 // FLIGHTGATEFIX §19 D4, D5, D6. A hole is proven by acknowledgements that

@@ -1,3 +1,9 @@
+//go:build flightgate_next
+
+// FLIGHTGATEFIX §20.3. What a misclassification of the direct lane costs.
+// The latch is gone from the landing; this is the specification any
+// future lane signal is measured against.
+
 package connect
 
 import (
@@ -5,63 +11,6 @@ import (
 	"testing"
 	"time"
 )
-
-// laneBurstLoss is the campaign's two-state loss model (server/connect/perfvar
-// mixed-direct-burst-loss): a good state with a small background loss that
-// enters a bad state, where most packets are lost, and leaves it again a few
-// packets later. Bursts arrive about every hundred packets, so the model is
-// clustered loss, not long clean stretches between bursts.
-type laneBurstLoss struct {
-	goodToBad float64
-	badToGood float64
-	goodLoss  float64
-	badLoss   float64
-}
-
-// campaignBurstLoss are the campaign's parameters verbatim.
-var campaignBurstLoss = laneBurstLoss{
-	goodToBad: 0.01,
-	badToGood: 0.35,
-	goodLoss:  0.002,
-	badLoss:   0.65,
-}
-
-// laneLossProcess is a seeded per-packet loss process, independent with one
-// probability or the two-state burst chain, so a classification test is
-// deterministic and repeatable.
-type laneLossProcess struct {
-	random      *rand.Rand
-	independent float64
-	burst       *laneBurstLoss
-	bad         bool
-}
-
-func newLaneLossProcess(seed int64, independent float64, burst *laneBurstLoss) *laneLossProcess {
-	return &laneLossProcess{
-		random:      rand.New(rand.NewSource(seed)),
-		independent: independent,
-		burst:       burst,
-	}
-}
-
-// lost reports whether the next packet is lost.
-func (self *laneLossProcess) lost() bool {
-	if self.burst == nil {
-		return self.random.Float64() < self.independent
-	}
-	if self.bad {
-		if self.random.Float64() < self.burst.badToGood {
-			self.bad = false
-		}
-	} else if self.random.Float64() < self.burst.goodToBad {
-		self.bad = true
-	}
-	probability := self.burst.goodLoss
-	if self.bad {
-		probability = self.burst.badLoss
-	}
-	return self.random.Float64() < probability
-}
 
 // FLIGHTGATEFIX §19.5. What a misclassification of the lane costs, rather
 // than how often the classification changes. Once a hole is deferred to the

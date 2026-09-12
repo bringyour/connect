@@ -1,3 +1,9 @@
+//go:build flightgate_next
+
+// FLIGHTGATEFIX §20.3. D1 and D2's clocks. D1 is merged's text in the
+// landing, so what remains here is the D2 shape and the per-carrier
+// timer it replaced, kept as specification.
+
 package connect
 
 // FLIGHTGATEFIX §19 D1 and D2. Every clock is keyed to the path an

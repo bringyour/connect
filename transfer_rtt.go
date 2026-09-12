@@ -187,28 +187,7 @@ func (self *RttWindow) ScaledRtt() time.Duration {
 	return self.scaledRtt(time.Now())
 }
 
-// ScaledRttSampled is ScaledRtt together with whether the window holds any
-// samples. A caller choosing between two windows needs that: an unsampled
-// window answers with the conservative cold floor, which is worse evidence
-// than a sampled window of another lane (FLIGHTGATEFIX §15.2).
-func (self *RttWindow) ScaledRttSampled() (time.Duration, bool) {
-	self.stateLock.Lock()
-	sampled := self.windowCount != 0
-	self.stateLock.Unlock()
-	return self.scaledRtt(time.Now()), sampled
-}
-
 func (self *RttWindow) scaledRtt(sendTime time.Time) time.Duration {
-	return self.scaledRttWithFloor(sendTime, 0)
-}
-
-// scaledRttWithFloor computes the scaled round trip. A positive
-// sampledFloor replaces rttMinScaledRtt for a window that holds samples;
-// an empty window always uses the cold floor.
-func (self *RttWindow) scaledRttWithFloor(
-	sendTime time.Time,
-	sampledFloor time.Duration,
-) time.Duration {
 	self.stateLock.Lock()
 	self.coalesceWithLock(sendTime)
 
@@ -217,9 +196,6 @@ func (self *RttWindow) scaledRttWithFloor(
 		useRtt = self.netRtt / time.Duration(self.windowCount)
 	}
 	floor := self.rttMinScaledRtt
-	if 0 < sampledFloor {
-		floor = sampledFloor
-	}
 	if useRtt == 0 {
 		// no samples: no evidence to be aggressive on
 		floor = self.minScaledRtt

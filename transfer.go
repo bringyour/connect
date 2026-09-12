@@ -780,12 +780,9 @@ func DefaultReceiveBufferSettingsWithBufferSize(bufferSize int) *ReceiveBufferSe
 	return &ReceiveBufferSettings{
 		GapTimeout: 60 * time.Second,
 		// the receive idle timeout should be a bit longer than the send idle timeout
-		IdleTimeout: 120 * time.Second,
-		// one unreliable resend interval: a lane silent that long has already
-		// cost the sender a retransmit train
-		ReplyAffinityStaleAfter: 2 * time.Second,
-		SequenceBufferSize:      bufferSize,
-		H1SequenceBufferSize:    bufferSize,
+		IdleTimeout:          120 * time.Second,
+		SequenceBufferSize:   bufferSize,
+		H1SequenceBufferSize: bufferSize,
 		// Count headroom absorbs a flight of small tunnel packets. Retained
 		// encoded Transfer bytes remain independently bounded, so large frames
 		// cannot multiply the channel capacity into a memory spike.
@@ -1398,22 +1395,14 @@ func updateAtomicMaximum(target *atomic.Uint64, value uint64) {
 // An immutable view of Transfer recovery writes and unreliable-carrier flight
 // behavior. Counters are monotonic for one Client.
 type ClientSendRecoveryStatsSnapshot struct {
-	InitialWriteCount            uint64
-	InitialFrameCount            uint64
-	InitialMessageByteCount      uint64
-	TimeoutResendWriteCount      uint64
-	AckPendingResendPreemptCount uint64
-	TimeoutResendDeferCount      uint64
-	CarrierChangeWriteCount      uint64
-	SelectiveGapWriteCount       uint64
-	// SelectiveGapWritesByHoleCarrier and DeferredExpiriesByHoleCarrier
-	// attribute recovery to the lane that carried the hole, indexed by
-	// holeCarrier*. HolesProvenByLaneLatch counts holes recovered at once
-	// only because the direct lane was latched, which no arrival lane had
-	// yet proven (FLIGHTGATEFIX §19 D7).
-	SelectiveGapWritesByHoleCarrier       [holeCarrierCount]uint64
-	DeferredExpiriesByHoleCarrier         [holeCarrierCount]uint64
-	HolesProvenByLaneLatch                uint64
+	InitialWriteCount                     uint64
+	InitialFrameCount                     uint64
+	InitialMessageByteCount               uint64
+	TimeoutResendWriteCount               uint64
+	AckPendingResendPreemptCount          uint64
+	TimeoutResendDeferCount               uint64
+	CarrierChangeWriteCount               uint64
+	SelectiveGapWriteCount                uint64
 	AckTailProbeWriteCount                uint64
 	CumulativeProbeWriteCount             uint64
 	RecoveryWriteErrorCount               uint64
@@ -1511,9 +1500,6 @@ type Client struct {
 	initialSendFrameCount                  atomic.Uint64
 	initialSendMessageByteCount            atomic.Uint64
 	selectiveGapWriteCount                 atomic.Uint64
-	selectiveGapWritesByHoleCarrier        [holeCarrierCount]atomic.Uint64
-	deferredExpiriesByHoleCarrier          [holeCarrierCount]atomic.Uint64
-	holesProvenByLaneLatch                 atomic.Uint64
 	timeoutResendWriteCount                atomic.Uint64
 	ackPendingResendPreemptCount           atomic.Uint64
 	timeoutResendDeferCount                atomic.Uint64
@@ -1876,23 +1862,14 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 // Reads recovery-write counters without stopping send processing.
 func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 	return ClientSendRecoveryStatsSnapshot{
-		InitialWriteCount:            self.initialSendWriteCount.Load(),
-		InitialFrameCount:            self.initialSendFrameCount.Load(),
-		InitialMessageByteCount:      self.initialSendMessageByteCount.Load(),
-		TimeoutResendWriteCount:      self.timeoutResendWriteCount.Load(),
-		AckPendingResendPreemptCount: self.ackPendingResendPreemptCount.Load(),
-		TimeoutResendDeferCount:      self.timeoutResendDeferCount.Load(),
-		CarrierChangeWriteCount:      self.carrierChangeWriteCount.Load(),
-		SelectiveGapWriteCount:       self.selectiveGapWriteCount.Load(),
-		SelectiveGapWritesByHoleCarrier: [holeCarrierCount]uint64{
-			self.selectiveGapWritesByHoleCarrier[holeCarrierReliable].Load(),
-			self.selectiveGapWritesByHoleCarrier[holeCarrierUnreliable].Load(),
-		},
-		DeferredExpiriesByHoleCarrier: [holeCarrierCount]uint64{
-			self.deferredExpiriesByHoleCarrier[holeCarrierReliable].Load(),
-			self.deferredExpiriesByHoleCarrier[holeCarrierUnreliable].Load(),
-		},
-		HolesProvenByLaneLatch:              self.holesProvenByLaneLatch.Load(),
+		InitialWriteCount:                   self.initialSendWriteCount.Load(),
+		InitialFrameCount:                   self.initialSendFrameCount.Load(),
+		InitialMessageByteCount:             self.initialSendMessageByteCount.Load(),
+		TimeoutResendWriteCount:             self.timeoutResendWriteCount.Load(),
+		AckPendingResendPreemptCount:        self.ackPendingResendPreemptCount.Load(),
+		TimeoutResendDeferCount:             self.timeoutResendDeferCount.Load(),
+		CarrierChangeWriteCount:             self.carrierChangeWriteCount.Load(),
+		SelectiveGapWriteCount:              self.selectiveGapWriteCount.Load(),
 		AckTailProbeWriteCount:              self.ackTailProbeWriteCount.Load(),
 		CumulativeProbeWriteCount:           self.cumulativeProbeWriteCount.Load(),
 		RecoveryWriteErrorCount:             self.recoveryWriteErrorCount.Load(),
@@ -1992,54 +1969,6 @@ func (self *SendSequence) shouldDeferTimeoutResend(
 		item.timeoutDeferCount < self.sendBufferSettings.TimeoutResendDeferLimit &&
 		self.lastCumulativeAckTime.After(item.sendTime.Add(-scaledRtt)) &&
 		self.lastCumulativeAckTime.After(item.timeoutDeferAckTime)
-}
-
-// observeDeferredRecoveryExpiry records a deferred recovery whose wait ran
-// out without an acknowledgement, so the Pack was lost rather than its
-// reply reordered. D5: only a hole the direct lane carried says anything
-// about the direct lane, where a relay-carried hole whose delivery outran
-// the deferral used to latch it. D6: the flight halves once for the pass,
-// merged's per-round cadence, where one halving per expired item overshot.
-// Returns whether the pass has now reduced.
-func (self *SendSequence) observeDeferredRecoveryExpiry(
-	item *sendItem,
-	reducedThisPass bool,
-) bool {
-	item.gapRecoveryDeferred = false
-	self.client.deferredExpiriesByHoleCarrier[holeCarrierOf(item)].Add(1)
-	if item.unreliableCarrierObserved {
-		self.noteUnreliableLaneLoss()
-	}
-	if !item.unreliableFlightTracked {
-		return reducedThisPass
-	}
-	self.client.unreliableFlightGapCount.Add(1)
-	if !reducedThisPass {
-		reducedThisPass = true
-		if self.flightController.reduceForLoss() {
-			self.client.unreliableFlightReductionCount.Add(1)
-		}
-	}
-	self.client.observeUnreliableFlight(self.flightController)
-	return reducedThisPass
-}
-
-// holeCarrier indexes a recovery counter by the lane that carried the hole
-// being recovered (FLIGHTGATEFIX §19 D7).
-type holeCarrier int
-
-const (
-	holeCarrierReliable holeCarrier = iota
-	holeCarrierUnreliable
-	holeCarrierCount
-)
-
-// holeCarrierOf reports which lane carried this item, for attribution only.
-func holeCarrierOf(item *sendItem) holeCarrier {
-	if item != nil && item.unreliableCarrierObserved {
-		return holeCarrierUnreliable
-	}
-	return holeCarrierReliable
 }
 
 func (self *Client) recordSendRecovery(recoveryKind sendRecoveryKind, writeErr error) {
@@ -3226,9 +3155,6 @@ func (self *Client) run() {
 		var transferFrameBytes []byte
 		var transportType TransportType
 		var carrierReliability CarrierReliability
-		// the lane an acknowledgement arrived on, resolved for the send
-		// sequence's scoreboard (FLIGHTGATEFIX §19 D4)
-		var ackArrivalReliability CarrierReliability
 		var err error
 		c := func() error {
 			if carrierReader, ok := multiRouteReader.(transferCarrierMultiRouteReader); ok {
@@ -3239,19 +3165,16 @@ func (self *Client) run() {
 				)
 				transportType = disposition.transportType
 				carrierReliability = disposition.reliability
-				ackArrivalReliability = disposition.arrivalReliability
 			} else if transportReader, ok := multiRouteReader.(TransportMultiRouteReader); ok {
 				transferFrameBytes, transportType, err = transportReader.ReadWithTransport(
 					self.ctx,
 					self.settings.ReadTimeout,
 				)
 				carrierReliability = CarrierReliabilityUnknown
-				ackArrivalReliability = CarrierReliabilityUnknown
 			} else {
 				transferFrameBytes, err = multiRouteReader.Read(self.ctx, self.settings.ReadTimeout)
 				transportType = TransportTypeUnknown
 				carrierReliability = CarrierReliabilityUnknown
-				ackArrivalReliability = CarrierReliabilityUnknown
 			}
 			return err
 		}
@@ -3493,7 +3416,6 @@ func (self *Client) run() {
 						self.recordReceiveAckHandoffDrop()
 						return false
 					}
-					receiveAck.arrivalReliability = ackArrivalReliability
 					ackHandoffTimeout := self.settings.ReceiveBufferSettings.
 						ackHandoffTimeout(transportType)
 					result := self.sendBuffer.ackMessageDetailed(
@@ -4965,16 +4887,6 @@ type SendSequence struct {
 	lastHeadAckTime time.Time
 
 	contractMultiRouteWriter MultiRouteWriter
-	// unreliableLossHold latches the direct lane as losing. It is set by the
-	// first proven loss on that lane, a recovery that had to be written or a
-	// timeout of an item the lane carried, and decays over the next clean
-	// acknowledgements. One signal drives all three behaviours that must
-	// match the merged tree while a lane is dropping: the flight reduces on
-	// gaps, replies leave the lane, and timeouts are not deferred
-	// (FLIGHTGATEFIX §18). It tips on the first loss rather than on a ratio
-	// that needs hundreds of samples, because the campaign measured the
-	// damage arriving long before a ratio turns.
-	unreliableLossHold int
 	// lastCumulativeAckTime is when the cumulative ack last advanced; an RTO
 	// inside one scaled RTT of it is counted as spurious (M4).
 	lastCumulativeAckTime               time.Time
@@ -5441,12 +5353,6 @@ type receiveAckMessage struct {
 	selective                        bool
 	contractMissing                  bool
 	compactContractRecoverySupported bool
-	// arrivalReliability is the lane this acknowledgement arrived on, which
-	// is the receiver's choice and need not be the lane that carried the
-	// Pack. The scoreboard needs it to tell an acknowledgement that could
-	// have overtaken a slower reply from one that could not
-	// (FLIGHTGATEFIX §19 D4).
-	arrivalReliability CarrierReliability
 }
 
 type receiveAckHandoffResult uint8
@@ -5600,7 +5506,6 @@ func (self *SendSequence) coalesceReceivedAck(
 		selective:                        ack.selective,
 		tag:                              ack.tag,
 		compactContractRecoverySupported: ack.compactContractRecoverySupported,
-		arrivalReliability:               ack.arrivalReliability,
 	}
 	if ack.contractMissing {
 		sequenceAck.contractMissing = true
@@ -5721,45 +5626,10 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		self.resendQueue.Add(item)
 	}
 
-	// One read of the lane state and the RTT estimate for the whole pass:
-	// both are per-sequence, not per-item, and the estimate takes a lock.
-	limited := self.flightController != nil && self.flightController.limited
-	// F11b's grace for a hole the reliable lane carried is merged's clock,
-	// unchanged. D4's deferral of a hole the direct lane carried is bounded
-	// (FLIGHTGATEFIX §19.7): it holds the receiver's ordered stream at the
-	// hole while the sender's resend queue fills behind it, so it waits the
-	// relay's measured clock, or the retransmit pacing floor when the relay
-	// has carried nothing yet. Never the cold floor, which would stall with
-	// no evidence behind it.
-	relayHoleGrace := time.Duration(0)
-	directHoleDeferral := time.Duration(0)
-	if limited {
-		scaledRtt, sampled := self.rttWindow.ScaledRttSampled()
-		relayHoleGrace = scaledRtt
-		if sampled {
-			directHoleDeferral = scaledRtt
-		} else {
-			directHoleDeferral = self.sendBufferSettings.RttMinResendInterval
-		}
-	}
-	// D5 (FLIGHTGATEFIX §19): the latch drives exactly one behaviour, the
-	// conclusiveness test below. A latched lane is dropping, so a later
-	// acknowledgement is loss evidence whichever lane brought it.
-	laneLosing := self.unreliableLaneLosing()
-	// The grace is insurance against reordering. A lane whose own recent
-	// evidence says it is losing gets none: for it the merged rule applies
-	// and a hole is recovered as soon as three later acks prove it
-	// (FLIGHTGATEFIX §16).
 	selectiveAckCount := 0
-	// D4: acknowledgements that could not have overtaken a reply this item's
-	// own hole may still be waiting on. Counted separately from all of them.
-	conclusiveAckCount := 0
 	for _, item := range self.sendItems {
 		if item != nil && item.selectiveAcked {
 			selectiveAckCount += 1
-			if item.selectiveAckConclusive {
-				conclusiveAckCount += 1
-			}
 		}
 	}
 
@@ -5770,7 +5640,6 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 	gapRecoveryCount := 0
 	unreliableGapRecovery := false
 	remainingSelectiveAckCount := selectiveAckCount
-	remainingConclusiveAckCount := conclusiveAckCount
 	for _, item := range self.sendItems {
 		if item == nil {
 			continue
@@ -5780,74 +5649,27 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		}
 		if item.selectiveAcked {
 			remainingSelectiveAckCount -= 1
-			if item.selectiveAckConclusive {
-				remainingConclusiveAckCount -= 1
-			}
 			continue
 		}
 		if gapItem == nil {
 			gapItem = item
 		}
-		// Mixed lanes: acknowledgements arrive over two lanes whose latencies
-		// differ by an order of magnitude, so later selective acks say nothing
-		// about this item until the slowest lane has had its chance. That
-		// holds whichever lane carried the item: a direct-lane item whose
-		// reply took the relay, because its bounded reply route was full, is
-		// late for exactly the same reason (FLIGHTGATEFIX §14, M3). With a
-		// single ack lane the ordering rule is unchanged, so datagram tail
-		// recovery keeps its pace. An item's own RTO still covers a real loss.
-		// The grace is how long the lane that carried this item could still
-		// take to answer, so it is that lane's own estimate once the lane has
-		// D3/D4 (FLIGHTGATEFIX §19): the deferral is to the slowest lane an
-		// acknowledgement can take, which is the sequence window's clock.
-		// The direct lane's own estimate cannot bound a wait for an ack the
-		// receiver may send by the relay.
-		//
-		// A hole is proven by acknowledgements that could not have overtaken
-		// its own reply. For a hole the reliable lane carried that is any
-		// later acknowledgement, F11b unchanged. For a hole the direct lane
-		// carried, a fast-lane acknowledgement for a later Pack can arrive
-		// ahead of a relay-borne reply for this one, so only conclusive
-		// acknowledgements prove it; the rest defer it by one sequence
-		// round trip, which is the longest that reply can take.
-		// A hole the reliable lane carried keeps F11b unchanged: it is late
-		// rather than lost while it is younger than the clock, whatever
-		// proved it, and the direct lane's latch says nothing about it.
-		relayHole := item.reliableCarrierObserved && !item.unreliableFlightTracked
-		itemGrace := directHoleDeferral
-		if relayHole {
-			itemGrace = relayHoleGrace
-		}
-		provenByAcks := !relayHole && threshold <= remainingConclusiveAckCount
-		provenByLatch := !relayHole && !provenByAcks && laneLosing
-		lateNotLost := limited && !provenByAcks && !provenByLatch &&
-			currentTime.Before(item.sendTime.Add(itemGrace))
-		if 0 < threshold && gapRecoveryCount < burstSize &&
+		// Mixed lanes: an item carried by the reliable route is routinely
+		// acknowledged after later items that rode a direct datagram lane
+		// with a fraction of its latency. Until it is older than the reliable
+		// lane's RTT it is late, not lost; a gap resend now only doubles the
+		// relay traffic. Its own RTO still covers a real loss.
+		lateNotLost := self.flightController != nil && self.flightController.limited &&
+			item.reliableCarrierObserved && !item.unreliableFlightTracked &&
+			currentTime.Before(item.sendTime.Add(self.rttWindow.ScaledRtt()))
+		if 0 < threshold && gapRecoveryCount < burstSize && !lateNotLost &&
 			!item.selectiveGapRecovered &&
 			(item.ackTailProbeCount == 0 || item.recoveryKind != sendRecoveryNone) &&
 			threshold <= remainingSelectiveAckCount {
 			item.selectiveGapRecovered = true
 			self.selectiveGapRecoveryActive = true
-			gapRecoveryCount += 1
-			if provenByLatch {
-				self.client.holesProvenByLaneLatch.Add(1)
-			}
-			if lateNotLost {
-				// The recovery is deferred, not dropped: it is due when the
-				// lane that carried this item could have answered. An
-				// acknowledgement arriving first removes the item and nothing
-				// is written, so reordering costs no traffic, while a Pack the
-				// lane really lost is recovered one lane round trip later and
-				// the outcome feeds the evidence above. The flight is not
-				// reduced for evidence that has not arrived.
-				item.gapRecoveryDeferred = true
-				reschedule(item, item.sendTime.Add(itemGrace), sendRecoverySelectiveGap)
-				continue
-			}
 			reschedule(item, currentTime, sendRecoverySelectiveGap)
-			if item.unreliableCarrierObserved {
-				self.noteUnreliableLaneLoss()
-			}
+			gapRecoveryCount += 1
 			unreliableGapRecovery = unreliableGapRecovery || item.unreliableFlightTracked
 		}
 	}
@@ -5992,17 +5814,10 @@ func (self *SendSequence) resendIntervalForPolicy(
 	sendCount int,
 ) time.Duration {
 	maxInterval := self.sendBufferSettings.MaxResendInterval
-	scaledRtt := self.rttWindow.ScaledRtt()
 	if policy.limited && 0 < self.sendBufferSettings.UnreliableMaxResendInterval {
 		maxInterval = min(maxInterval, self.sendBufferSettings.UnreliableMaxResendInterval)
 	}
-	// D1 (FLIGHTGATEFIX §19): the timer is the sequence window's clock for
-	// every item, merged's form. No clock keyed to the carrier can cover a
-	// path the receiver picks per acknowledgement: with a reliable sibling
-	// this is the relay's clock, which is the lane the acks travel, and a
-	// direct item resent reliable-only after §13.1's forget is judged by it
-	// too.
-	interval := min(scaledRtt, maxInterval)
+	interval := min(self.rttWindow.ScaledRtt(), maxInterval)
 	if shift := uint(min(max(sendCount-1, 0), 16)); 0 < shift {
 		interval = min(interval<<shift, maxInterval)
 	}
@@ -6196,7 +6011,6 @@ sendSequenceLoop:
 				false,
 				ackSnapshot.headAck.tag,
 				ackSnapshot.headAck.compactContractRecoverySupported,
-				ackSnapshot.headAck.arrivalReliability,
 			)
 		}
 		for messageId, ack := range ackSnapshot.selectiveAcks {
@@ -6205,7 +6019,6 @@ sendSequenceLoop:
 				true,
 				ack.tag,
 				ack.compactContractRecoverySupported,
-				ack.arrivalReliability,
 			)
 		}
 		for messageId, ack := range ackSnapshot.contractMissingAcks {
@@ -6229,10 +6042,6 @@ sendSequenceLoop:
 			timeout = self.sendBufferSettings.IdleTimeout
 		} else {
 			timeout = self.sendBufferSettings.AckTimeout
-
-			// D6: expired deferrals halve the flight once for this pass of
-			// the resend queue, however many expire in it.
-			deferredExpiryReducedThisPass := false
 
 			for {
 				item := self.resendQueue.PeekFirst()
@@ -6317,12 +6126,6 @@ sendSequenceLoop:
 				// ordinary cadence. Any resend awaits fresh acknowledgement state.
 				recoveryKind := item.recoveryKind
 				item.recoveryKind = sendRecoveryNone
-				if recoveryKind == sendRecoverySelectiveGap && item.gapRecoveryDeferred {
-					deferredExpiryReducedThisPass = self.observeDeferredRecoveryExpiry(
-						item,
-						deferredExpiryReducedThisPass,
-					)
-				}
 				if recoveryKind == sendRecoveryNone && !self.lastCumulativeAckTime.IsZero() {
 					scaledRtt := self.rttWindow.ScaledRtt()
 					if sendTime.Sub(self.lastCumulativeAckTime) < scaledRtt {
@@ -6349,7 +6152,6 @@ sendSequenceLoop:
 				}
 				reliableOnlyResend := false
 				if recoveryKind == sendRecoveryNone && item.unreliableFlightTracked {
-					self.noteUnreliableLaneLoss()
 					reliableOnlyResend = self.observeUnreliableResendTimeout(item, flightPolicy)
 				}
 				item.selectiveAcked = false
@@ -6429,9 +6231,6 @@ sendSequenceLoop:
 					self.observeCarrierWrite(item, resendDisposition)
 				}
 				self.client.recordSendRecovery(recoveryKind, resendErr)
-				if recoveryKind == sendRecoverySelectiveGap {
-					self.client.selectiveGapWritesByHoleCarrier[holeCarrierOf(item)].Add(1)
-				}
 				if recoveryKind == sendRecoverySelectiveGap &&
 					self.scheduleGapRecoveryProbe(
 						item,
@@ -7766,14 +7565,6 @@ func (self *SendSequence) observeItemAck(item *sendItem) {
 	if item.recoveryKind == sendRecoverySelectiveGap {
 		self.client.unreliableFlightGapReorderSuspected.Add(1)
 	}
-	if item.gapRecoveryDeferred {
-		// the acknowledgement arrived before the deferred recovery was
-		// written, so the evidence was ordering, not loss
-		item.gapRecoveryDeferred = false
-	}
-	if item.unreliableCarrierObserved && item.recoveryKind == sendRecoveryNone {
-		self.noteUnreliableLaneProgress()
-	}
 	if item.carrierRoute != nil {
 		if observer, ok := self.contractMultiRouteWriter.(transferRouteAckProgressObserver); ok {
 			observer.observeRouteAckProgress(item.carrierRoute)
@@ -7810,73 +7601,10 @@ func (self *SendSequence) releaseUnreliableFlight(item *sendItem) {
 // resends per second while p2p is live). The unreliable lane has its own
 // bounded recovery policy and does not depend on this estimate.
 func (self *SendSequence) observeAckRtt(item *sendItem, tag sequenceTag) {
-	if !tag.set || item == nil {
-		return
-	}
-	// F10 whole (FLIGHTGATEFIX §19.7): the sequence window never takes a
-	// sample an unreliable carrier produced. D2 would have fed it on a
-	// forced direct route, but RttWindow has no reset, so a route that
-	// flaps between one and two carriers leaves direct-lane samples
-	// mis-clocking the relay for up to 128 acks or 60 s afterwards. A
-	// forced direct route keeps merged's cold floor deliberately: every ack
-	// there is conclusive, gap recovery is immediate, and the timer is the
-	// last resort.
-	if item.unreliableCarrierObserved {
+	if !tag.set || item == nil || item.unreliableCarrierObserved {
 		return
 	}
 	self.rttWindow.CloseSendTime(tag.sendTime)
-}
-
-// deferTimeoutResend reports whether a timed-out item carried by a reliable
-// lane should wait one more scaled RTT instead of being re-sent now. While
-// the cumulative ACK is still advancing, an item behind the head is queued,
-// not lost (a real hole is recovered from selective ACKs); re-sending it only
-// deepens the queue that delayed its ACK, which is the spurious-RTO cascade
-// observed with a direct lane live. Bounded to two deferrals per item so a
-// genuine loss is still re-sent.
-func (self *SendSequence) deferTimeoutResend(item *sendItem, now time.Time) bool {
-	if item == nil || item.unreliableFlightTracked || 2 <= item.timeoutDeferCount ||
-		self.lastHeadAckTime.IsZero() {
-		return false
-	}
-	rtt := self.rttWindow.ScaledRtt()
-	if rtt < now.Sub(self.lastHeadAckTime) {
-		return false
-	}
-	item.timeoutDeferCount += 1
-	item.resendTime = now.Add(rtt)
-	self.client.timeoutResendDeferCount.Add(1)
-	return true
-}
-
-// unreliableLaneLossHold is how many clean acknowledgements of
-// direct-lane items clear one proven loss. At the one to three per cent the
-// campaign measured, losses arrive well inside this, so the lane stays
-// latched through a lossy episode and clears shortly after it ends.
-const unreliableLaneLossHold = 64
-
-// noteUnreliableLaneLoss latches the direct lane as losing. Proven loss is a
-// recovery the lane forced us to write or a timeout of an item it carried;
-// reordering, where the acknowledgement arrives first, is not.
-func (self *SendSequence) noteUnreliableLaneLoss() {
-	self.unreliableLossHold = unreliableLaneLossHold
-}
-
-// noteUnreliableLaneProgress decays the latch on a clean acknowledgement
-// from the direct lane, so a lane that stops dropping gets our behaviour
-// back without a restart.
-func (self *SendSequence) noteUnreliableLaneProgress() {
-	if 0 < self.unreliableLossHold {
-		self.unreliableLossHold -= 1
-	}
-}
-
-// unreliableLaneLosing reports whether the direct lane's recent evidence
-// says it is dropping. While it does this sequence behaves as the merged
-// tree does: gaps reduce the flight, replies take the reliable carrier and
-// timeouts are not deferred.
-func (self *SendSequence) unreliableLaneLosing() bool {
-	return 0 < self.unreliableLossHold
 }
 
 func (self *SendSequence) unreliableFlightGates(
@@ -7889,18 +7617,11 @@ func (self *SendSequence) unreliableFlightGates(
 // carrier because its flight is full and a reliable carrier can take it.
 func (self *SendSequence) reliableOnlyWrite(
 	policy transferFlightPolicySnapshot,
-	frameByteCount ByteCount,
 ) bool {
 	if !policy.reliableRouteAvailable || !self.flightController.limited {
 		return false
 	}
 	if !self.flightController.canSend() {
-		return true
-	}
-	// FLIGHTGATEFIX §13.6: at the loss floor the lane carries only small
-	// frames, whose message loss is close to the packet loss.
-	if 0 < policy.lossyMaxByteCount && policy.lossyMaxByteCount < frameByteCount &&
-		self.flightController.atFloor() {
 		return true
 	}
 	// A carrier that loss has reduced to its floor keeps proving itself with
@@ -7957,7 +7678,6 @@ func (self *SendSequence) receiveAck(
 	selective bool,
 	tag sequenceTag,
 	compactContractRecoverySupported bool,
-	arrivalReliability CarrierReliability,
 ) {
 	item := self.resendQueue.GetByMessageId(messageId)
 	if item == nil {
@@ -7981,10 +7701,6 @@ func (self *SendSequence) receiveAck(
 		if !item.selectiveAcked {
 			self.observeItemAck(item)
 			self.releaseUnreliableFlight(item)
-			// D4: with no reliable sibling every acknowledgement travels the
-			// only lane there is, so every one is conclusive.
-			item.selectiveAckConclusive = arrivalReliability == CarrierReliabilityReliable ||
-				self.flightController == nil || !self.flightController.reliableRouteAvailable
 		}
 		// refresh sendTime so the ack-timeout deadline includes the selective-ack window
 		item.sendTime = time.Now()
@@ -8115,7 +7831,7 @@ func (self *SendSequence) writeMaybeWrappedBytes(
 	// carrier is active: route the overflow reliable-only so it is neither
 	// tracked in the flight nor lost with the unreliable carrier.
 	reliableOnly = reliableOnly ||
-		self.reliableOnlyWrite(self.transferFlightPolicy(), ByteCount(len(transferFrameBytes)))
+		self.reliableOnlyWrite(self.transferFlightPolicy())
 	var cipher *sequenceCipher
 	if self.session != nil && !forceUnwrapped {
 		cipher = self.session.Cipher()
@@ -8510,18 +8226,12 @@ type sendItem struct {
 	// (see receiveAck). selectiveGapRecovered and ackTailProbeCount bound receiver-
 	// paced data recovery per item. recoveryKind marks the scheduled attempt so it
 	// does not inflate ordinary timeout backoff and remains observable.
-	selectiveAcked bool
-	// selectiveAckConclusive is set with selectiveAcked on the item's first
-	// selective acknowledgement: this acknowledgement travelled a path at
-	// least as slow as the one this item's own reply can take, so a later
-	// one cannot have overtaken it. The zero value is not conclusive, which
-	// is what a hand-built scoreboard reads (FLIGHTGATEFIX §19 D4).
-	selectiveAckConclusive bool
-	selectiveGapRecovered  bool
-	gapFollowupScheduled   bool
-	ackTailProbeCount      int
-	recoveryKind           sendRecoveryKind
-	promotedHead           bool
+	selectiveAcked        bool
+	selectiveGapRecovered bool
+	gapFollowupScheduled  bool
+	ackTailProbeCount     int
+	recoveryKind          sendRecoveryKind
+	promotedHead          bool
 	// forceUnwrapped pins this item to plaintext on every (re)send, so the
 	// outer wrap is skipped even if the per-peer cipher becomes available
 	// between the initial send and a retransmit.
@@ -8544,9 +8254,6 @@ type sendItem struct {
 	// most once (FLIGHTGATEFIX §16).
 	timeoutDeferCount   int
 	timeoutDeferAckTime time.Time
-	// gapRecoveryDeferred marks a recovery the grace postponed, so its
-	// outcome can be counted as reordering or as loss.
-	gapRecoveryDeferred bool
 
 	// messageType protocol.MessageType
 }
@@ -8651,11 +8358,6 @@ func newResendQueue(budget *TransferMemoryBudget, minByteCount ByteCount) *resen
 type ReceiveBufferSettings struct {
 	GapTimeout  time.Duration
 	IdleTimeout time.Duration
-	// ReplyAffinityStaleAfter is how long an unreliable lane may go without
-	// acknowledgement progress before a reply for a Pack received on it
-	// prefers the reliable lanes (FLIGHTGATEFIX §13.2). Zero keeps replies on
-	// an affine unreliable lane whenever it has channel room.
-	ReplyAffinityStaleAfter time.Duration
 
 	SequenceBufferSize int
 	// H1SequenceBufferSize optionally gives reliable H1 arrivals more burst
@@ -10068,10 +9770,6 @@ func (self *ReceiveSequence) Run() {
 			)
 		}
 
-		// replyLaneLosing is the receiver's own evidence that the lane its
-		// Packs arrive on is dropping; the ack worker is one goroutine, so a
-		// plain field of the loop is enough (FLIGHTGATEFIX §18).
-		replyLaneLosing := false
 		writeAck := func(sendAck sequenceAck) {
 			path := sendTransferPath(self.client.ClientId(), ackDestination)
 
@@ -10125,7 +9823,7 @@ func (self *ReceiveSequence) Run() {
 				var waitDuration time.Duration
 				// The carrier the acknowledgement actually left on, which is
 				// what a campaign needs to read; the carrier of the Pack it
-				// answers is only the preference (FLIGHTGATEFIX §18).
+				// answers is only the preference (FLIGHTGATEFIX §20.3).
 				writtenTransportType := sendAck.transportType
 				if selector, ok := ackMultiRouteWriter.(*MultiRouteSelector); ok {
 					if success, _ := selector.tryWriteH1AckPriorityWithCarrierPreference(
@@ -10142,8 +9840,6 @@ func (self *ReceiveSequence) Run() {
 							shared,
 							self.receiveBufferSettings.WriteTimeout,
 							sendAck.transportType,
-							self.receiveBufferSettings.ReplyAffinityStaleAfter,
-							replyLaneLosing,
 						)
 						blocked = disposition.initiallyBlocked
 						waitDuration = disposition.initialWaitDuration
@@ -10240,12 +9936,6 @@ func (self *ReceiveSequence) Run() {
 		ackCompressTimer := time.NewTimer(0)
 		defer ackCompressTimer.Stop()
 		writeSnapshot := func(ackSnapshot sequenceAckWindowSnapshot) bool {
-			// A selective acknowledgement exists because this receiver is
-			// missing something, which is the earliest local evidence that
-			// the lane those Packs arrive on is dropping. While it is, the
-			// replies take the reliable carrier so a lost cumulative ack
-			// cannot cost the sender a window (FLIGHTGATEFIX §18).
-			replyLaneLosing = 0 < len(ackSnapshot.selectiveAcks)
 			wrote := false
 			if 0 < ackSnapshot.ackUpdateCount {
 				writeAck(ackSnapshot.headAck)
@@ -11372,9 +11062,6 @@ type sequenceAck struct {
 	// ciphers haven't been established yet can read the ack. Cumulative
 	// head acks or-in the bit across every absorbed lower ack.
 	unwrapped bool
-	// arrivalReliability is the lane this acknowledgement arrived on
-	// (FLIGHTGATEFIX §19 D4).
-	arrivalReliability CarrierReliability
 }
 
 type sequenceAckWindowSnapshot struct {

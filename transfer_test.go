@@ -125,7 +125,7 @@ func TestCumulativeAckBoundarySurvivesImmediateSendItemReuse(t *testing.T) {
 	sequence.resendQueue.Add(target)
 	sequence.resendQueue.Add(later)
 
-	sequence.receiveAck(target.messageId, false, sequenceTag{}, false, CarrierReliabilityReliable)
+	sequence.receiveAck(target.messageId, false, sequenceTag{}, false)
 
 	if len(sequence.sendItems) != 1 || sequence.sendItems[0] != later {
 		t.Fatalf("cumulative ack crossed its snapshotted boundary: remaining=%d", len(sequence.sendItems))

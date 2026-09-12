@@ -103,10 +103,6 @@ type TransferCarrierProperties struct {
 	// capacity for untracked ACK, compact-recovery, contract, and probe traffic
 	// without changing the process-wide Transfer defaults.
 	unreliableFlightByteLimit ByteCount
-	// unreliableLossyMaxMessageByteCount, when positive, is the largest frame
-	// the unreliable lane should carry once loss has pinned the Transfer
-	// flight to its floor; larger frames go reliable-only (§13.6).
-	unreliableLossyMaxMessageByteCount ByteCount
 	// unreliableForMessageByteCount refines a hybrid carrier after an exact route has
 	// accepted one complete routed Transfer frame. Nil preserves the historical
 	// route-wide meaning of Unreliable. The callback must be safe for concurrent
@@ -335,17 +331,7 @@ type TransportMultiRouteReader interface {
 // exact route lane into Client admission.
 type transferReceiveDisposition struct {
 	transportType TransportType
-	// reliability is the carrier's published receive reliability, left
-	// exactly as the carrier declared it. The receive Pack handoff reads it
-	// to decide whether a full handoff may block, so an unset value must
-	// keep meaning unset here.
-	reliability CarrierReliability
-	// arrivalReliability is the same question resolved for the send
-	// sequence's scoreboard: a carrier that publishes properties but no
-	// receive reliability still says whether it can drop. Only a reader
-	// with no carrier information at all stays Unknown, which the
-	// scoreboard counts as unreliable (FLIGHTGATEFIX §19 D4).
-	arrivalReliability CarrierReliability
+	reliability   CarrierReliability
 }
 
 type transferCarrierMultiRouteReader interface {
@@ -1579,23 +1565,13 @@ type routeSnapshot struct {
 	// sets materialized as slices at publication time, so multiple transports
 	// can share affinity without allocating on the write path.
 	affinityWriteRoutesByTransport map[TransportType][]Route
-	// replyAffineFirstByTransport and replyReliableFirstByTransport are the
-	// two orders a reply (an ACK) can use when every affine route of the
-	// carrier is potentially unreliable: the affine lanes followed by the
-	// reliable lanes, or the reverse. When any affine route is reliable both
-	// equal the affinity set, so hybrid H3 keeps its affinity unchanged. The
-	// writer picks per reply from channel room and the route ack clock
-	// (FLIGHTGATEFIX §13.2).
-	replyAffineFirstByTransport   map[TransportType][]Route
-	replyReliableFirstByTransport map[TransportType][]Route
-	routeCarrierProperties        map[Route]TransferCarrierProperties
+	routeCarrierProperties         map[Route]TransferCarrierProperties
 	// reliableRoutes is the subset of routes whose carrier is not potentially
 	// unreliable, in route order. Reliable-only writes use it when non-empty.
 	reliableRoutes               []Route
 	generation                   uint64
 	unreliableTransferPath       bool
 	unreliableFlightByteLimit    ByteCount
-	unreliableLossyMaxByteCount  ByteCount
 	unreliableFlightMessageLimit int
 	unreliableFlowIsolation      bool
 	unreliableFlowReserve        bool
@@ -1660,16 +1636,13 @@ func (self *routeSnapshot) observeDirectAffinityBlocked() {
 // carrier needs Transfer-level flight control and which publication wakes a
 // sender waiting for that constraint to change.
 type transferFlightPolicySnapshot struct {
-	generation   uint64
-	limited      bool
-	byteLimit    ByteCount
-	messageLimit int
-	// lossyMaxByteCount, when positive, is the largest frame the unreliable
-	// lane carries while the flight sits at its loss floor (§13.6).
-	lossyMaxByteCount ByteCount
-	flowIsolation     bool
-	flowReserve       bool
-	h1Only            bool
+	generation    uint64
+	limited       bool
+	byteLimit     ByteCount
+	messageLimit  int
+	flowIsolation bool
+	flowReserve   bool
+	h1Only        bool
 	// reliableRouteAvailable is true while at least one active carrier is not
 	// potentially unreliable. A full unreliable flight then writes the
 	// overflow reliable-only instead of gating the whole sequence.
@@ -1684,7 +1657,6 @@ func (self *MultiRouteSelector) transferFlightPolicy() transferFlightPolicySnaps
 		generation:             snapshot.generation,
 		limited:                snapshot.unreliableTransferPath,
 		byteLimit:              snapshot.unreliableFlightByteLimit,
-		lossyMaxByteCount:      snapshot.unreliableLossyMaxByteCount,
 		messageLimit:           snapshot.unreliableFlightMessageLimit,
 		flowIsolation:          snapshot.unreliableFlowIsolation,
 		flowReserve:            snapshot.unreliableFlowReserve,
@@ -1833,37 +1805,12 @@ func (self *routeSnapshot) writeRoutesReliableOnly() []Route {
 	return routes
 }
 
-// routeWritePolicy selects which published route order one write uses.
-type routeWritePolicy int
-
-const (
-	// routeWriteOrdinary is the weighted policy with optional carrier affinity.
-	routeWriteOrdinary routeWritePolicy = iota
-	// routeWriteReliableOnly is the overflow path of a full unreliable flight.
-	routeWriteReliableOnly
-	// routeWriteReplyAffineFirst is a reply whose affine unreliable lane is
-	// healthy: that lane first, the reliable lanes as the fall-through.
-	routeWriteReplyAffineFirst
-	// routeWriteReplyReliableFirst is a reply whose affine unreliable lanes
-	// are all full or stale: the reliable lanes first, the affine lanes last.
-	routeWriteReplyReliableFirst
-)
-
 func (self *routeSnapshot) writeRoutesFor(
 	preferredTransportType TransportType,
-	policy routeWritePolicy,
+	reliableOnly bool,
 ) []Route {
-	switch policy {
-	case routeWriteReliableOnly:
+	if reliableOnly {
 		return self.writeRoutesReliableOnly()
-	case routeWriteReplyAffineFirst:
-		if routes := self.replyAffineFirstByTransport[preferredTransportType]; 0 < len(routes) {
-			return routes
-		}
-	case routeWriteReplyReliableFirst:
-		if routes := self.replyReliableFirstByTransport[preferredTransportType]; 0 < len(routes) {
-			return routes
-		}
 	}
 	return self.writeRoutesForTransport(preferredTransportType)
 }
@@ -1891,19 +1838,9 @@ func (self *routeSnapshot) transportType(route Route) TransportType {
 }
 
 func (self *routeSnapshot) receiveDisposition(route Route) transferReceiveDisposition {
-	properties := self.routeCarrierProperties[route]
-	arrivalReliability := properties.ReceiveReliability
-	if arrivalReliability == CarrierReliabilityUnknown {
-		if properties.Unreliable {
-			arrivalReliability = CarrierReliabilityUnreliable
-		} else {
-			arrivalReliability = CarrierReliabilityReliable
-		}
-	}
 	return transferReceiveDisposition{
-		transportType:      self.transportType(route),
-		reliability:        properties.ReceiveReliability,
-		arrivalReliability: arrivalReliability,
+		transportType: self.transportType(route),
+		reliability:   self.routeCarrierProperties[route].ReceiveReliability,
 	}
 }
 
@@ -2087,7 +2024,6 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 	reliableRoutes := []Route{}
 	unreliableTransferPath := false
 	unreliableFlightByteLimit := ByteCount(0)
-	unreliableLossyMaxByteCount := ByteCount(0)
 	unreliableFlightMessageLimit := 0
 	unreliableFlowIsolation := true
 	unreliableFlowReserve := true
@@ -2144,10 +2080,6 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 				if limit := properties.unreliableFlightByteLimit; 0 < limit &&
 					(unreliableFlightByteLimit == 0 || limit < unreliableFlightByteLimit) {
 					unreliableFlightByteLimit = limit
-				}
-				if limit := properties.unreliableLossyMaxMessageByteCount; 0 < limit &&
-					(unreliableLossyMaxByteCount == 0 || limit < unreliableLossyMaxByteCount) {
-					unreliableLossyMaxByteCount = limit
 				}
 				if limit := properties.unreliableFlightMessageLimit; 0 < limit &&
 					(unreliableFlightMessageLimit == 0 || limit < unreliableFlightMessageLimit) {
@@ -2239,45 +2171,6 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 		eligible = append(eligible, affinityRoutes...)
 		affinityWriteRoutesByTransport[transportType] = eligible
 	}
-	replyAffineFirstByTransport := map[TransportType][]Route{}
-	replyReliableFirstByTransport := map[TransportType][]Route{}
-	for transportType, eligible := range affinityWriteRoutesByTransport {
-		allUnreliable := true
-		for _, route := range eligible {
-			if !routeCarrierProperties[route].Unreliable {
-				allUnreliable = false
-				break
-			}
-		}
-		if !allUnreliable {
-			replyAffineFirstByTransport[transportType] = eligible
-			replyReliableFirstByTransport[transportType] = eligible
-			continue
-		}
-		included := make(map[Route]bool, len(eligible))
-		for _, route := range eligible {
-			included[route] = true
-		}
-		reliable := make([]Route, 0, len(activeRoutes))
-		for _, route := range activeRoutes {
-			if !included[route] && !routeCarrierProperties[route].Unreliable {
-				reliable = append(reliable, route)
-			}
-		}
-		if len(reliable) == 0 {
-			replyAffineFirstByTransport[transportType] = eligible
-			replyReliableFirstByTransport[transportType] = eligible
-			continue
-		}
-		affineFirst := make([]Route, 0, len(eligible)+len(reliable))
-		affineFirst = append(affineFirst, eligible...)
-		affineFirst = append(affineFirst, reliable...)
-		reliableFirst := make([]Route, 0, len(eligible)+len(reliable))
-		reliableFirst = append(reliableFirst, reliable...)
-		reliableFirst = append(reliableFirst, eligible...)
-		replyAffineFirstByTransport[transportType] = affineFirst
-		replyReliableFirstByTransport[transportType] = reliableFirst
-	}
 
 	var weight map[Route]float32
 	if self.weightedRoutes {
@@ -2295,14 +2188,11 @@ func (self *MultiRouteSelector) updateActiveRoutesWithLock() {
 		routes:                         activeRoutes,
 		routeTransportTypes:            routeTransportTypes,
 		affinityWriteRoutesByTransport: affinityWriteRoutesByTransport,
-		replyAffineFirstByTransport:    replyAffineFirstByTransport,
-		replyReliableFirstByTransport:  replyReliableFirstByTransport,
 		routeCarrierProperties:         routeCarrierProperties,
 		reliableRoutes:                 reliableRoutes,
 		generation:                     self.nextRouteGeneration,
 		unreliableTransferPath:         unreliableTransferPath,
 		unreliableFlightByteLimit:      unreliableFlightByteLimit,
-		unreliableLossyMaxByteCount:    unreliableLossyMaxByteCount,
 		unreliableFlightMessageLimit:   unreliableFlightMessageLimit,
 		unreliableFlowIsolation:        unreliableTransferPath && unreliableFlowIsolation,
 		unreliableFlowReserve:          unreliableTransferPath && unreliableFlowReserve,
@@ -2877,7 +2767,7 @@ func (self *MultiRouteSelector) writeDetailedWithCarrierPreference(
 		transferFrameBytes,
 		timeout,
 		preferredTransportType,
-		routeWriteOrdinary,
+		false,
 	)
 }
 
@@ -2891,64 +2781,60 @@ func (self *MultiRouteSelector) writeDetailedReliableOnly(
 		transferFrameBytes,
 		timeout,
 		TransportTypeUnknown,
-		routeWriteReliableOnly,
+		true,
 	)
 }
 
 // writeDetailedReplyWithCarrierPreference writes a reply (an ACK) with the
-// carrier affinity of the Pack it answers. When every affine route is
-// potentially unreliable (native p2p at the top priority), the reply keeps
-// that lane first only while at least one affine route has channel room and
-// its ack clock is not older than staleAfter; otherwise the reliable lanes
-// come first and the affine lanes last. A cumulative ACK lost on a full or
-// dead datagram lane times out the sender's whole window; on the relay it
-// costs one hop of latency. Hybrid carriers whose affinity set includes a
-// reliable lane are unchanged. Zero staleAfter disables the clock rule.
+// carrier affinity of the packet it answers, except that a reply is never
+// pinned to a potentially unreliable carrier while a reliable one is active.
+// A cumulative ACK lost on a lossy datagram lane times out the sender's whole
+// window; on the reliable carrier it costs one extra hop of latency.
 func (self *MultiRouteSelector) writeDetailedReplyWithCarrierPreference(
 	ctx context.Context,
 	transferFrameBytes []byte,
 	timeout time.Duration,
 	preferredTransportType TransportType,
-	staleAfter time.Duration,
-	laneLosing bool,
 ) (bool, transferWriteDisposition, error) {
-	policy := routeWriteReplyAffineFirst
-	if laneLosing {
-		// The lane this Pack arrived on is dropping, so its acknowledgements
-		// are dropping too and every lost cumulative ack costs the sender a
-		// window. Reply on the reliable carrier until the lane recovers
-		// (FLIGHTGATEFIX §18). A carrier whose own lane shows no loss keeps
-		// its affinity, so hybrid H3 is unaffected by another lane's trouble.
-		policy = routeWriteReplyReliableFirst
-	} else if snapshot := self.activeRoutesSnapshot.Load(); snapshot != nil {
-		affine := snapshot.affinityWriteRoutesByTransport[preferredTransportType]
-		if 0 < len(affine) && len(affine) < len(snapshot.replyAffineFirstByTransport[preferredTransportType]) {
-			// every affine route is unreliable and a reliable lane exists
-			healthy := false
-			for _, route := range affine {
-				if cap(route) <= len(route) {
-					continue
-				}
-				if 0 < staleAfter {
-					if age, ok := self.RouteAckProgressAge(route); ok && staleAfter <= age {
-						continue
-					}
-				}
-				healthy = true
-				break
-			}
-			if !healthy {
-				policy = routeWriteReplyReliableFirst
-			}
-		}
+	if self.transportPotentiallyUnreliable(preferredTransportType) {
+		return self.writeDetailedWithRoutePolicy(
+			ctx,
+			transferFrameBytes,
+			timeout,
+			TransportTypeUnknown,
+			true,
+		)
 	}
 	return self.writeDetailedWithRoutePolicy(
 		ctx,
 		transferFrameBytes,
 		timeout,
 		preferredTransportType,
-		policy,
+		false,
 	)
+}
+
+// transportPotentiallyUnreliable reports whether every active route of the
+// transport type is a potentially unreliable carrier and a reliable route
+// exists to take its place.
+func (self *MultiRouteSelector) transportPotentiallyUnreliable(
+	transportType TransportType,
+) bool {
+	snapshot := self.activeRoutesSnapshot.Load()
+	if snapshot == nil || len(snapshot.reliableRoutes) == 0 {
+		return false
+	}
+	found := false
+	for _, route := range snapshot.routes {
+		if snapshot.routeTransportTypes[route] != transportType {
+			continue
+		}
+		if !snapshot.routeCarrierProperties[route].Unreliable {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
@@ -2956,7 +2842,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 	transferFrameBytes []byte,
 	timeout time.Duration,
 	preferredTransportType TransportType,
-	policy routeWritePolicy,
+	reliableOnly bool,
 ) (bool, transferWriteDisposition, error) {
 	enterTime := time.Now()
 	preferredBlockedObserved := false
@@ -2965,7 +2851,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 	// writer selector and writes its ordered stream serially; the mutex below is
 	// only needed when a write must retain and reuse the selector timer.
 	initialSnapshot := self.acquireWriterSnapshot()
-	initialRoutes := initialSnapshot.writeRoutesFor(preferredTransportType, policy)
+	initialRoutes := initialSnapshot.writeRoutesFor(preferredTransportType, reliableOnly)
 	if self.log.V(2).Enabled() {
 		self.log.Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(initialRoutes))
 	}
@@ -3016,7 +2902,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 		// on every packet
 		snapshot := self.acquireWriterSnapshot()
 		notify := snapshot.notify
-		activeRoutes := snapshot.writeRoutesFor(preferredTransportType, policy)
+		activeRoutes := snapshot.writeRoutesFor(preferredTransportType, reliableOnly)
 
 		if self.log.V(2).Enabled() {
 			self.log.Infof("[mrw] %s->%s s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))

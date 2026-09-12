@@ -823,7 +823,7 @@ func TestFlightGateItemsAreAllocationFree(t *testing.T) {
 	}
 	if allocs := testing.AllocsPerRun(200, func() {
 		drain()
-		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second, false)
+		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p)
 	}); allocs != 0 {
 		t.Fatalf("reply route decision allocates %.1f per reply", allocs)
 	}
@@ -832,7 +832,7 @@ func TestFlightGateItemsAreAllocationFree(t *testing.T) {
 		for len(h1Route) > 0 {
 			<-h1Route
 		}
-		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p, 2*time.Second, false)
+		selector.writeDetailedReplyWithCarrierPreference(ctx, frame, time.Second, TransportTypeP2p)
 	}); allocs != 0 {
 		t.Fatalf("reply fall-through allocates %.1f per reply", allocs)
 	}
@@ -840,7 +840,7 @@ func TestFlightGateItemsAreAllocationFree(t *testing.T) {
 
 	settings := DefaultSendBufferSettings()
 	controller := newSendFlightController(settings)
-	policy := transferFlightPolicySnapshot{generation: 1, limited: true, reliableRouteAvailable: true, lossyMaxByteCount: 2376}
+	policy := transferFlightPolicySnapshot{generation: 1, limited: true, reliableRouteAvailable: true}
 	controller.applyPolicy(policy)
 	key := sendSchedulingKey{valid: true}
 	if allocs := testing.AllocsPerRun(1000, func() {
@@ -851,7 +851,7 @@ func TestFlightGateItemsAreAllocationFree(t *testing.T) {
 	}
 	sequence := &SendSequence{client: &Client{}, flightController: controller, sendBufferSettings: settings}
 	if allocs := testing.AllocsPerRun(1000, func() {
-		sequence.reliableOnlyWrite(policy, 4000)
+		sequence.reliableOnlyWrite(policy)
 	}); allocs != 0 {
 		t.Fatalf("reliable-only decision allocates %.1f per write", allocs)
 	}

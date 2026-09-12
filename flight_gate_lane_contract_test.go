@@ -1,3 +1,9 @@
+//go:build flightgate_next
+
+// FLIGHTGATEFIX §20.3. The seven-row mixed-lane contract. It is the
+// specification of the affinity candidate in §20.5, no longer a gate on
+// this landing, so it builds only under the flightgate_next tag.
+
 package connect
 
 // FLIGHTGATEFIX §18. The contract for mixed-lane behaviour, written as what
