@@ -45,7 +45,7 @@ func laneHole(sequence *SendSequence, items []*sendItem, relay Route, provingRou
 	for index := 1; index < len(items); index += 1 {
 		items[index].selectiveAcked = true
 		items[index].carrierRoute = provingRoute
-		sequence.observeLaneAck(items[index])
+		sequence.observeLaneAck(items[index], time.Now())
 	}
 }
 
@@ -99,10 +99,10 @@ func TestLaneAcksAreRecordedPerRouteAndResetOnAGeneration(t *testing.T) {
 	sequence, items, relay, direct := laneScoreboard(t, true)
 	items[1].carrierRoute = relay
 	items[1].sequenceNumber = 5
-	sequence.observeLaneAck(items[1])
+	sequence.observeLaneAck(items[1], time.Now())
 	items[2].carrierRoute = direct
 	items[2].sequenceNumber = 9
-	sequence.observeLaneAck(items[2])
+	sequence.observeLaneAck(items[2], time.Now())
 
 	if highest, acked := sequence.laneHighestAcked(relay); !acked || highest != 5 {
 		t.Fatalf("the relay's highest acknowledged number reads %d (acked=%v), want 5", highest, acked)
@@ -112,7 +112,7 @@ func TestLaneAcksAreRecordedPerRouteAndResetOnAGeneration(t *testing.T) {
 	}
 	// it only ever advances
 	items[1].sequenceNumber = 2
-	sequence.observeLaneAck(items[1])
+	sequence.observeLaneAck(items[1], time.Now())
 	if highest, _ := sequence.laneHighestAcked(relay); highest != 5 {
 		t.Fatalf("the relay's highest moved backwards to %d", highest)
 	}
@@ -131,7 +131,7 @@ func TestLaneAckTableAllocatesNothing(t *testing.T) {
 	if allocs := testing.AllocsPerRun(1000, func() {
 		number += 1
 		item.sequenceNumber = number
-		sequence.observeLaneAck(item)
+		sequence.observeLaneAck(item, time.Now())
 		sequence.laneHighestAcked(relay)
 		sequence.laneOldestOutstanding(relay)
 	}); allocs != 0 {
@@ -171,28 +171,49 @@ func TestLaneProbeReplacesTheWholeWindowOnASilentLane(t *testing.T) {
 	t.Logf("per item: rto=%d deferred=%d", perItem.TimeoutResendWriteCount, perItem.TimeoutResendDeferCount)
 	t.Logf("per lane: rto=%d deferred=%d probes=%d held=%d",
 		perLane.TimeoutResendWriteCount, perLane.TimeoutResendDeferCount,
-		perLane.LaneProbeWriteCount, perLane.LaneProbeHeldCount)
+		perLane.LaneProbeWriteCount, perLane.LaneProbeRideCount)
 
 	if perItem.TimeoutResendWriteCount < 100 {
 		t.Fatalf("only %d whole-window writes through the stall: this no longer reproduces the "+
 			"excursion the gap export measures", perItem.TimeoutResendWriteCount)
 	}
-	if 20 < perLane.TimeoutResendWriteCount {
+	// §27.2's falsification bar: more than ten writes during the stall
+	if 10 < perLane.TimeoutResendWriteCount {
 		t.Fatalf("reading the lane still wrote %d whole-window retransmits through the stall, "+
-			"want single digits", perLane.TimeoutResendWriteCount)
-	}
-	if 0 != perLane.TimeoutResendDeferCount {
-		t.Fatalf("reading the lane deferred %d times through the stall; a silent lane is the "+
-			"probe's case, not the deferral's", perLane.TimeoutResendDeferCount)
+			"want at most ten", perLane.TimeoutResendWriteCount)
 	}
 	if perLane.LaneProbeWriteCount == 0 {
 		t.Fatal("no probe was written, so the head was never retransmitted")
 	}
+	// every write is the route head's probe: a write that is not a probe is
+	// a second firing, which is what the rule exists to remove
+	if perLane.TimeoutResendWriteCount != perLane.LaneProbeWriteCount {
+		t.Fatalf(
+			"%d whole-window writes against %d probes: the difference is a second firing written "+
+				"into a lane that is not draining, which §27.2 forbids",
+			perLane.TimeoutResendWriteCount, perLane.LaneProbeWriteCount,
+		)
+	}
+	if perLane.LaneProvenTimeoutWriteCount != 0 {
+		t.Fatalf("%d writes were charged to an endpoint drop during a stall that drops nothing",
+			perLane.LaneProvenTimeoutWriteCount)
+	}
+	// deferrals are re-arms, and §27.2 expects them in the stall's first
+	// interval while the route's last acknowledgement is still recent. What
+	// it forbids is a second deferral of the same item, so the count must
+	// stay within one per item the lane held.
+	if perItem.TimeoutResendDeferCount+10 < perLane.TimeoutResendDeferCount {
+		t.Fatalf(
+			"reading the lane deferred %d times against %d per item: a silent lane must not defer "+
+				"an item twice",
+			perLane.TimeoutResendDeferCount, perItem.TimeoutResendDeferCount,
+		)
+	}
 	// the hold must not spin: one hold per item per probe interval, not per
 	// pass of the resend loop
-	if 100*perLane.LaneProbeWriteCount < perLane.LaneProbeHeldCount/100 {
+	if 100*perLane.LaneProbeWriteCount < perLane.LaneProbeRideCount/100 {
 		t.Fatalf("%d holds against %d probes: the hold is re-arming into the past and spinning",
-			perLane.LaneProbeHeldCount, perLane.LaneProbeWriteCount)
+			perLane.LaneProbeRideCount, perLane.LaneProbeWriteCount)
 	}
 }
 

@@ -1462,11 +1462,26 @@ type ClientSendRecoveryStatsSnapshot struct {
 	SelectiveGapWritesOfDeferredItems [gapHoleCarrierCount]uint64
 	RouteGenerationChangeCount        uint64
 	// LaneProbeWriteCount is how many retransmits were written as a silent
-	// reliable lane's single probe, and LaneProbeHeldCount how many items
-	// were held behind one instead of being rewritten themselves
-	// (FLIGHTGATEFIX §26.2).
-	LaneProbeWriteCount               uint64
-	LaneProbeHeldCount                uint64
+	// reliable lane's single probe, LaneProbeRideCount how many items rode
+	// behind one instead of being rewritten themselves, and
+	// LaneProvenTimeoutWriteCount how many were written because the item's
+	// own route had acknowledged past it, which is an endpoint drop. Probes
+	// also count in TimeoutResendWriteCount, so a campaign's total recovery
+	// writes sees them (FLIGHTGATEFIX §27.4).
+	LaneProbeWriteCount         uint64
+	LaneProbeRideCount          uint64
+	LaneProvenTimeoutWriteCount uint64
+	// The longest stretch a reliable lane went without acknowledging
+	// anything, and, at the first timer firing of that stretch, the resend
+	// interval the timer read, how many items the sequence held, and how far
+	// into the sequence's life the stretch began. These distinguish one
+	// campaign seed from another independently of any candidate: §27.1
+	// predicts the collapsing seed reads the smallest interval at onset.
+	// No behaviour depends on them.
+	ReliableLaneLongestAckGap         time.Duration
+	ReliableLaneStallOnsetInterval    time.Duration
+	ReliableLaneStallOnsetOutstanding uint64
+	ReliableLaneStallOnsetOffset      time.Duration
 	ReliableAdmissionWaitCount        uint64
 	ReliableAdmissionWaitDuration     time.Duration
 	ReliableAdmissionByteLimitMinimum uint64
@@ -1568,7 +1583,12 @@ type Client struct {
 	selectiveGapWritesOfDeferredItems           [gapHoleCarrierCount]atomic.Uint64
 	routeGenerationChangeCount                  atomic.Uint64
 	laneProbeWriteCount                         atomic.Uint64
-	laneProbeHeldCount                          atomic.Uint64
+	laneProbeRideCount                          atomic.Uint64
+	laneProvenTimeoutWriteCount                 atomic.Uint64
+	reliableLaneLongestAckGapNanos              atomic.Uint64
+	reliableLaneStallOnsetIntervalNanos         atomic.Uint64
+	reliableLaneStallOnsetOutstanding           atomic.Uint64
+	reliableLaneStallOnsetOffsetNanos           atomic.Uint64
 	reliableAdmissionWaitCount                  atomic.Uint64
 	reliableAdmissionWaitNanos                  atomic.Uint64
 	reliableAdmissionByteLimitMinimum           atomic.Uint64
@@ -1945,9 +1965,17 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 			self.selectiveGapWritesOfDeferredItems[gapHoleCarrierReliable].Load(),
 			self.selectiveGapWritesOfDeferredItems[gapHoleCarrierUnreliable].Load(),
 		},
-		RouteGenerationChangeCount:        self.routeGenerationChangeCount.Load(),
-		LaneProbeWriteCount:               self.laneProbeWriteCount.Load(),
-		LaneProbeHeldCount:                self.laneProbeHeldCount.Load(),
+		RouteGenerationChangeCount:  self.routeGenerationChangeCount.Load(),
+		LaneProbeWriteCount:         self.laneProbeWriteCount.Load(),
+		LaneProbeRideCount:          self.laneProbeRideCount.Load(),
+		LaneProvenTimeoutWriteCount: self.laneProvenTimeoutWriteCount.Load(),
+		ReliableLaneLongestAckGap: time.Duration(
+			self.reliableLaneLongestAckGapNanos.Load()),
+		ReliableLaneStallOnsetInterval: time.Duration(
+			self.reliableLaneStallOnsetIntervalNanos.Load()),
+		ReliableLaneStallOnsetOutstanding: self.reliableLaneStallOnsetOutstanding.Load(),
+		ReliableLaneStallOnsetOffset: time.Duration(
+			self.reliableLaneStallOnsetOffsetNanos.Load()),
 		ReliableAdmissionWaitCount:        self.reliableAdmissionWaitCount.Load(),
 		ReliableAdmissionWaitDuration:     time.Duration(self.reliableAdmissionWaitNanos.Load()),
 		ReliableAdmissionByteLimitMinimum: self.reliableAdmissionByteLimitMinimum.Load(),
@@ -2019,6 +2047,51 @@ func (self *SendSequence) deferredResendInterval(
 	return self.resendIntervalForItem(item, item.sendCount+item.timeoutDeferCount)
 }
 
+// observeReliableLaneFiring takes the reading §27.1 asks for at the first
+// timer firing of a reliable lane's current silence: the interval the timer
+// read, the items the sequence held, and how far into its life the silence
+// began. No behaviour depends on it.
+func (self *SendSequence) observeReliableLaneFiring(
+	item *sendItem,
+	interval time.Duration,
+	now time.Time,
+) {
+	if item == nil || !item.reliableCarrierObserved || item.unreliableFlightTracked {
+		return
+	}
+	if self.lastReliableAckTime.IsZero() || self.stallOnsetTaken {
+		return
+	}
+	self.stallOnsetTaken = true
+	self.stallOnsetInterval = interval
+	self.stallOnsetOutstanding = len(self.sendItems)
+	self.stallOnsetOffset = now.Sub(self.sequenceStartTime)
+}
+
+// observeReliableLaneAck ends the current silence and commits its reading
+// if it was the longest of the run.
+func (self *SendSequence) observeReliableLaneAck(item *sendItem, at time.Time) {
+	if item == nil || !item.reliableCarrierObserved || item.unreliableFlightTracked {
+		return
+	}
+	if !self.lastReliableAckTime.IsZero() {
+		if gap := at.Sub(self.lastReliableAckTime); 0 < gap &&
+			time.Duration(self.client.reliableLaneLongestAckGapNanos.Load()) < gap {
+			self.client.reliableLaneLongestAckGapNanos.Store(uint64(gap))
+			if self.stallOnsetTaken {
+				self.client.reliableLaneStallOnsetIntervalNanos.Store(
+					uint64(self.stallOnsetInterval))
+				self.client.reliableLaneStallOnsetOutstanding.Store(
+					uint64(self.stallOnsetOutstanding))
+				self.client.reliableLaneStallOnsetOffsetNanos.Store(
+					uint64(self.stallOnsetOffset))
+			}
+		}
+	}
+	self.lastReliableAckTime = at
+	self.stallOnsetTaken = false
+}
+
 // laneAckSlotCount bounds the per-route acknowledgement table. A route
 // snapshot publishes a handful of carriers, and a linear scan of eight is
 // cheaper than any map and allocates nothing (FLIGHTGATEFIX §26.2).
@@ -2027,7 +2100,14 @@ const laneAckSlotCount = 8
 type laneAckSlot struct {
 	route                      Route
 	highestAckedSequenceNumber uint64
-	set                        bool
+	// lastAckNanos is when this route last acknowledged anything. It, and
+	// not the sequence's cumulative clock, decides whether the route is
+	// draining: on a mixed route a relay whose head is stuck while
+	// direct-lane acknowledgements keep the cumulative ack moving must read
+	// as silent and be probed, not deferred to its limit and written
+	// (FLIGHTGATEFIX §27.3).
+	lastAckNanos int64
+	set          bool
 }
 
 // resetLaneAcks forgets every route's acknowledgement history, which a
@@ -2043,7 +2123,7 @@ func (self *SendSequence) resetLaneAcks(generation uint64) {
 
 // observeLaneAck records that this item's route has acknowledged up to at
 // least this sequence number.
-func (self *SendSequence) observeLaneAck(item *sendItem) {
+func (self *SendSequence) observeLaneAck(item *sendItem, at time.Time) {
 	if item == nil || item.carrierRoute == nil {
 		return
 	}
@@ -2060,6 +2140,7 @@ func (self *SendSequence) observeLaneAck(item *sendItem) {
 			if slot.highestAckedSequenceNumber < item.sequenceNumber {
 				slot.highestAckedSequenceNumber = item.sequenceNumber
 			}
+			slot.lastAckNanos = at.UnixNano()
 			return
 		}
 	}
@@ -2067,6 +2148,7 @@ func (self *SendSequence) observeLaneAck(item *sendItem) {
 		self.laneAcks[free] = laneAckSlot{
 			route:                      item.carrierRoute,
 			highestAckedSequenceNumber: item.sequenceNumber,
+			lastAckNanos:               at.UnixNano(),
 			set:                        true,
 		}
 	}
@@ -2113,6 +2195,55 @@ func (self *SendSequence) laneHighestAcked(route Route) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// laneLastAck reports when this route last acknowledged anything.
+func (self *SendSequence) laneLastAck(route Route) (time.Time, bool) {
+	if route == nil {
+		return time.Time{}, false
+	}
+	for index := range self.laneAcks {
+		slot := &self.laneAcks[index]
+		if slot.set && slot.route == route && slot.lastAckNanos != 0 {
+			return time.Unix(0, slot.lastAckNanos), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// laneTimerVerdict is what a reliable-carried item's timer firing means,
+// read from its own route's clocks in the order §27.3 fixes.
+type laneTimerVerdict int
+
+const (
+	// the rule is off, or the item is not reliable-carried
+	laneTimerNotApplicable laneTimerVerdict = iota
+	// the route delivered something sent after this item, so this item was
+	// dropped at an endpoint
+	laneTimerEndpointDrop
+	// the route acknowledged within the last scaled round trip
+	laneTimerDraining
+	// the route has answered nothing recently
+	laneTimerSilent
+)
+
+// laneTimerVerdictFor reads the item's own route's clocks.
+func (self *SendSequence) laneTimerVerdictFor(
+	item *sendItem,
+	now time.Time,
+) laneTimerVerdict {
+	if !self.laneProvenRecovery(item) {
+		return laneTimerNotApplicable
+	}
+	if highest, acked := self.laneHighestAcked(item.carrierRoute); acked &&
+		item.sequenceNumber < highest {
+		return laneTimerEndpointDrop
+	}
+	if lastAck, ok := self.laneLastAck(item.carrierRoute); ok &&
+		now.Sub(lastAck) < self.rttWindow.ScaledRtt() {
+		return laneTimerDraining
+	}
+	return laneTimerSilent
 }
 
 // laneProvenRecovery reports whether this sequence reads a reliable lane's
@@ -5166,6 +5297,16 @@ type SendSequence struct {
 	// estimate (FLIGHTGATEFIX §26.2).
 	laneAcks          [laneAckSlotCount]laneAckSlot
 	laneAckGeneration uint64
+	// The reliable lane's silence, exported for the campaign (§27.1). The
+	// stallOnset fields hold the reading taken at the first firing of the
+	// current silence; it is committed when that silence ends and proves to
+	// be the longest of the run.
+	sequenceStartTime     time.Time
+	lastReliableAckTime   time.Time
+	stallOnsetTaken       bool
+	stallOnsetInterval    time.Duration
+	stallOnsetOutstanding int
+	stallOnsetOffset      time.Duration
 	// lastCumulativeAckTime is when the cumulative ack last advanced; an RTO
 	// inside one scaled RTT of it is counted as spurious (M4).
 	lastCumulativeAckTime               time.Time
@@ -5256,6 +5397,7 @@ func newSendSequenceWithLogicalLane(
 	)
 
 	seq := &SendSequence{
+		sequenceStartTime:              time.Now(),
 		ctx:                            cancelCtx,
 		cancel:                         cancel,
 		done:                           make(chan struct{}),
@@ -6472,12 +6614,20 @@ sendSequenceLoop:
 				// neither a send nor a deferral, which is TCP's timer applied
 				// to the lane. A firing on a route that has acknowledged past
 				// the item is an endpoint drop and is written as today.
-				laneSilent := false
-				if recoveryKind == sendRecoveryNone && self.laneProvenRecovery(item) {
-					highest, acked := self.laneHighestAcked(item.carrierRoute)
-					laneSilent = !acked || highest < item.sequenceNumber
+				laneVerdict := laneTimerNotApplicable
+				if recoveryKind == sendRecoveryNone {
+					laneVerdict = self.laneTimerVerdictFor(item, sendTime)
+					self.observeReliableLaneFiring(
+						item,
+						self.resendIntervalForItem(item, item.sendCount),
+						sendTime,
+					)
 				}
-				if laneSilent {
+				if laneVerdict == laneTimerEndpointDrop {
+					// the route delivered past this item, so it was dropped at
+					// an endpoint: written with backoff, as today
+					self.client.laneProvenTimeoutWriteCount.Add(1)
+				} else if laneVerdict == laneTimerSilent {
 					if head := self.laneOldestOutstanding(item.carrierRoute); head != nil && head != item {
 						// Held behind the head's probe. The head may itself be
 						// due in this pass, so the hold is never shorter than
@@ -6490,7 +6640,7 @@ sendSequenceLoop:
 						item.resendTime = holdUntil
 						item.recoveryKind = sendRecoveryNone
 						self.resendQueue.Add(item)
-						self.client.laneProbeHeldCount.Add(1)
+						self.client.laneProbeRideCount.Add(1)
 						continue
 					}
 					self.client.laneProbeWriteCount.Add(1)
@@ -8217,7 +8367,9 @@ func (self *SendSequence) receiveAck(
 			self.observeItemAck(item)
 			self.releaseUnreliableFlight(item)
 		}
-		self.observeLaneAck(item)
+		ackTime := time.Now()
+		self.observeLaneAck(item, ackTime)
+		self.observeReliableLaneAck(item, ackTime)
 		// refresh sendTime so the ack-timeout deadline includes the selective-ack window
 		item.sendTime = time.Now()
 		item.resendTime = item.sendTime.Add(self.sendBufferSettings.SelectiveAckTimeout)
@@ -8265,7 +8417,8 @@ func (self *SendSequence) receiveAck(
 		}
 
 		cumulativeByteCount += implicitItem.MessageByteCount()
-		self.observeLaneAck(implicitItem)
+		self.observeLaneAck(implicitItem, self.lastCumulativeAckTime)
+		self.observeReliableLaneAck(implicitItem, self.lastCumulativeAckTime)
 		if !implicitItem.selectiveAcked {
 			self.observeItemAck(implicitItem)
 			self.releaseUnreliableFlight(implicitItem)
