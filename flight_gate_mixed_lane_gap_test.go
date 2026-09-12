@@ -150,6 +150,9 @@ type mixedLaneOptions struct {
 	// deferredItemIsLateForTheScoreboard turns on FLIGHTGATEFIX §23.2's
 	// narrowing, which is off in the landed tree.
 	deferredItemIsLateForTheScoreboard bool
+	// deferTimeoutResendBackoffOff turns off FLIGHTGATEFIX §24.3's deferral
+	// backoff, which is the shape the campaign's storm runs measured.
+	deferTimeoutResendBackoffOff bool
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -192,6 +195,8 @@ func newMixedLaneHarnessWithOptions(
 			!options.reliableAdmissionUnbounded
 		settings.SendBufferSettings.DeferredItemIsLateForTheScoreboard =
 			options.deferredItemIsLateForTheScoreboard
+		settings.SendBufferSettings.DeferTimeoutResendBackoff =
+			!options.deferTimeoutResendBackoffOff
 		if 0 < options.resendBudget {
 			settings.SendBufferSettings.ResendQueueMaxByteCount = options.resendBudget
 		}

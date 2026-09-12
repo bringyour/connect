@@ -769,6 +769,7 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// (FLIGHTGATEFIX §22.4).
 		ReliableAdmissionBoundedByDelivery: false,
 		DeferredItemIsLateForTheScoreboard: false,
+		DeferTimeoutResendBackoff:          true,
 		ContractFillFraction:               0.8,
 		PrewarmOpeningContract:             true,
 		CompactContractHead:                true,
@@ -1988,6 +1989,24 @@ func (self *Client) observeUnreliableFlight(controller *sendFlightController) {
 // Records one physical recovery attempt after it leaves the resend queue. A
 // route refusal is retained separately: attempting a write is not proof that
 // the carrier admitted the recovery frame.
+// deferredResendInterval is how long a deferral waits. It backs off like
+// the rewrite it replaces (FLIGHTGATEFIX §24.3): a deferral that re-arms at
+// the same scaled round trip and leaves sendCount alone lets a window
+// stalled mid-transfer re-fire whole every round trip, and the deferral
+// limit then writes the third firing of every item into the stall, where
+// merged's rewrite doubles its interval each attempt and backs off. Read
+// before the deferral count is advanced, so an item's first deferral is
+// one interval as it has always been and its second is twice that.
+func (self *SendSequence) deferredResendInterval(
+	item *sendItem,
+	scaledRtt time.Duration,
+) time.Duration {
+	if !self.sendBufferSettings.DeferTimeoutResendBackoff {
+		return scaledRtt
+	}
+	return self.resendIntervalForItem(item, item.sendCount+item.timeoutDeferCount)
+}
+
 // gapHoleCarrier indexes a recovery counter by the lane that carried the
 // hole being recovered (FLIGHTGATEFIX §23.3).
 type gapHoleCarrier int
@@ -3987,6 +4006,15 @@ type SendBufferSettings struct {
 	// deferral expires. Off by default: it is a candidate to be read in one
 	// campaign after the A/A calibration of §23.3, not a landing.
 	DeferredItemIsLateForTheScoreboard bool
+	// DeferTimeoutResendBackoff makes a deferral back off like the rewrite
+	// it replaces (FLIGHTGATEFIX §24.3). Without it a deferral re-arms at
+	// the same scaled round trip and leaves sendCount alone, so a window
+	// stalled mid-transfer re-fires whole every round trip and the deferral
+	// limit writes the third firing of every item into the stall; merged's
+	// rewrite doubles its interval each attempt and backs off. Parallel
+	// flows make the window several times deeper, so every firing costs
+	// that much more, which is why only that workload shows it.
+	DeferTimeoutResendBackoff bool
 	// ResendQueueBudget, when set, is a byte budget shared across sequences
 	// (typically all clients of one device): resend queue bytes above the
 	// floor reserve from it, and admission pauses above the floor while it
@@ -6252,10 +6280,11 @@ sendSequenceLoop:
 						// hole nothing can acknowledge is deferred once and then
 						// retransmitted: deferring is right while the queue drains
 						// and wrong once the Pack is gone (§16).
+						deferInterval := self.deferredResendInterval(item, scaledRtt)
 						item.timeoutDeferCount += 1
 						item.timeoutDeferAckTime = self.lastCumulativeAckTime
 						item.deferralOutstanding = true
-						item.resendTime = sendTime.Add(scaledRtt)
+						item.resendTime = sendTime.Add(deferInterval)
 						self.resendQueue.Add(item)
 						self.client.timeoutResendDeferCount.Add(1)
 						continue
