@@ -129,8 +129,13 @@ A3. The extender request. `POST /` with `Content-Type:
 application/x-ur-extender` and a body of at most 1024 bytes holding the
 serialized `ExtenderHeader`. On tcp it is an HTTP/1.1 request on the
 terminated TLS connection; the extender's `http.Server` handler writes
-`200` with the same content type and a body holding the serialized
-`ExtenderResponse`, then hijacks the connection. On quic and dns it is one
+`200` with the same content type and a body holding the response frame,
+then hijacks the connection. The response frame is a 4-byte big-endian
+length followed by the serialized `ExtenderResponse`, on every carrier:
+on the udp carriers the response body and the raw bytes after it are one
+http3 DATA stream, and a content length there would bound the reader the
+client keeps, so the frame delimits itself and only the tcp response
+carries a `Content-Length`. On quic and dns it is one
 H3 request opened with `OpenRequestStream`; the handler writes the same
 response and takes the stream with `HTTPStream()`. After the response both
 ends use the stream raw. The client uses `http.Request.Write` and
@@ -139,7 +144,12 @@ follow, and the `RequestStream` type on quic and dns, so both ends share
 the http3 DATA framing. The client offers no ALPN on tcp, as today, so
 HTTP/1.1 is negotiated; the server offers `h2` and `http/1.1` so a prober
 that asks for h2 gets it. An extender request that arrives over h2 is
-refused with 403, since h2 cannot be hijacked.
+refused with 403, since h2 cannot be hijacked. Because the extender has
+already read the first bytes of the stream to tell v1 from HTTP, the
+served connection is no longer the `*tls.Conn` net/http's ALPN hook needs,
+so h2 is dispatched directly through the configured `http2.Server`; the
+SNI of a tcp connection is taken from the terminated connection state and
+attached to the request context rather than read from `req.TLS`.
 
 Legacy framing: when the first four bytes after the tcp handshake decode
 as a big-endian length of at most 1024, the connection is handled as a v1
@@ -158,7 +168,11 @@ the extender's ed25519 public key or empty when it has none, the signature
 over `"ur-extender-challenge-v1" || Challenge` when a challenge was given,
 and the carriers this extender serves (`tcp`, `quic`, `dns`). Refusals are
 HTTP 403 with no body: bad secret, destination not allowed, service not
-available, header too large. The connection closes after a refusal.
+available, header too large. The connection closes after a refusal. An
+empty secret list means an open extender that accepts every header, which
+is what an operator-activated extender is; a non-empty list requires the
+HMAC to match one entry, which is the private extender of the network
+space's manual configuration.
 
 A5. Whitelist and fallback. The whitelist is the union of the bundled
 spoof list (A10) and the operator domain patterns. Operator patterns come
@@ -194,10 +208,15 @@ request; the client moves to another extender.
 A8. Reserved services. `Service` 1 (gossip) hands the taken-over stream to
 the in-process gossip listener (D2). `Service` 2 (feed) hands it to the
 feed server (D4). An extender without a gossip node refuses both with 403.
-`DestinationHost` is ignored when `Service` is set.
+`DestinationHost` is ignored when `Service` is set. The handlers are
+settings callbacks that own the stream for the duration of the call; the
+extender closes the stream when the callback returns and keeps it in its
+shutdown set meanwhile, so a listener implementation blocks in the
+callback until its consumer releases the connection.
 
 A9. Limits. Relay read and write timeouts 30 s as today. Header read
-deadline 10 s. Per-source concurrent connections 64, total 4096, both
+deadline 10 s, which also bounds the outer handshake and, as the HTTP
+server's read timeout, the request body. Per-source concurrent connections 64, total 4096, both
 settings. Idle QUIC connections close after 30 s.
 
 A10. Spoof list and dial. `SpoofDomains()` in connect root returns the
@@ -226,7 +245,8 @@ whose signatures are accepted, for rotation.
 
 B2. Records. In `protocol/extender.proto`:
 
-- `ExtenderAddress{Ip, IpVersion, Carriers []string}`.
+- `ExtenderAddress{Ip, IpVersion, Carriers []string}`, with `Ip` the text
+  form of the address.
 - `ExtenderRecordBody{PublicKey, Addresses, TcpPort, UdpPort, DnsPort,
   DnsTld, CountryCode, IssueTimeMs, ExpireTimeMs, NetworkHost}`.
 - `ExtenderRecord{Body bytes, RootSignature, RootKeyId}` where `Body` is
