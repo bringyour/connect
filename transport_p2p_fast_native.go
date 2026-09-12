@@ -8,9 +8,7 @@ package connect
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -105,37 +103,6 @@ type webRtcFastPath struct {
 	nextSequenceNumber        uint16
 	warmupVersion             byte
 	afterWarmupReceiveForTest func(byte)
-	// FLIGHTGATEFIX L1 (M6). The RTP lane has no acknowledgements of its
-	// own, so a fast path that accepts writes and delivers nothing looks
-	// healthy forever. The receiver reports its complete-message count on
-	// the reverse RTP lane while it changes; the sender retires the
-	// association when a write goes unanswered by any report advance for
-	// noProgressTimeout, the contract SctpNoProgressTimeout gives the
-	// reliable lane. Zero disables the watchdog.
-	noProgressTimeout    time.Duration
-	retire               func(error)
-	reconnect            func()
-	sentMessageCount     atomic.Uint64
-	receivedMessageCount atomic.Uint64
-	remoteReceivedCount  atomic.Uint64
-	// unansweredSinceNanos is the unix time of the first write after the
-	// last report advance, or zero while every write has been answered.
-	unansweredSinceNanos atomic.Int64
-	// remoteReportSeen arms the watchdog: a peer that has never reported is
-	// an older peer that drops reports as malformed fragments, and it must
-	// not be retired for the silence it cannot break.
-	remoteReportSeen    atomic.Bool
-	progressReportsSent atomic.Uint64
-	// progressReportPacket and its payload are reused under sendMutex so a
-	// report allocates nothing per interval.
-	progressReportPacket  rtp.Packet
-	progressReportPayload [p2pFastPathProgressReportByteCount]byte
-	watchdogOnce          sync.Once
-	reporterOnce          sync.Once
-	startWorker           func(name string, run func())
-	// oldStyleReceiverForTest makes this side behave as a peer from before
-	// progress reports: it neither parses nor sends them.
-	oldStyleReceiverForTest bool
 
 	// Tests retain an exact reassembly-buffer witness before queue handoff.
 	// Nil is a production no-op.
@@ -219,13 +186,6 @@ func (self *peerConn) configureFastPath() error {
 		log:                     self.log,
 		maximumMessageByteCount: int(self.settings.MaxMessageSize),
 		dataPlaneStats:          self.settings.DataPlaneStats,
-		noProgressTimeout:       self.settings.FastPathNoProgressTimeout,
-		oldStyleReceiverForTest: self.settings.oldStyleFastPathReceiverForTest,
-		retire:                  self.cancelBecause,
-		reconnect:               self.requestImmediateReconnect,
-		startWorker: func(name string, run func()) {
-			self.startWorker(name, run)
-		},
 		track: &webRtcFastPathTrack{
 			track:      track,
 			capability: capability,
@@ -440,137 +400,7 @@ func (self *webRtcFastPath) writeMessage(message []byte) (int, error) {
 		}
 	}
 	self.dataPlaneStats.observeFastSendFragments(fragmentCount)
-	self.sentMessageCount.Add(1)
-	if 0 < self.noProgressTimeout {
-		self.unansweredSinceNanos.CompareAndSwap(0, time.Now().UnixNano())
-		self.watchdogOnce.Do(func() {
-			self.startWorker("fast path progress watchdog", self.runProgressWatchdog)
-		})
-	}
 	return fragmentCount, nil
-}
-
-const (
-	p2pFastPathProgressReportByteCount = 11
-	p2pFastPathProgressReportInterval  = 50 * time.Millisecond
-	// A changed count is repeated for a few intervals so one lost report
-	// cannot make a delivered write look unanswered.
-	p2pFastPathProgressReportRepeat = 3
-)
-
-// writeProgressReport emits the receiver's complete-message count as an
-// 11-byte control payload ('U','R','P' + big-endian count), which no
-// fragment can be mistaken for (fragment headers alone are 16 bytes).
-func (self *webRtcFastPath) writeProgressReport(count uint64) error {
-	self.sendMutex.Lock()
-	defer self.sendMutex.Unlock()
-	self.nextSequenceNumber += 1
-	// the report is built in place: nothing is allocated per report beyond
-	// what the RTP writer itself needs (MEMSTEADY gate, FLIGHTGATEFIX §13.3)
-	payload := &self.progressReportPayload
-	payload[0], payload[1], payload[2] = 'U', 'R', 'P'
-	binary.BigEndian.PutUint64(payload[3:], count)
-	self.progressReportPacket.Header = rtp.Header{
-		Version:        2,
-		SequenceNumber: self.nextSequenceNumber,
-	}
-	self.progressReportPacket.Payload = payload[:]
-	err := self.track.track.WriteRTP(&self.progressReportPacket)
-	if err == nil {
-		self.progressReportsSent.Add(1)
-	}
-	return err
-}
-
-// runProgressReporter sends the received-message count while it changes,
-// repeating a change for a few intervals, and stays silent when idle.
-func (self *webRtcFastPath) runProgressReporter() {
-	ticker := time.NewTicker(p2pFastPathProgressReportInterval)
-	defer ticker.Stop()
-	reported := uint64(0)
-	repeat := 0
-	for {
-		select {
-		case <-self.ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		count := self.receivedMessageCount.Load()
-		if count != reported {
-			reported = count
-			repeat = p2pFastPathProgressReportRepeat
-		}
-		if repeat == 0 || !self.track.bound.Load() {
-			continue
-		}
-		repeat -= 1
-		if err := self.writeProgressReport(count); err != nil {
-			if self.log.V(1).Enabled() {
-				self.log.Infof("[p2p-fast]progress report err = %s\n", err)
-			}
-			return
-		}
-	}
-}
-
-// observeProgressReport applies one received report: a higher count is
-// delivery evidence and clears the unanswered-write clock.
-func (self *webRtcFastPath) observeProgressReport(payload []byte) {
-	count := binary.BigEndian.Uint64(payload[3:])
-	self.remoteReportSeen.Store(true)
-	for {
-		seen := self.remoteReceivedCount.Load()
-		if count <= seen {
-			return
-		}
-		if self.remoteReceivedCount.CompareAndSwap(seen, count) {
-			self.unansweredSinceNanos.Store(0)
-			return
-		}
-	}
-}
-
-// runProgressWatchdog retires the association when a fast-path write has
-// gone unanswered by any report advance for noProgressTimeout.
-func (self *webRtcFastPath) runProgressWatchdog() {
-	timeout := self.noProgressTimeout
-	sampleInterval := min(250*time.Millisecond, timeout/4)
-	if sampleInterval <= 0 {
-		sampleInterval = time.Millisecond
-	}
-	ticker := time.NewTicker(sampleInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-self.ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		since := self.unansweredSinceNanos.Load()
-		if since == 0 || !self.remoteReportSeen.Load() {
-			continue
-		}
-		unanswered := time.Since(time.Unix(0, since))
-		if unanswered < timeout {
-			continue
-		}
-		noProgressErr := fmt.Errorf(
-			"fast path no progress for %s after %d sent and %d reported delivered",
-			unanswered.Truncate(time.Millisecond),
-			self.sentMessageCount.Load(),
-			self.remoteReceivedCount.Load(),
-		)
-		if self.log.V(1).Enabled() {
-			self.log.Infof("[p2p-fast]%s; retiring\n", noProgressErr)
-		}
-		if self.reconnect != nil {
-			self.reconnect()
-		}
-		if self.retire != nil {
-			self.retire(noProgressErr)
-		}
-		return
-	}
 }
 
 // startFastPathWarmup starts the generation-local native readiness exchange.
@@ -670,15 +500,6 @@ func (self *webRtcFastPath) readTrack(reader p2pFastPathPacketReader) {
 			continue
 		}
 		payload := packetBuffer[headerByteCount:packetByteCount]
-		if !self.oldStyleReceiverForTest &&
-			len(payload) == p2pFastPathProgressReportByteCount &&
-			payload[0] == 'U' &&
-			payload[1] == 'R' &&
-			payload[2] == 'P' {
-			self.observeProgressReport(payload)
-			MessagePoolReturn(packetBuffer)
-			continue
-		}
 		if len(payload) == 4 &&
 			payload[0] == 'U' &&
 			payload[1] == 'R' &&
@@ -708,12 +529,6 @@ func (self *webRtcFastPath) readTrack(reader p2pFastPathPacketReader) {
 		}
 		if message == nil {
 			continue
-		}
-		self.receivedMessageCount.Add(1)
-		if self.startWorker != nil && !self.oldStyleReceiverForTest {
-			self.reporterOnce.Do(func() {
-				self.startWorker("fast path progress reporter", self.runProgressReporter)
-			})
 		}
 		fragmentCount := p2pFastPathFragmentCount(len(message))
 		select {
