@@ -2430,3 +2430,96 @@ draining lane, which is the win's own signature. If the definitive
 campaign's collapsing seed also shows a longer stall or a larger
 outstanding window than its four siblings, the exports of 27.1 will say so
 before §26.2's numbers are read against it.
+
+## 28. Ninth round: row 1's deferrals are irreducible and free, its writes are the deferral's own bounds, which the lane rule has made redundant
+
+Written 2026-09-12 against 0ca5c71 and the seven-row table.
+
+### 28.1 Which it is
+
+The first scaled round trip of a stall is indistinguishable from slow
+draining by the route's clock, by construction: silence began at the last
+acknowledgement, and for one interval after it the test "the route
+acknowledged something within the last interval" is true whether the next
+acknowledgement is a quarter-interval away or never coming. Deferring the
+firings in that window is therefore the cost of not knowing yet, and it is
+irreducible. It is also free: a deferral is a re-arm, and the contract
+already shows it at one per outstanding item (352 against 360). So the
+honest bound on deferrals is one per item outstanding at onset, and it
+should be stated that way rather than as a number.
+
+The writes are a different object and are not irreducible. Under §27.3 an
+item deferred in that window is re-armed by its backoff to two intervals
+later, which is outside the first round trip, where the route reads silent
+and the item rides the head. A second firing cannot write inside the
+stall by the precedence itself. What wrote 16 to 17 on row 1 is the
+deferral branch's own bookkeeping: `TimeoutResendDeferLimit` and the
+since-last-deferral term deny a deferral to items that had already used
+theirs on the tight, deep lane before the stall, and precedence 2 then
+writes them. That is why the residue scales with items outstanding at
+onset and vanishes on row 2, where fewer items arrive at the stall with
+their deferrals consumed. The second firing is the thing to suppress, and
+it is suppressed not by a mechanism but by removing two rules the lane
+rule has made redundant.
+
+### 28.2 Why the two rules are redundant for reliable-carried items
+
+The limit and the since-last term exist so that a hole nothing can
+acknowledge is deferred once and then retransmitted (§16). For a
+reliable-carried item under the lane rule that bound is enforced
+elsewhere, case by case on a FIFO lane:
+
+- the item was dropped at an endpoint and the lane keeps delivering: the
+  next item sent after it on that route is acknowledged, precedence 1
+  writes it, and the gap rule writes it sooner when three have arrived;
+- the item is the tail, nothing after it: the lane drains to it and goes
+  silent, precedence 3 makes it the route head and probes it with backoff;
+- the lane is dead: silent, probed with backoff, and route retirement
+  moves the window through `scheduleRetiredReliableCarrierRecovery`;
+- the item is merely late in a draining queue: deferred again at each
+  firing while the lane acknowledges items sent before it, which is the
+  right answer for as long as it is true, and it cannot stay true past the
+  item's own position.
+
+There is no case in which a reliable-carried item is deferred without
+bound that is not one of these. So with the lane rule on, precedence 2 is
+unconditional for reliable-carried items: deferral with backoff, no limit,
+no since-last term. Unreliable-carried items are untouched, and with the
+lane rule off both rules stand exactly as measured on 175d82a. This is
+part of the lane rule's own definition, not a fourth flag.
+
+Effect: row 1's writes become the head's probes, two or three, at any
+outstanding count; the relay-only queue-inflation cell loses the 111
+limit releases as well, since a late item on a draining lane is never
+released into a write; and the deferral count is unchanged, being the
+win's own signature.
+
+### 28.3 The contract rows this adds, in the required shape
+
+| Row | Regime | Behaviour | merged | 175d82a | lane rule |
+|---|---|---|---|---|---|
+| 1, restated | stall, tight interval, 571 outstanding | writes at most ⌈log2(stall / interval)⌉ + 1, and no item deferred twice inside the stall | fails | fails | holds |
+| 8 | single reliable lane draining under queue inflation, no drop | a late item is never written while the lane keeps acknowledging items sent before it | fails: the storm | fails: released at the limit (the 111) | holds |
+| 9, the trade | single reliable lane, one endpoint drop, one later same-lane item only | the drop is written at its next timer firing after that item's acknowledgement, not at the acknowledgement | holds, by the timer | holds | holds, and the bound is stated: one interval past the proof |
+
+Row 8 is where merged and 175d82a trade against the metric, each buying
+a real hole's recovery with duplicates of late ones, and the file makes
+both fail it by construction. Row 9 records the one place the removal is
+slower than a rule that wrote on the second firing: a proven hole waits
+for its own timer rather than being written the moment it is proven, at
+most one interval, and the row asserts that bound so it cannot lengthen
+quietly. The held-item re-arm defect the stream found belongs in the same
+file as its own row: a held item's re-arm is never shorter than one of the
+head's intervals, with the ratio check already written.
+
+### 28.4 If the removal is not taken this round
+
+Then the honest bound for row 1 is writes at most the log bound plus the
+items that arrive at the stall with their deferrals consumed, which is
+what the excess is, and the row should say "limit releases" rather than
+leave the number unexplained. But the removal is a narrowing inside a
+candidate that is already off by default, it needs no campaign of its own
+to be judged (the instrument's row 1 and the relay-only cell's 111 are its
+two numbers), and it is what makes the bound independent of the
+outstanding count, which is the quantity the parallel-flow cells and the
+collapsing seed scale with. I would take it.
