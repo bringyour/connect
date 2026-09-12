@@ -2309,3 +2309,124 @@ which the calibration shows no tree can.
 7. The instrument: repetitions from the A/A table as the rule (twenty for a
    storm rate, thirty-three for a 10 % effect), the stall shape kept, and
    every flag landed off re-read by its test rather than forgotten.
+
+## 27. Eighth round: the collapsing seed is the second firing, the prediction for §26.2, and its root-cause contract
+
+Written 2026-09-12 while the definitive campaign runs, for the
+implementation stream building §26.2 against the stall instrument.
+
+### 27.1 What distinguishes one seed from four when the stall is identical
+
+Not the deferral. A deferral is a re-arm; it writes nothing, and its count
+is the count of timers that fired spuriously, which on a draining lane is
+the mechanism of the win (20,564 deferrals against 111 writes relay-only).
+What a stalled lane pays today is the second firing. `shouldDeferTimeoutResend`
+grants a first deferral to every item the lane had answered around, and
+its since-last-deferral term denies the second while the lane is still
+silent, so an item whose second firing lands inside the stall is written,
+as a duplicate, into the lane that is not draining. The earlier stalled
+runs carry that rule's signature, written and deferred nearly equal (2,780
+against 2,036, 2,823 against 2,560). With the backoff the second firing
+lands at two intervals after the first, so whether it lands inside a
+2.75 s stall is set by the interval the timer read at the stall's onset:
+a tight pre-stall lane reads 300 to 500 ms and the window is written from
+0.9 to 1.5 s into the stall; a queue-inflated lane reads near a second and
+the window's second firings fall past 2.75 s and are acknowledged instead.
+That interval is a function of the lane's load in the seconds before the
+stall, which the seed sets and the stall does not. The duplicates then
+queue behind the originals in the stalled lane, the post-stall round trip
+carries them, and the lane inflates on its own duplicates: the collapse.
+So the backoff halved the mode (two seeds of five to one) by moving some
+seeds' second firings past the stall, and could not remove it.
+
+What would settle it independently of §26.2: export the interval the
+timer read at the first firing after the longest gap began, beside the
+gap's offset in the run and the items outstanding at its onset. The
+prediction is that the collapsing seed reads the smallest interval at
+onset of the five.
+
+### 27.2 The prediction for §26.2, stated to be falsified
+
+Under §26.2 a firing in silence rides the route head; the second firing
+is a ride, not a write, at every alignment. On the instrument's shape (a
+200 ms lane holding everything for 2.75 s mid-transfer, which gave 347
+writes and 346 deferrals with the scaled mean and backoff):
+
+- whole-window writes during the stall: at most three, all of them the
+  route head, at the head's first interval and then doubling (0.5, 1.5,
+  3.5 s for a 500 ms interval, so two inside 2.75 s; three for 300 ms);
+- no item written on its second firing during the stall, and no item
+  deferred twice during it;
+- deferrals: only the firings inside the first interval of the stall,
+  while the route's last acknowledgement is still within one interval,
+  bounded by the items sent in the interval before the stall; they are
+  re-arms and are not the metric;
+- after the stall: the originals drain in order, the probes' copies are
+  discarded past the head, and no secondary inflation follows; the
+  transfer's excess over an unstalled run is the stall plus one drain;
+- on the campaign's relay-only cell: no seed below its defer-off value,
+  the mode gone at every alignment, the median unchanged.
+
+Falsified if the stall produces more than ten writes, any second-firing
+write, or a post-stall firing rate above the pre-stall one. If the
+instrument agrees and the campaign seed still collapses, the collapse is
+not the second firing, and the exports of 27.1 are what remain.
+
+### 27.3 The precedence, made exact
+
+§26.2 left the draining test ambiguous. Per route, in the fixed array:
+`highestAckedSequenceNumber` and `lastAckNanos`, both set in `receiveAck`
+from the acknowledged item's `carrierRoute`, reset on a generation change.
+At a reliable-carried item's timer firing, in this order:
+
+1. `highestAckedSequenceNumber > item.sequenceNumber`: the route
+   delivered something sent after this item, so the item was dropped at an
+   endpoint; write, with `sendCount` backoff, as today.
+2. `now − lastAckNanos < scaledRtt`: the route is draining; §13.5's
+   deferral with its backoff, limit and since-last rule unchanged.
+3. otherwise the route is silent: if the item is the oldest outstanding
+   item on its route, write it with backoff and count a probe; else re-arm
+   it to that head's `resendTime`, counting neither a send nor a deferral.
+
+The route clocks, not the sequence's `lastCumulativeAckTime`, decide 2
+and 3, so on a mixed route a relay whose head is stuck while direct-lane
+acknowledgements keep the cumulative ack moving is still read as silent
+and probed, not deferred to its limit and written. On a single lane the
+two clocks coincide. Unreliable-carried items keep merged's rules whole.
+
+### 27.4 The metrics and their root-cause contract
+
+New: `LaneProbeWriteCount`, `LaneProbeRideCount`,
+`LaneProvenTimeoutWriteCount`. Probes also count in `TimeoutResendWriteCount`
+so the campaign's total-recovery-writes primary sees them. Their test is
+`flight_gate_lane_recovery_contract_test.go`, in the seven-row shape: each
+row states a regime and a behaviour, is built from API that predates the
+program (hand-built scoreboards for the gap rows, the stall instrument's
+two real clients for the timer rows), and is run against merged, 175d82a
+and §26.2 so the record says which tree holds which row and why.
+
+| Row | Regime | Behaviour | merged | 175d82a | §26.2 |
+|---|---|---|---|---|---|
+| 1 | single reliable lane, 2.75 s stall mid-transfer, tight pre-stall interval | writes during the stall at most ⌈log2(stall / interval)⌉ + 1 | fails: the window | fails: second firings | holds |
+| 2 | same, queue-inflated pre-stall interval | the same bound | fails | holds by alignment | holds |
+| 3 | single reliable lane, queue inflation, draining | no write while the cumulative ack advances (§15.1) | fails: the storm | holds | holds |
+| 4 | single reliable lane, one endpoint drop with three later same-lane acks | recovered in one gap round, written once | holds | holds | holds |
+| 5 | mixed route, relay item overtaken by three direct-lane acks, relay draining | not written | fails: F11b expires and writes | fails | holds |
+| 6 | mixed route, relay item proven by three later relay-lane acks | written in that round | holds | holds | holds |
+| 7 | mixed route, relay endpoint drop with direct-lane acks only, no later relay item | recovered within F11b's grace | holds | holds | fails: waits the head's probe |
+
+Row 7 is the trade, written so it is assertable and so merged's row
+records where merged is faster: §26.2 recovers that drop by the probe's
+backoff rather than the grace, and the row states the bound (the head's
+interval, doubling). Rows 1 and 5 are where merged trades against the
+metric, buying ordered-stream progress with duplicates, and the file makes
+merged fail them by construction rather than by a campaign.
+
+### 27.5 What is not claimed
+
+§26.2 does not shorten the stall, which is the relay's; it does not change
+the unreliable lane; and it does not lower the deferral count on a
+draining lane, which is the win's own signature. If the definitive
+campaign's collapsing seed also shows a longer stall or a larger
+outstanding window than its four siblings, the exports of 27.1 will say so
+before §26.2's numbers are read against it.
