@@ -161,6 +161,14 @@ type mixedLaneOptions struct {
 	// reliableTimerUsesDeviation turns on FLIGHTGATEFIX §25.2's RFC 6298
 	// timer, off in the landed tree.
 	reliableTimerUsesDeviation bool
+	// reliableLaneProvenRecovery turns on FLIGHTGATEFIX §26.2's lane rule,
+	// off in the landed tree.
+	reliableLaneProvenRecovery bool
+	// slowDropFraction drops that share of the relay's frames, from a seeded
+	// source. A reliable carrier retransmits below Transfer, so this models
+	// a drop at an endpoint rather than on the wire: the only reliable-lane
+	// loss Transfer's own recovery is responsible for (FLIGHTGATEFIX §26.2).
+	slowDropFraction float64
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -207,6 +215,8 @@ func newMixedLaneHarnessWithOptions(
 			!options.deferTimeoutResendBackoffOff
 		settings.SendBufferSettings.ReliableTimerUsesDeviation =
 			options.reliableTimerUsesDeviation
+		settings.SendBufferSettings.ReliableLaneProvenRecovery =
+			options.reliableLaneProvenRecovery
 		if 0 < options.resendBudget {
 			settings.SendBufferSettings.ResendQueueMaxByteCount = options.resendBudget
 		}
@@ -308,6 +318,10 @@ func newMixedLaneHarnessWithOptions(
 	// One pipeline per physical lane: a latency, and optionally a bandwidth
 	// of one frame per serialization interval. Order within a lane is kept
 	// and nothing is dropped.
+	var slowLoss *laneLossProcess
+	if 0 < options.slowDropFraction {
+		slowLoss = newLaneLossProcess(20260913, options.slowDropFraction, nil)
+	}
 	var fastLoss, fastReplyLoss *laneLossProcess
 	if options.fastBurstLoss != nil {
 		fastLoss = newLaneLossProcess(20260911, 0, options.fastBurstLoss)
@@ -413,7 +427,7 @@ func newMixedLaneHarnessWithOptions(
 		}()
 	}
 	forward(senderOutFast, receiverInFast, fastDelay, options.fastSerialization, fastLoss, &harness.fastCarried)
-	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization, nil, &harness.slowCarried)
+	forward(senderOutSlow, receiverInSlow, slowDelay, options.slowSerialization, slowLoss, &harness.slowCarried)
 	forward(receiverOutFast, senderIn, fastDelay, options.replySerialization, fastReplyLoss, nil)
 	forward(receiverOutSlow, senderIn, slowDelay, 0, nil, nil)
 
