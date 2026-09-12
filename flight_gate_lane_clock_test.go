@@ -67,89 +67,48 @@ func TestUnreliableItemTimerIsTheSequenceClock(t *testing.T) {
 	}
 }
 
-// D2. On a forced direct route the sequence window is fed by the direct
-// lane's own acknowledgements, stock's rule; with a reliable sibling it is
-// not, which is F10 and which TestSendSequenceAckRttIgnoresUnreliableCarrier
-// guards from the other side.
-func TestForcedDirectRouteFeedsTheSequenceWindow(t *testing.T) {
+// FLIGHTGATEFIX §19.7. D2 is withdrawn: a forced direct route keeps
+// merged's cold floor for the timer and for probe pacing, and the sequence
+// window stays unsampled. RttWindow has no reset, so feeding it there
+// would leave a flapping route's direct-lane samples mis-clocking the
+// relay for up to 128 acks or 60 s after the relay returns.
+func TestForcedDirectRouteKeepsMergedsColdFloor(t *testing.T) {
 	for _, arm := range []struct {
 		name            string
 		reliableSibling bool
-		moves           bool
 	}{
-		{"forced direct route", false, true},
-		{"mixed route", true, false},
+		{"forced direct route", false},
+		{"mixed route", true},
 	} {
 		sequence := laneClockSequence(t, arm.reliableSibling)
+		settings := sequence.sendBufferSettings
 		beforeScaled := sequence.rttWindow.ScaledRtt()
 		beforeProbe := sequence.rttWindow.ProbeRtt()
 		item := &sendItem{transferFrameBytes: make([]byte, 64)}
 		sequence.observeCarrierWrite(item, transferWriteDisposition{unreliable: true})
-		for range 8 {
+		for range settings.RttWindowSize {
 			sequence.observeAckRtt(item, laneClockAckTag(350*time.Millisecond))
 		}
-		afterScaled := sequence.rttWindow.ScaledRtt()
-		afterProbe := sequence.rttWindow.ProbeRtt()
-		movedScaled := afterScaled != beforeScaled
-		movedProbe := afterProbe != beforeProbe
-		if movedScaled != arm.moves || movedProbe != arm.moves {
+		if after := sequence.rttWindow.ScaledRtt(); after != beforeScaled {
 			t.Errorf(
-				"%s: an ack the direct lane carried moved the sequence clock=%v and the probe=%v, want %v: "+
-					"with no relay to describe the direct lane's acks are the only samples there are",
-				arm.name, movedScaled, movedProbe, arm.moves,
+				"%s: acks the direct lane carried moved the sequence clock %s -> %s; the window "+
+					"has no reset, so a flapping route would mis-clock the relay afterwards",
+				arm.name, beforeScaled, after,
 			)
 		}
-	}
-}
-
-// D2, the trade. On a forced direct route the timer is stock's: the cold
-// floor until the lane answers, then twice the window mean floored at the
-// retransmit pacing floor and capped at the unreliable ceiling. It is
-// never a sixteen-sample mean, which is what tracked a cell-edge uplink's
-// own serialisation queue faster than the queue moved.
-func TestForcedDirectRouteFirstRetransmitMatchesStock(t *testing.T) {
-	sequence := laneClockSequence(t, false)
-	settings := sequence.sendBufferSettings
-	item := &sendItem{transferFrameBytes: make([]byte, 64)}
-	sequence.observeCarrierWrite(item, transferWriteDisposition{unreliable: true})
-
-	if cold := sequence.resendIntervalForItem(item, 1); cold != settings.MinResendInterval {
-		t.Fatalf("before any ack the first retransmit is due in %s, want the cold floor %s",
-			cold, settings.MinResendInterval)
-	}
-	for range settings.RttWindowSize {
-		sequence.observeAckRtt(item, laneClockAckTag(350*time.Millisecond))
-	}
-	first := sequence.resendIntervalForItem(item, 1)
-	if want := 700 * time.Millisecond; first != want {
-		t.Fatalf(
-			"after %d acks at 350 ms the first retransmit is due in %s, want %s, twice the window mean: "+
-				"the clock must be the 128-sample window, never a sixteen-sample mean",
-			settings.RttWindowSize, first, want,
-		)
-	}
-	if first <= settings.RttMinResendInterval {
-		t.Fatalf("the timer %s is at or under the pacing floor %s, so the lane is not being measured",
-			first, settings.RttMinResendInterval)
-	}
-	// a short burst of fast acknowledgements must not move the clock far: a
-	// 128-sample window absorbs sixteen of them, where a sixteen-sample mean
-	// would be entirely replaced and collapse to the pacing floor. That
-	// collapse is what chased a cell-edge uplink's own serialisation queue
-	// faster than the queue moved.
-	for range 16 {
-		sequence.observeAckRtt(item, laneClockAckTag(50*time.Millisecond))
-	}
-	afterBurst := sequence.resendIntervalForItem(item, 1)
-	if afterBurst < 550*time.Millisecond || 700*time.Millisecond < afterBurst {
-		t.Fatalf(
-			"after sixteen acks at 50 ms the timer is %s, want it still near %s: a sixteen-sample "+
-				"mean would have collapsed to the %s pacing floor",
-			afterBurst, first, settings.RttMinResendInterval,
-		)
-	}
-	if capped := sequence.resendIntervalForItem(item, 8); capped != settings.UnreliableMaxResendInterval {
-		t.Fatalf("the backed-off timer is %s, want the unreliable ceiling %s",
-			capped, settings.UnreliableMaxResendInterval)
+		if after := sequence.rttWindow.ProbeRtt(); after != beforeProbe {
+			t.Errorf("%s: acks the direct lane carried moved the probe clock %s -> %s",
+				arm.name, beforeProbe, after)
+		}
+		if _, sampled := sequence.rttWindow.ScaledRttSampled(); sampled {
+			t.Errorf("%s: the sequence window is sampled by direct-lane acknowledgements", arm.name)
+		}
+		if first := sequence.resendIntervalForItem(item, 1); first != settings.MinResendInterval {
+			t.Errorf(
+				"%s: the first retransmit of a direct-carried item is due in %s, want merged's "+
+					"cold floor %s",
+				arm.name, first, settings.MinResendInterval,
+			)
+		}
 	}
 }

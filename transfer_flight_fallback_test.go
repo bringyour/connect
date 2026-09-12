@@ -425,7 +425,9 @@ func TestSelectiveAckGapSkipsUnreliableItemsWhileBothLanesCarryAcks(t *testing.T
 			items[4].selectiveGapRecovered, items[4].recoveryKind)
 	}
 
-	// one ack lane only: the ordering rule is untouched, whichever lane
+	// one ack lane only: the ordering rule is untouched, whichever lane.
+	// With no reliable sibling every acknowledgement travels the only lane
+	// there is, so every one is conclusive (FLIGHTGATEFIX §19 D4).
 	sequenceOne, itemsOne := newSelectiveAckRecoveryTestSequence(8, sendTime)
 	sequenceOne.client = &Client{}
 	sequenceOne.flightController = newSendFlightController(sequenceOne.sendBufferSettings)
@@ -434,6 +436,7 @@ func TestSelectiveAckGapSkipsUnreliableItemsWhileBothLanesCarryAcks(t *testing.T
 	itemsOne[0].unreliableFlightTracked = true
 	for _, index := range []int{1, 2, 3, 5, 6, 7} {
 		itemsOne[index].selectiveAcked = true
+		itemsOne[index].selectiveAckConclusive = true
 	}
 	sequenceOne.scheduleSelectiveAckRecovery(currentTime)
 	if !itemsOne[0].selectiveGapRecovered || itemsOne[0].resendTime.After(currentTime) {

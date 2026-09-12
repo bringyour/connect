@@ -1881,9 +1881,22 @@ func (self *routeSnapshot) transportType(route Route) TransportType {
 }
 
 func (self *routeSnapshot) receiveDisposition(route Route) transferReceiveDisposition {
+	properties := self.routeCarrierProperties[route]
+	reliability := properties.ReceiveReliability
+	if reliability == CarrierReliabilityUnknown {
+		// A carrier that publishes properties but no receive reliability
+		// still says whether it can drop. Only a reader with no carrier
+		// information stays Unknown, and Unknown counts as unreliable
+		// (FLIGHTGATEFIX §19 D4).
+		if properties.Unreliable {
+			reliability = CarrierReliabilityUnreliable
+		} else {
+			reliability = CarrierReliabilityReliable
+		}
+	}
 	return transferReceiveDisposition{
 		transportType: self.transportType(route),
-		reliability:   self.routeCarrierProperties[route].ReceiveReliability,
+		reliability:   reliability,
 	}
 }
 
