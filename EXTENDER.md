@@ -233,7 +233,10 @@ bundled list, loaded from an embedded xor-masked gzip resource decoded on
 first use, so the names do not appear as plain strings in the binary (the
 existing FIXME). The initial content is an operator decision and ships
 empty until provided; tests install synthetic `.example` names through a
-seam. A client dial picks one spoof domain per dialer at random.
+seam. A client dial picks one spoof domain per dialer at random. While the
+bundled list is empty, a dial presents no SNI at all: the operator's name
+must never appear in the outer ClientHello, and a TLS connection without
+SNI is what an extender request to an ip literal looks like anyway.
 `ExtenderProfile` becomes `{ConnectMode tcptls|quic|dns, ServerName, Port,
 Fragment, Reorder, DnsTld}` and stays comparable; fragment and reorder apply
 to tcp only. `ExtenderConfig` gains `PublicKey`. The dial per carrier: tcp
@@ -491,7 +494,10 @@ the host has (`probeFamilySupport`), and creates one dialer per address
 and carrier the record lists, priorities 100 tcp, 110 quic, 120 dns,
 minimum weight `ExtenderMinimumWeight`. `clientDialer.Update` reports to
 the directory. `collapseExtenderDialers` also drops dialers whose address
-is held, revoked or removed. `MaxExtenderCount`, `ExtenderDropTimeout`,
+is held, revoked or removed, and judges the drop timeout from the later of
+a dialer's creation and its last error, so a dialer that was expanded but
+never tried survives to its first attempt. Expansion interleaves v4 and v6
+candidates so a dual-stack host does not spend its budget on one family. `MaxExtenderCount`, `ExtenderDropTimeout`,
 `ExtenderConfigs` and `SetCustomExtenders` keep their behavior; a manual
 extender still excludes every other dialer.
 
@@ -505,8 +511,16 @@ candidate, verified first, tcp then quic then dns carriers, with
 initial sample done. In the feed role it keeps the stream and reconnects
 through another candidate on failure with backoff 1 s doubling to 5
 minutes. It re-bootstraps over DNS every 6 hours and whenever fewer than 4
-active entries remain, and reconnects on network change. `Status()`
-reports feed connected, the feed ip, last sample time and last error.
+active entries remain (held addresses count as active here; the startup
+gate of E4 counts only usable ones), refreshes the root keys from hello
+every 6 hours, and reconnects on network change. A subscribed stream that
+is silent for 90 s, three keepalive intervals, is treated as gone. A
+subscription that ends advances the backoff, which resets only after a
+stream stayed up for the maximum backoff, so an extender that accepts,
+samples and drops is not redialed every second. `Status()` reports feed
+connected, the feed ip, last sample time, last error and whether the
+initial attempt is done, which is set at `end_of_sample` so a served
+sample releases the gate at once.
 
 E4. Startup gate. `parallelEval` waits for the initial sample to complete
 only while the directory has no usable entry and the network client is
@@ -523,7 +537,8 @@ with the env prefix rule, `<env>-extender.<host>` for non-main envs),
 `GossipUrl` (default `wss://gossip.<host>` with the same rule) and
 `ExtenderRootPublicKeys`. `NetExtenderAutoConfigure` and its getter are
 removed; `NetExtender` stays. `NetworkSpace` constructs the directory, the
-store at `<storagePath>/.extenders` (memory only without a storage path),
+store at the space's local state directory as `.extenders` beside the
+other dot files (memory only without a storage path),
 the network client, and in the member role the gossip node, at
 construction, and closes them with the space. cgo exports and js types are
 regenerated.
@@ -533,7 +548,8 @@ F2. Status. `NetworkSpace.GetExtenderStatus() *ExtenderStatus` with
 peer), `GossipPeerCount`, `KnownCount`, `ActiveCount`, `WarningCount`,
 `HoldCount`, `LastSampleTime`, `LastError` and `Extenders
 *ExtenderInfoList`; `ExtenderInfo` with `Id` (base58 of the key, empty
-when unverified), `Ip`, `IpVersion`, `Carriers`, `CountryCode`, `State`
+when unverified), `Ip`, `IpVersion`, `Carriers` (comma-separated, since
+gomobile binds no string slice), `CountryCode`, `State`
 (`active`, `warning`, `hold`, `unverified`, `revoked`, `expired`),
 `Source` (`dns`, `feed`, `gossip`, `bootstrap`, `manual`),
 `LastSuccessTime`, `LastFailureTime`, `SuccessCount`, `FailureCount`,
