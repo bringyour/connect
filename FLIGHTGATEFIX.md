@@ -1715,3 +1715,137 @@ cells must stay INDISTINGUISHABLE.
    `ResendQueueMaxByteCount` exceeds the lane's measured drain in one
    scaled RTT, which is the estimator this design avoided and would then
    have earned its place.
+
+## 22. Fourth round: admission is unbounded on a reliable lane in both trees, and the bound must be measured from delivery
+
+Design for review, 2026-09-12, from the §21.5 reproduction (f034b84):
+one reliable lane whose drain steps down mid-transfer, queue depth
+settable, the default 2 MiB resend budget.
+
+### 22.1 What the reproduction settled, and what §21 got wrong
+
+| Arm | Time | Peak resend queue | Timeouts written |
+|---|---|---|---|
+| shallow queue, defer on | 6.1 s | 709 KB | 2 |
+| deep queue, defer off | 12.1 s | 2,099,737 B | 1,516 |
+| deep queue, defer on | 6.6 s | 2,099,782 B | 115 |
+
+The accidental throttle is real but it is the route channel, not the
+rewrites: with a shallow queue the channel fills, writes block, and the
+resend queue stays at a third of the budget. With a deep queue nothing
+blocks, and both arms reach the budget within 45 bytes of each other.
+§21.2's claim that the deferral removed the throttle is withdrawn: merged
+admits the full 2 MiB against a lane that has just proved it cannot drain
+what it holds, and the defer is protective in that state, about twofold
+(2 m 2 s and 72 of 121 windows dead against 58 s and 21 of 58 at scale).
+§21.3's pause is withdrawn with it: it acts only while a deferral is
+outstanding, so it cannot act in the worse, defer-off shape at all.
+
+What the reproduction cannot show: a route-generation change, and with it
+the carrier-change writes and the multi-client's send-stall bar in the two
+stalled campaign runs. That component stays open, and 22.5 says what
+settles it. The bimodality being two seeds in five on one cell, merged's
+own rate is bounded only weakly: zero storms in fifteen clean-lan runs
+puts it under about a fifth per run, and the same cell showed 6 dead
+windows in 22 for the defer-off arm of an earlier tree, so the rig's
+baseline is bimodal for everyone and the reproduction must count.
+
+### 22.2 The tension, resolved
+
+The numbers ask for a bound on unacknowledged bytes against what the lane
+drains, and a bound against a drain needs a measure of the drain. The
+question is only which measure. The one to avoid is the window's mean
+round trip: it lags an inflation by design and is what the timer already
+reads. The one to use is delivery itself: the bytes the lane acknowledged
+during the last scaled round trip are a count the sequence already has,
+not a model, and they are a floor on the drain that no queue depth can
+inflate. When the drain steps down, the count falls within one scaled
+round trip and the bound follows; when it steps up, the bound admits twice
+what was delivered and grows by doubling. And it is the timer's own
+margin: unacknowledged bytes at most what the lane delivered in `RttScale`
+round trips means the queue adds at most one round trip of delay, so the
+scaled timer fires on loss and not on depth. The bound is not an estimate
+of a rate but the statement that a lane may hold what it has shown it can
+carry.
+
+### 22.3 The change: reliable-lane admission bounded by delivered bytes
+
+- `SendSequence.deliveredBytesRing`: sixteen entries of (unix nanos,
+  acknowledged byte total), allocated once with the sequence, advanced on a
+  cumulative acknowledgement when the newest entry is older than
+  `RttMinResendInterval / 4`. `deliveredBytes(d)` is the total now less the
+  entry just older than `now − d`; a scan of at most sixteen. 256 bytes per
+  sequence, the only retained cost.
+- `reliableUnackedBytes = resendQueue.byteCount − flightController.byteCount`:
+  what the reliable lane holds, since the unreliable flight already bounds
+  the rest.
+- `reliableAdmissionByteLimit = max(ResendQueueMinByteCount, deliveredBytes(rttWindow.ScaledRtt()))`.
+- At the write site that evaluates `unreliableFlightGates`, a new Pack
+  whose write would be reliable-only, or any new Pack when no unreliable
+  carrier is active, waits while `reliableAdmissionByteLimit <=
+  reliableUnackedBytes`, through the flight gate's wait path, until an
+  acknowledgement moves either side. Retransmits, probes and gap
+  recoveries are not admissions and are unaffected, and so are Packs the
+  unreliable flight admits.
+- Where it is inert, by construction: under the mobile budget
+  (`ResendQueueMaxByteCount == ResendQueueMinByteCount`, 256 KiB) the floor
+  is the budget, so the low-bar cells and the device rig are untouched; on
+  a lane whose delivery over a scaled round trip exceeds the budget (a LAN
+  relay at 300 ms floor delivers tens of megabytes) the limit is never
+  below the budget. It acts only where the budget exceeds 256 KiB and the
+  lane delivers less than the budget per scaled round trip: relays between
+  about 5 and 40 Mbit/s, which is the queue-inflation cell (20 Mbit/s,
+  bound near 1 MB against 2 MiB today) and the storm runs of clean-lan.
+- `SendBufferSettings.ReliableAdmissionBoundedByDelivery`, default true,
+  identity-bearing for the harness; counters
+  `ReliableAdmissionWaitCount`, `ReliableAdmissionWaitDuration`,
+  `ReliableAdmissionByteLimitMinimum`.
+
+The defer stays on and unchanged: it covers the transition, when the pipe
+still holds what the old bound admitted and the mean has not yet followed,
+and the bound covers the steady state, so the storm has no state to grow
+in. Merged's recovery path stays. Rejected: a reduction-triggered window
+for reliable lanes (a spurious timeout as the trigger halves the exchange
+low-bar cells, whose queues fire that signal constantly); a length cap on
+the deferral (depth, not time); the route channel's capacity as the bound
+(it is a memory constant, not a lane property, and the deep-queue arm
+shows what it is worth).
+
+### 22.4 Tests, red on b0b04c8 unless marked
+
+| Test | Regime | Asserts |
+|---|---|---|
+| `TestReliableAdmissionIsBoundedByDelivery` | one reliable lane, deep queue, 2 MiB budget | unacknowledged bytes on the lane never exceed `max(256 KiB, delivered over one scaled RTT)`; today they reach the budget |
+| `TestReliableAdmissionBoundFollowsAStepDown` | one reliable lane, drain steps down | within two scaled round trips of the step the lane's unacknowledged bytes are under the new bound and no whole-window timeout is written after that |
+| the reproduction's three arms as one test | one reliable lane | deep queue with the bound: peak resend queue under half the budget, time within the shallow arm's, timeouts written at most the shallow arm's |
+| `TestReliableAdmissionBoundIsInertUnderTheMobileBudget` (guard) | mobile budget | admission decisions identical to today's, `ReliableAdmissionWaitCount` zero |
+| `TestReliableAdmissionBoundDoesNotStarveAFastLane` (guard) | one reliable lane, delivery above the budget | the limit never falls below the budget |
+| `TestDeliveredBytesRingAllocatesNothing` | | the ring is built with the sequence; the admission check and the ring's advance allocate nothing; `sendItem` gains no bytes |
+
+### 22.5 Measurements, in order
+
+1. The rig reproduction of §21.5 step 1 stands, unchanged in purpose and
+   now more pointed: seeds 20260912 and 20260913 three times each, defer
+   on and off, on b0b04c8 and 66a2130, with transport logging at V(1) and
+   a route-generation change count exported beside the carrier-change
+   writes and the multi-client's verdict events. It settles two things the
+   instrument cannot: whether a66 stalls at the same rate, which decides
+   whether the removal set is exonerated, and whether the route churn
+   follows the send-stall bar, which decides whether the churn is the
+   tunnel's queue delay (then the bound is its fix, since a bound near 1 MB
+   at 20 Mbit/s is 400 ms of queue against a 3 s bar) or the connection
+   layer (then it is a transport finding outside this program's path).
+2. The bound alone against b0b04c8 on all seventeen cells and both
+   queue-inflation A/Bs, with `ReliableAdmissionWaitCount` reported per
+   cell so where it acted is visible. Bar: relay-only every seed at or
+   above 15 Mbit/s with no dead window; mixed at or above 14.6 Mbit/s and
+   at most 4 dead windows; `clean-lan / tcp-parallel` with no run above 9
+   gap resends and no written whole-window timeout; the six mixed cells
+   behind on gap resends at or above merged; the six exchange low-bar cells
+   and the three forced-direct cells with the wait count zero and medians
+   INDISTINGUISHABLE, which is the inertness claim measured; memory not
+   worse beyond 256 bytes per sequence, in the envelope test.
+3. If step 1 shows a66 stalling at b0b's rate and step 2 clears the bar,
+   the landing is b0b04c8 plus the bound. If step 2 leaves a relay-only
+   seed stalled with the wait count active, the residue is the connection
+   layer and the transport logs of step 1 are where the next round starts.
