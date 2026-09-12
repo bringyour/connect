@@ -193,9 +193,8 @@ func udpAddrFamily(udpAddr *net.UDPAddr) int {
 // a proxy would prove the proxy's family, not the provider's.
 func NewDirectClientStrategy(ctx context.Context, settings *ClientStrategySettings, ipFamily int) *ClientStrategy {
 	direct := *settings
-	direct.ExtenderNetworks = nil
-	direct.ExtenderHostnames = nil
 	direct.ExtenderConfigs = nil
+	direct.ExtenderDirectory = nil
 	direct.ExpandExtenderProfileCount = 0
 	direct.MaxExtenderCount = 0
 	direct.ConnectSettings.ProxySettings = nil

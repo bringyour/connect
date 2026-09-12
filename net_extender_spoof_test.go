@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"net/netip"
 	"slices"
 	"testing"
 )
@@ -87,53 +88,52 @@ func TestSpoofDomainsTestSeamInstallsAndRestores(t *testing.T) {
 	}
 }
 
-// With no spoof names there is nothing to front an extender with, so discovery
-// enumerates nothing (A10).
-func TestEnumerateExtenderProfilesIsEmptyWithoutSpoofDomains(t *testing.T) {
-	restore := setSpoofDomainsForTest(nil)
-	defer restore()
-	if profiles := EnumerateExtenderProfiles(8, map[ExtenderProfile]bool{}); len(profiles) != 0 {
-		t.Fatalf("enumerated %d profiles without a spoof list", len(profiles))
-	}
-}
-
-// Profiles draw their names from the spoof list and use the fixed carrier
-// ports; nothing already visited is enumerated again (A10).
-func TestEnumerateExtenderProfilesUsesSpoofDomainsAndFixedPorts(t *testing.T) {
+// A dialer built from a directory candidate takes its outer name from the
+// spoof list and its port from the record (A10, E2).
+func TestExtenderConfigsForCandidateUseSpoofDomainsAndRecordPorts(t *testing.T) {
 	restore := setSpoofDomainsForTest([]string{"one.example", "two.example"})
 	defer restore()
 
-	profiles := EnumerateExtenderProfiles(64, map[ExtenderProfile]bool{})
-	if len(profiles) == 0 {
-		t.Fatal("no profiles were enumerated")
+	candidate := &ExtenderCandidate{
+		Ip:       netip.MustParseAddr("192.0.2.10"),
+		Carriers: []string{ExtenderCarrierTcp, ExtenderCarrierQuic, ExtenderCarrierDns},
+		TcpPort:  8443,
+		UdpPort:  9443,
+		DnsPort:  5353,
+		DnsTld:   "x.example.",
+	}
+	extenderConfigs := extenderConfigsForCandidate(candidate, "")
+	if len(extenderConfigs) != 3 {
+		t.Fatalf("configs = %d, expected one per carrier", len(extenderConfigs))
 	}
 	carriers := map[ExtenderConnectMode]bool{}
-	for _, profile := range profiles {
+	for _, extenderConfig := range extenderConfigs {
+		profile := extenderConfig.Profile
 		if profile.ServerName != "one.example" && profile.ServerName != "two.example" {
 			t.Fatalf("profile name = %q, expected a spoof name", profile.ServerName)
 		}
 		carriers[profile.ConnectMode] = true
 		switch profile.ConnectMode {
 		case ExtenderConnectModeTcpTls:
-			if profile.Port != ExtenderTcpPort {
-				t.Fatalf("tcp port = %d, expected %d", profile.Port, ExtenderTcpPort)
+			if profile.Port != 8443 {
+				t.Fatalf("tcp port = %d, expected the record port", profile.Port)
 			}
 			if profile.DnsTld != "" {
 				t.Fatalf("tcp profile carries a dns tld %q", profile.DnsTld)
 			}
 		case ExtenderConnectModeQuic:
-			if profile.Port != ExtenderQuicPort {
-				t.Fatalf("quic port = %d, expected %d", profile.Port, ExtenderQuicPort)
+			if profile.Port != 9443 {
+				t.Fatalf("quic port = %d, expected the record port", profile.Port)
 			}
 			if profile.Fragment || profile.Reorder {
 				t.Fatal("a quic profile carries the tcp resilience flags")
 			}
 		case ExtenderConnectModeDns:
-			if profile.Port != ExtenderDnsPort {
-				t.Fatalf("dns port = %d, expected %d", profile.Port, ExtenderDnsPort)
+			if profile.Port != 5353 {
+				t.Fatalf("dns port = %d, expected the record port", profile.Port)
 			}
-			if profile.DnsTld != DefaultExtenderDnsTld {
-				t.Fatalf("dns tld = %q, expected %q", profile.DnsTld, DefaultExtenderDnsTld)
+			if profile.DnsTld != "x.example." {
+				t.Fatalf("dns tld = %q, expected the record tld", profile.DnsTld)
 			}
 			if profile.Fragment || profile.Reorder {
 				t.Fatal("a dns profile carries the tcp resilience flags")
@@ -148,18 +148,28 @@ func TestEnumerateExtenderProfilesUsesSpoofDomainsAndFixedPorts(t *testing.T) {
 		ExtenderConnectModeDns,
 	} {
 		if !carriers[connectMode] {
-			t.Fatalf("no %s profile was enumerated", connectMode)
+			t.Fatalf("no %s config was built", connectMode)
 		}
 	}
+}
 
-	visited := map[ExtenderProfile]bool{}
-	for _, profile := range profiles {
-		visited[profile] = true
+// With no bundled spoof list a dialer still works: it carries no outer name,
+// and the dial presents the destination name instead (A10).
+func TestExtenderConfigsForCandidateWithoutSpoofDomains(t *testing.T) {
+	restore := setSpoofDomainsForTest(nil)
+	defer restore()
+
+	candidate := &ExtenderCandidate{
+		Ip:       netip.MustParseAddr("192.0.2.11"),
+		Carriers: []string{ExtenderCarrierTcp},
+		TcpPort:  ExtenderTcpPort,
 	}
-	for _, profile := range EnumerateExtenderProfiles(8, visited) {
-		if visited[profile] {
-			t.Fatalf("profile %v was enumerated again", profile)
-		}
+	extenderConfigs := extenderConfigsForCandidate(candidate, "")
+	if len(extenderConfigs) != 1 {
+		t.Fatalf("configs = %d, expected one", len(extenderConfigs))
+	}
+	if extenderConfigs[0].Profile.ServerName != "" {
+		t.Fatalf("profile name = %q, expected none", extenderConfigs[0].Profile.ServerName)
 	}
 }
 

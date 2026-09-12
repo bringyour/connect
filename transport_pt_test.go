@@ -1203,3 +1203,98 @@ func TestPacketTranslationDeliversOtherDnsQueries(t *testing.T) {
 		t.Fatal("the second query was not delivered to the hook")
 	}
 }
+
+// A TXT query outside every encoding tld is a forwarder query, not a
+// translation query (EXTENDER.md A6). It used to decode as an empty
+// translation packet and be dropped, so the forwarder never saw it.
+func TestPacketTranslationDeliversTxtQueriesOutsideTheEncodingTld(t *testing.T) {
+	tlds := [][]byte{[]byte("pt.example.")}
+	var decodeBuf [1024]byte
+
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 0x5151})
+	builder.EnableCompression()
+	if err := builder.StartQuestions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.Question(dnsmessage.Question{
+		Name:  dnsmessage.MustNewName("mail.other.example."),
+		Type:  dnsmessage.TypeTXT,
+		Class: dnsmessage.ClassINET,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queryBytes, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, tld, err, otherData := decodeDnsRequest(queryBytes, decodeBuf, tlds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tld != nil {
+		t.Fatalf("tld = %q, expected no encoding tld", tld)
+	}
+	if !otherData {
+		t.Fatal("a txt query outside every encoding tld was not an other query")
+	}
+}
+
+// The same query reaches the hook through a live decode53 socket, which is the
+// path the extender's forwarder sits on (A6).
+func TestPacketTranslationDeliversTxtQueriesToTheHook(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serverConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	otherQueries := make(chan []byte, 4)
+	settings := DefaultPacketTranslationSettings()
+	settings.DnsTlds = [][]byte{[]byte("pt.example.")}
+	settings.DnsOtherHandler = func(queryBytes []byte, addr net.Addr) {
+		otherQueries <- queryBytes
+	}
+	translation, err := NewPacketTranslation(ctx, PacketTranslationModeDecode53, serverConn, settings)
+	if err != nil {
+		serverConn.Close()
+		t.Fatal(err)
+	}
+	defer translation.Close()
+
+	clientConn, err := net.DialUDP("udp", nil, serverConn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 0x6161})
+	builder.EnableCompression()
+	if err := builder.StartQuestions(); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.Question(dnsmessage.Question{
+		Name:  dnsmessage.MustNewName("mail.other.example."),
+		Type:  dnsmessage.TypeTXT,
+		Class: dnsmessage.ClassINET,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queryBytes, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientConn.Write(queryBytes); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delivered := <-otherQueries:
+		if !bytes.Equal(delivered, queryBytes) {
+			t.Fatalf("delivered %x, expected %x", delivered, queryBytes)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the txt query was not delivered to the hook")
+	}
+}

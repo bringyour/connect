@@ -62,6 +62,30 @@ const (
 	ExtenderCarrierDns  = "dns"
 )
 
+// Fixed carrier ports (A1). The old multi-port personas are removed. A record
+// may name other ports (B2); these are what an address with no record is
+// dialed on.
+const (
+	ExtenderTcpPort  = 443
+	ExtenderQuicPort = 443
+	ExtenderDnsPort  = 53
+)
+
+// The connect mode of a carrier name, and whether the name is one this client
+// can dial.
+func ExtenderConnectModeForCarrier(carrier string) (ExtenderConnectMode, bool) {
+	switch carrier {
+	case ExtenderCarrierTcp:
+		return ExtenderConnectModeTcpTls, true
+	case ExtenderCarrierQuic:
+		return ExtenderConnectModeQuic, true
+	case ExtenderCarrierDns:
+		return ExtenderConnectModeDns, true
+	default:
+		return "", false
+	}
+}
+
 // Reserved services of the extender header (A8). 0 forwards to the
 // destination; the others hand the taken-over stream to an in-process server.
 const (
@@ -177,6 +201,16 @@ func newExtenderDialTlsContext(
 			panic(err)
 		}
 
+		// with no bundled spoof list a dialer carries no outer name (A10), so
+		// the destination name is presented instead: an outer handshake still
+		// has to name something, and the destination is the one name this
+		// dial is already for
+		outerTlsConfig := extenderTlsConfig
+		if outerTlsConfig.ServerName == "" {
+			outerTlsConfig = extenderTlsConfig.Clone()
+			outerTlsConfig.ServerName = host
+		}
+
 		serverConn, _, err := dialExtenderStream(
 			ctx,
 			connectSettings,
@@ -185,7 +219,7 @@ func newExtenderDialTlsContext(
 				DestinationHost: host,
 				DestinationPort: port,
 			},
-			extenderTlsConfig,
+			outerTlsConfig,
 		)
 		if err != nil {
 			return nil, err
