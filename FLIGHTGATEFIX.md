@@ -2067,3 +2067,121 @@ and test 7 stay green.
 If a storm run still writes hundreds with the backoff on, the residue is
 the relay path's own stall and belongs with the route-churn question of
 §22.5, not with the recovery path.
+
+## 25. Sixth round: the 2.0 s read is not a ceiling, the stall wants a variance term beside the backoff, and what the calibration retracts
+
+Written 2026-09-12 from flightgate-aa-20260912, flightgate-175-20260912
+and the source at 175d82a.
+
+### 25.1 What the two exports say, and what they cannot
+
+The gap export is taken while items are outstanding, so a median longest
+gap of 2,750 to 2,899 ms without a cumulative advance, in every run of
+both arms, is a real in-flight stall of the relay path, and merged's
+worst storm being its longest stall (7,023 ms, 3,902 writes) ties the
+storms to its tail. But "exactly 2,000 ms, the configured maximum" is
+not a ceiling on the items that storm. A relay-carried item's interval is
+`min(scaledRtt, MaxResendInterval)`, 8 s, and the window is built with
+`MaxResendInterval` as its own maximum (transfer.go, `NewRttWindow`), so
+the estimate can read up to 8 s. The only 2.0 s constants are
+`MinResendInterval`, the cold floor every sequence reads before its first
+sample, and `UnreliableMaxResendInterval`, the cap on direct-carried
+items. A largest read of exactly 2,000 ms in every run therefore says the
+sampled estimate never exceeded 2 s: the mean relay round trip never
+exceeded 1 s, against a stall of 2.75 s. The stall is an excursion of
+three times the mean, not a level the timer sits below, and no ceiling
+change reaches it. What the exports do not say is where in the run the
+gap sits and what the head was waiting on; a stall that spans the first
+Packs before the route settles and one that hits a full four-flow window
+mid-transfer call for different answers, and the storm-length correlation
+argues for the second only for the long ones.
+
+### 25.2 Whether the ceiling is the design
+
+Raising a ceiling: not sound, because for relay-carried items there is no
+ceiling below 8 s to raise; the direct-carried cap of 2 s is a separate
+knob (§2: "keep the oldest missing Pack moving often enough that an inner
+TCP sender does not exhaust its own retry budget") and `unreliable_flight_
+timeout_count` is zero in every storm run, so it is not firing here.
+
+Following the observed gap: sound in its standard form, and the form
+matters. The timer today is a mean with a fixed margin, `RttScale` 2,
+which cannot cover an excursion of three times the mean without tripling
+every retransmit on every lane. The standard answer is a deviation term,
+RFC 6298: an exponentially weighted `rttVar` of `|sample − mean|`, one
+duration of state per window, no retained bytes, and `timer = mean +
+max(floor, 4 × rttVar)`, still clamped by the floors and `MaxResendInterval`.
+On a lane whose jitter is a third of its mean a 3× excursion sits inside
+four deviations; on a stable lane the timer tightens toward the mean and
+the 300 ms floor, which is faster than today's 2× mean. A max-tracking
+timer, the literal "follow the longest gap", is the other reading: it
+never fires on a repeat of the same stall, but it decays only as samples
+age out of the window (60 s), so it stays slow long after a transient, and
+it still cannot cover a longer stall than it has seen, which is the 7 s
+storm. That case is the backoff's, at logarithmic cost.
+
+Cost on a genuinely lost tail: a tail item, with nothing after it for the
+gap rule, is recovered only by the timer. With the deviation term a stable
+lane recovers it in about the mean plus the floor, sooner than today; a
+jittery relay recovers it in mean plus four deviations, later than today's
+2× mean by up to the deviation term and never past 8 s. The cold start
+keeps its 2 s floor either way. That is the trade: a lane that has shown a
+wide spread earns a longer wait on its rare real loss in exchange for not
+rewriting its whole window on every excursion.
+
+Interaction with the backoff, now both exist: the estimator sets the first
+interval, the backoff doubles it per deferral, so `resendIntervalForItem(
+item, sendCount + timeoutDeferCount)` composes with either estimate
+unchanged. A larger first interval means fewer deferrals and a later third
+firing, past most stalls; a 7 s stall at a 1.5 s first interval fires at
+1.5, 3 and 6 s, three times against today's four or five. They divide the
+work: the estimator lowers how often the timer fires on a routine
+excursion, the backoff bounds what a firing costs when the excursion is
+exceptional. Neither makes the other redundant, and the backoff is the one
+already measured.
+
+The stall itself is the product finding. A relay whose mean round trip is
+under a second and which routinely goes 2.75 s without acknowledging is a
+property of the exchange path, and no sender timer makes a 3 s hole free
+for the inner TCP, whose own timer fires at about a second and retransmits
+through the tunnel. It should be localised before the timer is changed:
+the same export on the relay-only queue-inflation cell and on the exchange
+low-bar cells, plus the gap's offset in the run and the head item's carrier
+and sequence number. If it is present relay-only, it is the exchange; if
+it sits at the start, it is readiness and the cold floor already covers it.
+
+### 25.3 What the calibration retracts, and what stands
+
+| Claim | Basis then | Standing now |
+|---|---|---|
+| §19.1: the forced-direct deficit was §15.2's sixteen-sample timer | source | retracted by a66 (0 of 12 after D1 to D3); the reporter was the cause (§20), measured 0 of 12 → 8 of 13 with the packet signature gone |
+| §19.2: the mixed-route deficits were carrier-keyed clocks and the latch coupling, sized by 4.6 vs 15.5, 569 vs 70, 184 vs 4 | source plus five-repetition verdicts | mechanisms stand as source facts; every magnitude is inside the null band or a single storm run, so the claim that they explained the verdicts is retracted; D4 to D7 were designed against noise and are gone |
+| §19.7: D2 withdrawn for route churn, D4 bounded | source | the withdrawal stands on its reasoning (no window reset on a generation change); the churn evidence was 2 of 5 runs and carried no weight |
+| §20.2: the 182 lossless recoveries were our striping flooding the relay | records, five runs | retracted: storm runs occur in 25 of 155 runs of each identical arm; the anatomy stands as description, the attribution does not |
+| §20.3: the landing, merged plus what measures | measurement of parts | stands; its measured parts are the ones the A/A lists as surviving |
+| §21: the deferral removed a throttle; a pause on deferral | records | withdrawn in §22 by a deterministic reproduction; stands as withdrawn |
+| §22: bound admission by delivered bytes | source | falsified in the instrument; the falsification is deterministic and stands; the reading that the storm was queue depth is retracted, the storm rate is the rig's |
+| §23: the bar needs an A/A; the grace narrowing | assessment | the first is confirmed exactly; the narrowing measured wrong-way and is retracted |
+| §24.2: merged stalls only at a cold start | records | retracted by the exports: merged stalls in every run; what differs is the response |
+| §24.2: a deferral re-fires a stalled window without backoff | source | stands, and measured at twenty repetitions: 0 of 40 storms against 5 of 40, 27 of 40 paired, +1.0 and +2.7 Mbit/s on the means |
+| §24.1: total recovery writes as the primary | reasoning | stands; the rescoring confirms the substitution |
+
+On the record: what rests on measurement is stock's collapse, the
+forced-direct regression of d381cfa and 66a2130 and its reversal, the
+defer's relay-only A/B, the backoff at twenty repetitions, the two
+in-process falsifications, and the A/A itself. Everything else in §19 to
+§24 that named a magnitude on the mixed route named noise, and the
+mechanisms traced there remain source facts whose cost has not been
+measured.
+
+### 25.4 Order
+
+1. Land 175d82a as the head, with the flags as they stand.
+2. Export the gap's offset and the head item's carrier; run the export on
+   the relay-only and exchange low-bar cells to localise the stall.
+3. The deviation-term timer behind a flag, default off until measured,
+   against 175d82a on the two storm cells at twenty repetitions and on the
+   relay-only cell, judged on total recovery writes, goodput and dead
+   windows, with the low-bar cells as the guard for the tail-loss cost.
+4. The relay stall as a product item on the exchange path, owned outside
+   this tree.
