@@ -151,3 +151,57 @@ func TestInflatedRelayQueueDepthDominatesTheStorm(t *testing.T) {
 		}
 	}
 }
+
+// FLIGHTGATEFIX §23.3. What the six mixed cells' gap resends actually are.
+// A direct lane beside a relay whose drain steps down mid-transfer is the
+// shape those cells measure, and in it most scoreboard recoveries are of
+// relay-carried holes whose own retransmit had already been deferred: the
+// grace ends exactly when the timer first comes due, so the scoreboard
+// writes what the timer declined. The counters attribute that rather than
+// leaving it as a single number.
+func TestGapWritesOfDeferredItemsAreAttributed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("mixed route with an inflating relay")
+	}
+	const messageCount = 4000
+	harness := newMixedLaneHarnessWithOptions(t, mixedLaneOptions{
+		fastLatency:                20 * time.Millisecond,
+		slowLatency:                200 * time.Millisecond,
+		fastSerialization:          time.Millisecond,
+		slowSerialization:          500 * time.Microsecond,
+		slowStepAfter:              time.Second,
+		slowSerializationAfterStep: 12 * time.Millisecond,
+		slowQueueFrames:            4096,
+		fastDropFraction:           0.01,
+		replySerialization:         time.Millisecond,
+		deferTimeoutResend:         true,
+	})
+	harness.startReverseLoad(5 * time.Millisecond)
+	stats := harness.run(t, messageCount)
+	fromDeferredRelay := stats.SelectiveGapWritesOfDeferredItems[gapHoleCarrierReliable]
+	fromDeferredDirect := stats.SelectiveGapWritesOfDeferredItems[gapHoleCarrierUnreliable]
+	t.Logf(
+		"gap=%d of which deferred relay=%d direct=%d | rto=%d deferred=%d route generations=%d",
+		stats.SelectiveGapWriteCount, fromDeferredRelay, fromDeferredDirect,
+		stats.TimeoutResendWriteCount, stats.TimeoutResendDeferCount,
+		stats.RouteGenerationChangeCount,
+	)
+	if stats.SelectiveGapWriteCount < 100 {
+		t.Fatalf("only %d gap writes: this no longer reproduces the shape the counters attribute",
+			stats.SelectiveGapWriteCount)
+	}
+	if attributed := fromDeferredRelay + fromDeferredDirect; attributed < stats.SelectiveGapWriteCount/2 {
+		t.Fatalf(
+			"only %d of %d gap writes are of items whose own retransmit was deferred; the counters "+
+				"exist to say which recoveries the six mixed cells are behind on",
+			attributed, stats.SelectiveGapWriteCount,
+		)
+	}
+	if fromDeferredRelay <= fromDeferredDirect {
+		t.Fatalf(
+			"gap writes of deferred items split %d relay to %d direct: the mechanism is a "+
+				"relay-carried hole overtaken by direct-lane acknowledgements",
+			fromDeferredRelay, fromDeferredDirect,
+		)
+	}
+}

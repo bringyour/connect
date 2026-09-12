@@ -147,6 +147,9 @@ type mixedLaneOptions struct {
 	reliableAdmissionUnbounded bool
 	// resendBudget overrides ResendQueueMaxByteCount; zero keeps the default.
 	resendBudget ByteCount
+	// deferredItemIsLateForTheScoreboard turns on FLIGHTGATEFIX §23.2's
+	// narrowing, which is off in the landed tree.
+	deferredItemIsLateForTheScoreboard bool
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -187,6 +190,8 @@ func newMixedLaneHarnessWithOptions(
 			options.deferTimeoutResend
 		settings.SendBufferSettings.ReliableAdmissionBoundedByDelivery =
 			!options.reliableAdmissionUnbounded
+		settings.SendBufferSettings.DeferredItemIsLateForTheScoreboard =
+			options.deferredItemIsLateForTheScoreboard
 		if 0 < options.resendBudget {
 			settings.SendBufferSettings.ResendQueueMaxByteCount = options.resendBudget
 		}

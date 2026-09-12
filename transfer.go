@@ -768,6 +768,7 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// inert. Landing it on awaits a shape where it pays
 		// (FLIGHTGATEFIX §22.4).
 		ReliableAdmissionBoundedByDelivery: false,
+		DeferredItemIsLateForTheScoreboard: false,
 		ContractFillFraction:               0.8,
 		PrewarmOpeningContract:             true,
 		CompactContractHead:                true,
@@ -1448,6 +1449,15 @@ type ClientSendRecoveryStatsSnapshot struct {
 	// applied (FLIGHTGATEFIX §22). All three read zero where the bound is
 	// inert, which is how the inertness claim is measured rather than
 	// asserted.
+	// SelectiveGapWritesOfDeferredItems attributes a scoreboard recovery to
+	// the lane that carried the hole, counting only items whose own timeout
+	// had already been deferred, indexed by gapHoleCarrier*. Those are the
+	// recoveries the deferred retransmit declined to write and the
+	// scoreboard wrote instead, which is the residue §23 needs attributed.
+	// RouteGenerationChangeCount is how many route generations a sequence
+	// saw, read beside the carrier-change writes.
+	SelectiveGapWritesOfDeferredItems [gapHoleCarrierCount]uint64
+	RouteGenerationChangeCount        uint64
 	ReliableAdmissionWaitCount        uint64
 	ReliableAdmissionWaitDuration     time.Duration
 	ReliableAdmissionByteLimitMinimum uint64
@@ -1546,6 +1556,8 @@ type Client struct {
 	unreliableFlightBlockedWithReliableCapacity atomic.Uint64
 	unreliableFlightGapReorderSuspected         atomic.Uint64
 	timeoutResendWithRecentCumulativeProgress   atomic.Uint64
+	selectiveGapWritesOfDeferredItems           [gapHoleCarrierCount]atomic.Uint64
+	routeGenerationChangeCount                  atomic.Uint64
 	reliableAdmissionWaitCount                  atomic.Uint64
 	reliableAdmissionWaitNanos                  atomic.Uint64
 	reliableAdmissionByteLimitMinimum           atomic.Uint64
@@ -1918,10 +1930,15 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 		UnreliableFlightBlockedWithReliableCapacity: self.unreliableFlightBlockedWithReliableCapacity.Load(),
 		UnreliableFlightGapReorderSuspected:         self.unreliableFlightGapReorderSuspected.Load(),
 		TimeoutResendWithRecentCumulativeProgress:   self.timeoutResendWithRecentCumulativeProgress.Load(),
-		ReliableAdmissionWaitCount:                  self.reliableAdmissionWaitCount.Load(),
-		ReliableAdmissionWaitDuration:               time.Duration(self.reliableAdmissionWaitNanos.Load()),
-		ReliableAdmissionByteLimitMinimum:           self.reliableAdmissionByteLimitMinimum.Load(),
-		UnreliableCarrierLastAckAge:                 self.unreliableCarrierLastAckAge(),
+		SelectiveGapWritesOfDeferredItems: [gapHoleCarrierCount]uint64{
+			self.selectiveGapWritesOfDeferredItems[gapHoleCarrierReliable].Load(),
+			self.selectiveGapWritesOfDeferredItems[gapHoleCarrierUnreliable].Load(),
+		},
+		RouteGenerationChangeCount:        self.routeGenerationChangeCount.Load(),
+		ReliableAdmissionWaitCount:        self.reliableAdmissionWaitCount.Load(),
+		ReliableAdmissionWaitDuration:     time.Duration(self.reliableAdmissionWaitNanos.Load()),
+		ReliableAdmissionByteLimitMinimum: self.reliableAdmissionByteLimitMinimum.Load(),
+		UnreliableCarrierLastAckAge:       self.unreliableCarrierLastAckAge(),
 	}
 }
 
@@ -1971,6 +1988,24 @@ func (self *Client) observeUnreliableFlight(controller *sendFlightController) {
 // Records one physical recovery attempt after it leaves the resend queue. A
 // route refusal is retained separately: attempting a write is not proof that
 // the carrier admitted the recovery frame.
+// gapHoleCarrier indexes a recovery counter by the lane that carried the
+// hole being recovered (FLIGHTGATEFIX §23.3).
+type gapHoleCarrier int
+
+const (
+	gapHoleCarrierReliable gapHoleCarrier = iota
+	gapHoleCarrierUnreliable
+	gapHoleCarrierCount
+)
+
+// gapHoleCarrierOf reports which lane carried this item, for attribution.
+func gapHoleCarrierOf(item *sendItem) gapHoleCarrier {
+	if item != nil && item.unreliableCarrierObserved {
+		return gapHoleCarrierUnreliable
+	}
+	return gapHoleCarrierReliable
+}
+
 // shouldDeferTimeoutResend reports whether a due timeout is the spurious
 // cascade of §13.5 (F12) rather than a stalled lane: the cumulative ack
 // advanced within one scaled round trip of this item's send, so the
@@ -3941,6 +3976,17 @@ type SendBufferSettings struct {
 	// and on any lane delivering more than the budget per scaled round
 	// trip.
 	ReliableAdmissionBoundedByDelivery bool
+	// DeferredItemIsLateForTheScoreboard makes F11b's grace and the
+	// retransmit timer agree about one item (FLIGHTGATEFIX §23.2). The grace
+	// is anchored on the item's send time plus the scaled round trip, which
+	// is exactly when its own timer first comes due, so once the deferred
+	// retransmit extends that timer the grace has already expired and the
+	// scoreboard writes at the next round of later acknowledgements what the
+	// timer just declined to write. With this set, an item holding a
+	// deferral is late rather than lost for the scoreboard until the
+	// deferral expires. Off by default: it is a candidate to be read in one
+	// campaign after the A/A calibration of §23.3, not a landing.
+	DeferredItemIsLateForTheScoreboard bool
 	// ResendQueueBudget, when set, is a byte budget shared across sequences
 	// (typically all clients of one device): resend queue bytes above the
 	// floor reserve from it, and admission pauses above the floor while it
@@ -5706,6 +5752,14 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		lateNotLost := self.flightController != nil && self.flightController.limited &&
 			item.reliableCarrierObserved && !item.unreliableFlightTracked &&
 			currentTime.Before(item.sendTime.Add(self.rttWindow.ScaledRtt()))
+		// FLIGHTGATEFIX §23.2: the grace above ends exactly when the item's
+		// own timer first comes due, so a deferral of that timer leaves the
+		// scoreboard free to write what the timer declined. While the item
+		// holds a deferral it is late, not lost, until the deferral expires.
+		if !lateNotLost && self.sendBufferSettings.DeferredItemIsLateForTheScoreboard &&
+			item.deferralOutstanding && currentTime.Before(item.resendTime) {
+			lateNotLost = true
+		}
 		if 0 < threshold && gapRecoveryCount < burstSize && !lateNotLost &&
 			!item.selectiveGapRecovered &&
 			(item.ackTailProbeCount == 0 || item.recoveryKind != sendRecoveryNone) &&
@@ -6005,6 +6059,9 @@ func (self *SendSequence) Run() {
 	// FLIGHTGATEFIX §22: when the reliable admission bound first blocks, this
 	// records the moment so the wait's duration is charged once.
 	reliableAdmissionWaitStart := time.Time{}
+	// FLIGHTGATEFIX §23.3: the route generation this sequence last saw, so a
+	// change is counted beside the carrier-change writes it produces.
+	lastRouteGeneration := uint64(0)
 	disposeScheduledPack := func(sendPack *SendPack) {
 		err := errors.New("Send sequence closed.")
 		sendPack.disposeUnsentGroup(err)
@@ -6037,6 +6094,12 @@ func (self *SendSequence) Run() {
 sendSequenceLoop:
 	for {
 		flightPolicy := self.transferFlightPolicy()
+		if flightPolicy.generation != lastRouteGeneration {
+			if lastRouteGeneration != 0 {
+				self.client.routeGenerationChangeCount.Add(1)
+			}
+			lastRouteGeneration = flightPolicy.generation
+		}
 		self.flowIsolation.Store(flightPolicy.flowIsolation)
 		flightPolicyChanged := self.flightController.applyPolicy(flightPolicy)
 		if flightPolicyChanged {
@@ -6191,12 +6254,15 @@ sendSequenceLoop:
 						// and wrong once the Pack is gone (§16).
 						item.timeoutDeferCount += 1
 						item.timeoutDeferAckTime = self.lastCumulativeAckTime
+						item.deferralOutstanding = true
 						item.resendTime = sendTime.Add(scaledRtt)
 						self.resendQueue.Add(item)
 						self.client.timeoutResendDeferCount.Add(1)
 						continue
 					}
 				}
+				// the deferral, if any, is over: this timeout is being written
+				item.deferralOutstanding = false
 				reliableOnlyResend := false
 				if recoveryKind == sendRecoveryNone && item.unreliableFlightTracked {
 					reliableOnlyResend = self.observeUnreliableResendTimeout(item, flightPolicy)
@@ -6278,6 +6344,11 @@ sendSequenceLoop:
 					self.observeCarrierWrite(item, resendDisposition)
 				}
 				self.client.recordSendRecovery(recoveryKind, resendErr)
+				if recoveryKind == sendRecoverySelectiveGap && 0 < item.timeoutDeferCount {
+					// a recovery the deferred retransmit declined to write
+					// and the scoreboard wrote instead (FLIGHTGATEFIX §23.3)
+					self.client.selectiveGapWritesOfDeferredItems[gapHoleCarrierOf(item)].Add(1)
+				}
 				if recoveryKind == sendRecoverySelectiveGap &&
 					self.scheduleGapRecoveryProbe(
 						item,
@@ -8418,10 +8489,15 @@ type sendItem struct {
 	// does not inflate ordinary timeout backoff and remains observable.
 	selectiveAcked        bool
 	selectiveGapRecovered bool
-	gapFollowupScheduled  bool
-	ackTailProbeCount     int
-	recoveryKind          sendRecoveryKind
-	promotedHead          bool
+	// deferralOutstanding is set while this item's own retransmit is waiting
+	// out a deferral and cleared when that retransmit is finally written. It
+	// sits in the existing bool run, so the item gains no bytes
+	// (FLIGHTGATEFIX §23.2).
+	deferralOutstanding  bool
+	gapFollowupScheduled bool
+	ackTailProbeCount    int
+	recoveryKind         sendRecoveryKind
+	promotedHead         bool
 	// forceUnwrapped pins this item to plaintext on every (re)send, so the
 	// outer wrap is skipped even if the per-peer cipher becomes available
 	// between the initial send and a retransmit.
