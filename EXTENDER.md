@@ -368,7 +368,13 @@ random, `allowed_hosts` the operator patterns of A5. On success the row
 and the family's address row are upserted active, `record_issue_time` is
 set, and a record publish row is inserted. The country comes from the ip
 geolocation of the caller. A probe failure returns `activated: false` with
-the failing carrier in `error` and stores nothing.
+the failing carrier in `error` and stores nothing. The tcp carrier is
+required, since only it can prove the forward. Zero ports and an empty tld
+take the C1 defaults. The configuration check precedes the rate limit so
+an unconfigured operator never spends a caller's budget. A failed
+geolocation leaves the country empty rather than failing the activation.
+The bootstrap records are signed fresh at each activation. Probe requests
+name the api host on port 443 as their destination.
 
 C3. Uptime probes. Taskworker task every 5 minutes over every active
 address, batched, concurrency 16, tcp challenge probe only, 15 s timeout.
@@ -376,14 +382,20 @@ A failure increments `consecutive_probe_failures`; at 6 the address is
 deactivated. When an extender has no active address it becomes inactive,
 `revoke_time` is set and a revocation publish row is inserted. A success
 resets the counter and stamps `last_probe_success_time`. A deactivated
-address is re-probed only by a new activation.
+address is re-probed only by a new activation. The read of an extender's
+remaining active addresses is locked, so two probes losing both families
+of one extender in the same tick cannot each see the other still active
+and leave the extender active with no address and no revocation.
 
 C4. Publish tick. Taskworker task every 10 minutes. Drip: select up to 8
 active extenders ordered by the oldest `last_publish_time` (nulls first),
 sign a record for each with its active addresses, insert a record publish
 row, stamp `last_publish_time`. When the active count exceeds what 8 per
 tick rotates within 7 days, the batch grows to keep the rotation under 7
-days so every record is republished before its 14 day expiry. DNS: C5.
+days so every record is republished before its 14 day expiry: the batch is
+the larger of 8 and the active count divided by 1008 ticks, rounded up.
+Each drip also stamps `record_issue_time`, since it is the newest record.
+DNS: C5.
 
 C5. Geo DNS. Route 53 geolocation routing by continent: AF, AN, AS, EU,
 NA, OC, SA and the default, each an A and an AAAA set at
@@ -408,32 +420,45 @@ with `websocket: true` and the alias exposed), joins the topic, and every
 originates records itself.
 
 C7. Hello. `HelloResult.ExtenderRootPublicKeys []string` from
-`root_public_keys_hex`; empty when unconfigured.
+`root_public_keys_hex`, and `GossipPeerId string` (json
+`gossip_peer_id`), the libp2p peer id of the operator node derived from
+`gossip_identity_key_hex`; both empty when unconfigured. A member with no
+peer id makes no operator dial.
 
 ### D. Gossip network
 
-D1. Node (`connect/gossip`). go-libp2p host with the extender transport
-(D2) and the websocket transport, noise security, yamux, gossipsub with
-strict message signing, topic `/ur/extender/<host>/1`, a validator that
+D1. Node (`connect/gossip`). go-libp2p host assembled from the swarm and
+basic host with exactly the extender transport (D2) and the websocket
+transport (the default transport set pulls in webtransport, which does
+not build against the pinned quic-go, and would add quic, webtransport
+and webrtc to every binary), noise security, yamux, gossipsub with strict
+message signing and flood publish for locally originated messages (only
+the operator originates, and without it a publish before the first
+heartbeat graft is lost), topic `/ur/extender/<host>/1`, a validator that
 decodes `ExtenderGossipMessage`, verifies the root signature against the
 node's current key list and the `NetworkHost`, and rejects everything
 else, peer scoring at library defaults, no discovery. Every accepted
 message is applied to the directory (E1). Connection manager watermarks:
 8/16 for members, 16/32 for extenders. `Publish` is exposed for the
-operator node. The node's own identity is the extender key when the node
+operator node. The status is refreshed on a 5 s tick as well as on events,
+since a peer's subscription event can precede the node's own stream to
+it. Measured cost: 1.4 MiB on a darwin arm64 build of the whole sdk, so
+no size ceiling changes. The node's own identity is the extender key when the node
 is an extender, else a per-install key persisted with the extender key
 file.
 
 D2. Extender transport. A libp2p `transport.Transport` registered for
 `/ip4|ip6/<ip>/tcp/443` addresses in place of the tcp transport. Dial runs
 the connect root extender dial with `Service` gossip over the tcp carrier
-to that ip, verifying the outer cert when the directory knows the peer's
-key, then the upgrader (noise and yamux) with the expected peer id, which
-is derived from the extender's ed25519 key. Listen exists only on
+to that ip on the tcp port the record names, verifying the outer cert
+with the directory's key for that ip and refusing before any connection
+when the expected peer id is not the one derived from that key, then the
+upgrader (noise and yamux) with the expected peer id, which is derived
+from the extender's ed25519 key. Listen exists only on
 extenders: a listener fed by the extender's gossip accept channel (A8),
 advertising `/ip4|ip6/<public ip>/tcp/443` per activated family. Apps have
-no listener. The operator is dialed at `/dns4/gossip.<host>/tcp/443/wss`
-by the websocket transport.
+no listener. The operator is dialed at `/dns/gossip.<host>/tcp/443/wss/p2p/<id>` by
+the websocket transport (`/dns`, so a v6-only host resolves it too).
 
 D3. Peering. Every node keeps a connection to the operator and to up to N
 random active extenders from the directory, N 8 for members and 16 for
@@ -449,7 +474,10 @@ replies with up to `SampleCount` random active records, its own record
 first when it has one, then `end_of_sample`, then, when `Subscribe` is
 set, every record and revocation it applies until the client closes, with
 a keepalive every 30 s. Frames are 4-byte length-prefixed protobuf of at
-most 64 KiB. Server caps: sample 32, subscribers 256. The feed server
+most 64 KiB. Server caps: sample 32, subscribers 256; a client over the
+subscriber cap still gets its sample and then the stream ends, and a
+subscriber that falls 64 frames behind is disconnected. The server reads
+the stream so a departed client releases its slot at once. The feed server
 lives in `connect/gossip` beside the node since it reads the same
 directory; the feed client lives in connect root.
 
@@ -534,7 +562,9 @@ key into `ExtenderConfig.PublicKey` (B3).
 
 F1. Network space values gain `ExtenderDnsName` (default `extender.<host>`
 with the env prefix rule, `<env>-extender.<host>` for non-main envs),
-`GossipUrl` (default `wss://gossip.<host>` with the same rule) and
+`GossipUrl` (default `wss://gossip.<host>` with the same env prefix rule
+but never the env secret path, since a multiaddr carries no path and the
+gossip service has none) and
 `ExtenderRootPublicKeys`. `NetExtenderAutoConfigure` and its getter are
 removed; `NetExtender` stays. `NetworkSpace` constructs the directory, the
 store at the space's local state directory as `.extenders` beside the
@@ -572,12 +602,15 @@ G1. Eligibility. Compiled for desktop and connectctl only, build tags
 server nor the role. Default on with the opt-out of F3.
 
 G2. Lifecycle in `deviceLocalProvider`. When provide is on and the setting
-is on: load or create the identity key; start `extender.Server` on tcp
+is on: load or create the identity key (the space's `.extender_key`, the
+same key the member node already uses); start `extender.Server` on tcp
 443, udp 443 and udp 53, each bound independently, a failed bind disabling
 that carrier, with all failed meaning not listening; the forward dialer is
 the device's egress-aware connect dial narrowed by family; the whitelist is
-A5 from the space hosts plus the spoof list; the gossip listener is wired
-to the space's node, which becomes a listening node. Bind failures log
+A5 from the space hosts plus the spoof list; the space's node is rebuilt
+with the extender role, the in-process listener, the feed server and the
+listen addresses of the activated families, so it becomes a listening
+node. Bind failures log
 once and retry on the activation cadence, never as a user-visible error.
 
 G3. Activation loop. At start, every 24 hours, and on triggers: own key
@@ -603,8 +636,10 @@ tests: `--jwt`, `--api_url`, `--extender_key_file`, listen port flags,
   listener. Imports go-libp2p and go-libp2p-pubsub. Imported by the sdk
   except on js and by the server.
 - `connect/extender`: server, carriers, HTTP handlers, reverse proxy, DNS
-  forwarder, certificates, limits. Imports `connect/gossip` for the
-  in-process listener and feed server. Built for desktop and connectctl.
+  forwarder, certificates, limits. It does not import `connect/gossip`:
+  the reserved-service handlers are plain callbacks, and whoever runs both
+  (the sdk provider role, connectctl) wires the listener and the feed
+  server in. Built for desktop and connectctl.
 - server: model, handlers, controller, taskworker work, Route 53
   publisher, `gossip` service, `cli/gossip`, migrations, hello.
 - sdk: network space fields and lifecycle, status types, store, roles,
