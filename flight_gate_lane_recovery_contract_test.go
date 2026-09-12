@@ -48,6 +48,20 @@ var laneRecoveryRecordAcksForTree = func(*SendSequence, []*sendItem) {}
 // has carried populate it; a tree without one does nothing.
 var laneRecoveryRecordSendsForTree = func(*SendSequence, []*sendItem) {}
 
+// metricDeferredGapForTree reports the deferred-item gap split where the
+// tree keeps one; a tree with no deferral reports unsupported.
+var metricDeferredGapForTree = func(
+	ClientSendRecoveryStatsSnapshot,
+) (uint64, uint64, bool, bool) {
+	return 0, 0, false, false
+}
+
+// metricRouteGenerationsForTree reports the route generation change count
+// where the tree keeps one.
+var metricRouteGenerationsForTree = func(ClientSendRecoveryStatsSnapshot) (uint64, bool) {
+	return 0, false
+}
+
 func laneRecoveryRecordSends(sequence *SendSequence, items []*sendItem) {
 	laneRecoveryRecordSendsForTree(sequence, items)
 }

@@ -48,6 +48,18 @@ func init() {
 			stats.ReliableLaneStallOnsetOutstanding,
 		)
 	}
+	metricDeferredGapForTree = func(
+		stats ClientSendRecoveryStatsSnapshot,
+	) (uint64, uint64, bool, bool) {
+		return stats.SelectiveGapWritesOfDeferredItems[gapHoleCarrierReliable],
+			stats.SelectiveGapWritesOfDeferredItems[gapHoleCarrierUnreliable],
+			true, true
+	}
+	metricRouteGenerationsForTree = func(
+		stats ClientSendRecoveryStatsSnapshot,
+	) (uint64, bool) {
+		return stats.RouteGenerationChangeCount, true
+	}
 	laneRecoveryRecordSendsForTree = func(sequence *SendSequence, items []*sendItem) {
 		for _, item := range items {
 			sequence.observeLaneSend(item)
