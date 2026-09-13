@@ -63,8 +63,11 @@ func SpoofDomains() []string {
 // Installs a synthetic list in place of the bundled one and returns the
 // restore. Tests use it so no real domain appears in the repository.
 func setSpoofDomainsForTest(spoofDomains []string) func() {
-	// take the once so a later SpoofDomains does not overwrite the override
-	spoofDomainsOnce.Do(func() {})
+	// load the bundled list first, so the restore puts the real list back and
+	// a later SpoofDomains does not overwrite the override. Taking the once
+	// with nothing loaded would save a nil previous and leave every caller
+	// after the restore with an empty list, for the rest of the process
+	SpoofDomains()
 	spoofDomainsStateLock.Lock()
 	defer spoofDomainsStateLock.Unlock()
 	previousSpoofDomains := spoofDomainsValues
