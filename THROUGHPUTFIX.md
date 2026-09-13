@@ -882,3 +882,123 @@ autosndbufmax` on the oldest and newest supported iOS, from the packet
 tunnel, and one phone-provider download and upload cell on main against
 this tree, which 11.2 predicts as unchanged within noise on iOS and as the
 reporter's 3.2x on Android for download.
+
+## 12. UDP: the buffer that is not a lock, the abandon path it never enters, and the shape of a UDP zombie
+
+Design, 2026-09-13. H8, H9 and the converse the brief names as H10.
+Kernel numbers from the runner (`7.0.12-linuxkit`); the source is
+`UdpSequence.openSocket`, `ip_udp_socket_poller.go`, `retryReturnSend`,
+`providerReturnIpTransferOptions`, `UdpBuffer.runSharedSocketLifecycle`
+and `setSourceRetired`.
+
+### 12.1 H8: what the UDP buffer request does
+
+`openSocket` sets both buffers after the dial from the UDP
+`MaxWindowSize`, `MemoryScaledByteCount(1 MiB, 256 KiB)`, so 1 MiB unscaled
+and 256 to 768 KiB on the phone profiles (§11.1). UDP has no autotuning,
+so there is nothing to lock: the call is exactly what it looks like, a
+request for a bigger buffer than the default. The kernel clamps it to
+`net.core.{r,w}mem_max` and doubles it. Observed:
+
+| Request | `rmem_max` | `SO_RCVBUF` | 1,400-byte datagrams that fit with the reader paused | payload fraction |
+|---:|---:|---:|---:|---:|
+| none | any | 212,992 (the default, not doubled) | 92 | 0.60 |
+| 256 KiB | 4 MiB | 524,288 | 227 | 0.61 |
+| 1 MiB | 4 MiB | 2,097,152 | 910 | 0.61 |
+| 1 MiB | 212,992 (stock) | 425,984 | about 185 (by the same charge) | 0.61 |
+
+Each 1,400-byte datagram is charged 2,304 bytes against the buffer (its
+`skb` truesize), so the payload capacity is 0.60 of the reported number;
+100-byte datagrams are charged 896 and fit at 0.11, 8 KiB datagrams at
+0.49. `SO_MEMINFO`'s drop counter equals sent minus delivered exactly
+(5,081 of 5,991; 516 of 608). This is the trap the handover flagged, and
+it is worse than "half": a drop-counter test must size by the charge, not
+by the payload.
+
+Three consequences. On a stock host the request is inert above 208 KiB,
+so every profile gets 425,984 and the memory scaling changes nothing; the
+call still doubles the default's capacity and stays. On a host with
+`rmem_max` raised the request lands, and the unscaled 2 MiB holds 2.1 ms
+of a 1 Gb/s arrival, the stock 425,984 about 0.4 ms. And the drop is
+invisible: the poller reads what the kernel queued, and the flow above it
+sees a gap it cannot distinguish from loss on the origin path.
+
+Decision: the UDP calls stay, with their comment saying what they buy
+(twice the default on a stock host, the request itself where the operator
+allows it) and that nothing here can be locked. Removing them for symmetry
+with §9 would halve the buffer on every stock host. What the program adds
+is the instrument: every UDP flow reads its socket's own drop counter as
+it closes and adds it to `LocalUserNat.UdpKernelReceiveDropCount()`,
+Linux only through `SO_MEMINFO` (`ip_udp_socket_drops_linux.go`), one
+getsockopt per flow close and nothing on the packet path. Landed in
+`ip: count the datagrams the kernel drops at a UDP flow's socket`.
+
+Prediction for the UDP cell, stated before it runs: with the provider's
+read shards keeping up, kernel drops are zero at 200, 400 and 600 Mb/s of
+UDP download on the rig; drops appear only as bursts when a shard is
+descheduled for longer than the buffer holds, so a run that shows them
+shows them clustered, not spread, and their count is (pause − 0.4 ms) ×
+rate ÷ 2,304 on a stock host. If drops are spread evenly at a rate that
+grows with offered load, the shards are not keeping up and the fix is
+`SocketReadShardCount`, not the buffer.
+
+An adjacent finding, not fixed here: each poller shard reads into a
+`ReadBufferByteCount` buffer of 2,048 bytes (`defaultUdpReadBufferByteCount`),
+and a UDP `read` into a short buffer discards the rest of the datagram. A
+datagram over 2 KiB from an origin, which EDNS permits up to 4,096 and
+which some tunnels and games send, is truncated silently. Rare on the
+public internet because such datagrams fragment at the IP layer first,
+but a provider on a jumbo path would see it. Row D5 pins the current
+behaviour.
+
+### 12.2 H9: UDP never reaches the abandon path, and what its zombie is instead
+
+Positively: a UDP return is delivered to the provider with
+`receiveRecoveryModeNonblocking` (`UdpSequence.receiveBatch`), and
+`retryReturnSend` returns after the first attempt for any item whose mode
+is not `receiveRecoveryModeTcpSocket`, before either abandon evaluation.
+`returnSendAckEvidence` also excludes it, so a UDP item is neither
+counted outstanding nor able to record a stall. The abandon timeout is
+structurally TCP-only, and the reporter's fix is correctly bounded.
+
+The converse, what a UDP flow does when its client is gone:
+
+1. Its return datagrams are sent NoAck (`providerReturnIpTransferOptions`
+   clears `Ack` for a non-TCP item under `ForceStream`), so they bypass
+   the resend queue: written once to the transport, forwarded by the
+   exchange into a forward whose destination has no resident, and dropped
+   there when that forward's buffer fills (`ForwardTimeout` is 0 in
+   production, so the drop is nonblocking). A UDP zombie retransmits
+   nothing. Its egress is whatever the origin keeps sending, at the
+   origin's rate, until the origin stops; most UDP protocols stop within
+   seconds without feedback, a one-way stream does not.
+2. Its socket, poller registration and bounded send queue live until
+   `IdleTimeout` after the last socket activity, 300 s on the provider
+   profile (`providerUdpIdleTimeout`), swept by `runSharedSocketLifecycle`
+   or the per-flow idle timer. That is the leak, and it is bounded by
+   origin activity plus 300 s, not by anything the client does.
+3. If the same client also has a parked TCP return, the TCP abandon
+   releases the whole source, and `UdpBuffer.setSourceRetired` cancels
+   every UDP sequence of that source at once.
+
+So there is no UDP counterpart to the TCP zombie's cost: nothing is
+retransmitted and nothing is held past the idle reaper. The one thing
+worth measuring is the exchange's `forwardDroppedCounter` under a
+one-way UDP stream to a dead client, which should climb at the origin's
+packet rate for up to 300 s and then stop.
+
+### 12.3 Tests, in the contract shape
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| D1 | `TestUpstreamUdpBufferSizing` (Linux only) | after `openSocket`, `SO_RCVBUF` and `SO_SNDBUF` read `2 × min(MaxWindowSize, net.core.{r,w}mem_max)`, with the sysctls read from `/proc`, under `SetMemoryBudget(0)` and `SetMemoryBudget(8 MiB)` | a tree that removes the UDP calls "for symmetry", where both read the 212,992 default | Linux |
+| D2 | `TestUpstreamUdpReceiveDropsAreCounted` (Linux only) | a UDP flow whose reader is held while a loopback origin sends `4 × SO_RCVBUF / 1,400` datagrams of 1,400 bytes: after the flow closes, `LocalUserNat.UdpKernelReceiveDropCount()` equals sent minus delivered, and delivered is within 10 per cent of `SO_RCVBUF / 2,304`, the charge of 12.1 | main, which has no counter; and any sizing by payload rather than charge | Linux |
+| D3 | `TestUdpReturnNeverEntersTheAbandonPath` | a UDP return toward a destination whose sequence admits nothing: exactly one attempt (`afterReturnSendAttemptForTest` once, sent = false), the producer returns at once, no release for 5 T, and the source's evidence records nothing outstanding and no stall | a tree that lets a datagram item into the retry loop | in-process |
+| D4 | `TestUdpFlowReleasedWhenClientDisappears` | a UDP flow with the client gone: (a) the flow closes `IdleTimeout` after the origin's last datagram, at test scale, and its socket is unregistered; (b) with a parked TCP return of the same source released by the abandon, `setSourceRetired` cancels the UDP sequence before the release completes | none by design; characterises the bound | in-process |
+| D5 | `TestUdpDatagramOverTheReadBufferIsTruncated` | characterisation of the 2 KiB read: a 4,000-byte origin datagram reaches the flow as 2,048 bytes | none; documents | in-process, loopback |
+
+The UDP cell that calls H8 answered: UDP download through the provider at
+200, 400 and 600 Mb/s, four repetitions, main against this tree (identical
+sockets, so identical throughput is the prediction), with
+`UdpKernelReceiveDropCount` read at the end of each run and the exchange's
+forward drop counter beside it.
