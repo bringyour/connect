@@ -909,9 +909,7 @@ and carried as a new version v22. The whodis port is 4053 everywhere, which is a
 connect service's dns listener behind the lb (8053 kept for old lbs), so
 alt listens on 4053 and nothing moves; and an extender listens on 4053 always and on 53 only where
 the platform allows it without privilege, the linux daemon and the windows
-service; macOS binds 4053 only. Records carry the list of dns ports that
-passed the activation probe (`DnsPorts`, with `DnsPort` kept for old
-readers); a client dials 53 first when listed, then 4053, and a manual or
+service; macOS binds 4053 only. Records carry the list of dns ports that passed the activation probe (`DnsPorts`, the ascending union over the extender's active addresses, with `DnsPort` kept for old readers as the extender's configured port, 4053 by default); each listed port is probed on its own 3 s sub-budget inside the 10 s activation budget, the ports that answer are recorded per address, and a dns carrier with no answering port refuses the activation; a client dials 53 first when listed, then 4053, and a manual or
 unverified address is dialed on 4053 only. Alt is dialed on 53 first,
 then 4053. The extender binds the configured dns port, 4053 in the sdk and
 connectctl, plus 53 under `DnsPrivilegedPort`, and reports what it bound
@@ -1121,28 +1119,44 @@ Phase 5b follows 4 because both touch the server.
 
 ## 7. As built
 
-All phases were implemented and committed on branch `extender` on
-2026-09-12: connect (protocol, carriers, records, probes, directory, feed,
-network client, gossip node, activator, connectctl), server (tables,
-activation, probes, drip, Route 53, gossip service, hello), sdk (network
-space values, status, roles, provider role, bindings), vault (the gossip
-service entry), build (the gossip build step), operator-proxy (go.sum).
-Each phase's refinements are recorded inline above.
+Every phase of section 5 is implemented and committed on branch
+`extender` across connect, server, sdk, sn, vault (services version v22
+and `extender.yml`), warp, build, localizations, android, apple, windows
+and linux, as of 2026-09-13. Each phase's refinements are recorded inline
+above. Nothing is pushed.
 
-Verification at the end: connect `go test ./...` green; sdk full suite green
-except `TestDeviceLocalProviderMemoryUnderLoad`, which fails on the build
-host before this work (31.3 to 31.7 MiB against a 31.0 MiB ceiling); server
-model, api, taskworker and gossip suites green, and the controller suite
-showing only its 15 pre-existing failures in the ARIN and account
-reconcile tests; the js and mobile builds compile. The libp2p dependency
-costs 1.4 MiB of binary.
+Verification at the end, on the final trees: connect `go test ./...`
+green (about ten minutes, run with a 30 minute timeout); sdk full suite
+green except `TestDeviceLocalProviderMemoryUnderLoad`, which fails on the
+build host before this work at the same ceiling; server model, controller
+(extender selection), taskworker, gossip, alt and api suites green, the
+controller suite otherwise showing only its pre-existing ARIN and account
+reconcile failures; warp services and warpctl green; android 433 unit
+tests, apple 341 on the iOS simulator plus the macOS build, linux 232
+unit tests with every gui translation unit compiled, windows 47
+host-buildable cases with the WinUI code reviewed but not compiled on the
+macOS build host. Coverage audits added 147 tests in connect, 45 in the
+server and the sdk's own pass, each pinning every behavior of the change
+set; the audits found no product bugs, one wrong test assertion (the
+activator backoff schedule) and one wire fact (alt's refusal codes are not
+observable before the handshake completes).
 
-Done the same day: the spoof list is bundled, `vault/main/extender.yml`
-holds the generated root and gossip keys, the network hosts, the api url,
-the named zone and the gossip record block, the sdk bundles the root
-public key, the zone is resolved by name and the gossip names are warp aliases created once,
-and the sn miner runs the role with a persisted identity. What remains
-for operations: aws credentials on the taskworker hosts with Route 53
-access to both zones, no plain A or AAAA record at
-`extender.bringyour.com`, and a deploy of the gossip service, whose
-aliases the warp certificate flow already covers.
+Operations before the network works end to end:
+
+- DNS: `gossip.bringyour.com` and `gossip.ur.network` as aliases of each
+  zone's `main-lb`; `alt`, `main-alt`, `alt-v4`, `alt-v6`, `main-alt-v4`
+  and `main-alt-v6` under both domains as the A and AAAA records of the
+  proxy hosts fireside and crisp, the family names single-family. No
+  plain A or AAAA record may exist at `extender.bringyour.com`, which the
+  taskworker publishes.
+- AWS credentials with Route 53 access to both zones on the taskworker
+  hosts; the zone is resolved by name from `extender.yml`.
+- The router DNAT of public udp 53 to 4053 in front of the proxy hosts.
+- Deploy the gossip and alt services (both are in the build), then the
+  taskworker, api and connect with the extender changes.
+- The iOS sdk slice is 72 MiB against the 64 MiB ceiling of the size
+  check; the pending decision is a build tag excluding libp2p from iOS,
+  which every iOS device can afford since it runs the feed role, or a
+  reviewed ceiling of 76 MiB.
+- The linux gui release container gained `libzxing-cpp-dev`; the windows
+  build fetches zxing-cpp.
