@@ -2,11 +2,15 @@ package connect
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	quic "github.com/quic-go/quic-go"
 )
 
 // The platform carriers on alt (EXTENDER.md L3, L4): the H3 modes send their
@@ -325,5 +329,81 @@ func TestFamilyPlatformTransportGroupDerivesFamilyAltUrls(t *testing.T) {
 				t.Errorf("standby alt url = %q, expected %q", altUrl, c.altUrl)
 			}
 		}()
+	}
+}
+
+// One client hello as a quic listener saw it.
+type testAltClientHello struct {
+	serverName string
+	alpn       []string
+}
+
+// The platform H3 carrier reaches alt at the alt address while presenting the
+// connect name as sni and no alpn at all, which is the shape alt dispatches to
+// its connect front (L1, L4). A connect-side alpn would be refused there, so
+// the default quic configuration is used exactly as production has it.
+func TestPlatformTransportAltH3PresentsThePlatformSniWithNoAlpn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	certPem, keyPem, err := selfSign(
+		[]string{"connect.space.example"}, "alt-platform-test", 1*time.Hour, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(certPem, keyPem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientHellos := make(chan testAltClientHello, 8)
+	listener, err := quic.ListenAddrEarly(
+		"127.0.0.1:0",
+		&tls.Config{
+			Certificates: []tls.Certificate{cert},
+			GetConfigForClient: func(clientHello *tls.ClientHelloInfo) (*tls.Config, error) {
+				select {
+				case clientHellos <- testAltClientHello{
+					serverName: clientHello.ServerName,
+					alpn:       slices.Clone(clientHello.SupportedProtos),
+				}:
+				default:
+				}
+				return nil, nil
+			},
+		},
+		&quic.Config{MaxIdleTimeout: 10 * time.Second},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	altPort := listener.Addr().(*net.UDPAddr).Port
+
+	settings := testingFamilyTransportSettings()
+	if 0 < len(settings.QuicTlsConfig.NextProtos) {
+		t.Fatalf("the platform quic configuration offers %v", settings.QuicTlsConfig.NextProtos)
+	}
+	settings.AltUrl = "https://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(altPort))
+	transport := NewPlatformTransportWithTargetMode(
+		ctx,
+		NewClientStrategyWithDefaults(ctx),
+		NewRouteManager(ctx, "alt-h3-sni"),
+		testAltPlatformUrl,
+		testingFamilyAuth(),
+		TransportModeH3,
+		settings,
+	)
+	defer transport.Close()
+
+	select {
+	case clientHello := <-clientHellos:
+		if clientHello.serverName != "connect.space.example" {
+			t.Fatalf("sni = %q, expected the platform host", clientHello.serverName)
+		}
+		if 0 < len(clientHello.alpn) {
+			t.Fatalf("alpn = %v, expected none", clientHello.alpn)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the h3 carrier never reached the alt address")
 	}
 }

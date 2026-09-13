@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,10 +31,35 @@ const (
 )
 
 // One in-process alt: an http3 server on loopback, over the decode53
-// translation when whodis is set, and the roots that verify it.
+// translation when whodis is set, the roots that verify it, and what every
+// client hello it saw offered.
 type testAltServer struct {
 	altUrl  string
 	rootCAs *x509.CertPool
+
+	stateLock   sync.Mutex
+	serverNames []string
+	alpns       [][]string
+}
+
+// Records one client hello, which is where the sni and the offered alpn are
+// observable exactly as alt sees them (L1).
+func (self *testAltServer) noteClientHello(clientHello *tls.ClientHelloInfo) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.serverNames = append(self.serverNames, clientHello.ServerName)
+	self.alpns = append(self.alpns, slices.Clone(clientHello.SupportedProtos))
+}
+
+// The sni and the alpn of the one client hello this server saw.
+func (self *testAltServer) clientHello(t *testing.T) (string, []string) {
+	t.Helper()
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if len(self.serverNames) != 1 {
+		t.Fatalf("client hellos = %d, expected one", len(self.serverNames))
+	}
+	return self.serverNames[0], self.alpns[0]
 }
 
 func newTestAltServer(t *testing.T, whodis bool) *testAltServer {
@@ -49,6 +76,7 @@ func newTestAltServer(t *testing.T, whodis bool) *testAltServer {
 	if !rootCAs.AppendCertsFromPEM(certPem) {
 		t.Fatal("the fixture certificate is not a usable root")
 	}
+	altServer := &testAltServer{rootCAs: rootCAs}
 
 	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -86,7 +114,12 @@ func newTestAltServer(t *testing.T, whodis bool) *testAltServer {
 	listener, err := quicTransport.Listen(
 		&tls.Config{
 			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{http3.NextProtoH3},
+			// alt advertises only h3 and negotiates per client hello (L1)
+			NextProtos: []string{http3.NextProtoH3},
+			GetConfigForClient: func(clientHello *tls.ClientHelloInfo) (*tls.Config, error) {
+				altServer.noteClientHello(clientHello)
+				return nil, nil
+			},
 		},
 		&quic.Config{MaxIdleTimeout: 30 * time.Second},
 	)
@@ -115,10 +148,8 @@ func newTestAltServer(t *testing.T, whodis bool) *testAltServer {
 		carrierPacketConn.Close()
 	})
 
-	return &testAltServer{
-		altUrl:  fmt.Sprintf("https://%s", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port))),
-		rootCAs: rootCAs,
-	}
+	altServer.altUrl = fmt.Sprintf("https://%s", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)))
+	return altServer
 }
 
 // One strategy with the alt dialers and nothing else, so a request has exactly
@@ -184,22 +215,39 @@ func testAltGet(t *testing.T, dialer *clientDialer) string {
 	return string(bodyBytes)
 }
 
-// The alt h3 dialer completes an api GET against an in-process alt, with the
-// api host as the sni and the fixture roots verifying it.
+// The alt h3 dialer completes an api GET against an in-process alt, presenting
+// the api host as the sni and h3 as the only alpn, with the fixture roots
+// verifying the certificate (L1, L4).
 func TestAltH3DialerGet(t *testing.T) {
 	altServer := newTestAltServer(t, false)
 	clientStrategy := newTestAltStrategy(t, altServer)
 	if body := testAltGet(t, testAltDialer(t, clientStrategy, "alt h3")); body != testAltBodyText {
 		t.Fatalf("body = %q", body)
 	}
+	testAltAssertClientHello(t, altServer)
 }
 
-// The alt whodis dialer completes the same GET through the dns translation.
+// The alt whodis dialer completes the same GET through the dns translation,
+// with the same sni and alpn.
 func TestAltWhodisDialerGet(t *testing.T) {
 	altServer := newTestAltServer(t, true)
 	clientStrategy := newTestAltStrategy(t, altServer)
 	if body := testAltGet(t, testAltDialer(t, clientStrategy, "alt whodis")); body != testAltBodyText {
 		t.Fatalf("body = %q", body)
+	}
+	testAltAssertClientHello(t, altServer)
+}
+
+// An api dial names the api host and offers h3 alone, which is what alt
+// dispatches on: an alt name as sni is refused (L1, L3).
+func testAltAssertClientHello(t *testing.T, altServer *testAltServer) {
+	t.Helper()
+	serverName, alpn := altServer.clientHello(t)
+	if serverName != testAltApiHost {
+		t.Fatalf("sni = %q, expected the api host", serverName)
+	}
+	if !slices.Equal(alpn, []string{http3.NextProtoH3}) {
+		t.Fatalf("alpn = %v, expected h3 alone", alpn)
 	}
 }
 
@@ -264,6 +312,26 @@ func TestAltDialerPriorityOrder(t *testing.T) {
 	for description, priority := range expected {
 		if actual, ok := priorities[description]; !ok || actual != priority {
 			t.Fatalf("%q priority = %d (present %t), expected %d", description, actual, ok, priority)
+		}
+	}
+}
+
+// The whodis dialer encodes under the same tld the platform dns carrier uses,
+// which is the one alt decodes (L1). They are defaulted in different settings
+// structs, so a change to one that misses the other is silent until a dial
+// stops being answered.
+func TestAltWhodisTldMatchesThePlatformDnsTld(t *testing.T) {
+	strategyTlds := DefaultClientStrategySettings().DnsTlds
+	platformTlds := DefaultPlatformTransportSettings().DnsTlds
+	if len(strategyTlds) == 0 {
+		t.Fatal("the strategy has no whodis tld")
+	}
+	if len(strategyTlds) != len(platformTlds) {
+		t.Fatalf("whodis tlds = %q, platform dns tlds = %q", strategyTlds, platformTlds)
+	}
+	for i := range strategyTlds {
+		if !bytes.Equal(strategyTlds[i], platformTlds[i]) {
+			t.Fatalf("whodis tld %q, platform dns tld %q", strategyTlds[i], platformTlds[i])
 		}
 	}
 }
