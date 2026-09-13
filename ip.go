@@ -6055,6 +6055,11 @@ func DefaultRemoteUserNatProviderSettingsWithMemoryTarget(targetByteCount ByteCo
 		EventEpoch:              1 * time.Second,
 		MaxSourceCount:          maxSourceCount,
 		IngressDispatchTimeout:  0,
+
+		// twice the NAT's zero-progress bound for an upstream TCP write
+		// (`TcpBufferSettings.WriteTimeout`), which already tolerates tens of
+		// seconds of acknowledgement starvation on a live flow
+		ReturnSendAbandonTimeout: 120 * time.Second,
 	}
 }
 
@@ -6063,6 +6068,17 @@ type RemoteUserNatProviderSettings struct {
 	// ReturnSendRetryTimeout is the strict pacing floor between failed TCP
 	// sender admissions. Zero retains the default.
 	ReturnSendRetryTimeout time.Duration
+
+	// ReturnSendAbandonTimeout bounds how long a socket-owned TCP return may
+	// go unadmitted before its source is treated as unreachable and released.
+	// A connected destination acknowledges Transfer on receipt, so admission
+	// that makes no progress for this long means the destination is gone.
+	// The check runs after an attempt returns, and one attempt may wait
+	// WriteTimeout, so a release lands up to WriteTimeout later. Nothing is
+	// released while the backend is degraded, when no destination can get a
+	// contract. A non-positive value retries until the source or provider
+	// closes.
+	ReturnSendAbandonTimeout time.Duration
 
 	// ReturnSendWorkerCount is the number of datagram sender shards used after
 	// the local NAT's borrowed-packet callback. Zero retains the default.
@@ -6459,6 +6475,13 @@ type RemoteUserNatProvider struct {
 	sourceRetirementClosed      bool
 	sourceRetirementWorkerCount int
 	sourceRetirementWorkers     sync.WaitGroup
+
+	// sources with an unreachable release in progress
+	unreachableSourceReleases       map[Id]bool
+	unreachableSourceReleaseWorkers sync.WaitGroup
+	// transient retirement owners of sources that turned terminal during
+	// their release, kept for the generation like the terminal tombstone
+	unreachableTerminalOwnerIds []uint64
 	// the packet stats epoch worker started (on the first callback)
 	packetStatsStarted bool
 
@@ -6494,6 +6517,9 @@ type RemoteUserNatProvider struct {
 	afterReceiveSourceRetirementForTest func(Id)
 	afterSendSourceRetirementForTest    func(Id)
 	afterSourceRetirementForTest        func(Id)
+
+	afterUnreachableSourceReleaseForTest func(Id)
+	backendDegradedForTest               func() bool
 }
 
 func NewRemoteUserNatProviderWithDefaults(
@@ -6828,6 +6854,117 @@ func (self *RemoteUserNatProvider) retireSourceLifecycle(
 	if self.afterSourceRetirementForTest != nil {
 		self.afterSourceRetirementForTest(sourceId)
 	}
+}
+
+// releaseUnreachableSource ends a source whose socket-owned TCP return made no
+// Transfer admission progress for ReturnSendAbandonTimeout. Nothing else ends
+// it: Reliability retirement needs the platform's answer to a new contract,
+// which a sequence with a full window never requests, so without this the
+// source's flows retry and retransmit until the provider restarts, and they
+// throttle every other source of the provider while they do.
+//
+// It is the non-terminal counterpart of retireSourceLifecycle. The stalled
+// generation closes its admissions and is cancelled exactly as a terminal one,
+// so its retries return and new packets are refused rather than re-admitted
+// under a fresh context. Once its producers finish, the source's NAT flows
+// and Transfer sequences are retired and joined under a transient owner.
+// Releasing that owner and unmapping the generation then readmits the source,
+// because a client that reconnects keeps its id. A Reliability status that
+// arrives meanwhile makes the generation terminal and keeps it.
+func (self *RemoteUserNatProvider) releaseUnreachableSource(
+	sourceId Id,
+	sourceLifecycle *providerSourceLifecycle,
+) {
+	if sourceId == (Id{}) || sourceLifecycle == nil {
+		return
+	}
+	self.stateLock.Lock()
+	if self.sourceLifecycleClosed ||
+		sourceLifecycle.terminal ||
+		self.sourceLifecycles[sourceId] != sourceLifecycle ||
+		self.unreachableSourceReleases[sourceId] {
+		self.stateLock.Unlock()
+		return
+	}
+	if self.unreachableSourceReleases == nil {
+		self.unreachableSourceReleases = map[Id]bool{}
+	}
+	self.unreachableSourceReleases[sourceId] = true
+	sourceLifecycle.admissions.close()
+	sourceLifecycle.cancel()
+	self.unreachableSourceReleaseWorkers.Add(1)
+	self.stateLock.Unlock()
+
+	// The caller is a producer of this generation and one of the flows being
+	// retired, so the join runs apart from it. Close joins this worker; a
+	// provider close cancels every wait.
+	go HandleError(func() {
+		defer self.unreachableSourceReleaseWorkers.Done()
+		ownerId := self.retireUnreachableSource(sourceId, sourceLifecycle)
+		keepOwner := false
+		self.stateLock.Lock()
+		delete(self.unreachableSourceReleases, sourceId)
+		if sourceLifecycle.terminal {
+			// A Reliability status retired this generation during the release.
+			// Its tombstone lasts the provider generation, so the transient
+			// claim does too: releasing it here could readmit the NAT source
+			// before the terminal retirement claims it.
+			if ownerId != 0 {
+				self.unreachableTerminalOwnerIds = append(self.unreachableTerminalOwnerIds, ownerId)
+				keepOwner = true
+			}
+		} else if self.sourceLifecycles[sourceId] == sourceLifecycle {
+			// a later Reliability status finds no generation and retires anew
+			delete(self.sourceLifecycles, sourceId)
+		}
+		self.stateLock.Unlock()
+		if ownerId != 0 && !keepOwner {
+			self.localUserNat.releaseSourceRetirementOwner(ownerId)
+		}
+		if self.afterUnreachableSourceReleaseForTest != nil {
+			self.afterUnreachableSourceReleaseForTest(sourceId)
+		}
+	})
+}
+
+// backendDegraded reports the process-wide backend state that gates releases.
+func (self *RemoteUserNatProvider) backendDegraded() bool {
+	if self.backendDegradedForTest != nil {
+		return self.backendDegradedForTest()
+	}
+	return isBackendDegraded()
+}
+
+// Joins the released generation's producers, then retires its NAT flows and
+// Transfer sequences. Returns the transient retirement owner, or zero if the
+// provider closed first; releasing the owner readmits the NAT source unless
+// another owner still retires it.
+func (self *RemoteUserNatProvider) retireUnreachableSource(
+	sourceId Id,
+	sourceLifecycle *providerSourceLifecycle,
+) uint64 {
+	select {
+	case <-sourceLifecycle.admissions.Done():
+	case <-self.ctx.Done():
+		return 0
+	}
+	ownerId := self.localUserNat.newSourceRetirementOwner()
+	for _, done := range self.localUserNat.retireSourceForOwner(ownerId, sourceId) {
+		select {
+		case <-done:
+		case <-self.ctx.Done():
+			return ownerId
+		}
+	}
+	if self.ctx.Err() != nil {
+		return ownerId
+	}
+	self.client.receiveBuffer.cancelSourceAndWait(sourceId)
+	if self.ctx.Err() != nil {
+		return ownerId
+	}
+	self.client.sendBuffer.cancelDestinationAndWait(sourceId)
+	return ownerId
 }
 
 // tcpFlowClosed retires policy state when the provider NAT releases the actual
@@ -7310,6 +7447,8 @@ func (self *RemoteUserNatProvider) retryReturnSend(
 	if retryTimeout <= 0 {
 		retryTimeout = 10 * time.Millisecond
 	}
+	abandonTimeout := self.settings.ReturnSendAbandonTimeout
+	startTime := time.Now()
 	for {
 		retry := NewPacedReconnect(retryTimeout)
 		sent := send()
@@ -7323,11 +7462,20 @@ func (self *RemoteUserNatProvider) retryReturnSend(
 		if sent || item.recoveryMode != receiveRecoveryModeTcpSocket {
 			return sent
 		}
+		sendCtx := item.sendContext(self.ctx)
+		if sendCtx.Err() != nil {
+			// the attempt failed because the source or provider closed
+			return false
+		}
+		if 0 < abandonTimeout && abandonTimeout <= time.Since(startTime) && !self.backendDegraded() {
+			self.releaseUnreachableSource(item.source.SourceId, item.sourceLifecycle)
+			return false
+		}
 		if self.beforeTcpReturnSendRetryForTest != nil {
 			self.beforeTcpReturnSendRetryForTest()
 		}
 		select {
-		case <-item.sendContext(self.ctx).Done():
+		case <-sendCtx.Done():
 			return false
 		case <-retry.After():
 		}
@@ -8330,6 +8478,14 @@ func (self *RemoteUserNatProvider) Close() {
 			<-sourceLifecycle.admissions.Done()
 		}
 		self.sourceRetirementWorkers.Wait()
+		self.unreachableSourceReleaseWorkers.Wait()
+		self.stateLock.Lock()
+		unreachableTerminalOwnerIds := self.unreachableTerminalOwnerIds
+		self.unreachableTerminalOwnerIds = nil
+		self.stateLock.Unlock()
+		for _, ownerId := range unreachableTerminalOwnerIds {
+			self.localUserNat.releaseSourceRetirementOwner(ownerId)
+		}
 		self.localUserNat.releaseSourceRetirementOwner(self.sourceRetirementOwnerId)
 	})
 }
