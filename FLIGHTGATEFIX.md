@@ -3503,3 +3503,138 @@ Until that exists the rule stays off by default, which is where §33.6 and
 the revert have already put it. The row above is kept as a guard: if a later
 change makes a silent lane fail to drain in process, it is caught here
 rather than in a twenty-repetition campaign.
+
+## 34. Fifteenth round: the proof chain is not always reachable, unconditional re-arm is unsound, and the sound bound is lane position
+
+Design analysis, 2026-09-13, against §33 and the counters of run 6.
+
+### 34.1 The argument holds, in a more general form
+
+§32.4 rested on "every recovery case is covered": a head dropped after a
+stall is proven by the next same-lane acknowledgement, a lone tail by
+§29.3, a dead route by the liveness write. The coordinator's objection is
+right and it is wider than one case. The rule's proof for a reliable-
+carried item X is "a later same-lane item was acknowledged", and that
+needs three things the absence of X can itself remove: a later same-lane
+item must exist (the sender admits nothing new once its budget is full of
+items queued behind X, and §29.3 covers exactly one unproven item per
+route, never thirteen); it must be delivered (a receiver whose ordered
+stream is blocked at X buffers above the hole to its budget and then drops
+what arrives, on every lane, so the later same-lane items are dropped
+too, unacknowledged and themselves unproven, and every link of the chain
+waits on the next); and its acknowledgement must reach the lane (eeca11f's
+attribution mark credits no lane for a rewritten item). So on a FIFO lane a
+later same-lane acknowledgement proves loss when it arrives and proves
+nothing when it does not. §32 treated "not proven lost" as "proven late",
+and re-armed on it without bound. That is the error, and it is exactly
+what a wedge that ends only when something external arrives looks like.
+
+The liveness write was meant to be the proof-independent bound and it
+cannot be, because it is keyed on route silence and the wedged route is
+not silent: any acknowledgement credited to the route, a gap write's, a
+probe's, resets it, and the counters say it fired about nine times in
+twelve minutes where a 2 s bound on a silent route would have fired
+ninety. A route can be alive and X can still be the one item nothing will
+ever acknowledge. The bound has to be per item, and it has to be about
+X's own neighbourhood on its lane, not about the route.
+
+### 34.2 What the wedge is, and why the instrument could not build it
+
+The shape the invariants pick out, and the one to build: a direct hole H
+blocks the receiver's ordered stream; the sender keeps striping; the
+receiver buffers above H to its budget and then drops what arrives,
+including a run of relay items X, X+1, …; H is recovered by merged's
+direct rules within seconds and the receiver's head advances to X, which
+is now the head hole; the dropped relay items are unproven because every
+later relay item was dropped with them, the sender's budget is full of
+acknowledged items queued behind X, and the route stays "alive" on other
+acknowledgements. Nothing writes X. The in-process sink drops nothing at
+a budget, so §33.10's links cannot reach it; a receiver with the real
+`ReceiveBufferSettings` budget can, and that row is specified in 34.5.
+The release the campaign saw at full rate after minutes is consistent
+with a receiver-side timeout clearing the head hole, and the receiver-
+state export §33.10 asks for is still the right instrument to confirm it.
+
+### 34.3 The correct bound
+
+The estimate returns as a pacer and stays out of the decision. At a
+reliable-carried item's timer firing, decided by same-lane
+acknowledgements only:
+
+1. any same-lane acknowledgement above X, ever: X was delivered and its
+   own acknowledgement lost, or X was dropped; either way write X (a
+   duplicate into a live lane at worst), with backoff;
+2. else any same-lane acknowledgement below X since X's last firing: the
+   lane is draining toward X, and on a FIFO lane X is next; re-arm with
+   backoff;
+3. else nothing on X's lane has moved since X last looked: if X is the
+   lane's oldest unacknowledged item, write it with backoff; if not,
+   re-arm it to that head's next firing.
+
+And one promotion: when a lane head's acknowledgement arrives, the new
+lane head's next firing is set to `now + probeRtt`, the lane's minimum,
+so that a batch the receiver dropped drains at one lane round trip per
+item rather than one backed-off interval per item, while a post-stall
+drain, whose acknowledgements arrive below the new head inside that round
+trip, re-arms it under rule 2 and writes nothing.
+
+What this does, regime by regime. Queue inflation (M4): the head's
+acknowledgement comes at the queue depth D, and items below it are
+acknowledged continuously until then, so rule 2 holds at every firing
+before D and the head is never written; a pause in acknowledgements
+longer than twice the head's interval writes the head once, which is the
+honest bound and is above M4's steps. A stall (§24): nothing moves, the
+head writes at I, 2I, 4I and the rest ride it, the probe count as before.
+The wedge: X is the lane head and nothing below it exists, so rule 3
+writes it at its first backed-off firing whatever the route's other
+acknowledgements say; X's acknowledgement promotes X+1 to one round trip,
+nothing arrives below X+1, it is written, and the dropped batch drains at
+one round trip per item. Re-establishment: the sequence head is a lane
+head, so it is written on its own timer when nothing below it moves, with
+`setHead`; the cold-cadence probe of eeca11f is redundant and goes. A
+dead route: the head writes at its backoff until retirement, as now.
+
+The residual cost, stated: a lane head whose acknowledgement pause
+exceeds twice its interval is written once per such pause, on any lane.
+That is one duplicate per pause, it is the price of a bound that owes
+nothing to proof, and it is the only place the sound rule writes where
+the unconditional one did not.
+
+### 34.4 Whether the mechanism can be saved
+
+Yes, in this form, and the unconditional re-arm is withdrawn as unsound:
+it removed the one bound that holds when the proof chain is broken, and
+replaced it with a route-level liveness bound that any acknowledgement on
+the route defeats. The rule does not need "the estimate it was designed
+to remove" in merged's sense, where the estimate alone decides and every
+item writes when it fires; it needs the estimate to say when to look and
+the lane's own acknowledgements, above and below the item, to say what
+was seen. §32.1's rule stands and is what 34.3 follows: the estimate
+paces, facts decide. §32.3's claim that every recovery case was covered
+is retracted; the case it missed is the one in which the receiver's own
+drops remove the proof.
+
+### 34.5 Tests, in the contract shape
+
+| Row | Regime | Behaviour | merged | unconditional (eeca11f) | 34.3 |
+|---|---|---|---|---|---|
+| 14 | two lanes, a direct hole, the receiver's budget dropping a run of relay items above it, the hole then recovered | the dropped run is recovered within one backed-off interval plus one lane round trip per item, and the transfer resumes | holds, by whole-window rewrite | fails: unproven, re-armed for the run's life | holds |
+| 15 | one reliable lane, 20 s stall | writes during the stall at most the probe count; after it, promotion writes nothing while the drain continues | fails | holds | holds |
+| 16 | M4's profile | no write while acknowledgements below the head continue; one head write per pause longer than twice its interval, asserted as the bound | fails | holds | holds |
+| 17 | one reliable lane, one item dropped at the endpoint, later items delivered | written at its next firing after any later same-lane acknowledgement | holds | holds | holds |
+
+Row 14 is the wedge made deterministic and the row the unconditional
+rule fails by construction; it needs the receiver's real budget, which
+the in-process link must be given. Sizes and allocation unchanged: the
+per-route slots already hold the sequence numbers the rules read.
+
+### 34.6 Now
+
+The rule stays off. Build 34.3 behind the same flag, row 14 first, since
+it is the row that decides whether the wedge has the shape 34.2 says;
+then rows 15 to 17; then the relay queue-inflation cell and the two storm
+cells at twenty repetitions against `175d82a`, judged on total recovery
+writes, dead windows and the count of runs over 100 s, which must be
+zero. The receiver-state export stays on the list, because if row 14
+holds and the campaign still wedges, the wedge is not the shape the
+invariants pick out, and that export is what would say what it is.
