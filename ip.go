@@ -720,6 +720,12 @@ type LocalUserNat struct {
 	clientTag string
 	log       Logger
 
+	// datagrams the kernel dropped at a UDP flow's socket because its
+	// receive buffer was full, summed over every UDP socket this NAT closed
+	// (THROUGHPUTFIX §12). Read from the socket's own counter at close on
+	// Linux; zero elsewhere. Invisible to every layer above the socket.
+	udpKernelReceiveDropCount atomic.Uint64
+
 	sendPackets chan *SendPacket
 	sendLock    sync.Mutex
 	sendClosed  bool
@@ -925,6 +931,12 @@ func (self *LocalUserNat) addSourceRetirementCallback(callback sourceRetirementF
 			self.sourceRetirementLock.Unlock()
 		})
 	}
+}
+
+// UdpKernelReceiveDropCount is the running total of datagrams the kernel
+// dropped at this NAT's UDP flow sockets, counted as each socket closes.
+func (self *LocalUserNat) UdpKernelReceiveDropCount() uint64 {
+	return self.udpKernelReceiveDropCount.Load()
 }
 
 func (self *LocalUserNat) SecurityPolicyStats(reset bool) SecurityPolicyStats {
@@ -1471,6 +1483,8 @@ func (self *LocalUserNat) runSendShard(sendPackets chan *SendPacket) {
 	// callback after this nat's Run starts.
 	udp4Buffer.receiveTransferPacketsCallback = self.receiveTransferPackets
 	udp6Buffer.receiveTransferPacketsCallback = self.receiveTransferPackets
+	udp4Buffer.kernelReceiveDropCount = &self.udpKernelReceiveDropCount
+	udp6Buffer.kernelReceiveDropCount = &self.udpKernelReceiveDropCount
 	tcp4Buffer.receiveTransferPacketsCallback = self.receiveTransferPackets
 	tcp6Buffer.receiveTransferPacketsCallback = self.receiveTransferPackets
 	icmp4Buffer.receiveTransferPacketsCallback = self.receiveTransferPackets
@@ -2602,6 +2616,9 @@ type UdpBuffer[BufferId comparable] struct {
 	sharedLifecycleWake            chan struct{}
 	sharedLifecycleWaitGroup       sync.WaitGroup
 	sequenceWaitGroup              sync.WaitGroup
+	// the owning NAT's kernel receive-drop counter, handed to each sequence
+	// for its socket close; nil leaves the drops uncounted
+	kernelReceiveDropCount *atomic.Uint64
 
 	mutex sync.Mutex
 
@@ -2741,6 +2758,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
 			self.socketReadPoller = newUdpSocketReadPoller(self.ctx, self.udpBufferSettings)
 		}
 		sequence.socketReadPoller = self.socketReadPoller
+		sequence.kernelReceiveDropCount = self.kernelReceiveDropCount
 		sequence.sharedSocketLifecycle =
 			self.socketReadPoller != nil && self.udpBufferSettings.SharedSocketLifecycle
 		sequence.sharedLifecycleWake = self.sharedLifecycleWake
@@ -2970,6 +2988,7 @@ type UdpSequence struct {
 	closeOnce                      sync.Once
 	retirementOperations           *lifecycleAdmission
 	retirementDone                 chan struct{}
+	kernelReceiveDropCount         *atomic.Uint64
 
 	sendMutex sync.Mutex
 	sendItems chan *UdpSendItem
@@ -3245,6 +3264,18 @@ func (self *UdpSequence) openSocket() (net.Conn, error) {
 	return socket, nil
 }
 
+// Closes the flow's upstream socket, first adding the datagrams the kernel
+// dropped at it to the NAT's counter. The read is one getsockopt per flow
+// close, so it costs nothing on the packet path.
+func (self *UdpSequence) closeSocket(socket net.Conn) {
+	if self.kernelReceiveDropCount != nil {
+		if dropCount := udpSocketReceiveDropCount(socket); 0 < dropCount {
+			self.kernelReceiveDropCount.Add(dropCount)
+		}
+	}
+	_ = socket.Close()
+}
+
 func (self *UdpSequence) startSharedSocket() bool {
 	socket, err := self.openSocket()
 	if err != nil {
@@ -3294,7 +3325,7 @@ func (self *UdpSequence) Run() {
 	if err != nil {
 		return
 	}
-	defer socket.Close()
+	defer self.closeSocket(socket)
 	// f, _ := udpConn.File()
 	// fd := SocketHandle(f.Fd())
 	// syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MTU, self.udpBufferSettings.Mtu)
@@ -3477,7 +3508,7 @@ func (self *UdpSequence) Close() {
 				self.socketReadPoller.unregister(self)
 			}
 			if self.sharedSocket != nil {
-				_ = self.sharedSocket.Close()
+				self.closeSocket(self.sharedSocket)
 			}
 			select {
 			case self.sharedLifecycleWake <- struct{}{}:
