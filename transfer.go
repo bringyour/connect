@@ -1232,6 +1232,13 @@ type sendPackRecoveryOption struct {
 	retainAfterAckTimeout bool
 }
 
+// A send option naming the `sendAckTarget` of the Pack, for callers whose
+// entry point takes an `AckFunction`. A target takes precedence over the
+// callback in `sendAckRecord.invoke`.
+type sendAckTargetOption struct {
+	target sendAckTarget
+}
+
 func observeTransportWrite(observer func(TransportType)) transportWriteOption {
 	return transportWriteOption{observer: observer}
 }
@@ -3070,6 +3077,7 @@ func (self *Client) sendGroupToWithTimeoutDetailed(
 		Destination:                  destinationId,
 		IntermediaryIds:              intermediaryIds,
 		AckCallback:                  ackCallback,
+		ackTarget:                    resolved.ackTarget,
 		MessageByteCount:             MessageByteCount(frames),
 		Ctx:                          resolved.ctx,
 		EncryptionRole:               resolved.encryptionRole,
@@ -3109,6 +3117,7 @@ func (self *Client) sendWithTimeoutDetailed(
 		// store the raw callback; invoked via safeAck so no per-send wrapper
 		// closure is allocated.
 		AckCallback:                  ackCallback,
+		ackTarget:                    resolved.ackTarget,
 		MessageByteCount:             messageByteCount,
 		Ctx:                          resolved.ctx,
 		EncryptionRole:               resolved.encryptionRole,
@@ -3135,6 +3144,7 @@ type resolvedSendOptions struct {
 	logicalLaneExplicit    bool
 	upstreamRecoverable    bool
 	retainAfterAckTimeout  bool
+	ackTarget              sendAckTarget
 }
 
 // Applies options left-to-right. A received TransferKey reproduces the exact
@@ -3187,6 +3197,8 @@ func (self *Client) resolveSendOptions(opts []any) resolvedSendOptions {
 		case sendPackRecoveryOption:
 			resolved.upstreamRecoverable = v.upstreamRecoverable
 			resolved.retainAfterAckTimeout = v.retainAfterAckTimeout
+		case sendAckTargetOption:
+			resolved.ackTarget = v.target
 		}
 	}
 	return resolved

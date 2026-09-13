@@ -126,8 +126,8 @@ func closedProviderTestChannel(channel <-chan struct{}) bool {
 	}
 }
 
-// returnSendTestClock stands in for the wall clock that times an unadmitted
-// return. The provider's first retry moves it far past any abandon timeout, so
+// returnSendTestClock stands in for the clock that evaluates a source's
+// acknowledgement silence. The first retry moves it past any abandon timeout, so
 // every later abandon check sees an expired stall without the test waiting.
 type returnSendTestClock struct {
 	now          atomic.Int64
@@ -162,8 +162,11 @@ func newUnreachableSourceTestProvider(
 		settings.ReturnSendAbandonTimeout = abandonTimeout
 	})
 	// the backend state is process-wide and other tests' clients trip it;
-	// these tests decide it explicitly
+	// these tests decide it explicitly. The fixture client registers no
+	// transport, and silence without a carrier is inadmissible
+	// (THROUGHPUTFIX §10), so these tests hold a carrier explicitly too.
 	provider.backendDegradedForTest = func() bool { return false }
+	provider.hasActiveTransportForTest = func() bool { return true }
 	clock := &returnSendTestClock{expiredRetry: make(chan struct{})}
 	clock.now.Store(time.Now().UnixNano())
 	provider.returnSendNowForTest = clock.Now

@@ -6064,9 +6064,9 @@ func DefaultRemoteUserNatProviderSettingsWithMemoryTarget(targetByteCount ByteCo
 		MaxSourceCount:          maxSourceCount,
 		IngressDispatchTimeout:  0,
 
-		// twice the NAT's zero-progress bound for an upstream TCP write
-		// (`TcpBufferSettings.WriteTimeout`), which already tolerates tens of
-		// seconds of acknowledgement starvation on a live flow
+		// twice Transfer's own acknowledgement bound (`SendBufferSettings
+		// .AckTimeout`), and above every acknowledgement gap the shipped tree
+		// has been measured to produce (THROUGHPUTFIX §10.3)
 		ReturnSendAbandonTimeout: 120 * time.Second,
 	}
 }
@@ -6077,15 +6077,19 @@ type RemoteUserNatProviderSettings struct {
 	// sender admissions. Zero retains the default.
 	ReturnSendRetryTimeout time.Duration
 
-	// ReturnSendAbandonTimeout bounds how long a socket-owned TCP return may
-	// go unadmitted before its source is treated as unreachable and released.
-	// A connected destination acknowledges Transfer on receipt, so admission
-	// that makes no progress for this long means the destination is gone.
-	// The check runs after an attempt returns, and one attempt may wait
-	// WriteTimeout, so a release lands up to WriteTimeout later. Nothing is
-	// released while the backend is degraded, when no destination can get a
-	// contract. A non-positive value retries until the source or provider
-	// closes.
+	// ReturnSendAbandonTimeout bounds how long a source whose socket-owned
+	// TCP return is parked may go without acknowledging any of the provider's
+	// returns to it before it is treated as unreachable and released, then
+	// readmitted (THROUGHPUTFIX §10). The clock is per source and advances
+	// only on the destination's acknowledgements, so a client that
+	// acknowledges anything, however slowly and however many flows it has
+	// parked, is never released, and an admitted item never restarts it.
+	// Time the provider spends without a transport is not counted, and
+	// nothing is released while the backend is degraded, when the return
+	// may have no contract. The check runs before an attempt and after a
+	// failed one, and an attempt may wait WriteTimeout, so a release lands
+	// up to WriteTimeout later. A non-positive value retries until the
+	// source or provider closes.
 	ReturnSendAbandonTimeout time.Duration
 
 	// ReturnSendWorkerCount is the number of datagram sender shards used after
@@ -6420,6 +6424,101 @@ type providerSourceLifecycle struct {
 	// Terminal lifecycles are their own pending cleanup nodes, so the status
 	// path allocates no second capacity-sized queue.
 	retirementNext *providerSourceLifecycle
+	// the source's acknowledgement evidence, kept by the provider across the
+	// source's lifecycles (THROUGHPUTFIX §10); nil on a terminal lifecycle
+	evidence *sourceAckEvidence
+}
+
+// The acknowledgement evidence of one source (THROUGHPUTFIX §10): the
+// provider's own record that its socket-owned returns to that client are
+// deliverable. It outlives the source's lifecycles, which are reclaimed
+// whenever the source has no admitted producer, so an acknowledgement that
+// arrives between a flow's items still lands on the source. Bounded with the
+// provider's other per-source maps. All times are monotonicNanos, and every
+// field is atomic: the acknowledgement path is the send sequence goroutine,
+// the readers are parked return producers.
+type sourceAckEvidence struct {
+	// socket-owned returns admitted to Transfer and not yet acknowledged or
+	// failed, and when that count last rose from zero. While something is
+	// outstanding, silence accrues from there or from the last
+	// acknowledgement, whichever is later, so a further admission never
+	// restarts it.
+	outstanding           atomic.Int64
+	outstandingSinceNanos atomic.Int64
+	// when a producer first found its return unadmitted with nothing
+	// outstanding, which is the only silence there is then; cleared by an
+	// admission
+	parkedSinceNanos atomic.Int64
+	// when the destination last acknowledged one of the source's returns
+	lastAckNanos atomic.Int64
+	// when a parked producer last found the provider without a transport,
+	// since the provider's own silence is no evidence about the client
+	carrierAbsentNanos atomic.Int64
+}
+
+// `sendAckTarget` for the source's socket-owned returns: one fewer
+// outstanding, and on success the destination is reachable now. One clock
+// read and two atomic operations per acknowledged item.
+func (self *sourceAckEvidence) sendAckResult(value ByteCount, err error) {
+	if self == nil {
+		return
+	}
+	for {
+		count := self.outstanding.Load()
+		if count <= 0 || self.outstanding.CompareAndSwap(count, count-1) {
+			break
+		}
+	}
+	if err == nil {
+		self.lastAckNanos.Store(monotonicNanos())
+	}
+}
+
+// One more socket-owned return admitted to Transfer.
+func (self *sourceAckEvidence) admitted(nowNanos int64) {
+	if self.outstanding.Add(1) == 1 {
+		self.outstandingSinceNanos.Store(nowNanos)
+	}
+	self.parkedSinceNanos.Store(0)
+}
+
+// A producer found its return unadmitted. With nothing outstanding the start
+// of that stall is the clock's floor, recorded once.
+func (self *sourceAckEvidence) parked(nowNanos int64) {
+	if self.outstanding.Load() <= 0 {
+		self.parkedSinceNanos.CompareAndSwap(0, nowNanos)
+	}
+}
+
+// How long the destination has acknowledged nothing while the provider had a
+// return outstanding or parked for it and a carrier to deliver on: since the
+// latest of the last acknowledgement, the outstanding count last rising from
+// zero (or, with nothing outstanding, the stall's start), and the last
+// observed carrier absence.
+func (self *sourceAckEvidence) silence(nowNanos int64) time.Duration {
+	var sinceNanos int64
+	if 0 < self.outstanding.Load() {
+		sinceNanos = self.outstandingSinceNanos.Load()
+	} else {
+		sinceNanos = self.parkedSinceNanos.Load()
+		if sinceNanos == 0 {
+			return 0
+		}
+	}
+	floorNanos := max(
+		sinceNanos,
+		self.lastAckNanos.Load(),
+		self.carrierAbsentNanos.Load(),
+	)
+	return time.Duration(nowNanos - floorNanos)
+}
+
+// The process-relative monotonic clock behind the evidence stamps, so a
+// wall-clock step on the host cannot read as a silent client.
+var monotonicEpoch = time.Now()
+
+func monotonicNanos() int64 {
+	return int64(time.Since(monotonicEpoch))
 }
 
 type RemoteUserNatProvider struct {
@@ -6469,6 +6568,11 @@ type RemoteUserNatProvider struct {
 	// on the provider packet path. Entries are bounded with
 	// sourceProvideMode and removed on the same arbitrary safe eviction.
 	sourceP2pPriorityRefresh map[Id]time.Time
+	// sourceAckEvidences is the per-source acknowledgement evidence behind
+	// the abandon decision (THROUGHPUTFIX §10): created with a source's first
+	// lifecycle, bounded by MaxSourceCount with the same arbitrary eviction,
+	// removed on an authoritative disconnect
+	sourceAckEvidences map[Id]*sourceAckEvidence
 	// sourceLifecycles contains only active healthy sources and permanent
 	// terminal tombstones. Healthy entries disappear at their final admission;
 	// terminal entries never expire or evict within this provider generation.
@@ -6528,8 +6632,9 @@ type RemoteUserNatProvider struct {
 
 	afterUnreachableSourceReleaseForTest func(Id)
 	backendDegradedForTest               func() bool
-	// returnSendNowForTest replaces the wall clock that times an unadmitted
-	// socket-owned return against ReturnSendAbandonTimeout.
+	hasActiveTransportForTest            func() bool
+	// returnSendNowForTest replaces the clock used to evaluate a source's
+	// acknowledgement silence against ReturnSendAbandonTimeout.
 	returnSendNowForTest func() time.Time
 }
 
@@ -6713,6 +6818,7 @@ func (self *RemoteUserNatProvider) acquireSourceLifecycle(sourceId Id) *provider
 			ctx:        sourceCtx,
 			cancel:     cancel,
 			admissions: newLifecycleAdmission(),
+			evidence:   self.sourceAckEvidenceWithLock(sourceId),
 		}
 		self.sourceLifecycles[sourceId] = sourceLifecycle
 	}
@@ -6946,6 +7052,92 @@ func (self *RemoteUserNatProvider) backendDegraded() bool {
 	return isBackendDegraded()
 }
 
+// Whether the provider's client has a carrier at all. Without one nothing it
+// sends can be acknowledged, so a source's silence is the provider's own.
+func (self *RemoteUserNatProvider) hasActiveTransport() bool {
+	if self.hasActiveTransportForTest != nil {
+		return self.hasActiveTransportForTest()
+	}
+	return self.client.RouteManager().HasActiveTransport()
+}
+
+// The source's acknowledgement evidence, created on first use. Called with
+// stateLock held. At the cap an arbitrary entry is evicted; a source whose
+// evidence is evicted starts a fresh record with its next lifecycle, which
+// reads as nothing outstanding until its next admission.
+func (self *RemoteUserNatProvider) sourceAckEvidenceWithLock(sourceId Id) *sourceAckEvidence {
+	if self.sourceAckEvidences == nil {
+		self.sourceAckEvidences = map[Id]*sourceAckEvidence{}
+	}
+	if evidence := self.sourceAckEvidences[sourceId]; evidence != nil {
+		return evidence
+	}
+	if maxCount := self.settings.MaxSourceCount; 0 < maxCount && maxCount <= len(self.sourceAckEvidences) {
+		for evictSourceId := range self.sourceAckEvidences {
+			delete(self.sourceAckEvidences, evictSourceId)
+			break
+		}
+	}
+	evidence := &sourceAckEvidence{}
+	self.sourceAckEvidences[sourceId] = evidence
+	return evidence
+}
+
+// The evidence a return item is counted against: its source's, for a
+// socket-owned item whose acknowledgement no test target intercepts. Datagram
+// and control items have none; only socket-owned returns are outstanding.
+func (self *RemoteUserNatProvider) returnSendAckEvidence(item *providerReturnItem) *sourceAckEvidence {
+	if self.returnAckTargetForTest != nil ||
+		item.recoveryMode != receiveRecoveryModeTcpSocket ||
+		item.sourceLifecycle == nil {
+		return nil
+	}
+	return item.sourceLifecycle.evidence
+}
+
+// The ack target of a return item: its source's evidence, whose clock the
+// destination's acknowledgement advances. A test target wins.
+func (self *RemoteUserNatProvider) returnSendAckTarget(item *providerReturnItem) sendAckTarget {
+	if self.returnAckTargetForTest != nil {
+		return self.returnAckTargetForTest
+	}
+	if evidence := self.returnSendAckEvidence(item); evidence != nil {
+		return evidence
+	}
+	return nil
+}
+
+// Releases a parked socket-owned return's source when the destination has
+// acknowledged none of the source's returns for ReturnSendAbandonTimeout
+// (THROUGHPUTFIX §10). The clock is the source's evidence: it advances on the
+// destination's acknowledgements and is floored at the start of what is
+// outstanding, so a client that acknowledges anything, however slowly, is
+// never released and an admitted item never restarts it. While the provider
+// has no transport nothing can be acknowledged, so that time is not counted
+// against the client; while the backend is degraded the return may have no
+// contract, likewise. Reports whether the source was released.
+func (self *RemoteUserNatProvider) abandonSilentSource(item *providerReturnItem) bool {
+	abandonTimeout := self.settings.ReturnSendAbandonTimeout
+	evidence := self.returnSendAckEvidence(item)
+	if abandonTimeout <= 0 || evidence == nil {
+		return false
+	}
+	nowNanos := monotonicNanos()
+	if self.returnSendNowForTest != nil {
+		nowNanos = int64(self.returnSendNowForTest().Sub(monotonicEpoch))
+	}
+	if !self.hasActiveTransport() {
+		evidence.carrierAbsentNanos.Store(nowNanos)
+		return false
+	}
+	evidence.parked(nowNanos)
+	if evidence.silence(nowNanos) < abandonTimeout || self.backendDegraded() {
+		return false
+	}
+	self.releaseUnreachableSource(item.source.SourceId, item.sourceLifecycle)
+	return true
+}
+
 // Joins the released generation's producers, then retires its NAT flows and
 // Transfer sequences. Returns the transient retirement owner, or zero if the
 // provider closed first; releasing the owner readmits the NAT source unless
@@ -6996,6 +7188,7 @@ func (self *RemoteUserNatProvider) senderDisconnected(senderClientId Id) {
 		delete(self.sourceProvideMode, senderClientId)
 		delete(self.sourceP2pPriorityRefresh, senderClientId)
 		delete(self.sourceDiagnostics, senderClientId)
+		delete(self.sourceAckEvidences, senderClientId)
 	}()
 }
 
@@ -7444,10 +7637,12 @@ func providerReturnIpTransferOptions(
 const providerReturnBatchMaxFrames = 16
 const providerReturnBatchMaxBytes = 24 * 1024
 
-// Retries caller-owned socket-return data until Transfer accepts it or the
-// provider closes. Every non-owned callback has one downstream disposition,
-// even for a synthesized or public TCP packet. Failed owned attempts wait a
-// strict pacing floor, including immediate no-route and full-buffer failures.
+// Retries caller-owned socket-return data until Transfer accepts it, the
+// provider closes, or the source has been silent for ReturnSendAbandonTimeout
+// (abandonSilentSource). Every non-owned callback has one downstream
+// disposition, even for a synthesized or public TCP packet. Failed owned
+// attempts wait a strict pacing floor, including immediate no-route and
+// full-buffer failures.
 func (self *RemoteUserNatProvider) retryReturnSend(
 	item *providerReturnItem,
 	packetCount int,
@@ -7458,13 +7653,10 @@ func (self *RemoteUserNatProvider) retryReturnSend(
 	if retryTimeout <= 0 {
 		retryTimeout = 10 * time.Millisecond
 	}
-	abandonTimeout := self.settings.ReturnSendAbandonTimeout
-	now := time.Now
-	if self.returnSendNowForTest != nil {
-		now = self.returnSendNowForTest
-	}
-	startTime := now()
 	for {
+		if self.abandonSilentSource(item) {
+			return false
+		}
 		retry := NewPacedReconnect(retryTimeout)
 		sent := send()
 		if self.afterReturnSendAttemptForTest != nil {
@@ -7474,16 +7666,21 @@ func (self *RemoteUserNatProvider) retryReturnSend(
 				sent:            sent,
 			})
 		}
-		if sent || item.recoveryMode != receiveRecoveryModeTcpSocket {
-			return sent
+		if sent {
+			if evidence := self.returnSendAckEvidence(item); evidence != nil {
+				evidence.admitted(monotonicNanos())
+			}
+			return true
+		}
+		if item.recoveryMode != receiveRecoveryModeTcpSocket {
+			return false
 		}
 		sendCtx := item.sendContext(self.ctx)
 		if sendCtx.Err() != nil {
 			// the attempt failed because the source or provider closed
 			return false
 		}
-		if 0 < abandonTimeout && abandonTimeout <= now().Sub(startTime) && !self.backendDegraded() {
-			self.releaseUnreachableSource(item.source.SourceId, item.sourceLifecycle)
+		if self.abandonSilentSource(item) {
 			return false
 		}
 		if self.beforeTcpReturnSendRetryForTest != nil {
@@ -7542,6 +7739,7 @@ func (self *RemoteUserNatProvider) sendReturnPacket(item *providerReturnItem) bo
 		1,
 		item.packetByteCount,
 	)
+	ackTarget := self.returnSendAckTarget(item)
 	var sent bool
 	if 2 <= self.settings.ProtocolVersion {
 		sent = self.retryReturnSend(item, 1, item.packetByteCount, func() bool {
@@ -7549,7 +7747,7 @@ func (self *RemoteUserNatProvider) sendReturnPacket(item *providerReturnItem) bo
 				protocol.MessageType_IpIpPacketFromProvider,
 				packet,
 				destinationId,
-				self.returnAckTargetForTest,
+				ackTarget,
 				0,
 				writeTimeout,
 				returnOption,
@@ -7589,6 +7787,7 @@ func (self *RemoteUserNatProvider) sendReturnPacket(item *providerReturnItem) bo
 				sendSchedulingKeyOption{key: item.schedulingKey},
 				observeTransportWrite(transportAttribution.observe),
 				recoveryOption,
+				sendAckTargetOption{target: ackTarget},
 			)
 		})
 		if !sent {
@@ -7643,6 +7842,7 @@ func (self *RemoteUserNatProvider) sendReturnBatchWithLimits(
 	destinationId := item.source.SourceId
 	writeTimeout := self.returnWriteTimeout(item)
 	recoveryOption := self.returnSendRecoveryOption(item)
+	ackTarget := self.returnSendAckTarget(item)
 	frames := make([]*protocol.Frame, 0, maxFrames)
 	wrappedShares := make([][]byte, 0, maxFrames)
 	var chunkBytes int64
@@ -7677,6 +7877,7 @@ func (self *RemoteUserNatProvider) sendReturnBatchWithLimits(
 					sendSchedulingKeyOption{key: item.schedulingKey},
 					observeTransportWrite(transportAttribution.observe),
 					recoveryOption,
+					sendAckTargetOption{target: ackTarget},
 				)
 				return admitted
 			},
