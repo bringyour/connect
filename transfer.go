@@ -1414,11 +1414,13 @@ func updateAtomicMaximum(target *atomic.Uint64, value uint64) {
 // An immutable view of Transfer recovery writes and unreliable-carrier flight
 // behavior. Counters are monotonic for one Client.
 type ClientSendRecoveryStatsSnapshot struct {
-	InitialWriteCount                     uint64
-	InitialFrameCount                     uint64
-	InitialMessageByteCount               uint64
-	TimeoutResendWriteCount               uint64
-	AckPendingResendPreemptCount          uint64
+	InitialWriteCount            uint64
+	InitialFrameCount            uint64
+	InitialMessageByteCount      uint64
+	TimeoutResendWriteCount      uint64
+	AckPendingResendPreemptCount uint64
+	// RTO resends of reliable-carried items deferred by one scaled RTT
+	// because the cumulative ack was still advancing (FLIGHTGATEFIX §13.5).
 	TimeoutResendDeferCount               uint64
 	CarrierChangeWriteCount               uint64
 	SelectiveGapWriteCount                uint64
@@ -4518,8 +4520,17 @@ type SendBufferSettings struct {
 	// reliable-carried hole counts only later acknowledgements from its own
 	// route, with no time grace, and a timer firing on a route that has
 	// acknowledged nothing past the item probes the route's oldest
-	// outstanding item and holds the rest behind it. Off by default until
-	// measured.
+	// outstanding item and holds the rest behind it.
+	//
+	// Off by default, and the staging flip was attempted and withdrawn. With
+	// it on, TestSendSequenceQueueInflatedRelayRttDoesNotFireWholeWindowTimeouts
+	// fails two runs in eight under the race detector and none in four with
+	// it off: on a single reliable lane whose acknowledgement delay has grown
+	// past its own scaled round trip, the silent verdict of §27.3 fires a
+	// probe where §13.5 would defer, which is M4's contract. The lagging mean
+	// is the same one §22 and §25 identified, and using the item's own
+	// interval as the window does not close it either. The setting stays so
+	// the flip is one boolean once that is resolved.
 	ReliableLaneProvenRecovery bool
 	// ResendQueueBudget, when set, is a byte budget shared across sequences
 	// (typically all clients of one device): resend queue bytes above the
@@ -8872,8 +8883,7 @@ func (self *SendSequence) writeMaybeWrappedBytes(
 	// A full unreliable flight must not stall this sequence while a reliable
 	// carrier is active: route the overflow reliable-only so it is neither
 	// tracked in the flight nor lost with the unreliable carrier.
-	reliableOnly = reliableOnly ||
-		self.reliableOnlyWrite(self.transferFlightPolicy())
+	reliableOnly = reliableOnly || self.reliableOnlyWrite(self.transferFlightPolicy())
 	var cipher *sequenceCipher
 	if self.session != nil && !forceUnwrapped {
 		cipher = self.session.Cipher()

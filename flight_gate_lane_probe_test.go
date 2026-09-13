@@ -197,12 +197,16 @@ func TestLaneProbeReplacesTheWholeWindowOnASilentLane(t *testing.T) {
 	if perLane.LaneProbeWriteCount == 0 {
 		t.Fatal("no probe was written, so the head was never retransmitted")
 	}
-	// every write is the route head's probe: a write that is not a probe is
-	// a second firing, which is what the rule exists to remove
-	if perLane.TimeoutResendWriteCount != perLane.LaneProbeWriteCount {
+	// Every write is the route head's probe, save one: a route that has never
+	// acknowledged anything has no lane evidence to read, so its first firing
+	// goes to §13.5 and is written exactly as merged writes it. What the rule
+	// removes is the second firing, so the allowance is one write and not a
+	// proportion.
+	if perLane.LaneProbeWriteCount+1 < perLane.TimeoutResendWriteCount {
 		t.Fatalf(
-			"%d whole-window writes against %d probes: the difference is a second firing written "+
-				"into a lane that is not draining, which §27.2 forbids",
+			"%d whole-window writes against %d probes: beyond the one firing that precedes the "+
+				"route's first acknowledgement, the difference is a second firing written into a "+
+				"lane that is not draining, which §27.2 forbids",
 			perLane.TimeoutResendWriteCount, perLane.LaneProbeWriteCount,
 		)
 	}
