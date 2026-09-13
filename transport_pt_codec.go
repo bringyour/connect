@@ -124,6 +124,11 @@ func decodeDnsRequest(packet []byte, buf [1024]byte, tlds [][]byte) (id uint16, 
 				return nil
 			}()
 			if tld == nil {
+				// a TXT question outside every encoding tld is a forwarder
+				// query, not a translation query (A6). Without this it fell
+				// through as an empty translation packet and was dropped, so
+				// the forwarder never saw it.
+				otherData = true
 				continue
 			}
 

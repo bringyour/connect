@@ -193,14 +193,16 @@ func udpAddrFamily(udpAddr *net.UDPAddr) int {
 // a proxy would prove the proxy's family, not the provider's.
 func NewDirectClientStrategy(ctx context.Context, settings *ClientStrategySettings, ipFamily int) *ClientStrategy {
 	direct := *settings
-	direct.ExtenderNetworks = nil
-	direct.ExtenderHostnames = nil
 	direct.ExtenderConfigs = nil
+	direct.ExtenderDirectory = nil
 	direct.ExpandExtenderProfileCount = 0
 	direct.MaxExtenderCount = 0
 	direct.ConnectSettings.ProxySettings = nil
 
 	ipFamily = normalizeIpFamily(ipFamily)
+	// the alt carriers dial udp themselves, below any dial context, so the pin
+	// reaches them through the settings (L4)
+	direct.ipFamily = ipFamily
 	if ipFamily != 0 {
 		base := direct.ConnectSettings
 		base.DialContextSettings = nil
@@ -883,11 +885,29 @@ func NewFamilyPlatformTransportGroup(
 		connectedMonitor: NewMonitor(),
 	}
 
-	pinnedSettings := func(ipFamily int) *PlatformTransportSettings {
+	// each pinned transport dials the family alt name that pairs with its own
+	// family platform url, so alt-v4 goes with connect-v4 (L3). An alt url
+	// that is not the one the label rule derives from the family-agnostic
+	// platform url was set explicitly, and an override is passed through to
+	// every transport unchanged.
+	familyAltUrl := func(platformUrlFamily string) string {
+		if settings.AltUrl == "" {
+			return ""
+		}
+		if AltUrlFromPlatformUrl(platformUrl) != settings.AltUrl {
+			return settings.AltUrl
+		}
+		if altUrlFamily := AltUrlFromPlatformUrl(platformUrlFamily); altUrlFamily != "" {
+			return altUrlFamily
+		}
+		return settings.AltUrl
+	}
+	pinnedSettings := func(ipFamily int, platformUrlFamily string) *PlatformTransportSettings {
 		copied := *settings
 		copied.IpFamily = ipFamily
 		copied.StartDisabled = false
 		copied.PlatformTransportBudgetPriority = PlatformTransportBudgetPriorityBackground
+		copied.AltUrl = familyAltUrl(platformUrlFamily)
 		return &copied
 	}
 	if platformUrlV4 != "" {
@@ -899,7 +919,7 @@ func NewFamilyPlatformTransportGroup(
 			platformUrlV4,
 			auth,
 			targetMode,
-			pinnedSettings(4),
+			pinnedSettings(4, platformUrlV4),
 		)
 	}
 	if platformUrlV6 != "" {
@@ -911,7 +931,7 @@ func NewFamilyPlatformTransportGroup(
 			platformUrlV6,
 			auth,
 			targetMode,
-			pinnedSettings(6),
+			pinnedSettings(6, platformUrlV6),
 		)
 	}
 	hasPinned := group.ipv4Transport != nil || group.ipv6Transport != nil
@@ -1208,31 +1228,52 @@ func (self *PlatformTransport) h3DialCandidates(ctx context.Context, ptMode Tran
 			)
 		}
 	}
+	altHost, altPort := altUrlHostPort(self.settings.AltUrl)
 	switch ptMode {
 	case TransportModeH3Dns:
 		tld := self.settings.DnsTlds[mathrand.Intn(len(self.settings.DnsTlds))]
-		// The strategy resolver applies the network-space DoH policy before
-		// preserving the existing egress-aware fallback. The socket can be
-		// pinned while an OS name query still loops into this process's own
-		// tunnel. See egress_dial.go.
-		udpAddr, err := self.resolveSingleControlUDPAddr(ctx, net.JoinHostPort(serverName, strconv.Itoa(self.settings.DnsPort)))
+		dnsHost := serverName
+		dnsPorts := []int{self.settings.DnsPort}
+		if altHost != "" {
+			// the dns carrier is alt's whodis listener, on 53 through the
+			// router and on 4053 directly (L2)
+			dnsHost = altHost
+			dnsPorts = altDnsPorts(altPort, self.settings.DnsPort)
+		}
+		udpAddrs, err := self.resolveDnsCarrierAddrs(ctx, dnsHost, dnsPorts)
 		if err != nil {
 			return nil, nil, err
 		}
-		return []*net.UDPAddr{udpAddr}, translated(PacketTranslationModeDns, tld), nil
+		return udpAddrs, translated(PacketTranslationModeDns, tld), nil
 	case TransportModeH3DnsPump:
 		tld := self.settings.DnsTlds[mathrand.Intn(len(self.settings.DnsTlds))]
 		pumpServerName := strings.TrimSpace(self.settings.DnsPumpHost)
+		dnsPorts := []int{self.settings.DnsPort}
+		if pumpServerName == "" {
+			// the pump host is only where this client's own pump packets go,
+			// so it derives from the alt url rather than from a published
+			// name of its own (L3)
+			pumpServerName = altHost
+			dnsPorts = altDnsPorts(altPort, self.settings.DnsPort)
+		}
 		if pumpServerName == "" {
 			return nil, nil, fmt.Errorf("H3 DNS pump host is empty")
 		}
-		udpAddr, err := self.resolveSingleControlUDPAddr(ctx, net.JoinHostPort(pumpServerName, strconv.Itoa(self.settings.DnsPort)))
+		udpAddrs, err := self.resolveDnsCarrierAddrs(ctx, pumpServerName, dnsPorts)
 		if err != nil {
 			return nil, nil, err
 		}
-		return []*net.UDPAddr{udpAddr}, translated(PacketTranslationModeDnsPump, tld), nil
+		return udpAddrs, translated(PacketTranslationModeDnsPump, tld), nil
 	default:
-		address := net.JoinHostPort(serverName, strconv.Itoa(self.settings.H3Port))
+		h3Host := serverName
+		h3Port := self.settings.H3Port
+		if altHost != "" {
+			h3Host = altHost
+			if 0 < altPort {
+				h3Port = altPort
+			}
+		}
+		address := net.JoinHostPort(h3Host, strconv.Itoa(h3Port))
 		if self.settings.resolveH3AddrsForTest != nil {
 			udpAddrs, err := self.settings.resolveH3AddrsForTest(ctx, address, self.ipFamily)
 			return udpAddrs, plain, err
@@ -1252,6 +1293,39 @@ func (self *PlatformTransport) h3DialCandidates(ctx context.Context, ptMode Tran
 		}
 		return udpAddrs, plain, nil
 	}
+}
+
+// resolveDnsCarrierAddrs is the candidate list of one dns carrier dial, in
+// dial order (L2). The host is resolved once -- the translation wraps one
+// socket, so one address is dialed -- and each port becomes one candidate: 53
+// before 4053 where alt offers both. Several candidates go through the same
+// race the family dial uses, so the second port costs one stagger rather than
+// a whole attempt.
+//
+// The strategy resolver applies the network-space DoH policy before preserving
+// the existing egress-aware fallback. The socket can be pinned while an OS name
+// query still loops into this process's own tunnel. See egress_dial.go.
+func (self *PlatformTransport) resolveDnsCarrierAddrs(
+	ctx context.Context,
+	host string,
+	dnsPorts []int,
+) ([]*net.UDPAddr, error) {
+	if len(dnsPorts) == 0 {
+		return nil, fmt.Errorf("the H3 dns carrier has no port")
+	}
+	udpAddr, err := self.resolveSingleControlUDPAddr(ctx, net.JoinHostPort(host, strconv.Itoa(dnsPorts[0])))
+	if err != nil {
+		return nil, err
+	}
+	udpAddrs := []*net.UDPAddr{}
+	for _, dnsPort := range dnsPorts {
+		udpAddrs = append(udpAddrs, &net.UDPAddr{
+			IP:   udpAddr.IP,
+			Port: dnsPort,
+			Zone: udpAddr.Zone,
+		})
+	}
+	return udpAddrs, nil
 }
 
 // dialH3 opens the socket for one address and completes the QUIC dial on it.

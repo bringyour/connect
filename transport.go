@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -565,8 +566,18 @@ type PlatformTransportSettings struct {
 	// DnsPumpHost is only the public UDP/53 destination for H3DnsPump. QUIC
 	// authentication and TLS SNI continue to use the platform URL's hostname.
 	// Keeping this explicit avoids deriving an infrastructure hostname from the
-	// packet codec's canonical TLD representation.
+	// packet codec's canonical TLD representation. Empty derives the pump host
+	// from AltUrl instead (L3), since the pump destination is only where the
+	// client's own packets go.
 	DnsPumpHost string
+	// AltUrl, when set, is where the H3, h3dns and h3dnspump carriers send
+	// their packets (L4): the alt url's host replaces the platform url's host
+	// for the dial only, and a port on it pins the carrier. The sni and the
+	// quic authentication stay the platform url's host, which is the connect
+	// name alt serves, and H1 keeps the platform url entirely. Empty keeps
+	// every carrier on the platform host, which is the behavior of every
+	// space with no alt deployment.
+	AltUrl string
 
 	// FIXME
 	DnsTlds        [][]byte
@@ -599,6 +610,14 @@ type PlatformTransportSettings struct {
 	// carrier write. datagram distinguishes the packet lane from the reliable
 	// stream lane. The callback must not retain the bytes or block.
 	H3SendLaneObserver func(message []byte, datagram bool)
+
+	// ExtenderIpsMonitor, when set, replaces the transport's own change
+	// counter for its live extender addresses (K1). An owner that replaces
+	// transports across generations -- the window's migration -- supplies one
+	// counter so a watcher never has to re-subscribe to a new transport's
+	// monitor, and so the departure of the old transport's addresses wakes it.
+	// Nil gives the transport a counter of its own.
+	ExtenderIpsMonitor *MonitorValue[uint64]
 
 	// Nil outside package tests. A barrier here can hold the exact seam after
 	// logical route removal and before connection and writer cleanup.
@@ -647,7 +666,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		// MaxConnectDelay:      1 * time.Second,
 		ProtocolVersion: DefaultProtocolVersion,
 		H3Port:          443,
-		DnsPort:         53,
+		DnsPort:         DefaultDnsPort,
 		DnsPumpHost:     DefaultDnsPumpHost,
 		// FIXME
 		DnsTlds: [][]byte{[]byte("ur.xyz.")},
@@ -791,6 +810,19 @@ type PlatformTransport struct {
 	// transport to come up before closing the old one (CONNECTDRAIN2.md §3.3)
 	registeredCount  atomic.Int64
 	connectedMonitor *Monitor
+
+	// The extender address of each live H1 connection, counted so two
+	// connections through one extender (a make-before-break generation) are
+	// one entry (K1). A direct connection and every H3 connection contribute
+	// nothing. Guarded by stateLock; `extenderIpsMonitor` is a change counter
+	// rather than the set itself, because a slice is not comparable, and it is
+	// bumped inside the same locked scope as the mutation. The counter is
+	// incremented from whatever it holds rather than from a count of this
+	// transport's own changes, because an owner may share one counter across
+	// transport generations and two transports counting independently would
+	// write the same value twice -- a change that notifies nobody.
+	extenderIpCounts   map[netip.Addr]int
+	extenderIpsMonitor *MonitorValue[uint64]
 
 	// kickMonitor closes the live connection (if any) so the run loop
 	// re-dials immediately — fired on a host network path change
@@ -942,6 +974,83 @@ func (self *PlatformTransport) CanMakeBeforeBreakFrom(previous *PlatformTranspor
 // change. Capture the channel before checking `IsConnected`.
 func (self *PlatformTransport) ConnectedNotify() <-chan struct{} {
 	return self.connectedMonitor.NotifyChannel()
+}
+
+// ExtenderIps are the extender addresses carrying this transport's live
+// connections right now, deduplicated and sorted (K1). Empty means every live
+// connection is direct, which is also what an H3-only transport reports: H3
+// never runs through an extender.
+func (self *PlatformTransport) ExtenderIps() []netip.Addr {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	ips := make([]netip.Addr, 0, len(self.extenderIpCounts))
+	for ip := range self.extenderIpCounts {
+		ips = append(ips, ip)
+	}
+	slices.SortFunc(ips, func(a netip.Addr, b netip.Addr) int {
+		return a.Compare(b)
+	})
+	return ips
+}
+
+// ExtenderIpsMonitor counts changes of the set above. A consumer subscribes to
+// it and then reads `ExtenderIps`; the counter exists because the set itself is
+// a slice and cannot ride a MonitorValue.
+func (self *PlatformTransport) ExtenderIpsMonitor() *MonitorValue[uint64] {
+	return self.extenderIpsMonitor
+}
+
+// holdExtenderIp publishes one live H1 connection through an extender and
+// returns the release for when that connection ends (K1, K4). The strategy's
+// directory counts the same connection as in use, so the app's active extender
+// count is exactly the extenders carrying traffic right now; an api pooled
+// connection through the same address is not counted. A direct connection
+// (the zero address) holds nothing and releases nothing.
+func (self *PlatformTransport) holdExtenderIp(ip netip.Addr) func() {
+	if !ip.IsValid() {
+		return func() {}
+	}
+	ip = ip.Unmap()
+	directory := self.clientStrategy.ExtenderDirectory()
+	self.changeExtenderIp(ip, 1)
+	if directory != nil {
+		directory.SetInUse(ip, 1)
+	}
+	return func() {
+		self.changeExtenderIp(ip, -1)
+		if directory != nil {
+			directory.SetInUse(ip, -1)
+		}
+	}
+}
+
+// Adjusts the live connection count of one extender address. The change
+// counter is bumped, inside the same locked scope, only when the published set
+// actually changed, so a second connection through an address that is already
+// carrying one wakes nobody.
+func (self *PlatformTransport) changeExtenderIp(ip netip.Addr, delta int) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	count := self.extenderIpCounts[ip] + delta
+	changed := false
+	if count <= 0 {
+		if _, ok := self.extenderIpCounts[ip]; ok {
+			delete(self.extenderIpCounts, ip)
+			changed = true
+		}
+	} else {
+		if _, ok := self.extenderIpCounts[ip]; !ok {
+			changed = true
+		}
+		self.extenderIpCounts[ip] = count
+	}
+	if changed {
+		self.extenderIpsMonitor.Update(func(count uint64) uint64 {
+			return count + 1
+		})
+	}
 }
 
 // ReceiveStats returns a lock-free lifetime snapshot for this transport. It
@@ -1140,6 +1249,11 @@ func NewPlatformTransportWithTargetMode(
 		mode:                 NewMonitorValue(TransportModeNone),
 		connectedMonitor:     NewMonitor(),
 		kickMonitor:          NewMonitor(),
+		extenderIpCounts:     map[netip.Addr]int{},
+		extenderIpsMonitor:   settings.ExtenderIpsMonitor,
+	}
+	if transport.extenderIpsMonitor == nil {
+		transport.extenderIpsMonitor = NewMonitorValue[uint64](0)
 	}
 	transport.ipFamily = normalizeIpFamily(settings.IpFamily)
 	transport.enabled.Store(!settings.StartDisabled)
@@ -1743,6 +1857,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		clientId, _ := auth.ClientId()
 
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
+		// the extender the winning dialer used, zero for a direct dial (K1).
+		// Written by the single dial below and read by the connection it
+		// produced, both on this goroutine.
+		var dialExtenderIp netip.Addr
 		connect := func() (*websocket.Conn, error) {
 			header := http.Header{}
 			if self.settings.V2H1Auth {
@@ -1753,9 +1871,16 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				self.applyIntentHeader(header)
 			}
 
-			ws, _, err := self.clientStrategy.WsDialContext(self.dialContext(self.ctx), self.platformUrl, header)
+			ws, _, dialerInfo, err := self.clientStrategy.WsDialContextWithDialer(
+				self.dialContext(self.ctx),
+				self.platformUrl,
+				header,
+			)
 			if err != nil {
 				return nil, err
+			}
+			if dialerInfo != nil {
+				dialExtenderIp = dialerInfo.ExtenderIp
 			}
 			ws.SetReadLimit(self.h1MaxMessageByteCount())
 
@@ -2005,9 +2130,14 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				},
 			)
 			self.setRegistered(true)
+			// the extender carrying this connection is published for exactly
+			// its lifetime, so the ips and the directory's in-use count follow
+			// the connection rather than the dial (K1, K4)
+			releaseExtenderIp := self.holdExtenderIp(dialExtenderIp)
 
 			defer func() {
 				self.setRegistered(false)
+				releaseExtenderIp()
 				// Stop new priority admissions before retiring the public route.
 				// RemoveTransport then joins any writer that already acquired the
 				// old snapshot, so the final drain cannot race an enqueue.

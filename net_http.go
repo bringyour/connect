@@ -20,8 +20,6 @@ import (
 
 	// "golang.org/x/net/proxy"
 
-	"golang.org/x/net/nettest"
-
 	"maps"
 
 	"github.com/gorilla/websocket"
@@ -53,15 +51,15 @@ func DefaultClientStrategySettings() *ClientStrategySettings {
 
 		ParallelBlockSize: 4,
 
-		ExpandExtenderProfileCount: 8,
-		ExtenderNetworks:           []netip.Prefix{},
-		ExtenderHostnames:          []string{},
-		ReconnectTimeout:           15 * time.Second,
-		MaxExtenderCount:           128,
-		ExtenderMinimumWeight:      0.1,
-		ExtenderDropTimeout:        5 * time.Minute,
+		ExpandExtenderProfileCount:   8,
+		ReconnectTimeout:             15 * time.Second,
+		MaxExtenderCount:             128,
+		ExtenderMinimumWeight:        0.1,
+		ExtenderDropTimeout:          5 * time.Minute,
+		ExtenderInitialSampleTimeout: 2 * time.Second,
 
 		DohSettings: DefaultDohSettings(),
+		DnsTlds:     [][]byte{[]byte(DefaultExtenderDnsTld)},
 
 		HelloRetryTimeout:        5 * time.Second,
 		MaxHttpResponseBodyBytes: DefaultMaxHttpResponseBodyBytes,
@@ -122,13 +120,10 @@ type ClientStrategySettings struct {
 	// for gets and ws connects
 	ParallelBlockSize int
 
-	// the number of new profiles to add per expand
+	// the number of new extender candidates to draw per expand
 	ExpandExtenderProfileCount int
-	ExtenderNetworks           []netip.Prefix
-	// these are evaluated with DoH to grow the extender ips
-	ExtenderHostnames []string
-	ReconnectTimeout  time.Duration
-	MaxExtenderCount  int
+	ReconnectTimeout           time.Duration
+	MaxExtenderCount           int
 	// extender minimum weight
 	ExtenderMinimumWeight float32
 	// drop dialers that have not had a successful connect in this timeout
@@ -137,6 +132,33 @@ type ClientStrategySettings struct {
 	// Measurement fixtures use it for hermetic production extender paths. Nil
 	// retains normal discovery and selection. The strategy copies each entry.
 	ExtenderConfigs []*ExtenderConfig
+	// ExtenderDirectory is where discovered extenders come from (E1, E2). The
+	// strategy draws candidates from it, reports every dial outcome back to
+	// it, and drops the dialers of addresses it retires. Nil disables
+	// discovery, which is what a direct or url-only strategy wants.
+	ExtenderDirectory *ExtenderDirectory
+	// How long a cold start waits for the network client's first feed sample
+	// before dialing without extenders (E4). The wait happens only while the
+	// directory has nothing usable and a network client is still on its first
+	// attempt.
+	ExtenderInitialSampleTimeout time.Duration
+
+	// ipFamily is the family pin of `NewDirectClientStrategy`, applied to the
+	// strategy's own udp dials -- the alt carriers, which do not go through a
+	// dial context. 0 is the family-agnostic strategy this has always been.
+	// The stream dials are pinned through `DialContextSettings` instead.
+	ipFamily int
+
+	// AltUrl enables the two api alt dialers (L4). Only its host and explicit
+	// port are read: the alt host decides where the packets go, while the
+	// request's own host name stays the sni and the certificate is verified
+	// against it as on any direct api dial. Empty disables both dialers, which
+	// is every space that has no alt deployment. A port here pins both
+	// carriers to it, which is what an in-process fixture wants.
+	AltUrl string
+	// The encoding tlds of the alt whodis dialer, one picked at random per
+	// dial. Empty takes `DefaultExtenderDnsTld`.
+	DnsTlds [][]byte
 
 	DohSettings *DohSettings
 	// InternalDohDomains are network-space domains whose exact host and
@@ -220,8 +242,7 @@ type ClientStrategy struct {
 
 	mutex sync.Mutex
 	// dialers are only updated inside the mutex
-	dialers             map[*clientDialer]bool
-	resolvedExtenderIps []netip.Addr
+	dialers map[*clientDialer]bool
 
 	// custom extenders
 	// these take precedence over other extenders
@@ -316,13 +337,13 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 
 	// create dialers to match settings
 	dialers := map[*clientDialer]bool{}
-	resolvedExtenderIps := []netip.Addr{}
 
 	if settings.EnableNormal {
 		// TODO ECH support
 		if settings.ExposeServerHostNames && settings.ExposeServerIps {
 			dialer := &clientDialer{
 				description:        "normal",
+				createTime:         time.Now(),
 				minimumWeight:      0.5,
 				priority:           25,
 				dialTlsContext:     newNormalDialTlsContext(settings, clientWebSocketNextProtos),
@@ -338,6 +359,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// fragment+reorder
 			dialer1 := &clientDialer{
 				description:        "fragment+reorder",
+				createTime:         time.Now(),
 				minimumWeight:      0.25,
 				priority:           50,
 				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, true, true, clientWebSocketNextProtos),
@@ -348,6 +370,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// this is the highest priority because it has no performance impact and additional security benefits
 			dialer2 := &clientDialer{
 				description:        "fragment",
+				createTime:         time.Now(),
 				minimumWeight:      0.25,
 				priority:           0,
 				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, true, false, clientWebSocketNextProtos),
@@ -357,6 +380,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// reorder
 			dialer3 := &clientDialer{
 				description:        "reorder",
+				createTime:         time.Now(),
 				minimumWeight:      0.25,
 				priority:           50,
 				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, false, true, clientWebSocketNextProtos),
@@ -376,6 +400,7 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		copiedConfig := *extenderConfig
 		dialer := &clientDialer{
 			description:        "configured extender",
+			createTime:         time.Now(),
 			persistent:         true,
 			minimumWeight:      settings.ExtenderMinimumWeight,
 			priority:           100,
@@ -428,8 +453,13 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		settings:            settings,
 		internalDohResolver: internalDohResolver,
 		dialers:             dialers,
-		resolvedExtenderIps: resolvedExtenderIps,
 		extenderIpSecrets:   map[netip.Addr]string{},
+	}
+	// the alt dialers need the strategy itself, for its resolver and its
+	// lifetime, so they join the same map after it is built and before
+	// anything can read it (L4)
+	for _, dialer := range newAltDialers(clientStrategy, settings) {
+		dialers[dialer] = true
 	}
 	// a host network path change drops the dialers' pooled http connections:
 	// they are bound to the old path, and the next api call (auth,
@@ -493,6 +523,16 @@ func (self *ClientStrategy) SetCustomExtenders(extenderIpSecrets map[netip.Addr]
 			delete(self.dialers, dialer)
 		}
 	}
+}
+
+// ExtenderDirectory is the directory this strategy draws extenders from, nil
+// when discovery is disabled. The platform transport reads it to report the
+// live connections through each address (K4).
+func (self *ClientStrategy) ExtenderDirectory() *ExtenderDirectory {
+	if self == nil {
+		return nil
+	}
+	return self.settings.ExtenderDirectory
 }
 
 func (self *ClientStrategy) CustomExtenders() map[netip.Addr]string {
@@ -637,7 +677,9 @@ func (self *ClientStrategy) NextReconnectTime() (time.Time, func()) {
 	return time.Now().Add(jitter), release
 }
 
-func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
+// The weight of each dialer an eval may use. `webSocketOnly` drops the
+// api-only dialers, which is every dialer with no websocket dialer (L4).
+func (self *ClientStrategy) dialerWeights(webSocketOnly bool) map[*clientDialer]float32 {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -645,6 +687,9 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 
 	if len(self.extenderIpSecrets) == 0 {
 		for dialer, _ := range self.dialers {
+			if webSocketOnly && !dialer.supportsWebSocket() {
+				continue
+			}
 			w := dialer.Weight()
 			weights[dialer] = w
 		}
@@ -835,7 +880,10 @@ func preferredEvalAttemptContext(
 	return context.WithTimeout(ctx, attemptTimeout)
 }
 
-func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer) *evalResult) *evalResult {
+// parallelEval races the dialers of one request. `webSocketOnly` restricts it
+// to the dialers that can carry a websocket, which is what a platform dial
+// needs and an api request does not (L4).
+func (self *ClientStrategy) parallelEval(ctx context.Context, webSocketOnly bool, eval func(ctx context.Context, dialer *clientDialer) *evalResult) *evalResult {
 	// in this order:
 	// 1. try all dialers that previously worked sequentially
 	// 2. try dialers that previously failed in parallel blocks
@@ -867,6 +915,11 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			return
 		}
 	}, handleCancel)
+
+	// E4: a cold start gives the network client a bounded moment to land its
+	// first feed sample, so the first dial can use the extenders it is about
+	// to learn instead of racing them
+	self.waitForExtenderInitialSample(handleCtx)
 
 	out := make(chan *evalResult)
 
@@ -909,7 +962,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		// the number of runs with pending out
 		p := 0
 
-		dialerWeights := self.dialerWeights()
+		dialerWeights := self.dialerWeights(webSocketOnly)
 
 		if 0 < len(dialerWeights) {
 			serialDialers := []*clientDialer{}
@@ -999,7 +1052,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			}
 		}
 
-		if expandedDialers, _ := self.expandExtenderDialers(); 0 < len(expandedDialers) {
+		if expandedDialers := self.expandExtenderDialers(); 0 < len(expandedDialers) {
 			n := min(len(expandedDialers), self.settings.ParallelBlockSize-p)
 			p += n
 			for _, dialer := range expandedDialers[0:n] {
@@ -1090,7 +1143,7 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 
 		self.collapseExtenderDialers()
 
-		dialerWeights := self.dialerWeights()
+		dialerWeights := self.dialerWeights(false)
 
 		serialDialers := []*clientDialer{}
 
@@ -1142,7 +1195,7 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 		// keep retrying hello until at least one dialer is success
 		for {
 			helloStartTime := time.Now()
-			result := self.parallelEval(handleCtx, helloEval)
+			result := self.parallelEval(handleCtx, false, helloEval)
 			if result != nil {
 				// The nested evaluation cancels its selected attempt before
 				// returning. Let net/http own that response cleanup rather
@@ -1153,7 +1206,7 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 
 			// check if any dialer succeeded
 			successCount := 0
-			for dialer, _ := range self.dialerWeights() {
+			for dialer, _ := range self.dialerWeights(false) {
 				if dialer.IsLastSuccess() {
 					successCount += 1
 				}
@@ -1262,7 +1315,7 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 		return newEvalResultFromHttpResponse(response, err, self.settings.MaxHttpResponseBodyBytes)
 	}
 
-	result := self.parallelEval(request.Context(), eval)
+	result := self.parallelEval(request.Context(), false, eval)
 	if result == nil {
 		return nil, fmt.Errorf("Timeout.")
 	}
@@ -1345,7 +1398,25 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	return materializeHttpResult(result)
 }
 
+// DialerInfo describes the dialer a completed dial was won by (K1). The
+// extender ip is the zero value for a direct dial, which is what the platform
+// transport reads to decide whether the connection is carried by an extender.
+type DialerInfo struct {
+	Description string
+	ExtenderIp  netip.Addr
+}
+
+// WsDialContext dials without reporting the winning dialer, which is every
+// caller that does not draw the extender on a connection.
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
+	wsConn, response, _, err := self.WsDialContextWithDialer(ctx, url, requestHeader)
+	return wsConn, response, err
+}
+
+// WsDialContextWithDialer is the same dial, plus the description and extender
+// address of the dialer that won it (K1). The info is nil only when no dialer
+// completed at all, which is the same condition that yields the timeout error.
+func (self *ClientStrategy) WsDialContextWithDialer(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, *DialerInfo, error) {
 	if 0 < len(self.settings.ExtraHeaders) {
 		// clone so a caller-held header is not mutated across reconnects
 		merged := requestHeader.Clone()
@@ -1381,222 +1452,331 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 		}
 	}
 
-	result := self.parallelEval(ctx, eval)
+	result := self.parallelEval(ctx, true, eval)
 	if result == nil {
-		return nil, nil, fmt.Errorf("Timeout.")
+		return nil, nil, nil, fmt.Errorf("Timeout.")
 	}
-	return result.wsConn, result.response, result.err
+	return result.wsConn, result.response, result.dialer.Info(), result.err
 }
 
 func (self *ClientStrategy) collapseExtenderDialers() {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
 	now := time.Now()
-	for dialer, _ := range self.dialers {
-		shouldDrop := func() bool {
-			dialer.mutex.Lock()
-			defer dialer.mutex.Unlock()
+	// candidate drops, and the extender dialers the directory still has to
+	// judge. The directory is an external object, so it is consulted with no
+	// lock held and the result applied in a second pass.
+	dropDialers := []*clientDialer{}
+	judgeDialers := []*clientDialer{}
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
 
-			return dialer.extenderConfig != nil &&
-				!dialer.persistent &&
-				!dialer.isLastSuccessWithLock() &&
-				self.settings.ExtenderDropTimeout <= now.Sub(dialer.lastErrorTime)
-		}()
-		if shouldDrop {
+		// a manual extender is not in the directory, so its dialers are judged
+		// by the drop timeout alone
+		judge := self.settings.ExtenderDirectory != nil && len(self.extenderIpSecrets) == 0
+		for dialer, _ := range self.dialers {
+			if dialer.extenderConfig == nil || dialer.persistent {
+				continue
+			}
+			expired := func() bool {
+				dialer.mutex.Lock()
+				defer dialer.mutex.Unlock()
+
+				if dialer.isLastSuccessWithLock() {
+					return false
+				}
+				// the timeout runs from the later of creation and the last
+				// error (E2). Judging it from the last error alone drops a
+				// dialer that was expanded and never dialed on the very next
+				// collapse, because its zero last error is older than any
+				// timeout
+				since := dialer.createTime
+				if since.Before(dialer.lastErrorTime) {
+					since = dialer.lastErrorTime
+				}
+				return self.settings.ExtenderDropTimeout <= now.Sub(since)
+			}()
+			if expired {
+				dropDialers = append(dropDialers, dialer)
+			} else if judge {
+				judgeDialers = append(judgeDialers, dialer)
+			}
+		}
+	}()
+
+	if directory := self.settings.ExtenderDirectory; directory != nil {
+		for _, dialer := range judgeDialers {
+			// the address was held, revoked, expired or removed (E2)
+			if !directory.AddressUsable(dialer.extenderConfig.Ip) {
+				dropDialers = append(dropDialers, dialer)
+			}
+		}
+	}
+
+	if len(dropDialers) == 0 {
+		return
+	}
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		for _, dialer := range dropDialers {
+			if _, ok := self.dialers[dialer]; !ok {
+				continue
+			}
 			dialer.Close()
 			delete(self.dialers, dialer)
 		}
+	}()
+}
+
+// expandExtenderDialers adds one dialer per directory candidate address and
+// carrier (E2). A manually configured extender replaces discovery entirely:
+// its addresses are dialed on the fixed carrier ports, and `dialerWeights`
+// already excludes every non-extender dialer while one is configured.
+//
+// The outer name is one random spoof domain per dialer (A10). With no bundled
+// spoof list the name is left empty and the dial presents no sni at all: the
+// operator name the inner TLS is for must never appear in the outer
+// ClientHello, and a connection to an ip literal carries no name anyway.
+func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDialer) {
+	if self.settings.ExpandExtenderProfileCount <= 0 {
+		return []*clientDialer{}
+	}
+
+	visitedExtenderIpProfiles := map[extenderIpProfile]bool{}
+	visitedExtenderIps := []netip.Addr{}
+	extenderIpSecrets := map[netip.Addr]string{}
+	maxNewDialerCount := 0
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		visitedExtenderProfileCount := 0
+		visitedExtenderProfiles := map[ExtenderProfile]bool{}
+		for dialer, _ := range self.dialers {
+			if dialer.extenderConfig == nil {
+				continue
+			}
+			visitedExtenderProfiles[dialer.extenderConfig.Profile] = true
+			visitedExtenderIpProfiles[extenderIpProfile{
+				ip:      dialer.extenderConfig.Ip,
+				profile: dialer.extenderConfig.Profile,
+			}] = true
+			visitedExtenderIps = append(visitedExtenderIps, dialer.extenderConfig.Ip)
+		}
+		visitedExtenderProfileCount = len(visitedExtenderProfiles)
+		maxNewDialerCount = min(
+			self.settings.ExpandExtenderProfileCount,
+			self.settings.MaxExtenderCount-visitedExtenderProfileCount,
+		)
+		extenderIpSecrets = maps.Clone(self.extenderIpSecrets)
+	}()
+	if maxNewDialerCount <= 0 {
+		// at maximum extenders
+		return []*clientDialer{}
+	}
+
+	// the directory is an external object; no lock is held here
+	extenderConfigs := []*ExtenderConfig{}
+	if 0 < len(extenderIpSecrets) {
+		ips := slices.Collect(maps.Keys(extenderIpSecrets))
+		slices.SortFunc(ips, func(a netip.Addr, b netip.Addr) int {
+			return strings.Compare(a.String(), b.String())
+		})
+		for _, ip := range ips {
+			candidate := &ExtenderCandidate{
+				Ip:        ip,
+				IpVersion: addressIpVersion(ip),
+				Carriers:  []string{ExtenderCarrierTcp, ExtenderCarrierQuic, ExtenderCarrierDns},
+				TcpPort:   ExtenderTcpPort,
+				UdpPort:   ExtenderQuicPort,
+				DnsPort:   ExtenderDnsPort,
+				DnsPorts:  []int{ExtenderDnsPort},
+				DnsTld:    DefaultExtenderDnsTld,
+				Source:    ExtenderSourceManual,
+			}
+			extenderConfigs = append(
+				extenderConfigs,
+				extenderConfigsForCandidate(candidate, extenderIpSecrets[ip])...,
+			)
+		}
+	} else if directory := self.settings.ExtenderDirectory; directory != nil {
+		familyCandidates := [][]*ExtenderCandidate{}
+		for _, ipVersion := range []int{4, 6} {
+			if !controlFamilyProbe(ipVersion) {
+				continue
+			}
+			familyCandidates = append(
+				familyCandidates,
+				directory.Candidates(ipVersion, maxNewDialerCount, visitedExtenderIps...),
+			)
+		}
+		// interleave the families, so a dual-stack host does not spend its
+		// whole expand budget on v4 before v6 is ever dialed
+		for i := 0; ; i += 1 {
+			taken := false
+			for _, candidates := range familyCandidates {
+				if i < len(candidates) {
+					taken = true
+					extenderConfigs = append(
+						extenderConfigs,
+						extenderConfigsForCandidate(candidates[i], "")...,
+					)
+				}
+			}
+			if !taken {
+				break
+			}
+		}
+	}
+
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		for _, extenderConfig := range extenderConfigs {
+			if maxNewDialerCount <= len(expandedDialers) {
+				break
+			}
+			ipProfile := extenderIpProfile{
+				ip:      extenderConfig.Ip,
+				profile: extenderConfig.Profile,
+			}
+			if visitedExtenderIpProfiles[ipProfile] {
+				continue
+			}
+			visitedExtenderIpProfiles[ipProfile] = true
+			dialer := &clientDialer{
+				description:        fmt.Sprintf("extender %s", extenderConfig.Profile.ConnectMode),
+				createTime:         time.Now(),
+				minimumWeight:      self.settings.ExtenderMinimumWeight,
+				priority:           extenderDialerPriority(extenderConfig.Profile.ConnectMode),
+				dialTlsContext:     newExtenderDialTlsContext(&self.settings.ConnectSettings, extenderConfig, clientWebSocketNextProtos),
+				httpDialTlsContext: newExtenderDialTlsContext(&self.settings.ConnectSettings, extenderConfig, clientHttpNextProtos),
+				extenderConfig:     extenderConfig,
+				settings:           self.settings,
+			}
+			expandedDialers = append(expandedDialers, dialer)
+			self.dialers[dialer] = true
+		}
+	}()
+
+	return
+}
+
+// One address paired with one carrier profile, which is what makes a dialer
+// unique: the same profile on two addresses is two dialers.
+type extenderIpProfile struct {
+	ip      netip.Addr
+	profile ExtenderProfile
+}
+
+// The dialer priority of a carrier (E2). tcp is tried before quic before dns,
+// which is the order of how ordinary the traffic looks.
+func extenderDialerPriority(connectMode ExtenderConnectMode) int {
+	switch connectMode {
+	case ExtenderConnectModeQuic:
+		return 110
+	case ExtenderConnectModeDns:
+		return 120
+	default:
+		return 100
 	}
 }
 
-func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDialer, expandedExtenderIps []netip.Addr) {
-
-	// - distribute new ips evenly over new profiles
-	// - distribute existing ids as weighted where needed
-	// - `extenderIpSecrets` overrides new ips
-
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	if self.settings.ExpandExtenderProfileCount <= 0 {
-		return []*clientDialer{}, []netip.Addr{}
-	}
-
-	visitedExtenderProfiles := map[ExtenderProfile]bool{}
-	visitedExtenderIps := map[netip.Addr]bool{}
-
-	for dialer, _ := range self.dialers {
-		if dialer.IsExtender() {
-			visitedExtenderProfiles[dialer.extenderConfig.Profile] = true
-			visitedExtenderIps[dialer.extenderConfig.Ip] = true
-		}
-	}
-
-	if self.settings.MaxExtenderCount <= len(visitedExtenderProfiles) {
-		// at maximum extenders
-		return []*clientDialer{}, []netip.Addr{}
-	}
-
-	extenderProfiles := EnumerateExtenderProfiles(
-		min(self.settings.ExpandExtenderProfileCount, self.settings.MaxExtenderCount-len(visitedExtenderProfiles)),
-		visitedExtenderProfiles,
-	)
-
+// One extender config per carrier the candidate lists (E2, E5), and one per
+// dns port when the candidate offers several (L2): 53 is dialed before 4053.
+// The identity key of a verified record is carried into the config so the
+// outer leaf is checked against it (B3).
+func extenderConfigsForCandidate(candidate *ExtenderCandidate, secret string) []*ExtenderConfig {
+	spoofDomains := SpoofDomains()
 	extenderConfigs := []*ExtenderConfig{}
-	if len(self.extenderIpSecrets) == 0 {
-
-		// filter resolved ips by visited
-		unusedExtenderIps := []netip.Addr{}
-		for _, ip := range self.resolvedExtenderIps {
-			if !visitedExtenderIps[ip] {
-				unusedExtenderIps = append(unusedExtenderIps, ip)
-			}
+	appendConfig := func(profile ExtenderProfile) {
+		if 0 < len(spoofDomains) {
+			profile.ServerName = spoofDomains[mathrand.Intn(len(spoofDomains))]
 		}
-
-		deviceIpv4 := nettest.SupportsIPv4()
-		deviceIpv6 := nettest.SupportsIPv6()
-
-		// expand the ips to have one new ip per profile
-		if len(unusedExtenderIps) < len(extenderProfiles) {
-			// iterate these for ips not used
-			for _, network := range self.settings.ExtenderNetworks {
-				if network.Addr().Is4() && deviceIpv4 || network.Addr().Is6() && deviceIpv6 {
-					for ip := network.Addr(); network.Contains(ip); ip = ip.Next() {
-						if !visitedExtenderIps[ip] {
-							visitedExtenderIps[ip] = true
-							expandedExtenderIps = append(expandedExtenderIps, ip)
-						}
-					}
-				}
-			}
-
-			mathrand.Shuffle(len(expandedExtenderIps), func(i int, j int) {
-				expandedExtenderIps[i], expandedExtenderIps[j] = expandedExtenderIps[j], expandedExtenderIps[i]
-			})
-
-			if len(extenderProfiles) <= len(expandedExtenderIps) {
-				expandedExtenderIps = expandedExtenderIps[0:len(extenderProfiles)]
-			}
-
-			// if not enough ips, use DoH to load ips for the extender hostnames
-			if len(expandedExtenderIps) < len(extenderProfiles) && 0 < len(self.settings.ExtenderHostnames) {
-
-				// the network can be both ipv4 and ipv6
-				if deviceIpv4 {
-					ips := DohQuery(self.ctx, 4, "A", self.settings.DohSettings, self.settings.ExtenderHostnames...)
-					for ip, _ := range ips {
-						if !visitedExtenderIps[ip] {
-							visitedExtenderIps[ip] = true
-							expandedExtenderIps = append(expandedExtenderIps, ip)
-						}
-					}
-				}
-				if deviceIpv6 {
-					ips := DohQuery(self.ctx, 6, "AAAA", self.settings.DohSettings, self.settings.ExtenderHostnames...)
-					for ip, _ := range ips {
-						if !visitedExtenderIps[ip] {
-							visitedExtenderIps[ip] = true
-							expandedExtenderIps = append(expandedExtenderIps, ip)
-						}
-					}
-				}
-			}
-
-			unusedExtenderIps = append(unusedExtenderIps, expandedExtenderIps...)
+		if profile.Port <= 0 {
+			return
 		}
-
-		// unused ips first
-		mathrand.Shuffle(len(unusedExtenderIps), func(i int, j int) {
-			unusedExtenderIps[i], unusedExtenderIps[j] = unusedExtenderIps[j], unusedExtenderIps[i]
+		extenderConfigs = append(extenderConfigs, &ExtenderConfig{
+			Profile:   profile,
+			Ip:        candidate.Ip,
+			Secret:    secret,
+			PublicKey: slices.Clone(candidate.PublicKey),
 		})
-		n := min(len(extenderProfiles), len(unusedExtenderIps))
-		for i := range n {
-			extenderConfig := &ExtenderConfig{
-				Profile: extenderProfiles[i],
-				Ip:      unusedExtenderIps[i],
-			}
-			extenderConfigs = append(extenderConfigs, extenderConfig)
+	}
+	for _, carrier := range candidate.Carriers {
+		connectMode, ok := ExtenderConnectModeForCarrier(carrier)
+		if !ok {
+			continue
 		}
-
-		// existing ips distributed as weighted
-		if n < len(extenderProfiles) {
-			weights := map[netip.Addr]float32{}
-
-			netWeight := float32(0)
-			for dialer, _ := range self.dialers {
-				if dialer.IsExtender() {
-					w := dialer.Weight()
-					weights[dialer.extenderConfig.Ip] = w
-					netWeight += w
-				}
-			}
-			for _, ip := range unusedExtenderIps {
-				w := self.settings.ExtenderMinimumWeight
-				weights[ip] = w
-				netWeight += w
-			}
-
-			if 0 < len(weights) {
-				ips := slices.Collect(maps.Keys(weights))
-				mathrand.Shuffle(len(ips), func(i int, j int) {
-					ips[i], ips[j] = ips[j], ips[i]
-				})
-
-				for _, extenderProfile := range extenderProfiles[n:] {
-					v := mathrand.Float32() * netWeight
-					i := 0
-					for i < len(ips)-1 {
-						v -= weights[ips[i]]
-						if v <= 0 {
-							break
-						}
-						i += 1
-					}
-					extenderConfig := &ExtenderConfig{
-						Profile: extenderProfile,
-						Ip:      ips[i],
-					}
-					extenderConfigs = append(extenderConfigs, extenderConfig)
-				}
-			}
+		profile := ExtenderProfile{
+			ConnectMode: connectMode,
 		}
-	} else {
-		ips := slices.Collect(maps.Keys(self.extenderIpSecrets))
-		for _, extenderProfile := range extenderProfiles {
-			ip := ips[mathrand.Intn(len(ips))]
-			extenderConfig := &ExtenderConfig{
-				Profile: extenderProfile,
-				Ip:      ip,
-				Secret:  self.extenderIpSecrets[ip],
+		switch connectMode {
+		case ExtenderConnectModeQuic:
+			profile.Port = candidate.UdpPort
+			appendConfig(profile)
+		case ExtenderConnectModeDns:
+			profile.DnsTld = candidate.DnsTld
+			for _, dnsPort := range candidate.dnsCarrierPorts() {
+				profile.Port = dnsPort
+				appendConfig(profile)
 			}
-			extenderConfigs = append(extenderConfigs, extenderConfig)
+		default:
+			profile.Port = candidate.TcpPort
+			// fragment and reorder apply to tcp only
+			profile.Fragment = mathrand.Intn(2) != 0
+			profile.Reorder = mathrand.Intn(2) != 0
+			appendConfig(profile)
 		}
 	}
+	return extenderConfigs
+}
 
-	for _, extenderConfig := range extenderConfigs {
-		dialer := &clientDialer{
-			minimumWeight:      self.settings.ExtenderMinimumWeight,
-			priority:           100,
-			dialTlsContext:     newExtenderDialTlsContext(&self.settings.ConnectSettings, extenderConfig, clientWebSocketNextProtos),
-			httpDialTlsContext: newExtenderDialTlsContext(&self.settings.ConnectSettings, extenderConfig, clientHttpNextProtos),
-			extenderConfig:     extenderConfig,
-			settings:           self.settings,
+// waitForExtenderInitialSample is the E4 startup gate. It waits only while the
+// directory has nothing usable AND a network client is still on its first
+// attempt, for at most ExtenderInitialSampleTimeout. A stored directory, a
+// completed first attempt, or no network client at all never waits: the gate
+// exists so a cold start does not dial without the extenders it is about to
+// learn, not to delay anything else.
+func (self *ClientStrategy) waitForExtenderInitialSample(ctx context.Context) {
+	directory := self.settings.ExtenderDirectory
+	if directory == nil || self.settings.ExtenderInitialSampleTimeout <= 0 {
+		return
+	}
+	if 0 < len(self.CustomExtenders()) {
+		return
+	}
+	timeout := time.After(self.settings.ExtenderInitialSampleTimeout)
+	for {
+		state, update := directory.InitialSampleMonitor().Get()
+		if state != ExtenderInitialSamplePending {
+			return
 		}
-		expandedDialers = append(expandedDialers, dialer)
+		if 0 < directory.UsableCount(0) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-self.ctx.Done():
+			return
+		case <-update:
+		case <-timeout:
+			return
+		}
 	}
-
-	for _, dialer := range expandedDialers {
-		self.dialers[dialer] = true
-	}
-	self.resolvedExtenderIps = append(self.resolvedExtenderIps, expandedExtenderIps...)
-
-	return
 }
 
 // non-extender dialers are never dropped
 type clientDialer struct {
 	description string
+	// Set at construction and never changed, so it is read without the mutex.
+	// The drop timeout is judged from the later of this and lastErrorTime, so a
+	// dialer that was expanded but never dialed survives to its first attempt
+	// (E2).
+	createTime time.Time
 	// persistent dialers were supplied explicitly and are not discovery cache.
 	persistent    bool
 	minimumWeight float32
@@ -1609,6 +1789,11 @@ type clientDialer struct {
 	// speak.
 	dialTlsContext     DialTlsContextFunction
 	httpDialTlsContext DialTlsContextFunction
+	// httpClientFactory, when set, builds the api client of this dialer
+	// instead of the default http.Transport over httpDialTlsContext. The alt
+	// dialers use it for an http3 round tripper (L4). A dialer that carries
+	// one has no dialTlsContext, so it is api only.
+	httpClientFactory func() *http.Client
 
 	extenderConfig *ExtenderConfig
 
@@ -1633,11 +1818,31 @@ func nativeHttp2Config(settings *ConnectSettings) *http.HTTP2Config {
 	}
 }
 
+// Info is the dialer as a completed dial reports it (K1). A nil dialer -- no
+// dial completed -- reports nothing rather than panicking, so a caller can pass
+// the result of a failed eval straight through.
+func (self *clientDialer) Info() *DialerInfo {
+	if self == nil {
+		return nil
+	}
+	info := &DialerInfo{
+		Description: self.description,
+	}
+	if self.extenderConfig != nil {
+		info.ExtenderIp = self.extenderConfig.Ip.Unmap()
+	}
+	return info
+}
+
 func (self *clientDialer) HttpClient() *http.Client {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	if self.httpClient == nil {
+		if self.httpClientFactory != nil {
+			self.httpClient = self.httpClientFactory()
+			return self.httpClient
+		}
 		dialTlsContext := self.httpDialTlsContext
 		if dialTlsContext == nil {
 			dialTlsContext = self.dialTlsContext
@@ -1771,22 +1976,51 @@ func (self *clientDialer) Weight() float32 {
 	}
 }
 
+// Update records one completed dial outcome. An extender dialer also reports
+// the outcome to the directory, which is what drives the hold, warning and
+// removal policy of E1. The directory is an external object, so it is called
+// with no lock held.
 func (self *clientDialer) Update(handleCtx context.Context, err error) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
+	recorded := false
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
 
-	if err == nil {
-		self.successCount += 1
-		self.lastSuccessTime = time.Now()
-	} else {
-		select {
-		case <-handleCtx.Done():
-			// ignore any error is the context is canceled
-		default:
-			self.errorCount += 1
-			self.lastErrorTime = time.Now()
+		if err == nil {
+			self.successCount += 1
+			self.lastSuccessTime = time.Now()
+			recorded = true
+		} else {
+			select {
+			case <-handleCtx.Done():
+				// ignore any error is the context is canceled
+			default:
+				self.errorCount += 1
+				self.lastErrorTime = time.Now()
+				recorded = true
+			}
 		}
+	}()
+	if !recorded || self.extenderConfig == nil || self.settings == nil {
+		return
 	}
+	directory := self.settings.ExtenderDirectory
+	if directory == nil {
+		return
+	}
+	if err == nil {
+		directory.RecordSuccess(self.extenderConfig.Ip, self.extenderConfig.Profile.ConnectMode)
+	} else {
+		directory.RecordFailure(self.extenderConfig.Ip, self.extenderConfig.Profile.ConnectMode)
+	}
+}
+
+// Reports whether this dialer can carry a websocket dial. An api-only dialer
+// -- the alt dialers of L4 -- has no tls dial context at all, and dialing
+// through gorilla's own default instead would silently bypass the whole
+// strategy. Constant after construction.
+func (self *clientDialer) supportsWebSocket() bool {
+	return self.dialTlsContext != nil
 }
 
 func (self *clientDialer) IsExtender() bool {

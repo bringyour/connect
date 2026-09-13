@@ -611,7 +611,8 @@ func TestNewDirectClientStrategyDropsExtendersAndProxy(t *testing.T) {
 	defer cancel()
 
 	settings := DefaultClientStrategySettings()
-	settings.ExtenderHostnames = []string{"extender.example"}
+	settings.ExtenderDirectory = NewExtenderDirectoryWithDefaults(ctx)
+	defer settings.ExtenderDirectory.Close()
 	settings.ExtenderConfigs = []*ExtenderConfig{}
 	settings.ConnectSettings.ProxySettings = &ProxySettings{Network: "tcp", Address: "127.0.0.1:1080"}
 	plain := NewClientStrategy(ctx, DefaultClientStrategySettings())
@@ -622,14 +623,14 @@ func TestNewDirectClientStrategyDropsExtendersAndProxy(t *testing.T) {
 	if direct.settings.ConnectSettings.ProxySettings != nil {
 		t.Fatal("direct strategy kept the proxy")
 	}
-	if len(direct.settings.ExtenderHostnames) != 0 || direct.settings.MaxExtenderCount != 0 {
+	if direct.settings.ExtenderDirectory != nil || direct.settings.MaxExtenderCount != 0 {
 		t.Fatal("direct strategy kept extender discovery")
 	}
 	if len(direct.dialers) != len(plain.dialers) {
 		t.Fatalf("direct dialers = %d, want the plain set of %d", len(direct.dialers), len(plain.dialers))
 	}
 	// the caller's settings are untouched
-	if settings.ConnectSettings.ProxySettings == nil || len(settings.ExtenderHostnames) != 1 {
+	if settings.ConnectSettings.ProxySettings == nil || settings.ExtenderDirectory == nil {
 		t.Fatal("caller settings were mutated")
 	}
 	if direct.settings.ConnectSettings.DialContextSettings == nil {

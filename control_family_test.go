@@ -337,6 +337,64 @@ func TestProbeFamilySupportFailsClosedOnEnumerationError(t *testing.T) {
 	}
 }
 
+// FamilySupported is the exported probe the extender activation reads (G3).
+// It answers from the same interface table the probe does -- loopback alone is
+// not connectivity -- and refuses anything that is not an ip version.
+func TestFamilySupportedReadsTheInterfaceTable(t *testing.T) {
+	loopback := controlFamilyInterface{
+		name:  "lo0",
+		flags: net.FlagUp | net.FlagLoopback,
+		addrs: []net.Addr{ipNet("127.0.0.1/8"), ipNet("::1/128")},
+	}
+	// 198.18.0.0/15 (RFC 2544) and 3fff::/20 (RFC 9637) are global unicast and
+	// are not among controlFamilyReservedPrefixes, which the documentation
+	// ranges deliberately are -- so these read as connectivity while naming no
+	// real network.
+	dualStack := controlFamilyInterface{
+		name:  "en0",
+		flags: net.FlagUp,
+		addrs: []net.Addr{ipNet("198.18.7.20/24"), ipNet("3fff:db8::1/64")},
+	}
+
+	restore := swapControlFamilyInterfaces(
+		func() ([]controlFamilyInterface, error) {
+			return []controlFamilyInterface{loopback}, nil
+		})
+	if FamilySupported(4) || FamilySupported(6) {
+		restore()
+		t.Fatal("a loopback-only host reported a usable family")
+	}
+	restore()
+
+	restore = swapControlFamilyInterfaces(
+		func() ([]controlFamilyInterface, error) {
+			return []controlFamilyInterface{loopback, dualStack}, nil
+		})
+	supported4, supported6 := FamilySupported(4), FamilySupported(6)
+	restore()
+	if !supported4 || !supported6 {
+		t.Fatalf("dual-stack host reported v4 = %v, v6 = %v", supported4, supported6)
+	}
+
+	for _, ipVersion := range []int{0, 5, -1, 46} {
+		if FamilySupported(ipVersion) {
+			t.Fatalf("FamilySupported(%d) = true, expected false", ipVersion)
+		}
+	}
+}
+
+// The tests run on dual-stack hosts and require v6 (EXTENDER.md I), so the
+// unseamed probe must answer yes for both families here. A no is a broken test
+// host, not a broken build.
+func TestFamilySupportedOnThisHost(t *testing.T) {
+	if !FamilySupported(4) {
+		t.Error("this host has no usable ipv4; the extender tests require dual stack")
+	}
+	if !FamilySupported(6) {
+		t.Error("this host has no usable ipv6; the extender tests require dual stack")
+	}
+}
+
 func ipNet(cidr string) *net.IPNet {
 	ip, network, err := net.ParseCIDR(cidr)
 	if err != nil {

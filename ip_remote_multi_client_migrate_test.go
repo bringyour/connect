@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"maps"
 	"net"
+	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,11 +65,13 @@ type fakeWindowPlatformTransport struct {
 	mutex            sync.Mutex
 	connected        bool
 	waitingForBudget bool
-	notify           chan struct{}
-	closed           chan struct{}
-	closeOnce        sync.Once
-	waitStarted      chan struct{}
-	waitStartedOnce  sync.Once
+	// the extenders this transport's live connections run through (K1)
+	extenderIps     []netip.Addr
+	notify          chan struct{}
+	closed          chan struct{}
+	closeOnce       sync.Once
+	waitStarted     chan struct{}
+	waitStartedOnce sync.Once
 	// onClose, when set, runs synchronously inside Close before `closed` is
 	// signaled — a seam to observe migrator state at the exact instant of
 	// close (see TestApiWindowTransportMigrationDisarmsBeforeClosingReplacement).
@@ -96,6 +100,20 @@ func (self *fakeWindowPlatformTransport) IsConnected() bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	return self.connected
+}
+
+// ExtenderIps matches the platform transport's reporting seam (K1), so the
+// generator answers about a fake transport exactly as it does about a real one.
+func (self *fakeWindowPlatformTransport) ExtenderIps() []netip.Addr {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	return slices.Clone(self.extenderIps)
+}
+
+func (self *fakeWindowPlatformTransport) setExtenderIps(ips ...netip.Addr) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	self.extenderIps = slices.Clone(ips)
 }
 
 func (self *fakeWindowPlatformTransport) IsWaitingForBudget() bool {
@@ -140,15 +158,22 @@ func TestApiWindowTransportMigrationIsMakeBeforeBreakAndDeduplicated(t *testing.
 	client, _ := newApiMigrationTestClient(t)
 	old := newFakeWindowPlatformTransport(true)
 	next := newFakeWindowPlatformTransport(false)
+	// K1: each generation is reached through its own extender, and the window
+	// reads the current one through the generator
+	oldExtenderIp := netip.MustParseAddr("192.0.2.131")
+	nextExtenderIp := netip.MustParseAddr("192.0.2.132")
+	old.setExtenderIps(oldExtenderIp)
+	next.setExtenderIps(nextExtenderIp)
 	created := make(chan struct{}, 2)
 	settings := DefaultApiMultiClientGeneratorSettings()
 	settings.MigrateConnectTimeout = time.Second
 	settings.MigrateMaxScheduleDelay = 20 * time.Millisecond
 	transportSettings := DefaultPlatformTransportSettings()
 	state := &apiWindowClientTransport{
-		current:  old,
-		settings: transportSettings,
-		auth:     ClientAuth{InstanceId: NewId()},
+		current:            old,
+		settings:           transportSettings,
+		auth:               ClientAuth{InstanceId: NewId()},
+		extenderIpsMonitor: NewMonitorValue[uint64](0),
 	}
 	generator := &ApiMultiClientGenerator{
 		settings:   settings,
@@ -162,6 +187,11 @@ func TestApiWindowTransportMigrationIsMakeBeforeBreakAndDeduplicated(t *testing.
 			created <- struct{}{}
 			return next
 		},
+	}
+
+	extenderIps, extenderChange := generator.ClientExtenderIps(client)
+	if !slices.Equal(extenderIps, []netip.Addr{oldExtenderIp}) {
+		t.Fatalf("extender ips = %v, want [%v]", extenderIps, oldExtenderIp)
 	}
 
 	// A far-future timestamp is clamped, and a duplicate while pending must
@@ -196,6 +226,20 @@ func TestApiWindowTransportMigrationIsMakeBeforeBreakAndDeduplicated(t *testing.
 	generator.transportLock.Unlock()
 	if current != next {
 		t.Fatal("connected replacement was not installed")
+	}
+
+	// the swap itself is a change: a watcher subscribed before it is woken,
+	// and reads the replacement's extender rather than the retired one
+	select {
+	case <-extenderChange:
+	case <-time.After(time.Second):
+		t.Fatal("the transport swap did not wake the extender watcher")
+	}
+	if extenderIps, _ := generator.ClientExtenderIps(client); !slices.Equal(
+		extenderIps,
+		[]netip.Addr{nextExtenderIp},
+	) {
+		t.Fatalf("extender ips = %v, want [%v] after the swap", extenderIps, nextExtenderIp)
 	}
 }
 
