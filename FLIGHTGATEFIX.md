@@ -4334,13 +4334,31 @@ candidate.
 `TestDeliveredBytesRingIsNotRetainedWhenOff` skips only when the delivered
 bytes bound is on by default. It ships off, so this test runs.
 
-Red status is not yet established and this inventory will not pretend
-otherwise. Connect main `b8f72dd` has had a build check but no test run;
-the full race suite is queued behind the measurement campaign, and the
-three `net_http_plain_websocket_test.go` tests are named for it because the
-merge resolution there took the other side. Two tests carry comments
-predicting red on the tree they were written against,
+Nothing is red. Verified on 2026-09-13, 14:12 to 14:59, against connect
+main `4206043` and server main `1c16ef52`, with the race detector on and
+without `-short`, so every `-short` skip above actually ran.
+
+| Run | Result |
+| --- | --- |
+| connect build | exit 0 |
+| the three `net_http_plain_websocket_test.go` tests, alone, under `-race` | all pass, both address families each |
+| connect full race suite, whole module | every package ok; the main package 1,372.9 s |
+| server `connect/perfvar`, serialised | ok, 1,389.5 s |
+
+Two of these answer questions this section had left open. The three
+websocket tests were named because the merge took the other side of that
+conflict, where the dial seam is always installed rather than installed
+only when a resolver or dialer is configured; all three pass, including the
+injected-dialer row that asserts the dialer receives exactly `"tcp"`, so
+the family narrowing the merged path applies ahead of an injected dialer
+did not change what that dialer sees. And the two tests whose comments
+predict red on the tree they were written against,
 `TestTunInjectFromReaderGoroutineDoesNotDeadlock` and row 1 of the lane
-recovery contract, and whether either is red on the shipped tree is exactly
-what that run will say. This subsection should be amended with the result
-rather than left as it stands.
+recovery contract, both pass on the shipped tree: row 1's bound is asserted
+only for an arm that reads lanes, which the shipped default is not.
+
+One caveat on the timing rather than the result. Another session was
+running a race suite in the proxy repository throughout, on a host carrying
+32 GB of swap, so the wall times above are upper bounds. Nothing failed, so
+the contention cost time and not correctness; had anything timed out it
+would have needed re-running before being reported as a defect.
