@@ -3142,6 +3142,16 @@ inversions, and the contract link reports its inversions on row 10's log
 line so the premise is visible. The mixed-lane harness keeps its
 per-frame delivery.
 
+The default. This tree turned the rule on, in its own commit after the
+mechanism's, so that a campaign verdict the other way would be one revert.
+That is where the evidence stood at the time of writing, the device series
+at 0.4 against 4.8 Mbit/s with M4 and every row green, and it was not this
+stream's decision: the relay queue-inflation cell's re-run against this
+implementation was named here as the measurement that decides it. The
+re-run came in the other way, §33, and the revert this paragraph arranged
+for has been taken. The rule ships off by default; the paragraph is kept
+because the pre-registration is part of the record.
+
 Not done, and why. The receiver-state-loss row 32.4 names, a receiver that
 drops non-head Packs and installs a full head, is not written: the
 in-process links run no-contract peers, on which a lost receiver installs
