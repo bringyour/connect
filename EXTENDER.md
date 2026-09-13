@@ -353,7 +353,10 @@ network_extender_publish (
 `network_extender_publish (published_time, create_time)`.
 
 C2. Activation. `POST /network/extender-activate`, client jwt, on `api-v4`
-or `api-v6` so the caller address has one family. Args
+or `api-v6` so the caller address has one family. An operator without
+family hosts, such as a development operator on an ip literal, is
+activated through its plain api url instead, and the family of the
+outcome is the one the result reports. Args
 `{public_key_hex, tcp_port, udp_port, dns_port, dns_tld, carriers}`. Rate
 limit 6 per hour per client. The handler probes the caller ip synchronously
 within 10 s: for each requested carrier, `connect.ProbeExtenderCarrier`
@@ -417,7 +420,15 @@ port behind nginx at `gossip.<host>` (a `gossip` entry in `services.yml`
 with `websocket: true` and the alias exposed), joins the topic, and every
 5 s selects unpublished rows (`FOR UPDATE SKIP LOCKED`, oldest first,
 64 at a time), publishes each and stamps `published_time`. It never
-originates records itself.
+originates records itself. The node is built with the member role, zero
+peer target and no extender listener, with connection manager watermarks
+of 512 and 1024 since every member and extender dials it. Its `services.yml`
+entry carries `status: "no"`: the websocket listener owns the service port,
+so there is no status route, and the service is watched through its logs.
+The claim releases its row locks when the claim transaction commits, so
+`SKIP LOCKED` partitions the queue between concurrent drains rather than
+guaranteeing at-most-once delivery; a duplicate after a crash between claim
+and mark is harmless to gossip, and the single replica makes it rare.
 
 C7. Hello. `HelloResult.ExtenderRootPublicKeys []string` from
 `root_public_keys_hex`, and `GossipPeerId string` (json
@@ -593,7 +604,8 @@ F3. Provider status. `DeviceLocal.GetExtenderProvideStatus()
 `LastActivationError`, `RevokedTime`, `ConnectionCount`, plus
 `GetProvideExtender`, `SetProvideExtender` persisted in local state as
 `.provide_extender` (default true), and a change listener. These follow
-the `GetProviderFamilyTransportStatus` precedent on `DeviceLocal`.
+the `GetProviderFamilyTransportStatus` precedent on `DeviceLocal` only,
+since the role exists only on desktop builds where the device is local.
 
 ### G. Provider extender role
 
@@ -611,19 +623,37 @@ A5 from the space hosts plus the spoof list; the space's node is rebuilt
 with the extender role, the in-process listener, the feed server and the
 listen addresses of the activated families, so it becomes a listening
 node. Bind failures log
-once and retry on the activation cadence, never as a user-visible error.
+once and are reflected in the provide status, never as a user-visible
+error; a failed carrier stays down until the role restarts with provide
+or the setting. The feed server is wired to the extender's feed handler,
+and the node carries the in-process gossip listener; the node is rebuilt
+whenever the set of activated addresses changes so no stale address is
+advertised. When the user has chosen the feed-only gossip mode, the role
+runs the server and the feed service without a node and refuses the gossip
+service.
 
 G3. Activation loop. At start, every 24 hours, and on triggers: own key
 revoked as observed in the directory, the observed public address from
 hello changing (checked hourly), and network change. Per family with a
-global address (`probeFamilySupport`), `POST` activate to the family api
-url with the client jwt, apply the bootstrap records to the directory,
-and record the status. Backoff on failure 10 minutes doubling to 6 hours.
-A family without an address is skipped.
+global address (`FamilySupported`), `POST` activate to the family api
+url with the client jwt through a direct-only client strategy, since an
+activation that crossed an extender would publish the extender's address,
+apply the bootstrap records to the directory, and record the status.
+Backoff on failure 10 minutes doubling to 6 hours; a refusal of any
+attempted family holds the whole pass and the retry reissues both, and a
+pass that attempted nothing retries on the backoff rather than the daily
+tick. A family without an address is skipped. The hourly address check is
+one hello for both families and compares the address, not the port.
 
 G4. connectctl gains `extender`, a standalone extender for operators and
 tests: `--jwt`, `--api_url`, `--extender_key_file`, listen port flags,
-`--allowed_host` repeated, running G2 and G3 without a provider.
+`--allowed_host` repeated, `--state_dir`, running G2 and G3 without a
+provider. It derives the network host from the api host by dropping the
+service label and the extender dns name by replacing it, keeping an env
+prefix, takes its whitelist from the api host patterns plus the flags,
+does one synchronous hello at start to seed the root keys, and keeps its
+key at the state directory when no key file is given or runs with an
+ephemeral identity when there is neither.
 
 ### H. Packages and dependencies
 
@@ -751,3 +781,35 @@ Phase 5b follows 4 because both touch the server.
   which the probe-back guarantees silently.
 - The spoof list ships empty until operations provide it, so extender
   dialers appear only after that.
+
+## 7. As built
+
+All phases were implemented and committed on branch `extender` on
+2026-09-12: connect (protocol, carriers, records, probes, directory, feed,
+network client, gossip node, activator, connectctl), server (tables,
+activation, probes, drip, Route 53, gossip service, hello), sdk (network
+space values, status, roles, provider role, bindings), vault (the gossip
+service entry), build (the gossip build step), operator-proxy (go.sum).
+Each phase's refinements are recorded inline above.
+
+Verification at the end: connect `go test ./...` green; sdk full suite green
+except `TestDeviceLocalProviderMemoryUnderLoad`, which fails on the build
+host before this work (31.3 to 31.7 MiB against a 31.0 MiB ceiling); server
+model, api, taskworker and gossip suites green, and the controller suite
+showing only its 15 pre-existing failures in the ARIN and account
+reconcile tests; the js and mobile builds compile. The libp2p dependency
+costs 1.4 MiB of binary.
+
+Operations before the network works end to end:
+
+- Fill the spoof list with `scripts/extender_spoof` and commit the masked
+  resource; until then dialers present no SNI and probers see 403.
+- Create `extender.yml` in the vault with `root_private_key_hex`,
+  `root_public_keys_hex`, `network_host`, `network_hosts`, `api_url`,
+  `gossip_identity_key_hex` and the `dns:` block, and put the root public
+  keys in the sdk's bundled table (`sdk/extender_root_keys.go`).
+- Configure the Route 53 zone, credentials and `record_name`; no plain A or
+  AAAA record may exist at that name.
+- Publish DNS and a certificate for `gossip.<host>` and deploy the gossip
+  service; hello then serves the operator peer id.
+- Operators without family api hosts are activated through the plain url.
