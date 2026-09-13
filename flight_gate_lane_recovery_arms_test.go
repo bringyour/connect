@@ -71,7 +71,8 @@ func init() {
 		}
 	}
 	laneRecoveryTimerVerdictForTree = func(sequence *SendSequence, item *sendItem) string {
-		switch sequence.laneTimerVerdictFor(item, time.Now()) {
+		verdict, _ := sequence.laneTimerVerdictFor(item, time.Now())
+		switch verdict {
 		case laneTimerEndpointDrop:
 			return "endpoint drop"
 		case laneTimerDraining:

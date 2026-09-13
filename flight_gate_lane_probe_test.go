@@ -139,10 +139,22 @@ func TestLaneAckTableAllocatesNothing(t *testing.T) {
 	}
 }
 
-// The rule is off: a candidate.
+// The rule is off by default in this commit. It no longer regresses M4's
+// contract (ten of ten under the race detector with it on, FLIGHTGATEFIX
+// §32.6); the flip is the campaign's decision, and it is one boolean.
 func TestLaneProvenRecoveryIsOffByDefault(t *testing.T) {
 	if DefaultSendBufferSettings().ReliableLaneProvenRecovery {
-		t.Fatal("the lane rule is on by default, but it has not been read in a campaign")
+		t.Fatal("the lane rule is on by default; the flip is the campaign's decision")
+	}
+	// the setting is still the way to turn it off
+	settings := DefaultSendBufferSettings()
+	settings.ReliableLaneProvenRecovery = false
+	sequence, _ := newSelectiveAckRecoveryTestSequence(1, time.Unix(1_700_000_000, 0))
+	sequence.client = &Client{}
+	sequence.sendBufferSettings = settings
+	item := &sendItem{reliableCarrierObserved: true, carrierRoute: make(Route, 1)}
+	if sequence.laneProvenRecovery(item) {
+		t.Fatal("the setting no longer turns the lane rule off")
 	}
 }
 
@@ -198,15 +210,29 @@ func TestLaneProbeReplacesTheWholeWindowOnASilentLane(t *testing.T) {
 		t.Fatalf("%d writes were charged to an endpoint drop during a stall that drops nothing",
 			perLane.LaneProvenTimeoutWriteCount)
 	}
-	// deferrals are re-arms, and §27.2 expects them in the stall's first
-	// interval while the route's last acknowledgement is still recent. What
-	// it forbids is a second deferral of the same item, so the count must
-	// stay within one per item the lane held.
-	if perItem.TimeoutResendDeferCount+10 < perLane.TimeoutResendDeferCount {
+	// Deferrals are re-arms, not the metric; the writes above are. §27.2
+	// expected no item deferred twice inside the stall, which held under
+	// §27.3 because its draining window was one scaled round trip and a
+	// backed-off re-arm landed past it. §32.4 collapsed that window into the
+	// cold floor, so an item held through the stall's first two seconds is
+	// re-armed more than once by design: nothing on the round-trip scale
+	// reads whether the lane is silent. What the backoff still guarantees
+	// is that those re-arms are logarithmic, at most one per doubling of the
+	// item's interval inside the floor, never one per interval and never one
+	// per pass of the loop. The per-item arm defers each item it holds at
+	// onset exactly once before writing it, so its count is the items
+	// outstanding at onset, and the per-lane count must stay within the
+	// backoff's factor of that.
+	settings := DefaultSendBufferSettings()
+	reArmsPerItem := uint64(1)
+	for interval := settings.RttMinResendInterval; interval < settings.MinResendInterval; interval *= 2 {
+		reArmsPerItem += 1
+	}
+	if reArmsPerItem*perItem.TimeoutResendDeferCount+10 < perLane.TimeoutResendDeferCount {
 		t.Fatalf(
-			"reading the lane deferred %d times against %d per item: a silent lane must not defer "+
-				"an item twice",
-			perLane.TimeoutResendDeferCount, perItem.TimeoutResendDeferCount,
+			"reading the lane deferred %d times against %d per item: more than %d re-arms per "+
+				"item inside the cold floor, so the re-arm is not backing off",
+			perLane.TimeoutResendDeferCount, perItem.TimeoutResendDeferCount, reArmsPerItem,
 		)
 	}
 	// the hold must not spin: one hold per item per probe interval, not per

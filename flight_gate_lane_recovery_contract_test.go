@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,6 +130,10 @@ type laneRecoveryLink struct {
 	deliveryLock  sync.Mutex
 	deliveryTimes []time.Time
 	start         time.Time
+	// relayInversions counts frames the relay delivered ahead of a frame it
+	// took earlier: a reliable lane must never do this, and the rows'
+	// verdicts rest on it (diagnostic).
+	relayInversions atomic.Uint64
 }
 
 // newLaneRecoveryLink connects a sender to a receiver over one reliable
@@ -157,6 +162,13 @@ func newLaneRecoveryLink(
 		settings.SendBufferSettings.IdleTimeout = 120 * time.Second
 		settings.ReceiveBufferSettings.GapTimeout = 120 * time.Second
 		settings.ReceiveBufferSettings.IdleTimeout = 120 * time.Second
+		// There is no platform behind this link, so the client key a client
+		// publishes to the control destination at start would sit
+		// unacknowledged for the whole run and be rewritten on the cold
+		// cadence, one write at 2, 6, 14 and 22 s on either arm. That is the
+		// control sequence's, not the transfer's, and it would count in
+		// every row; park the publication until the link closes.
+		settings.beforeClientKeyPublishForTest = func() { <-ctx.Done() }
 		if configure != nil {
 			configure(settings.SendBufferSettings)
 		}
@@ -218,6 +230,9 @@ func newLaneRecoveryLink(
 	var forwarders sync.WaitGroup
 	forward := func(from Route, to Route, paced bool) {
 		forwarders.Add(1)
+		var orderLock sync.Mutex
+		nextTicket := uint64(0)
+		lastDelivered := uint64(0)
 		go func() {
 			defer forwarders.Done()
 			for {
@@ -230,6 +245,8 @@ func newLaneRecoveryLink(
 				if frameBytes == nil {
 					continue
 				}
+				nextTicket += 1
+				ticket := nextTicket
 				if paced {
 					pace := serialization
 					if 0 < stepSerialization && stepAfter <= time.Since(start) {
@@ -249,7 +266,7 @@ func newLaneRecoveryLink(
 					}
 				}
 				forwarders.Add(1)
-				go func(b []byte) {
+				go func(b []byte, ticket uint64) {
 					defer forwarders.Done()
 					select {
 					case <-ctx.Done():
@@ -257,12 +274,21 @@ func newLaneRecoveryLink(
 						return
 					case <-time.After(latency):
 					}
+					orderLock.Lock()
+					if ticket < lastDelivered {
+						if paced {
+							link.relayInversions.Add(1)
+						}
+					} else {
+						lastDelivered = ticket
+					}
+					orderLock.Unlock()
 					select {
 					case <-ctx.Done():
 						MessagePoolReturn(b)
 					case to <- b:
 					}
-				}(frameBytes)
+				}(frameBytes, ticket)
 			}
 		}()
 	}
@@ -732,6 +758,150 @@ func TestLaneRecoveryRow9ProvenDropWaitsAtMostOneInterval(t *testing.T) {
 			t.Errorf("%s: row 9: the proven hole waits %s, past the overall maximum %s",
 				arm.name, interval, max)
 		}
+		// §32.4: the bound must hold against the unconditional re-arm as
+		// well. A hole whose timer was backed off to the cap while the lane
+		// drained is, at the acknowledgement round that proves it, brought
+		// to the proof plus one interval, so the interval above is the wait
+		// and not the backoff.
+		now := time.Now()
+		hole.resendTime = now.Add(sequence.sendBufferSettings.MaxResendInterval)
+		sequence.scheduleSelectiveAckRecovery(now)
+		wait := hole.resendTime.Sub(now)
+		t.Logf("%s: row 9: a backed-off proven hole is scheduled %s past the proof",
+			arm.name, wait.Truncate(time.Millisecond))
+		if arm.readsLanes && sequence.resendIntervalForItem(hole, 0) < wait {
+			t.Errorf("%s: row 9: a proven hole backed off to the cap waits %s past the proof, "+
+				"want at most one interval %s; the unconditional re-arm delays a proven hole",
+				arm.name, wait, sequence.resendIntervalForItem(hole, 0))
+		}
+	}
+}
+
+// Row 13, attribution (FLIGHTGATEFIX §32.6). An acknowledgement is credited
+// to the lane that delivered it, and the sender only knows that lane when
+// the item was written to one lane only. A direct-lane item resent through
+// the relay while the direct flight was full is acknowledged by whichever
+// copy arrived, usually the direct one; credited to the relay it would prove
+// every relay item below it dropped, and the full suite under load wrote
+// 1,679 such "endpoint drops" into a stalled relay. So an item written to
+// more than one lane proves nothing about either, in the timer's verdict and
+// in the gap rule alike, while an item on one lane still proves as before.
+func TestLaneRecoveryRow13AnItemOnTwoLanesProvesNothingAboutEither(t *testing.T) {
+	for _, arm := range laneRecoveryArms() {
+		if !arm.readsLanes {
+			continue
+		}
+		sequence, items, _ := laneRecoveryScoreboard(t, 8, arm.configure)
+		relay := make(Route, 4)
+		direct := make(Route, 4)
+		hole := items[0]
+		hole.reliableCarrierObserved = true
+		hole.carrierRoute = relay
+		hole.sequenceNumber = 1
+		// three later items that went direct first, then through the relay
+		// when their timers fired with the direct flight full, and were then
+		// acknowledged: by the direct copy, but the sender cannot know that
+		for index := 1; index < 4; index += 1 {
+			item := items[index]
+			item.sequenceNumber = uint64(10 + index)
+			item.unreliableCarrierObserved = true
+			sequence.observeCarrierWrite(item, transferWriteDisposition{route: direct, unreliable: true})
+			sequence.observeCarrierWrite(item, transferWriteDisposition{route: relay, reliable: true})
+			if !item.carrierChanged {
+				t.Fatalf("%s: row 13: a second lane did not mark the item", arm.name)
+			}
+			item.selectiveAcked = true
+			sequence.observeLaneAck(item, time.Now())
+		}
+		// the relay's slot exists from the writes; what it must not hold is
+		// an acknowledgement
+		if highest, _ := sequence.laneHighestAcked(relay); 0 < highest {
+			t.Errorf("%s: row 13: the relay was credited with acknowledging %d by items that were "+
+				"on two lanes; it must be credited with nothing", arm.name, highest)
+		}
+		if verdict := laneRecoveryTimerVerdict(sequence, hole); verdict == "endpoint drop" {
+			t.Errorf("%s: row 13: a relay hole reads as an endpoint drop on the strength of "+
+				"acknowledgements that may have come through the direct lane", arm.name)
+		}
+		sequence.scheduleSelectiveAckRecovery(time.Now())
+		if hole.selectiveGapRecovered {
+			t.Errorf("%s: row 13: the gap rule wrote a relay hole on three acknowledgements of "+
+				"items that were on two lanes", arm.name)
+		}
+		// the control: the same three items on the relay alone do prove it
+		for index := 1; index < 4; index += 1 {
+			item := items[index]
+			item.carrierChanged = false
+			item.unreliableCarrierObserved = false
+			sequence.observeLaneAck(item, time.Now())
+		}
+		if verdict := laneRecoveryTimerVerdict(sequence, hole); verdict != "endpoint drop" {
+			t.Errorf("%s: row 13: three later relay-only acknowledgements read as %q, want an "+
+				"endpoint drop", arm.name, verdict)
+		}
+		sequence.scheduleSelectiveAckRecovery(time.Now())
+		if !hole.selectiveGapRecovered {
+			t.Errorf("%s: row 13: the gap rule did not write a relay hole proven by three "+
+				"relay-only acknowledgements", arm.name)
+		}
+	}
+}
+
+// Row 12, the liveness scale (FLIGHTGATEFIX §32.4). A route silent well past
+// the cap: its head is written on the cold cadence, at 2 s from the last
+// acknowledgement, then 4 s later, then every 8 s, and nothing else is
+// written. A 20 s stall from a last acknowledgement near 1.6 s puts the
+// probes near 3.6, 7.6 and 15.6 s with the fourth due past the stall and its
+// drain, so three; the row allows one either side. The lower bound is the
+// re-establishment guarantee, that a silent route keeps being probed within
+// the cap; the upper bound is what separates this cadence from one paced by
+// the estimate, which on this 300 ms lane would write six times, and from
+// one per interval, which would write dozens.
+func TestLaneRecoveryRow12SilentRouteIsProbedOnTheLivenessCadence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("lane recovery contract, live link, 20 s stall")
+	}
+	const (
+		stallAfter = 1500 * time.Millisecond
+		stallFor   = 20 * time.Second
+	)
+	for _, arm := range laneRecoveryArms() {
+		if !arm.readsLanes {
+			continue
+		}
+		link := newLaneRecoveryLink(
+			t, 100*time.Millisecond, 3*time.Millisecond,
+			stallAfter, stallFor, 1024, 0, 0, 0, arm.configure)
+		stats := laneRecoverySend(t, link, 3000)
+		rides, probes := laneRecoveryRidesAndProbes(stats)
+		gap, _ := laneRecoveryLongestGapForTree(stats)
+		t.Logf("%s: row 12: a %s stall (longest gap %s) wrote %d, of which %d probes, %d rides%s",
+			arm.name, stallFor, gap.Truncate(time.Millisecond), stats.TimeoutResendWriteCount,
+			probes, rides, laneRecoveryDetailForTree(stats))
+		if gap < stallFor/2 {
+			t.Errorf("%s: row 12: the longest lane gap was %s, so the stall did not bite and the "+
+				"row measured nothing", arm.name, gap)
+			continue
+		}
+		settings := DefaultSendBufferSettings()
+		// the cadence from the last acknowledgement: floor, then doubling to
+		// the cap, then the cap
+		expected := 0
+		for at := settings.MinResendInterval; at < stallFor; {
+			expected += 1
+			step := min(settings.MinResendInterval<<uint(expected), settings.MaxResendInterval)
+			at += step
+		}
+		if int(probes) < expected-1 || expected+1 < int(probes) {
+			t.Errorf("%s: row 12: %d probes over a %s stall, want %d, one either side: the head "+
+				"is not on the liveness cadence of %s doubling to %s",
+				arm.name, probes, stallFor, expected,
+				settings.MinResendInterval, settings.MaxResendInterval)
+		}
+		if probes+1 < stats.TimeoutResendWriteCount {
+			t.Errorf("%s: row 12: %d writes against %d probes: something other than the head "+
+				"was written into a silent route", arm.name, stats.TimeoutResendWriteCount, probes)
+		}
 	}
 }
 
@@ -806,9 +976,9 @@ func TestLaneRecoveryRow10StallHealingAndWritesIntoTheStalledLane(t *testing.T) 
 			}
 			delivered[arm.name] = during
 			written[arm.name] = stats.TimeoutResendWriteCount
-			t.Logf("%s: row 10 at flight %d: delivered %d frames during the stall, wrote %d%s",
+			t.Logf("%s: row 10 at flight %d: delivered %d frames during the stall, wrote %d%s, relay inversions %d",
 				arm.name, flight, during, stats.TimeoutResendWriteCount,
-				laneRecoveryDetailForTree(stats))
+				laneRecoveryDetailForTree(stats), link.relayInversions.Load())
 
 			// the second half: nothing extra written into the stalled lane
 			const bound = 10

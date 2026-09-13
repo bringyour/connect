@@ -2998,3 +2998,161 @@ silence-driven write to a fixed liveness bound where a false positive
 costs one duplicate and a true positive is the only re-establishment the
 protocol has. If the stream's fix is that, it is right for the right
 reason and this section is its justification.
+
+### 32.6 Reconciliation: what landed, measured
+
+Written 2026-09-13 by the implementation stream that took the §32.4 rule
+over mid-change, against the tree that carries it.
+
+What landed is 32.4 with one of its three sentences made exact, and its
+prediction held to the write. On the round-trip scale a reliable-carried
+firing that no later same-lane acknowledgement has proven is re-armed
+with backoff, unconditionally: no limit, no since-last term, no estimate
+read. The re-arm keeps the rewrite's own timer, due at one, three, seven
+intervals, which is what merged's timer runs when it writes, less the
+write. The sequence head's re-arm is held at the liveness due time, and
+that clamp is the sentence 32.4 needed: without it the first probe lands
+anywhere in [2 s, 4 s) of silence by the phase of the head's backoff, and
+"at 2 s" is not what the code does. On the liveness scale a route that has
+acknowledged nothing at all for `MinResendInterval`, measured from its last
+acknowledgement or, for a route that has never acknowledged, from the
+send of the oldest item it holds, writes its head; every other item on the
+route rides to the head's next write. A proof below the gap rule's
+threshold schedules the proven hole's firing at the proof plus one
+interval, so the unconditional backoff never delays a proven hole (rule
+1's second clause, row 9's bound made independent of the backoff).
+
+The head write's backoff, decided. 32.4 says "with backoff on that route's
+probe count" and predicts a second write at 6 s. It is counted on the
+head's own send count, on the cold floor: after the write the head is
+re-armed at `MinResendInterval` doubled once per write of the head and
+capped at `MaxResendInterval`, so a route that fell silent at its last
+acknowledgement is probed 2, 6, 14 and 22 s after it and every 8 s from
+there. Three reasons. It reads no estimate: it is literally the sender's
+cold timer, `resendIntervalForPolicy` with the floor as its base, the
+cadence the sender already runs when it has no evidence, which is what a
+silent route is. It needs no per-route state, since on a fixed head the
+head's writes are the route's probe count, and a head written before the
+silence starts one step further along, which is the conservative side and
+the rarer case. And the cap is the re-establishment bound: a receiver that
+comes back after any outage sees a head within 8 s, which is today's
+bound, and a cadence that kept doubling would make re-establishment
+latency grow with the outage, which is backwards for liveness. A hybrid H3
+head keeps its flat cap, which is never shorter, so it does not race the
+QUIC stream's recovery. The alternative measured first, the item's own
+scaled interval doubling from the probe, put probes at 2.0, 2.6, 3.8 and
+6.2 s on a 300 ms lane, four writes where the cold cadence writes two, and
+made the second probe's landing inside a 2.75 s stall a function of the
+estimate, the §27.1 signature at the scale of one write.
+
+Measured, `-race`, this tree. M4 passes 10 of 10 with the rule on (2 of 8
+failed on the tree §32 was written against). The contract rows, per-item
+arm against the lane rule: rows 1 and 2 write 428 and 389 against 1 and 1,
+the head at the due time and nothing else; row 1's bound reads 1 and 1
+across 88 and 732 outstanding against 44 and 394; rows 3 and 8 write 0 on
+both arms; row 9's backed-off proven hole is scheduled 600 ms past the
+proof against 8 s; row 10 writes 501 and 539 against 1 and 1 at flights of
+4 and 32, with delivery equal; row 11 holds at 38 rides against 1 probe.
+Row 12 is new, the liveness cadence itself: a 20 s stall on a 100 ms lane
+writes the head 3 times, at 2, 6 and 14 s from the last acknowledgement,
+with the fourth due past the stall, and writes nothing else, 1,541 to
+1,576 rides across 540 to 563 outstanding. That row is also the check the brief asked for on
+a stall past the 8 s cap: the gap from the second probe to the third is
+the cap, and the row's lower bound pins that a silent route keeps being
+probed within it. The stall instrument (mixed-lane harness, 2.75 s stall
+at 200 ms) writes 346 against 2, of which one is the stall's head and one
+is the control item described below; the endpoint-drop shape recovers in
+1.45 s against 1.72 s.
+
+The "deferred twice" assertion, judged. It was written for §27.3, where
+the draining window was one scaled round trip and a backed-off re-arm
+landed past it, so no item could be deferred twice inside a stall. §32.4
+collapsed that window into the cold floor, so an item held through a
+stall's first two seconds is re-armed more than once by design: nothing on
+the round-trip scale reads whether the lane is silent, which is the whole
+point. The assertion was also unstable rather than merely wrong, reading
+310 against 308 on one run and 343 against 307 on another, because a
+re-arm count is a schedule count. It is restated in 32's terms: writes are
+the metric and are bounded above it; the re-arms must be logarithmic, at
+most one per doubling of the item's interval inside the floor, which is
+⌈log2(MinResendInterval / RttMinResendInterval)⌉ + 1 per item the lane
+held at onset, never one per interval and never one per pass. That still
+catches a re-arm without backoff and a re-arm into the past; it does not
+try to tell three re-arms from four, which is not a quantity anything
+depends on.
+
+What the instrument had been counting. Every row on both arms carried one
+write that was not the transfer's: a client publishes its key to the
+control destination at start, there is no platform behind these links, so
+that one item sits unacknowledged for the run and is rewritten on the cold
+cadence, at 2, 6, 14 and 22 s, by the plain timer on the per-item arm and
+as a never-acknowledged route's head on the lane arm. It is one write in a
+6 s row and four in a 25 s row, and it is why the first reading of row 12
+was 7. The contract link now parks that publication until the link
+closes, which is why rows 3 and 8 read 0 and rows 1, 2 and 10 read 1
+where the earlier readings in this file say 2 and 3. The mixed-lane
+harness still carries it, one write, and the probe test's "2" is that
+write plus the head.
+
+Two things learned the wrong way first, recorded so they are not tried
+again. Pulling the route head forward to the due time from a riding
+item's firing, so that the first probe lands at the due time when the
+head is not the sequence head, is wrong as stated: after the first probe
+the head's next write is legitimately in the future and the due time,
+being last acknowledgement plus the floor, is stale, so every ride pulled
+the head back and every ride became a probe (349 writes on the stall
+instrument). The due time would have to advance to the next probe, which
+is per-route state; the clamp on the sequence head gives the property
+where it matters, since only a sequence-head write re-establishes a
+receiver, and a route head that is not the sequence head is probed at
+its own next firing, at most one cap later. And the liveness cadence
+indexed on the head's count as if the first send were count zero re-armed
+the first probe at 8 s instead of 4; the first send is count one.
+
+A defect the full suite found under load, and its row. Row 10 at a
+flight of 32 failed inside the full suite with 1,679 writes on the lane
+arm, every one an endpoint-drop verdict, no probe, and a 5.2 s lane gap on
+both arms, where standalone it writes 1. Under parallel load the link's
+relay does reorder, since its forwarder gives each frame its own latency
+goroutine, and once the link counted them it read 2 to 33 inversions a
+run; but the inversions write nothing, because a swapped pair is
+acknowledged milliseconds later and an item's timer almost never fires
+inside that window. The cascade is attribution. `observeLaneAck` credited
+an acknowledgement to the item's last-written route, and the copy the
+receiver acknowledged need not be the last one written: a direct-lane item
+whose acknowledgement is late fires its unreliable timer, is resent
+p2p-first, finds the direct flight full and lands on the relay, and its
+original direct copy is then acknowledged; credited to the relay, that
+acknowledgement carries a current sequence number and proves every relay
+item below it dropped, the whole stalled window, each written p2p-first
+into a full flight and so into the relay, which fills, blocks the sender,
+and is the extra 2.4 s of gap. The same crediting fed the scoreboard's
+per-lane counts and the route's last-acknowledgement clock. It was in
+§26.2's design, not in §32's change, and it is what a mixed route does
+whenever the receiver is slow, so the campaign's mixed cells would have
+met it. The fix is one mark on the item, set when a write lands on a
+route other than its previous one: such an item's acknowledgement is
+credited to no lane, it is not a lane item for the timer's verdict or the
+gap rule's count, it is not a route head, and it keeps merged's timer.
+Row 13 pins it: three later items written direct, then relay, then
+acknowledged credit the relay with nothing, prove no hole and write no gap
+recovery, while the same three on the relay alone prove and write. Under
+the same parallel load row 10 then writes 1 on both flights with up to 33
+inversions, and the contract link reports its inversions on row 10's log
+line so the premise is visible. The mixed-lane harness keeps its
+per-frame delivery.
+
+Not done, and why. The receiver-state-loss row 32.4 names, a receiver that
+drops non-head Packs and installs a full head, is not written: the
+in-process links run no-contract peers, on which a lost receiver installs
+the next head without asking for a contract, so the row would measure the
+endpoint-drop verdict rather than the liveness write; it wants a
+contracted link, which this package's instruments do not build. The
+liveness write's cadence is pinned by row 12 instead. The campaign's
+relay queue-inflation cell, twenty runs per arm on the pre-fix rule with
+level medians and three long-tail runs of 728, 263 and 41 s on the rule's
+arm, is the M4 defect at M4's rate; on this tree row 8, the same schedule
+in process, writes 0 over 6,000 messages with the rule on, and the
+prediction for the re-run is that the tail is gone and the medians stay
+level. If the re-run keeps the tail, it is not the second firing, and the
+exports of 27.1 are what remain.
