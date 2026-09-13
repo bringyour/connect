@@ -231,9 +231,10 @@ settings. Idle QUIC connections close after 30 s.
 A10. Spoof list and dial. `SpoofDomains()` in connect root returns the
 bundled list, loaded from an embedded xor-masked gzip resource decoded on
 first use, so the names do not appear as plain strings in the binary (the
-existing FIXME). The initial content is an operator decision and ships
-empty until provided; tests install synthetic `.example` names through a
-seam. A client dial picks one spoof domain per dialer at random. While the
+existing FIXME). The content is the v1 service and mail name lists recovered from the
+repository history (3523 names); tests install synthetic `.example` names
+through a seam. The generator refuses to run without an input so it can
+never rewrite the resource to an empty list by accident. A client dial picks one spoof domain per dialer at random. While the
 bundled list is empty, a dial presents no SNI at all: the operator's name
 must never appear in the outer ClientHello, and a TLS connection without
 SNI is what an extender request to an ip literal looks like anyway.
@@ -409,9 +410,14 @@ when short; the default set samples globally. All sets go in one
 `ChangeResourceRecordSets` UPSERT batch per tick; a set with no addresses
 is deleted. No Route 53 health checks. Continent from country through a
 static table in the server. Configuration in `extender.yml`:
-`dns: {enabled, hosted_zone_id, record_name, ttl, sample_count,
-aws_region, aws_access_key_id, aws_secret_access_key}`. The publisher is
-an interface with the aws-sdk-go implementation and a fake for tests.
+`dns: {enabled, hosted_zone_name, hosted_zone_id, record_name, ttl,
+sample_count, aws_region, aws_access_key_id, aws_secret_access_key}`. The
+zone is named, and the id is resolved once per process through the aws
+sdk's `ListHostedZonesByName` with the host's default credentials; an
+explicit id overrides the name and static credentials override the chain.
+The publisher is an interface with the aws-sdk-go implementation and a
+fake for tests. The operator configuration names `bringyour.com` with the
+record `extender.bringyour.com`.
 
 C6. Gossip service. A new server package `gossip` with `cli/gossip`, one
 replica. It runs a libp2p host (D1) with identity `gossip_identity_key_hex`
@@ -429,6 +435,17 @@ The claim releases its row locks when the claim transaction commits, so
 `SKIP LOCKED` partitions the queue between concurrent drains rather than
 guaranteeing at-most-once delivery; a duplicate after a crash between claim
 and mark is harmless to gossip, and the single replica makes it rare.
+
+C6a. Gossip records. The `gossip_dns:` block of `extender.yml` lists,
+per record, the zone name, the gossip name and a source name:
+`{enabled, aws_region, records: [{hosted_zone_name, name, source_name}]}`.
+A taskworker task runs at start and every 24 hours and mirrors the source
+name's A and AAAA record sets, alias targets included, onto the gossip
+name in its zone through the aws sdk, one change batch per zone, so
+`gossip.bringyour.com` and `gossip.ur.network` follow `connect.<host>`
+without operator steps; both zones are on Route 53. The certificate for
+the gossip aliases comes from the existing warp certificate flow, which
+issues for every alias in `services.yml`.
 
 C7. Hello. `HelloResult.ExtenderRootPublicKeys []string` from
 `root_public_keys_hex`, and `GossipPeerId string` (json
@@ -577,7 +594,13 @@ with the env prefix rule, `<env>-extender.<host>` for non-main envs),
 but never the env secret path, since a multiaddr carries no path and the
 gossip service has none) and
 `ExtenderRootPublicKeys`. `NetExtenderAutoConfigure` and its getter are
-removed; `NetExtender` stays. `NetworkSpace` constructs the directory, the
+removed; `NetExtender` stays. A url-only space, whose key host is not a
+dotted name, derives its network host, extender dns name and gossip url
+from the api url host by the shared label rule (`api.bringyour.com` gives
+`bringyour.com` and `extender.bringyour.com`), and takes its root keys
+from the bundled table for that derived host, so an embedder such as the
+sn miner discovers and activates like a stored space. The bundled table
+carries the operator's key under `bringyour.com` and `ur.network`. `NetworkSpace` constructs the directory, the
 store at the space's local state directory as `.extenders` beside the
 other dot files (memory only without a storage path),
 the network client, and in the member role the gossip node, at
@@ -611,11 +634,17 @@ since the role exists only on desktop builds where the device is local.
 
 G1. Eligibility. Compiled for desktop and connectctl only, build tags
 `!ios && !android && !js`, so mobile binaries carry neither the extender
-server nor the role. Default on with the opt-out of F3.
+server nor the role. Default on with the opt-out of F3, plus an embedder
+switch `DeviceLocalSettings.ProvideExtenderEnabled` for a process that runs
+many providers, which the miner swarm turns off, and never on a hosted
+device, which cannot provide.
 
 G2. Lifecycle in `deviceLocalProvider`. When provide is on and the setting
-is on: load or create the identity key (the space's `.extender_key`, the
-same key the member node already uses); start `extender.Server` on tcp
+is on: load or create the identity key, which belongs to the network space:
+local state's `.extender_key` when the space has storage, otherwise the
+seed an embedder passes through `DeviceLocalKeyMaterial`, otherwise one
+the space generates and hands back through the same key material for the
+embedder to persist (the miner keeps it beside its client key seed); start `extender.Server` on tcp
 443, udp 443 and udp 53, each bound independently, a failed bind disabling
 that carrier, with all failed meaning not listening; the forward dialer is
 the device's egress-aware connect dial narrowed by family; the whitelist is
@@ -800,16 +829,13 @@ showing only its 15 pre-existing failures in the ARIN and account
 reconcile tests; the js and mobile builds compile. The libp2p dependency
 costs 1.4 MiB of binary.
 
-Operations before the network works end to end:
-
-- Fill the spoof list with `scripts/extender_spoof` and commit the masked
-  resource; until then dialers present no SNI and probers see 403.
-- Create `extender.yml` in the vault with `root_private_key_hex`,
-  `root_public_keys_hex`, `network_host`, `network_hosts`, `api_url`,
-  `gossip_identity_key_hex` and the `dns:` block, and put the root public
-  keys in the sdk's bundled table (`sdk/extender_root_keys.go`).
-- Configure the Route 53 zone, credentials and `record_name`; no plain A or
-  AAAA record may exist at that name.
-- Publish DNS and a certificate for `gossip.<host>` and deploy the gossip
-  service; hello then serves the operator peer id.
-- Operators without family api hosts are activated through the plain url.
+Done the same day: the spoof list is bundled, `vault/main/extender.yml`
+holds the generated root and gossip keys, the network hosts, the api url,
+the named zone and the gossip record block, the sdk bundles the root
+public key, the zone is resolved by name and the gossip records are
+mirrored by the server through the aws sdk with the host's credentials,
+and the sn miner runs the role with a persisted identity. What remains
+for operations: aws credentials on the taskworker hosts with Route 53
+access to both zones, no plain A or AAAA record at
+`extender.bringyour.com`, and a deploy of the gossip service, whose
+aliases the warp certificate flow already covers.
