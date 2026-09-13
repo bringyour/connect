@@ -748,6 +748,99 @@ mode that flips this rebuilds the provider transports.
 J5. The legacy extender columns of `audit_contract_event` stay unused; the
 join table is the record.
 
+### K. App user interface
+
+K1. Which extender a provider uses. The extenders shown on a provider dot
+are the client's: the extender addresses carrying this client's live
+platform transports to that exit, usually zero or one, briefly two during
+a transport migration, none over a P2P route. They never represent
+extenders the provider itself may use. Plumbing: the client strategy's
+websocket dial reports the selected dialer's extender ip, the platform
+transport keeps the set of ips of its live connections, the window monitor
+carries them on `ProviderEvent.ExtenderIps` and updates them through
+`SetProviderExtenderIps` as `SetProviderIpFamily` does today, and the sdk
+grid point carries `ExtenderIps` and `ExtenderColorHexes` in the same
+order. Provider events are already mirrored over the device rpc, so the
+iOS app process receives the fields unchanged.
+
+K2. Dot outlines. A provider with extenders is drawn as a filled dot with
+one ring per extender, in the extender's color (K3): stroke 2 px, a 2 px
+gap between the dot and the first ring and between successive rings, and
+the outermost ring's outer edge at the cell edge, so the dot's footprint
+never grows into a neighbor: the filled dot shrinks inward by 4 px per
+ring. At most three rings are drawn; four or more collapse into a dashed
+third ring. The drawer's ip family histogram draws the same dots and the
+same rings at its dot size.
+
+K3. Extender color. One color per extender ip, computed once in the sdk
+by `GetExtenderColorHex(ip)` in the untagged color file so the iOS
+extension exports it too: FNV-1a 32 over the canonical ip string, hue is
+the hash modulo 360, saturation 70 percent, lightness 55 percent, as a
+hex rgb string. Every app draws the value as given.
+
+K4. Extender panel. In the connect drawer under the ip family panel. Left
+to right: one hollow ring per active extender in its color, where active
+means carrying at least one live connection right now, then the count as
+"N of M" where M is every usable directory entry (active state, not on
+hold), then a status dot for the gossip network: green connected (a
+member with at least one mesh peer, or a feed app with its stream up),
+yellow connecting (a dial or reconnect in progress), red disconnected
+(nothing in progress: backoff, no candidates, or disabled), with the count
+of records and revocations applied from the feed or the mesh in the
+trailing 60 s. Tapping does nothing yet; there is no details panel.
+
+K5. Status source. `ExtenderStatus` moves onto the device:
+`Device.GetExtenderStatus()` and `AddExtenderStatusChangeListener` on
+`DeviceLocal`, read from its space, and on `DeviceRemote` through the rpc
+with the last value cached, exactly as the provider family transport
+status, so every rpc consumer gets it. The status gains `GossipState`
+(`connected`, `connecting`, `disconnected`), `EventCountLastMinute`, and
+`ActiveCount` redefined as K4's active; the directory keeps a 60 s ring
+of apply times and reports the in-use count per address. On iOS the app
+process keeps its own directory for api dials but opens the shared store
+read-only, so only the tunnel extension writes `.extenders`.
+
+K6. Settings. Under account, a section named Extenders, per network
+space, editing three values through `UpdateNetworkSpaceValues`: the
+extender dns name, the gossip url, and a new `ExtenderHosts []string` of
+hostnames or ips. Empty fields show the derived default as a placeholder
+and mean the default. The list supplements discovery: each entry is a
+manual bootstrap address, hostnames resolved over DoH and re-resolved
+every 6 hours, never removed by policy, unioned with the dns bootstrap and
+everything the feed and the mesh deliver. The legacy single private
+extender with a secret stays as an advanced field with its exclusive
+override. Saving restarts the space's network client and node in place;
+on iOS the tunnel extension picks the values up at its next start and the
+app says so.
+
+K7. Share and import. The section has "share extenders" and "import
+extenders". The share payload is `ur-ext:1:` followed by base64url of
+`ExtenderShare{version, network_host, addresses (4 or 16 bytes each),
+settings{dns_name, gossip_url, root_public_keys}}`, addresses only, at
+most 48, active first, then usable, then manual; keys and records are not
+shared, since an imported address is an unverified bootstrap entry that
+upgrades when a record arrives over the feed. "Include extender settings"
+adds the settings block, off by default. The QR renders at error level H
+with the black and white connector glyph centered and a 4 px outline of
+the connector shape around it; the share screen also shows the payload as
+copyable text. Import accepts a scanned code, a chosen photo, or pasted
+text. An import whose network host differs from the space's is refused
+unless "use extender settings" is chosen, which shows the operator host
+and asks to confirm before replacing the dns name, gossip url and root
+keys; the first hello over the platform's pinned TLS replaces the root
+keys again, which bounds a hostile code. Encoding, decoding and applying
+live in the sdk (`ExtenderViewController`), one implementation for every
+app.
+
+K8. Platforms. Android: camera scan with CameraX and zxing decode plus
+the photo picker, never ML Kit, which the F-Droid build cannot carry.
+iOS: VisionKit camera scan and Vision for photos; macOS: photos and files
+only. Windows and linux: the code renders through a vendored single-file
+encoder, import reads an image file through zxing-cpp plus pasted text,
+no camera. Web app: out of scope, its device is hosted and never dials an
+extender. Every string goes through the localizations repo with the
+platform list of each key.
+
 ### I. Tests
 
 Every phase ships tests with it. In-process fixtures only: the extender
@@ -777,6 +870,11 @@ with the database.
 | `connect.ClientStrategySettings` | `ExtenderDirectory`, `ExtenderInitialSampleTimeout` added; `ExtenderNetworks`, `ExtenderHostnames` removed |
 | `network_client_connection` | `extender_id uuid NULL` |
 | `contract_extender` | new join table, zero to many per contract, source or destination party |
+| `connect.ProviderEvent` | `ExtenderIps` |
+| `sdk.ProviderGridPoint` | `ExtenderIps`, `ExtenderColorHexes` |
+| `sdk.ExtenderStatus` | `GossipState`, `EventCountLastMinute`; moves onto `Device` |
+| `sdk.NetworkSpaceValues` | `ExtenderHosts []string` |
+| `ExtenderShare` | new protobuf message, the QR payload |
 
 Old clients keep working: the header's new fields are optional, the hello
 field is additive, the tables are new, and a v1 extender client still
@@ -844,6 +942,20 @@ Phase 5b follows 4 because both touch the server.
    share, nothing on the payer's network, and once when it is also the
    egress; the rows go with the contract; a public provider's transports
    dial directly and a network provider's keep the extender dialers.
+8. App user interface: K1 to K8. 8a (connect, sdk): the extender ip
+   plumbing from dial to grid point, the color, the status on the device
+   and over rpc with the gossip state and event rate, the read-only store,
+   `ExtenderHosts`, the share payload and the view controller, bindings.
+   Acceptance: a provider reached through an extender carries that ip and
+   color on its grid point over a local and a remote device; the status
+   states and the event rate are pinned; a manual host resolves and unions;
+   a share round-trips with and without settings, refuses a foreign host,
+   and applies settings only when asked. 8b (one agent per app: android,
+   apple, windows, linux): dots with rings, the drawer panel, the account
+   section with settings, share and import per K8, localized strings.
+   Acceptance per app: rendering pinned by the app's existing view tests
+   where it has them, settings round-trip through the sdk, share renders
+   and import parses the sdk payload.
 
 ## 6. Known limitations
 
