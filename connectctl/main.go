@@ -124,6 +124,7 @@ Usage:
         [--listen_tcp=<port>]
         [--listen_udp=<port>]
         [--listen_dns=<port>]
+        [--dns_privileged_port]
         [--allowed_host=<host>]...
         [--state_dir=<dir>]
     
@@ -144,7 +145,8 @@ Options:
     --extender_key_file=<path>       Extender identity key file (hex seed), created when absent.
     --listen_tcp=<port>              Extender tcp carrier port (default 443).
     --listen_udp=<port>              Extender quic carrier port (default 443).
-    --listen_dns=<port>              Extender dns carrier port (default 53).
+    --listen_dns=<port>              Extender dns carrier port (default 4053).
+    --dns_privileged_port            Also bind the extender dns carrier on 53.
     --allowed_host=<host>            Extra host the extender may forward to. Repeatable.
     --state_dir=<dir>                Directory for the extender key and the known extenders.`,
 		DefaultApiUrl,

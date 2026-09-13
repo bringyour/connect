@@ -62,13 +62,15 @@ const (
 	ExtenderCarrierDns  = "dns"
 )
 
-// Fixed carrier ports (A1). The old multi-port personas are removed. A record
-// may name other ports (B2); these are what an address with no record is
-// dialed on.
+// Fixed carrier ports (A1, L2). The old multi-port personas are removed. A
+// record may name other ports (B2); these are what an address with no record
+// is dialed on. The dns carrier moved to the unprivileged 4053, which every
+// extender binds; 53 is reached only through a record that lists it, since
+// only the platforms that can bind it without privilege offer it.
 const (
 	ExtenderTcpPort  = 443
 	ExtenderQuicPort = 443
-	ExtenderDnsPort  = 53
+	ExtenderDnsPort  = DefaultWhodisPort
 )
 
 // The connect mode of a carrier name, and whether the name is one this client

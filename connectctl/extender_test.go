@@ -309,6 +309,11 @@ func TestExtenderCommandServesAndActivates(t *testing.T) {
 			t.Fatalf("activation ports = %d/%d/%d, expected %d/%d/%d",
 				args.TcpPort, args.UdpPort, args.DnsPort, tcpPort, quicPort, dnsPort)
 		}
+		// the dns ports that actually bound, which is what the operator
+		// probes one by one (L2)
+		if !slices.Equal(args.DnsPorts, []int{dnsPort}) {
+			t.Fatalf("activation dns ports = %v, expected %v", args.DnsPorts, []int{dnsPort})
+		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("the extender did not activate")
 	}

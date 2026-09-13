@@ -65,6 +65,10 @@ type extenderOptions struct {
 	tcpPort int
 	udpPort int
 	dnsPort int
+	// also bind the dns carrier on 53, which needs privilege on most hosts
+	// (L2). The bind is never required: a failure leaves the carrier on its
+	// unprivileged port.
+	dnsPrivilegedPort bool
 	// operator patterns this extender may forward to, on top of the api host
 	// and one wildcard level under it (A5)
 	allowedHosts []string
@@ -122,6 +126,9 @@ func extenderOptionsFromOpts(opts docopt.Opts) (*extenderOptions, error) {
 			return nil, fmt.Errorf("%s must be a port", flag)
 		}
 		*port = value
+	}
+	if dnsPrivilegedPort, err := opts.Bool("--dns_privileged_port"); err == nil {
+		options.dnsPrivilegedPort = dnsPrivilegedPort
 	}
 	if allowedHosts, ok := opts["--allowed_host"].([]string); ok {
 		for _, allowedHost := range allowedHosts {
@@ -266,6 +273,7 @@ func newExtenderRun(ctx context.Context, options *extenderOptions) (*extenderRun
 	}
 	serverSettings.Listen = options.listen
 	serverSettings.ListenPacket = options.listenPacket
+	serverSettings.DnsPrivilegedPort = options.dnsPrivilegedPort
 	// an operator activated extender is open: it accepts every header and
 	// forwards only to the whitelist (A4, A5)
 	run.server = extender.NewExtenderServer(
@@ -318,6 +326,9 @@ func newExtenderRun(ctx context.Context, options *extenderOptions) (*extenderRun
 	activatorSettings.TcpPort = options.tcpPort
 	activatorSettings.UdpPort = options.udpPort
 	activatorSettings.DnsPort = options.dnsPort
+	// the ports that actually bound, which is what the operator probes and the
+	// record lists (L2)
+	activatorSettings.DnsPorts = run.server.DnsPorts
 	activatorSettings.Carriers = run.server.Carriers
 	activatorSettings.Directory = run.directory
 	activatorSettings.OnActivated = run.activated

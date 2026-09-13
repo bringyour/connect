@@ -36,12 +36,16 @@ message ExtenderRecordBody {
     repeated ExtenderAddress Addresses = 2;
     uint32 TcpPort = 3;
     uint32 UdpPort = 4;
+    // the first dns port, kept for readers that predate DnsPorts
     uint32 DnsPort = 5;
     string DnsTld = 6;
     string CountryCode = 7;
     uint64 IssueTimeMs = 8;
     uint64 ExpireTimeMs = 9;
     string NetworkHost = 10;
+    // every dns port that passed the activation probe, dialed in ascending
+    // order so 53 is tried before 4053
+    repeated uint32 DnsPorts = 11;
 }
 
 message ExtenderRecord {

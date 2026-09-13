@@ -193,15 +193,33 @@ type ExtenderCandidate struct {
 	IpVersion int
 	// The identity key of a verified record, empty when unverified. The outer
 	// leaf is checked against it (B3, E5).
-	PublicKey   []byte
-	Carriers    []string
-	TcpPort     int
-	UdpPort     int
-	DnsPort     int
+	PublicKey []byte
+	Carriers  []string
+	TcpPort   int
+	UdpPort   int
+	// The first dns port, kept for a caller that predates DnsPorts.
+	DnsPort int
+	// Every dns port the record offers, in dial order (L2): ascending, so 53
+	// is dialed before 4053 when both are listed. Empty falls back to
+	// DnsPort.
+	DnsPorts    []int
 	DnsTld      string
 	CountryCode string
 	Source      string
 	Verified    bool
+}
+
+// The dns carrier ports of one candidate in dial order (L2). DnsPorts when it
+// has them -- a record may offer 53 and 4053 -- else the single DnsPort, which
+// is what a candidate built before DnsPorts carries.
+func (self *ExtenderCandidate) dnsCarrierPorts() []int {
+	if dnsPorts := orderedDnsPorts(self.DnsPorts); 0 < len(dnsPorts) {
+		return dnsPorts
+	}
+	if 0 < self.DnsPort {
+		return []int{self.DnsPort}
+	}
+	return nil
 }
 
 // One address as the status reports it (F2).
@@ -929,6 +947,7 @@ func (self *ExtenderDirectory) candidateWithLock(address *extenderDirectoryAddre
 		TcpPort:   ExtenderTcpPort,
 		UdpPort:   ExtenderQuicPort,
 		DnsPort:   ExtenderDnsPort,
+		DnsPorts:  []int{ExtenderDnsPort},
 		DnsTld:    DefaultExtenderDnsTld,
 		Source:    address.source,
 	}
@@ -946,8 +965,11 @@ func (self *ExtenderDirectory) candidateWithLock(address *extenderDirectoryAddre
 	if 0 < body.UdpPort {
 		candidate.UdpPort = int(body.UdpPort)
 	}
-	if 0 < body.DnsPort {
-		candidate.DnsPort = int(body.DnsPort)
+	// the list when the record carries one, else the single port, else the
+	// default (L2)
+	if dnsPorts := recordDnsPorts(body); 0 < len(dnsPorts) {
+		candidate.DnsPort = dnsPorts[0]
+		candidate.DnsPorts = dnsPorts
 	}
 	if body.DnsTld != "" {
 		candidate.DnsTld = body.DnsTld
@@ -956,6 +978,23 @@ func (self *ExtenderDirectory) candidateWithLock(address *extenderDirectoryAddre
 		candidate.Carriers = carriers
 	}
 	return candidate
+}
+
+// The dns ports one record offers, in dial order (L2). DnsPorts when it has
+// them, else the single DnsPort, else nothing, which leaves the candidate on
+// the carrier default.
+func recordDnsPorts(body *protocol.ExtenderRecordBody) []int {
+	dnsPorts := []int{}
+	for _, dnsPort := range body.DnsPorts {
+		dnsPorts = append(dnsPorts, int(dnsPort))
+	}
+	if dnsPorts = orderedDnsPorts(dnsPorts); 0 < len(dnsPorts) {
+		return dnsPorts
+	}
+	if 0 < body.DnsPort {
+		return []int{int(body.DnsPort)}
+	}
+	return nil
 }
 
 // The carriers the record lists for one address, or nil when the record does

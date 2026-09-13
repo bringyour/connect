@@ -158,6 +158,13 @@ type ExtenderSettings struct {
 	// is not part of the translation.
 	DnsTlds []string
 
+	// DnsPrivilegedPort also binds the dns carrier on 53, beside the
+	// unprivileged port the caller configured (L2). Only the platforms that
+	// can take 53 without privilege set it -- the linux daemon and the windows
+	// service -- and the bind is never required: a failure is reported through
+	// ListenErrorHandler and the carrier keeps serving on its other port.
+	DnsPrivilegedPort bool
+
 	// IdentityKeySeed, when set, is the ed25519 seed of the extender identity
 	// (B1). It signs the certificate authority the per-name leaves are issued
 	// under, and the challenge in an extender response. Empty leaves the
@@ -226,6 +233,10 @@ type ExtenderServer struct {
 	// ListenAndServe has bound them, because a carrier that did not bind must
 	// not be offered to a client or to an activation (G2).
 	carriers []string
+	// the dns ports whose bind succeeded, ascending, which is the order a
+	// client dials them in (L2). What the activation advertises, so a port
+	// that did not bind is never probed.
+	dnsPorts []int
 	// the last bind failure of each carrier that has one, which is what a
 	// provider role renders beside the carrier list (G2, F3). A carrier that
 	// binds clears its entry.
@@ -306,6 +317,7 @@ func NewExtenderServer(
 		allowedHosts:           allowedHosts,
 		ports:                  ports,
 		carriers:               []string{},
+		dnsPorts:               []int{},
 		carrierListenErrs:      map[string]error{},
 		forwardDialer:          forwardDialer,
 		listening:              make(chan struct{}),
@@ -559,9 +571,11 @@ func (self *ExtenderServer) ListenAndServe() error {
 		return self.certificatesErr
 	}
 
+	ports := self.listenPorts()
+
 	// one udp carrier per port: the two cannot share a socket, and binding
 	// the port once and dropping a carrier silently would hide the mistake
-	for port, connectModes := range self.ports {
+	for port, connectModes := range ports {
 		udpCarrierCount := 0
 		for _, connectMode := range connectModes {
 			switch connectMode {
@@ -600,7 +614,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 		}
 	}()
 
-	for port, connectModes := range self.ports {
+	for port, connectModes := range ports {
 		if !slices.Contains(connectModes, connect.ExtenderConnectModeTcpTls) {
 			continue
 		}
@@ -639,7 +653,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 		self.addCarrier(connect.ExtenderCarrierTcp)
 	}
 
-	for port, connectModes := range self.ports {
+	for port, connectModes := range ports {
 		connectMode := connect.ExtenderConnectMode("")
 		for _, portConnectMode := range connectModes {
 			switch portConnectMode {
@@ -683,6 +697,9 @@ func (self *ExtenderServer) ListenAndServe() error {
 			ownedCloser: ownedCloser,
 		})
 		self.addCarrier(carrier)
+		if connectMode == connect.ExtenderConnectModeDns {
+			self.addDnsPort(port)
+		}
 	}
 
 	if len(boundListeners) == 0 && len(boundPacketConns) == 0 {
@@ -774,6 +791,60 @@ func (self *ExtenderServer) markListening() {
 	self.listeningOnce.Do(func() {
 		close(self.listening)
 	})
+}
+
+// The ports to bind: the configured ones, plus 53 for the dns carrier when the
+// platform can take it without privilege (L2). The extra bind is additive --
+// the configured unprivileged port is bound either way -- and its failure is
+// reported like any other carrier bind failure without ending the serve.
+func (self *ExtenderServer) listenPorts() map[int][]connect.ExtenderConnectMode {
+	ports := maps.Clone(self.ports)
+	if ports == nil {
+		ports = map[int][]connect.ExtenderConnectMode{}
+	}
+	if !self.settings.DnsPrivilegedPort {
+		return ports
+	}
+	hasDns := false
+	for _, connectModes := range ports {
+		if slices.Contains(connectModes, connect.ExtenderConnectModeDns) {
+			hasDns = true
+			break
+		}
+	}
+	if !hasDns {
+		// nothing configured the dns carrier, so there is nothing to widen
+		return ports
+	}
+	if slices.Contains(ports[connect.DefaultDnsPort], connect.ExtenderConnectModeDns) {
+		return ports
+	}
+	ports[connect.DefaultDnsPort] = append(
+		slices.Clone(ports[connect.DefaultDnsPort]),
+		connect.ExtenderConnectModeDns,
+	)
+	return ports
+}
+
+// Adds one bound dns port, keeping the ascending dial order of L2. Only a bind
+// that succeeded reaches this.
+func (self *ExtenderServer) addDnsPort(port int) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if slices.Contains(self.dnsPorts, port) {
+		return
+	}
+	self.dnsPorts = append(self.dnsPorts, port)
+	slices.Sort(self.dnsPorts)
+}
+
+// The dns ports this extender is listening on, ascending, which is the order a
+// client dials them in (L2). Complete once Listening has closed, and what the
+// activation advertises so the operator never probes a port that did not bind.
+func (self *ExtenderServer) DnsPorts() []int {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return slices.Clone(self.dnsPorts)
 }
 
 // Adds one carrier to what this extender serves, keeping wire order (A4). Only

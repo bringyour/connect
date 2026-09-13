@@ -48,12 +48,16 @@ const ExtenderActivatePath = "/network/extender-activate"
 // The activation request (C2). The json is the server's contract; the field
 // names are the wire and are not ours to rename.
 type ExtenderActivateArgs struct {
-	PublicKeyHex string   `json:"public_key_hex"`
-	TcpPort      int      `json:"tcp_port"`
-	UdpPort      int      `json:"udp_port"`
-	DnsPort      int      `json:"dns_port"`
-	DnsTld       string   `json:"dns_tld"`
-	Carriers     []string `json:"carriers"`
+	PublicKeyHex string `json:"public_key_hex"`
+	TcpPort      int    `json:"tcp_port"`
+	UdpPort      int    `json:"udp_port"`
+	DnsPort      int    `json:"dns_port"`
+	// every dns port that is listening, which the operator probes one by one
+	// and the record then lists (L2). Empty leaves the operator on DnsPort
+	// alone, which is what an extender that predates the list offers.
+	DnsPorts []int    `json:"dns_ports,omitempty"`
+	DnsTld   string   `json:"dns_tld"`
+	Carriers []string `json:"carriers"`
 }
 
 // The activation answer (C2). A refusal is a normal answer with `Activated`
@@ -150,6 +154,10 @@ type ExtenderActivatorSettings struct {
 	// so a carrier whose bind failed is never probed. Nil offers none, which
 	// holds every activation.
 	Carriers func() []string
+
+	// The dns ports that are listening right now (L2), which is what the
+	// operator probes and the record lists. Nil offers DnsPort alone.
+	DnsPorts func() []int
 
 	// The directory the signed record and the bootstrap records are applied
 	// into (C2, E1). It is also where a revocation of this extender's own key
@@ -585,6 +593,18 @@ func (self *ExtenderActivator) byJwt() string {
 	return self.settings.ByJwt()
 }
 
+// The dns ports this extender is listening on, in dial order (L2). Nil when
+// the caller offers none, which leaves the operator on DnsPort alone.
+func (self *ExtenderActivator) dnsPorts() []int {
+	if self.settings.DnsPorts == nil {
+		return nil
+	}
+	if dnsPorts := orderedDnsPorts(self.settings.DnsPorts()); 0 < len(dnsPorts) {
+		return dnsPorts
+	}
+	return nil
+}
+
 // Activates every family that has an api url and an address on this host.
 // Reports whether the pass is a success, which is what resets the backoff: a
 // family that was attempted and refused holds the whole pass, since the next
@@ -660,6 +680,7 @@ func (self *ExtenderActivator) activateUrl(
 		TcpPort:      self.settings.TcpPort,
 		UdpPort:      self.settings.UdpPort,
 		DnsPort:      self.settings.DnsPort,
+		DnsPorts:     self.dnsPorts(),
 		DnsTld:       self.settings.DnsTld,
 		Carriers:     carriers,
 	}

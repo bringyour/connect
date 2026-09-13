@@ -239,17 +239,21 @@ func (x *ExtenderAddress) GetCarriers() []string {
 }
 
 type ExtenderRecordBody struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PublicKey     []byte                 `protobuf:"bytes,1,opt,name=PublicKey,proto3" json:"PublicKey,omitempty"`
-	Addresses     []*ExtenderAddress     `protobuf:"bytes,2,rep,name=Addresses,proto3" json:"Addresses,omitempty"`
-	TcpPort       uint32                 `protobuf:"varint,3,opt,name=TcpPort,proto3" json:"TcpPort,omitempty"`
-	UdpPort       uint32                 `protobuf:"varint,4,opt,name=UdpPort,proto3" json:"UdpPort,omitempty"`
-	DnsPort       uint32                 `protobuf:"varint,5,opt,name=DnsPort,proto3" json:"DnsPort,omitempty"`
-	DnsTld        string                 `protobuf:"bytes,6,opt,name=DnsTld,proto3" json:"DnsTld,omitempty"`
-	CountryCode   string                 `protobuf:"bytes,7,opt,name=CountryCode,proto3" json:"CountryCode,omitempty"`
-	IssueTimeMs   uint64                 `protobuf:"varint,8,opt,name=IssueTimeMs,proto3" json:"IssueTimeMs,omitempty"`
-	ExpireTimeMs  uint64                 `protobuf:"varint,9,opt,name=ExpireTimeMs,proto3" json:"ExpireTimeMs,omitempty"`
-	NetworkHost   string                 `protobuf:"bytes,10,opt,name=NetworkHost,proto3" json:"NetworkHost,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	PublicKey []byte                 `protobuf:"bytes,1,opt,name=PublicKey,proto3" json:"PublicKey,omitempty"`
+	Addresses []*ExtenderAddress     `protobuf:"bytes,2,rep,name=Addresses,proto3" json:"Addresses,omitempty"`
+	TcpPort   uint32                 `protobuf:"varint,3,opt,name=TcpPort,proto3" json:"TcpPort,omitempty"`
+	UdpPort   uint32                 `protobuf:"varint,4,opt,name=UdpPort,proto3" json:"UdpPort,omitempty"`
+	// the first dns port, kept for readers that predate DnsPorts
+	DnsPort      uint32 `protobuf:"varint,5,opt,name=DnsPort,proto3" json:"DnsPort,omitempty"`
+	DnsTld       string `protobuf:"bytes,6,opt,name=DnsTld,proto3" json:"DnsTld,omitempty"`
+	CountryCode  string `protobuf:"bytes,7,opt,name=CountryCode,proto3" json:"CountryCode,omitempty"`
+	IssueTimeMs  uint64 `protobuf:"varint,8,opt,name=IssueTimeMs,proto3" json:"IssueTimeMs,omitempty"`
+	ExpireTimeMs uint64 `protobuf:"varint,9,opt,name=ExpireTimeMs,proto3" json:"ExpireTimeMs,omitempty"`
+	NetworkHost  string `protobuf:"bytes,10,opt,name=NetworkHost,proto3" json:"NetworkHost,omitempty"`
+	// every dns port that passed the activation probe, dialed in ascending
+	// order so 53 is tried before 4053
+	DnsPorts      []uint32 `protobuf:"varint,11,rep,packed,name=DnsPorts,proto3" json:"DnsPorts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -352,6 +356,13 @@ func (x *ExtenderRecordBody) GetNetworkHost() string {
 		return x.NetworkHost
 	}
 	return ""
+}
+
+func (x *ExtenderRecordBody) GetDnsPorts() []uint32 {
+	if x != nil {
+		return x.DnsPorts
+	}
+	return nil
 }
 
 type ExtenderRecord struct {
@@ -943,7 +954,7 @@ const file_extender_proto_rawDesc = "" +
 	"\x0fExtenderAddress\x12\x0e\n" +
 	"\x02Ip\x18\x01 \x01(\tR\x02Ip\x12\x1c\n" +
 	"\tIpVersion\x18\x02 \x01(\rR\tIpVersion\x12\x1a\n" +
-	"\bCarriers\x18\x03 \x03(\tR\bCarriers\"\xdc\x02\n" +
+	"\bCarriers\x18\x03 \x03(\tR\bCarriers\"\xf8\x02\n" +
 	"\x12ExtenderRecordBody\x12\x1c\n" +
 	"\tPublicKey\x18\x01 \x01(\fR\tPublicKey\x128\n" +
 	"\tAddresses\x18\x02 \x03(\v2\x1a.bringyour.ExtenderAddressR\tAddresses\x12\x18\n" +
@@ -955,7 +966,8 @@ const file_extender_proto_rawDesc = "" +
 	"\vIssueTimeMs\x18\b \x01(\x04R\vIssueTimeMs\x12\"\n" +
 	"\fExpireTimeMs\x18\t \x01(\x04R\fExpireTimeMs\x12 \n" +
 	"\vNetworkHost\x18\n" +
-	" \x01(\tR\vNetworkHost\"h\n" +
+	" \x01(\tR\vNetworkHost\x12\x1a\n" +
+	"\bDnsPorts\x18\v \x03(\rR\bDnsPorts\"h\n" +
 	"\x0eExtenderRecord\x12\x12\n" +
 	"\x04Body\x18\x01 \x01(\fR\x04Body\x12$\n" +
 	"\rRootSignature\x18\x02 \x01(\fR\rRootSignature\x12\x1c\n" +

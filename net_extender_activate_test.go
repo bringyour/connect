@@ -491,6 +491,11 @@ func TestExtenderActivatorActivatesEveryFamily(t *testing.T) {
 		if post.args.DnsTld != testActivateDnsTld {
 			t.Fatalf("v%d dns tld = %q", ipVersion, post.args.DnsTld)
 		}
+		// with no listening ports to offer the operator reads DnsPort alone,
+		// which is what an extender that predates the list sends (L2)
+		if post.args.DnsPorts != nil {
+			t.Fatalf("v%d dns ports = %v, expected none", ipVersion, post.args.DnsPorts)
+		}
 	}
 
 	activated := map[int]bool{}
@@ -941,5 +946,23 @@ func TestExtenderActivateResultJsonContract(t *testing.T) {
 	}
 	if refused.ExpireTime != nil {
 		t.Fatalf("refusal expire time = %v, expected none", refused.ExpireTime)
+	}
+}
+
+// The activation advertises every dns port that is listening, in dial order,
+// beside the single port an operator that predates the list reads (L2).
+func TestExtenderActivatorSendsDnsPorts(t *testing.T) {
+	fixture := newTestActivatorFixture(t, func(settings *ExtenderActivatorSettings) {
+		// the bound order is the server's; the wire order is the dial order
+		settings.DnsPorts = func() []int { return []int{DefaultWhodisPort, DefaultDnsPort} }
+	})
+
+	fixture.waitPass()
+	post := fixture.waitPost()
+	if !slices.Equal(post.args.DnsPorts, []int{DefaultDnsPort, DefaultWhodisPort}) {
+		t.Fatalf("dns ports = %v, expected 53 then 4053", post.args.DnsPorts)
+	}
+	if post.args.DnsPort != ExtenderDnsPort {
+		t.Fatalf("dns port = %d, expected %d", post.args.DnsPort, ExtenderDnsPort)
 	}
 }
