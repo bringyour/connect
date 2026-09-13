@@ -3638,3 +3638,459 @@ writes, dead windows and the count of runs over 100 s, which must be
 zero. The receiver-state export stays on the list, because if row 14
 holds and the campaign still wedges, the wedge is not the shape the
 invariants pick out, and that export is what would say what it is.
+
+## 36. The merged tree, measured
+
+This section consolidates the measurements for the configuration that
+actually shipped, and nothing else. Every earlier section measured
+candidates, most of which did not land; quoting their numbers for the
+merged tree would describe builds nobody runs. What follows is drawn only
+from entries that measured the shipped configuration, with the provenance
+named on each, and it ends with an inventory of every deterministic test
+this program added.
+
+### 36.1 What shipped, read from the merge rather than assumed
+
+Verified by reading `DefaultSendBufferSettings` on connect main `b8f72dd`,
+not from the design notes.
+
+On: the deferred retransmit, which is unconditional in
+`shouldDeferTimeoutResend` and has no setting; its backoff,
+`DeferTimeoutResendBackoff: true`; the forget on retransmit timeout; the
+asynchronous race-commit delivery; the counters; and the removal of the fast
+path's liveness reporter.
+
+Off: `ReliableLaneProvenRecovery: false`, `ReliableTimerUsesDeviation:
+false`, `ReliableAdmissionBoundedByDelivery: false`, and
+`DeferredItemIsLateForTheScoreboard: false`. Size-aware fast-path admission
+is not merely off, it is not in the shipped tree at all: its only
+appearance is behind the `flightgate_next` build tag, as a specification.
+
+So the shipped behaviour is the arm the measurement ledger calls `a175`,
+connect `175d82a`, measured against `mergedX`, connect `89e1633`, which is
+the submitter's merged tree and is itself upstream on main. Everywhere
+below, "merged" means that control and "shipped" means this configuration.
+
+### 36.2 The storm cells, twenty repetitions per arm
+
+Provenance `flightgate-175-20260912`. Route `p2p-fast+exchange-h1`,
+`tcp-parallel`, download, twenty repetitions per arm interleaved on seeds
+20260910..20260929. Twenty was chosen from the A/A because the per-run storm
+rate is near one in five, which five repetitions cannot resolve.
+
+| Cell | Arm | Storm runs over 200 timeout writes | Timeout writes, median and max | Median Mbit/s | Dead windows |
+| --- | --- | ---: | --- | ---: | ---: |
+| clean-lan | merged | 2 of 20 | 0, 2,183 | 20.9 | 0 |
+| clean-lan | shipped | 0 of 20 | 0, 30 | 21.2 | 0 |
+| loss-100bp | merged | 3 of 20 | 0, 3,902 | 19.5 | 0 |
+| loss-100bp | shipped | 0 of 20 | 0, 36 | 19.9 | 0 |
+
+Paired goodput, shipped minus merged: `clean-lan` better in 14 of 20, mean
++1.0 Mbit/s with a standard deviation of 3.9; `loss-100bp` better in 13 of
+20, mean +2.7 with 4.0. Pooled storm counts 0 of 40 against 5 of 40, Fisher
+two-sided about 0.055.
+
+Read the tail rather than the rate. The rate test is marginal and the
+standard deviations are large; the worst run differs by two orders of
+magnitude, 36 against 3,902. That is the claim this cell supports.
+
+The same cells were re-measured on `eeca11f` with the lane rule off,
+twenty repetitions, and still showed zero storm runs
+(`flightgate-fixlane-20260913` stage 2), so the result carries forward
+across the later work rather than belonging to one commit.
+
+### 36.3 The forced-direct low-bar cells, stated before and after
+
+Provenance `flightgate-175-20260912`, low-bar stage, twenty repetitions per
+arm. These are the cells that matter most in this program's history,
+because two earlier candidates regressed them badly and the regression took
+three design rounds to find.
+
+| Cell | `d381cfa` | `66a2130` | shipped |
+| --- | ---: | ---: | ---: |
+| p2p-fast / 5m-down-1m-up | −13.7 % | −14.5 % | −0.1 % |
+| p2p-fast / 1m-down-250k-up | −13.7 % | −23.1 % | −0.5 % |
+| p2p-fast / 256k-down-64k-up | −25.0 % | −22.7 % | −2.2 % |
+| paired seeds better | 0 of 14 | 0 of 12 | 25 of 55 |
+
+All three shipped cells are inside the null band, at a sample size that
+would have detected a tenth of the regression. Removing the fast path's
+liveness reporter is what closed it. The size of the fix is only legible
+next to what it was, which is why both earlier arms are in the table.
+
+The same three cells were measured again on `eeca11f`, both lane-rule
+states, twenty repetitions each, and came back indistinguishable there too,
+with no run over 100 seconds in 120 scenario-runs.
+
+### 36.4 The exchange low-bar cells
+
+Same provenance and sample size.
+
+| Cell | median kbit/s, merged to shipped | paired mean | Verdict |
+| --- | --- | ---: | --- |
+| exchange-auto / 5m-down-1m-up | 294.6 → 299.2 | +2.3 % | better, marginal |
+| exchange-auto / 1m-down-250k-up | 120.2 → 125.8 | +4.4 % | better, marginal |
+| exchange-h3 / 5m-down-1m-up | 436.8 → 437.5 | +0.3 % | indistinguishable |
+| exchange-h3 / 1m-down-250k-up | 158.4 → 162.5 | +2.7 % | indistinguishable |
+
+Do not quote the two `exchange-auto` rows as a rate win. Each paired mean
+clears 1.96 standard errors only marginally, and the null standard
+deviations they are judged against come from the A/A at three to five pairs
+per cell, which is a thin null to lean on. The evidence worth citing there
+is the recovery traffic: halved on `5m-down-1m-up`, 17,965 writes against
+8,607, and down 38 per cent on `1m-down-250k-up`. This program has twice
+been burned by quoting a marginal rate without its caveat.
+
+### 36.5 The deferred retransmit on the shipped tree
+
+Provenance `flightgate-175-20260912` stage 2. The shipped arm only,
+`mixed-relay-queue-inflation-3s`, `tcp`, download, five runs per state.
+Five repetitions, so only effects far outside the null band are called.
+
+| Cell | Metric | defer off | defer on |
+| --- | --- | --- | --- |
+| exchange-h1 | median Mbit/s | 13.1 | 15.2 |
+| exchange-h1 | whole-window timeout writes | 16,837 | 5,924 |
+| exchange-h1 | dead windows | 4 | 11 |
+| p2p-fast+exchange-h1 | median Mbit/s | 9.0 | 15.1 |
+| p2p-fast+exchange-h1 | whole-window timeout writes | 22,328 | 4,746 |
+| p2p-fast+exchange-h1 | dead windows | 16 | 5 |
+
+A 65 to 79 per cent reduction in timeout writes is far outside the null
+band, as is the mixed route's dead-window change from 16 to 5. One seed of
+five still collapses on the relay-only cell with the defer on, to 3.3
+Mbit/s against 13.1 for the same seed with it off; four of five are 15.1 to
+16.1. The collapsing seed is the residue the later rounds chased.
+
+### 36.6 The mixed-route cells on the corrected primary
+
+Read this table for its method as much as its numbers, and read its
+provenance caveat first.
+
+The correction. A deferred spurious timeout that the scoreboard later
+writes is one duplicate counted as a gap write; merged's whole-window
+rewrite of the same item is the same duplicate counted as a timeout write.
+Scoring gap writes alone measured half of a substitution and produced
+verdicts in the wrong direction. The primary is total recovery writes with
+both ends summed, components kept as diagnostics.
+
+Caveat. The only mixed-route table scored this way was measured on
+`b0b04c8`, an earlier arm, at five repetitions. It is included because the
+method matters and because no equivalent was run on the shipped tree, not
+because it measures what shipped.
+
+| Cell | Gap writes M → B | Timeout writes M → B | Total M → B | Rescored | Original |
+| --- | --- | --- | --- | --- | --- |
+| clean-lan / latency-under-load | 240 → 145 | 4,813 → 97 | 5,098 → 242 | better | better |
+| loss-100bp / latency-under-load | 277 → 369 | 3,159 → 71 | 3,445 → 440 | better | worse |
+| loss-300bp / latency-under-load | 454 → 945 | 3,083 → 640 | 3,547 → 1,604 | better | worse |
+| burst-loss / latency-under-load | 438 → 591 | 4,665 → 204 | 5,146 → 802 | worse on dead windows only | worse |
+| burst-loss / tcp-parallel | 123 → 128 | 684 → 50 | 807 → 186 | better | equal |
+| clean-lan / tcp-parallel | 9 → 99 | 0 → 498 | 9 → 599 | worse | worse |
+| loss-100bp / tcp-parallel | 30 → 128 | 0 → 644 | 30 → 772 | worse | worse |
+| loss-300bp / tcp-parallel | 61 → 78 | 1 → 7 | 63 → 91 | worse on goodput | worse |
+
+Four of eight verdicts change. On the latency-under-load cells the
+duplicate traffic is 4 to 21 times lower than merged's. The tcp-parallel
+cells do not benefit from the substitution argument, because merged pays
+almost no timeouts there, and stay worse on the corrected primary.
+
+And then the A/A retires most of that too: on those same cells two
+identical trees produced total-recovery-write ratios of 0.07, 3.4, 83 and
+495, so a 9-to-599 or 30-to-772 change at five repetitions is not evidence.
+
+### 36.7 The device series, the only evidence from real hardware
+
+Pixel 8 Pro and Galaxy S24 Ultra pinned to each other as network peers,
+identical diagnostic build, four-stream download, twelve 15-second windows
+per run, six runs per role assignment. Relay-only was reached through a
+debug hook and interleaved with stock from a fresh tunnel per run.
+
+| Roles | Stock, per-run medians Mbit/s | Relay-only, per-run medians Mbit/s |
+| --- | --- | --- |
+| S24 on LTE to Pixel providing on Wi-Fi | 2.9, 2.8, 2.5, 2.5, 2.4, 2.3 | 6.2, 5.4, 5.5, 2.5, 2.3, 2.5 |
+| Pixel on LTE to S24 providing on LTE | 1.9, 1.8, 1.6, 1.5, 1.6, 1.7 | 4.7, 4.5, 2.1, 2.0, 2.1, 2.1 |
+| Pixel on Wi-Fi to S24 providing on LTE | 2.6, 1.9, 2.1, 1.8, 1.9, 1.8 | 2.6, 2.6, 2.6, 2.6, 2.5, 2.4 |
+
+Within every interleaved pair relay-only beat stock: about twice while the
+relay path was healthy, and by 0.2 to 0.8 Mbit/s after the relay path
+itself degraded mid-session. Stock with the fast path live never exceeded
+the relay-only run beside it. The same devices download directly at about
+65 Mbit/s on LTE and 550 Mbit/s on Wi-Fi, and every window of the stock
+runs was dead by the 5 Mbit/s threshold, 72 of 72 per role.
+
+Two things this table is not. It is the problem measured, on the stock
+build, not the fix measured: it is the evidence that the gate is a steady
+state from the first second on a phone rather than a collapse after 30 to
+90 seconds. And relay-only is a diagnostic mode, not a proposal.
+
+The counters behind it: 5,300 to 11,000 flight waits per three-minute run,
+98 to 99 per cent of them blocked while a reliable route had channel
+capacity, with the binding limit the mobile ceiling of 16 messages in
+flight rather than the byte floor. Relay-only runs show zero flight waits
+and 0 to 234 gap resends, but still 1,000 to 17,000 whole-window timeout
+resends per run, which is direct device evidence that the timeout machinery
+misfires on the relay lane alone.
+
+### 36.8 The A/A calibration, and the verdicts it retires
+
+This subsection is load-bearing. Without it a reader will quote
+five-repetition per-cell verdicts from earlier sections that do not mean
+what they appear to.
+
+Two arms built from the same commit, `89e1633` with sdk `5f2652f`, treated
+as independent by the pipeline and run through the identical seventeen
+cells, five repetitions, interleaved on the same seeds, with the same
+resources and primaries. Provenance `flightgate-aa-20260912`.
+
+| Quantity | Value |
+| --- | --- |
+| paired differences, where zero is the truth | 73 |
+| mean | +3.1 % |
+| standard deviation | 20.3 % |
+| range | −44.5 % to +75.3 % |
+| cells the old strict rule would call "worse" | 15 of 17 |
+| storm runs, arm A against arm B | 25 against 25, of 155 correct runs |
+
+So a null tree beats and loses to itself by tens of per cent, and the
+one-run-in-five storm that an earlier section attributed to a candidate is
+what merged does to itself at the same rate. Every per-cell "worse" verdict
+recorded at five repetitions on the mixed route, for `f8a507a`, `c64442c`,
+`d381cfa`, `66a2130` and `b0b04c8`, is inside this band and is retired.
+
+Repetitions needed for 80 per cent power at a two-sided 0.05 level, from
+the paired standard deviations: 1 to 11 on the low-bar cells for a 10 per
+cent effect, 12 to 131 on the mixed tcp-parallel cells, 33 pooled across
+all cells. For a storm rate rather than a median, about 20 repetitions
+separate "no storms" from one in five, and about 60 separate 20 per cent
+from 5 per cent.
+
+### 36.9 What ships off, and why
+
+Two mechanisms are implemented, tested and disabled. Neither is disabled
+for lack of evidence; each has a measurement against it.
+
+The lane rule, `ReliableLaneProvenRecovery`. It withholds a firing until a
+later same-lane acknowledgement proves it. Measured on the relay
+queue-inflation cell and the storm cells at twenty repetitions per state,
+it wedges transfers. Pooled over three cells and two independently built
+arms, runs over 100 seconds were 0 of 80 with it off and 5 of 80 with it
+on, Fisher two-sided 0.116 on the relay cell alone and 0.059 pooled. The
+worst was 712.8 seconds on a link carrying nothing worse than 1 per cent
+loss, with 142 of 143 windows dead, 11 timeout writes against 1,146
+deferrals, and the run failed. The mechanism is sound where its release
+condition is reachable, and a relay stall is precisely the state where it
+is not. §33 has the analysis; the default flip was reverted in its own
+commit, as §32 pre-registered.
+
+Size-aware unreliable admission. Measured with the cap on, goodput was 0.8
+and 2.0 Mbit/s lower. It is not in the shipped tree; its specification
+lives behind the `flightgate_next` tag.
+
+Two more ship off with weaker reasons and are recorded so they are not
+silently retried. The deviation timer, `ReliableTimerUsesDeviation`, does
+not cover an unsampled stall, which is the stall this program cares about.
+The delivered-bytes admission bound, `ReliableAdmissionBoundedByDelivery`,
+holds the resend queue below its budget as designed but costs about twice
+the transfer time in every arm and is inert on the arm its own design calls
+the target case.
+
+### 36.10 The resend ceiling is eight seconds, not two
+
+This corrects a figure that appears in earlier sections and that was also
+stated wrongly to the user.
+
+`RttMinResendInterval` is 300 ms, the floor once round-trip samples exist.
+`MinResendInterval` is 2 s, the cold floor the sender uses with no evidence
+at all. `MaxResendInterval` is 8 s, the ceiling.
+
+Two seconds was mistaken for the ceiling because it is where a typical
+run's maximum lands. The storm-cell entry observed a largest read of
+exactly 2,000 ms in every run of both arms and called it "the configured
+maximum resend interval"; it is the floor binding, because the scaled round
+trip never rose above it in those runs. The later relay-cell runs observed
+reads spanning 0.30 to 8.00 s, with a median per-side maximum of 2.00 to
+2.06 s, so the ceiling is reached in practice.
+
+The relay-stall finding survives and changes size. The relay goes 2.75 to
+2.9 s without advancing its cumulative acknowledgement in the storm cells,
+and 10 to 36 s as a per-run lifetime maximum in the relay cell. Against an
+8 s ceiling that is one and a quarter to four and a half times, not the
+three to four times stated in §33.4, and the storm cells' claim that "the
+ceiling sits below the stall" is wrong as a general statement: it held only
+where the 2 s floor was binding. The conclusion that survives is narrower
+and still worth acting on, that the relay routinely stalls for longer than
+the sender's timer will ever wait once the floor binds.
+
+### 36.11 Not yet measured
+
+Three things are outstanding and this section is not complete without
+saying so.
+
+The wedge classification fold-in. The relay cell and the loss storm cell
+are being re-measured on an arm carrying §34.2's receive-queue drop
+counter, both lane-rule states, twenty repetitions each, so that every
+wedged run can be classified as the receiver deadlock or the proof-chain
+mode from its own counters rather than by inference. On the runs in so far
+every wedge reads zero drops with a write-to-defer ratio far below one,
+which is the proof-chain signature, but the sample is partial.
+
+The clean re-run of the forced-direct rule-off block. Two short in-process
+test runs overlapped three of its twenty repetitions, which breaks the
+host-idle rule this program measures under. The verdict in §36.3 does not
+turn on those three, but the block is being re-run and the verdict should
+be re-read against it.
+
+The full-suite verification of connect and server main. Neither has been
+run yet. Connect main `b8f72dd` has had a build check and a reading of the
+affected tests but no test run; the server merge has not been made. Both
+are queued behind the campaign.
+
+### 36.12 The deterministic tests this program added
+
+Counted on connect main `b8f72dd`: 26 files matching `flight_gate_*_test.go`
+carrying 103 test functions and 3 benchmarks. Seven of those files, holding
+26 of the 103, are behind a build tag and do not run. So 77 tests run
+against the shipped tree.
+
+Outside the `flight_gate_` files the program added
+`net_http_plain_websocket_test.go`, 187 lines and three tests, and modified
+three existing test files without adding functions:
+`transfer_ack_window_test.go`, `transfer_flight_fallback_test.go` and
+`transport_p2p_webrtc_loss_test.go`. Those three are adaptations rather
+than additions. `transfer_flight_fallback_test.go` is the clearest case: it
+is main's `TestSendSequenceDefersTimeoutResendWhileAcksProgress` rewritten
+against this branch's implementation of the same rule, keyed on the
+cumulative-ack clock rather than the head-ack clock, with the limit and the
+since-last-deferral term as settings. The behaviour main asserted is
+preserved.
+
+#### Three categories that must be read differently
+
+Specification, not suite. The seven files behind `//go:build flightgate_next`
+do not compile against the shipped tree by construction, because they
+reference settings and methods that candidates would add and the shipped
+tree does not have, `FastPathSizeAwareAdmission` among them. They are the
+contract a candidate must satisfy, not a suite anyone runs.
+`flight_gate_ack_arrival_test.go` (8), `flight_gate_next_p2p_test.go` (5),
+`flight_gate_next_mixed_lane_test.go` (4), `flight_gate_lane_contract_test.go`
+(3), `flight_gate_next_fallback_test.go` (3),
+`flight_gate_lane_clock_test.go` (2),
+`flight_gate_lane_classification_test.go` (1).
+
+Negative findings, kept so they are not silently retried. Each asserts that
+a rejected mechanism stays rejected and records why.
+`TestDeviationTimerIsOffByDefault` and
+`TestDeviationTimerDoesNotCoverAnUnsampledStall`, which is the finding that
+rejected it. `TestLaneProvenRecoveryIsOffByDefault`.
+`TestReliableAdmissionBoundIsOffByDefault` and
+`TestReliableAdmissionBoundIsInertUnderTheMobileBudget`.
+`TestDeferredGraceNarrowingIsOffByDefault`.
+`TestDeliveredBytesRingIsNotRetainedWhenOff`, which also proves the
+disabled mechanism costs no memory.
+
+Ratchets, not bounds. Where a test pins a count on the shipping default,
+the number is a guard against regression and not a claim that the current
+value is correct. `TestLaneRecoveryRows1And2StallWritesAreLogarithmic`
+bounds stall writes by the head's probes at doubling intervals;
+`TestRetransmitIntervalCoversTheWindowOrTheDeferIsOn` pins the storm
+condition at the rate the device rig measured. Treat a failure as a
+question about the change, not as proof the change is wrong.
+
+#### What the rows pin, and which tree fails them
+
+The lane recovery contract, 14 rows in
+`flight_gate_lane_recovery_contract_test.go`, is the largest group. Rows 1
+and 2 bound the writes during a stall to a logarithm of the stall over the
+interval rather than one per item; merged fails them by construction
+because it rewrites its window. Row 3 pins that a draining lane is not
+rewritten, row 4 that a genuine endpoint drop is still recovered, rows 5
+and 6 that a relay hole overtaken by direct acknowledgements is not written
+while one proven by relay acknowledgements is, row 8 that a late item on a
+draining lane is never written, row 9 that a proven drop waits at most one
+interval, rows 10 through 13 the stall healing, the spin bound, the
+liveness cadence over a 20-second stall, and that an item carried on two
+lanes proves nothing about either.
+
+The metric contract, 6 rows, pins what the counters mean rather than what
+the transfer does. Its sharpest row is
+`TestMetricAckWriteIsAttributedToTheCarrierItLeftOn`: merged records the
+carrier of the Pack being answered rather than the carrier the
+acknowledgement left on, so an acknowledgement that takes the H1 priority
+companion is filed under the Pack's lane. Merged reports the wrong
+acknowledgement lane by construction and this row drives exactly that
+write. `TestMetricRouteGenerationChangesAreNotPinnableInProcess` is the
+honest opposite: it records what this instrument cannot pin.
+
+The dead-route contract, 4 rows, characterises a hang rather than fixing
+one, and two of its three behavioural rows are identical on both trees
+because every step of that hang is merged's. Row A pins that the condition
+is visible, how long a route has gone without acknowledging and how many
+items it holds. Row B pins that the retention holds as designed and says
+the wait is not a bug in the recovery path. Row C pins that every rewrite
+carries the head so a receiver that returns can resume. The fourth row
+places retirement with the multi-client rather than the sequence.
+
+The sizing invariants, 4 rows in `flight_gate_sizing_test.go`, fail if a
+future change pushes the mobile budgets past their share:
+`TestP2pUnreliableFlightLimitsStayInsideTheirReceiveQueue`,
+`TestUnreliableFlightMessageCeilingAdmitsItsByteBudget`,
+`TestUnreliableFlightFloorHoldsATypicalMessage`, and the retransmit
+interval ratchet above.
+
+`TestTunInjectFromReaderGoroutineDoesNotDeadlock` is the reentrancy row for
+M7: with the outbound queue full and its reader parked, an injection that
+makes netstack reply must still return, because the injecting goroutine is
+the reader in production. Its own comment records that it was expected red
+on the tree it was written against, where `WritePackets` waits without
+bound.
+
+The receiver-budget rows are the newest and come from the reproduction
+stream: `TestReceiverBudgetDropsArrivalsAboveAHole` pins §34.2's drop, a
+full receive queue blocked at a hole dropping an arrival it cannot evict
+anything to fit, and `TestReceiverBudgetDropsDoNotWedgeEitherArm` records
+the negative result that at a budget tight enough to wedge, both arms wedge
+at about half the runs, so that wedge is not the lane rule's.
+
+#### Rows that assert a trade rather than a win
+
+Read these as bounds on a cost, not as claims of improvement, and do not
+mistake them for failures.
+
+`TestLaneRecoveryRow7RelayTailDropIsProbedNoLaterThanMerged` is the clearest.
+A relay endpoint drop with direct-lane acknowledgements only and no later
+relay item is its route's one tail. The assertion is that it is scheduled
+no later than merged's own timer would fire, its send time plus the scaled
+round trip, and earlier whenever the relay's minimum is under its mean.
+Earlier drafts carried this as a trade with merged faster; §29.3 restated
+it as a bound and the trade column is gone.
+
+`TestLaneRecoveryProbeRttNeverExceedsTheScaledRtt` and
+`TestLaneRecoveryRow11HeldItemsDoNotSpin` are the same shape: each bounds a
+cost the mechanism introduces rather than asserting it wins.
+
+#### Skips, and what is red
+
+Most `flight_gate_` tests skip under `-short` and run in a normal
+invocation; those are labelled by what they need, "live link", "relay
+stall", "receiver budget", "vnet fast path". Two skips are not
+`-short` skips and must be called out.
+
+`TestP2pReadinessRequiresProbeQuality` is skipped unconditionally, pending
+candidate P1, which would define a probe-quality readiness gate in
+`transport_p2p_probe`. It is the one test in the suite waiting on a
+candidate.
+
+`TestDeliveredBytesRingIsNotRetainedWhenOff` skips only when the delivered
+bytes bound is on by default. It ships off, so this test runs.
+
+Red status is not yet established and this inventory will not pretend
+otherwise. Connect main `b8f72dd` has had a build check but no test run;
+the full race suite is queued behind the measurement campaign, and the
+three `net_http_plain_websocket_test.go` tests are named for it because the
+merge resolution there took the other side. Two tests carry comments
+predicting red on the tree they were written against,
+`TestTunInjectFromReaderGoroutineDoesNotDeadlock` and row 1 of the lane
+recovery contract, and whether either is red on the shipped tree is exactly
+what that run will say. This subsection should be amended with the result
+rather than left as it stands.
