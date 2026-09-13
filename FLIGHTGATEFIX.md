@@ -2877,3 +2877,124 @@ retired, is the same defect one layer down, and this is its multi-client
 analogue, a dead route with no sibling that is never retired. Read that
 way it confirms the reporter's line of analysis rather than deflecting
 from it, and it tells them where the next liveness signal has to live.
+
+## 32. Thirteenth round: silence is not load-bearing for recovery, it is load-bearing for re-establishment, and the two live on different scales
+
+Design investigation, 2026-09-13, written in parallel with the
+implementation stream and to be reconciled with what it lands.
+
+### 32.1 The pattern first
+
+Three candidates fell to the same thing: §22's delivered-bytes bound,
+§25's deviation term, and now §27.3's silence verdict. Each took a
+decision during the interval in which its estimate could not yet have
+learned what it was estimating, and each was wrong for one regime for
+exactly that interval. An estimator lags a step by construction; that is
+what estimating means. The two that were closed were closed by a
+quantity the sequence observes directly (a later same-lane
+acknowledgement, the count of items a route holds) or by a bound that
+estimates nothing. The rule this program should carry forward: no
+decision on the recovery path may depend on an estimate during the
+interval it cannot yet have learned; decisions rest on proofs, counts,
+or fixed bounds, and an estimate may only pace, never decide.
+
+### 32.2 Whether the two regimes are separable
+
+An alive-but-slow lane and a silent one differ in what the sequence
+observes: a queue delivers continuously, so its inter-acknowledgement
+gaps are the send spacing however deep it is, while a stall delivers
+nothing. The silence test was an inter-acknowledgement-gap test, which is
+the right quantity, against the scaled round trip, which is the wrong
+scale: a queue whose depth *grows* by ΔD pauses its acknowledgements for
+ΔD, and for that ΔD it is observationally identical to a stall of ΔD. So
+the regimes are inseparable in principle during a gap and separable only
+in hindsight, and any rule that acts differently in the two regimes is
+wrong in one of them for the gap's duration, whatever its threshold. M4's
+100 to 700 ms steps are such gaps, and the stream's attempt to key the
+window to the retransmit interval could not close it because the interval
+is the same estimate. That is a finding, not a defeat: it says the rule
+must act the same way in both regimes during a gap, and then the only
+question is which action costs nothing in both.
+
+### 32.3 Whether silence is load-bearing
+
+For loss recovery, no. §26.2's argument was that a lane has one tail,
+so writing more than one item teaches nothing; that argument never needed
+silence, and neither does the recovery. During a true stall a head probe
+is stuck behind the stall like everything else and is a duplicate when
+the stall lifts; on a dead route it is lost; a head dropped at an
+endpoint after a stall is proven by the next same-lane acknowledgement
+(precedence 1), and a lone tail is proven by the receiver's other-lane
+acknowledgements and probed by §29.3 at the lane's minimum. In every
+recovery case the probe either does nothing or is a duplicate, and the
+re-arm costs nothing in either regime. So at the round-trip scale the
+answer is one action: a reliable-carried item whose timer fires and that
+no later same-lane acknowledgement has proven lost is re-armed with
+backoff, unconditionally. §13.5's deferral and §27.3's probe were two
+answers to that one question, and the failure appeared only when both
+were live because the boundary between them is the inseparable gap. With
+one answer there is no boundary and M4 cannot fail: nothing on that path
+reads an estimate.
+
+For re-establishment, yes, and the source says exactly where. A receiver
+that has lost a sequence's state drops every non-head Pack ("[r]drop
+queue head no contract") and asks for a contract only when a compact
+head arrives whose contract it does not hold (`sendContractMissing`,
+guarded by `item.head && item.contractFrame == nil`). Nothing else it
+sends can start recovery, because a non-head Pack carries no contract to
+ask about. The timer's rewrite of `sendItems[0]` through `setHead` is
+therefore the only path by which a sequence on a live route recovers a
+receiver that silently lost it, and §31's 127 head rewrites were that
+path doing its job against a route that happened to be dead. That role is
+one write, of the head only, and it has nothing to do with round trips:
+it is liveness, and it belongs on the liveness scale.
+
+### 32.4 The rule, on two scales
+
+Round-trip scale, per reliable-carried item at a timer firing:
+1. proven by a later same-lane acknowledgement: written, with backoff,
+   and a proof arriving at an acknowledgement round schedules the write
+   at the proof plus one interval rather than at the item's backed-off
+   timer, so the unconditional backoff never delays a proven hole (the
+   §30.3 bound made independent of the backoff);
+2. otherwise: re-armed with backoff, no condition, no limit.
+
+Liveness scale, per route: a route that has acknowledged nothing at all,
+selective or cumulative, for `MinResendInterval`, the 2 s cold floor,
+writes its oldest outstanding item once, through `setHead`, with backoff
+on that route's probe count; every other item on the route rides it. The
+bound estimates nothing: it is the wait the sender already accepts when
+it has no evidence. A queue step of under two seconds never reaches it,
+which is why M4 passes deterministically rather than by the size of its
+steps; a step above two seconds costs one head write, which is what a
+step that size deserves. The lone-tail probe of §29.3 stays as it is,
+being proof-driven.
+
+What this predicts. M4: zero writes in every run, since no path on it
+reads the round-trip estimate. The 2.75 s stall of the instrument: one
+head write at 2 s and the next at 6 s, so one inside the stall against
+two or three now, and the contract's rows 1 and 2 hold with a tighter
+bound. Receiver state loss on a live route: re-established within 2 s
+plus the head's return, which is a new deterministic test: a receiver
+that drops non-head Packs and installs a full head must see the sequence
+resume within that bound, and it is the one row where merged is faster
+when its first interval is under two seconds, since merged rewrites the
+whole window at every firing; the row states our bound and merged's, as
+row 9 does. Dead route: one head write per backoff interval up to 8 s,
+as now, until retirement. §31's hang: unchanged, since its path was dead
+and its bound is the multi-client's.
+
+### 32.5 Reconciliation with what the stream lands
+
+If the stream lands "recent cumulative progress" as the not-silent
+predicate and M4 passes eight of eight, that is right for the wrong
+reason: recent-ness is a window, the window is a threshold on the same
+inter-acknowledgement gap, and a queue step larger than it reproduces
+the failure exactly as the scaled round trip did; M4 passes because its
+steps are smaller than the window, not because the regimes were told
+apart. The fix that holds for any step removes the estimate from the
+recovery decision altogether (32.4's round-trip rule) and moves the one
+silence-driven write to a fixed liveness bound where a false positive
+costs one duplicate and a true positive is the only re-establishment the
+protocol has. If the stream's fix is that, it is right for the right
+reason and this section is its justification.
