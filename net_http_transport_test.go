@@ -151,40 +151,70 @@ func TestClientDialerPlainWebSocketPreservesInjectedDialContext(t *testing.T) {
 
 func TestClientDialerPlainHttpUsesConnectSettingsResolver(t *testing.T) {
 	forEachIpVersion(t, func(t *testing.T, ipVersion int) {
-		server := newFamilyHttptestUnstartedServer(t, ipVersion, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
-		}))
-		server.Start()
-		defer server.Close()
-
-		settings := DefaultClientStrategySettings()
-		settings.ConnectSettings.Resolver = newFamilyTestResolver(t, testLoopbackAddr(ipVersion))
-		dialer := &clientDialer{settings: settings}
-		client := dialer.HttpClient()
-		defer client.CloseIdleConnections()
-
-		port := server.Listener.Addr().(*net.TCPAddr).Port
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		request, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodGet,
-			fmt.Sprintf("http://http-resolver.example.test:%d", port),
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			t.Fatalf("plain http through the configured resolver: %s", err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
-		}
+		testClientDialerHttpUsesConnectSettingsResolver(t, ipVersion, false)
 	})
+}
+
+func TestClientDialerSecureHttpUsesConnectSettingsResolver(t *testing.T) {
+	forEachIpVersion(t, func(t *testing.T, ipVersion int) {
+		testClientDialerHttpUsesConnectSettingsResolver(t, ipVersion, true)
+	})
+}
+
+func testClientDialerHttpUsesConnectSettingsResolver(t *testing.T, ipVersion int, secure bool) {
+	server := newFamilyHttptestUnstartedServer(t, ipVersion, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	if secure {
+		server.StartTLS()
+	} else {
+		server.Start()
+	}
+	defer server.Close()
+
+	settings := DefaultClientStrategySettings()
+	settings.ConnectSettings.Resolver = newFamilyTestResolver(t, testLoopbackAddr(ipVersion))
+	if secure {
+		serverTransport, ok := server.Client().Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("unexpected test server transport type %T", server.Client().Transport)
+		}
+		settings.TlsConfig = serverTransport.TLSClientConfig.Clone()
+		settings.TlsConfig.InsecureSkipVerify = true // test-only certificate has a different synthetic name
+	}
+	dialer := &clientDialer{
+		dialTlsContext:     newNormalDialTlsContext(settings, nil),
+		httpDialTlsContext: newNormalDialTlsContext(settings, clientHttpNextProtos),
+		settings:           settings,
+	}
+	client := dialer.HttpClient()
+	defer client.CloseIdleConnections()
+
+	scheme := "http"
+	if secure {
+		scheme = "https"
+	}
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("%s://http-resolver.example.test:%d", scheme, port),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s through the configured resolver: %s", scheme, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
 }
 
 func TestClientDialerPlainHttpPreservesInjectedDialContext(t *testing.T) {
