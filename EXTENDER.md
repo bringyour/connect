@@ -757,7 +757,11 @@ carries them on `ProviderEvent.ExtenderIps` and updates them through
 `SetProviderExtenderIps` as `SetProviderIpFamily` does today, and the sdk
 grid point carries `ExtenderIps` and `ExtenderColorHexes` in the same
 order. Provider events are already mirrored over the device rpc, so the
-iOS app process receives the fields unchanged.
+iOS app process receives the fields unchanged. As built, the api generator
+installs one change counter per window client in
+`PlatformTransportSettings.ExtenderIpsMonitor`, which the transport
+increments, so a watcher survives a transport migration; the generator
+exposes the ips through `MultiClientGeneratorWithExtenderIps`.
 
 K2. Dot outlines. A provider with extenders is drawn as a filled dot with
 one ring per extender, in the extender's color (K3): stroke 2 px, a 2 px
@@ -792,7 +796,9 @@ with the last value cached, exactly as the provider family transport
 status, so every rpc consumer gets it. The status gains `GossipState`
 (`connected`, `connecting`, `disconnected`), `EventCountLastMinute`, and
 `ActiveCount` redefined as K4's active; the directory keeps a 60 s ring
-of apply times and reports the in-use count per address. On iOS the app
+of apply times, counting only applies that changed it (a superseded or
+duplicate record is not an event), and reports the in-use count per
+address and in total. On iOS the app
 process keeps its own directory for api dials but opens the shared store
 read-only, so only the tunnel extension writes `.extenders`.
 
@@ -824,9 +830,12 @@ text. An import whose network host differs from the space's is refused
 unless "use extender settings" is chosen, which shows the operator host
 and asks to confirm before replacing the dns name, gossip url and root
 keys; the first hello over the platform's pinned TLS replaces the root
-keys again, which bounds a hostile code. Encoding, decoding and applying
-live in the sdk (`ExtenderViewController`), one implementation for every
-app.
+keys again, which bounds a hostile code. Encoding, decoding and building
+live in connect root (`net_extender_share.go`) and the view controller in
+the sdk applies them, one implementation for every app. An imported
+address has the source `import` and stays under the removal policy;
+only `manual` entries, including a manual host's resolved addresses, are
+exempt.
 
 K8. Platforms. Android: camera scan with CameraX and zxing decode plus
 the photo picker, never ML Kit, which the F-Droid build cannot carry.
