@@ -3383,3 +3383,66 @@ Deciding between them needs an instrument this package does not have: the
 relay's own queue depth over the wedge, alongside the sender's offered rate.
 That is a harness change, not another twenty-repetition campaign on this
 shape, and it is the recommendation this round ends on.
+
+### 33.9 The wedge is not the relay cell's; it reached the loss storm cell and failed a run
+
+Stage 2 of the same campaign ran the two storm cells on this arm, both
+states, twenty repetitions each: route `p2p-fast+exchange-h1`, `clean-lan`
+and `mixed-direct-loss-100bp`, `tcp-parallel`, download. These are cells
+whose rule-off runs finish in 3.2 and 3.7 seconds.
+
+The storms stay gone in both states, zero storm runs in eighty, which
+carries `175d82a`'s result forward to `eeca11f` unchanged. On rate both
+cells are inside the null band, +3.8 % and +1.0 %. The rule neither helps
+nor hurts the thing these cells were built to watch.
+
+It added one wedge, and that wedge is the clearest artefact this program has
+produced. `loss-100bp` run 6, rule on, failed at the workload stage after
+712.8 seconds with 142 of 143 progress windows dead. Its recovery counters
+for those twelve minutes:
+
+| Counter | Value |
+| --- | ---: |
+| whole-window timeout writes | 11 |
+| selective-gap writes | 10 |
+| ack-tail-probe writes | 9 |
+| cumulative-probe writes | 0 |
+| carrier-change writes | 0 |
+| deferrals | 1,146 |
+| total recovery writes per second | 0.04 |
+| write-to-defer ratio | 0.01 |
+
+The sender held one thousand one hundred and forty-six pieces of queued
+recovery work and sent thirty. The transfer never resumed. This is not a
+suppression that slowed recovery down; it is a suppression that switched it
+off and left nothing to turn it back on.
+
+Pooling every cell measured on this rule, the relay queue-inflation cell on
+both builds plus these two, one unit per scenario-run:
+
+| | rule off | rule on |
+| --- | ---: | ---: |
+| scenario-runs | 80 | 80 |
+| runs over 100 s | 0 | 5 |
+| failed runs | 1 | 2 |
+
+Fisher two-sided on the deep count is 0.059. Three cells, two independently
+built arms, and the rule-off column empty in every one.
+
+This changes what 33.8 asked for. The question is no longer only why a
+suppressed recovery path cannot clear a queue-inflated relay; run 6 was on
+a lossy direct profile with no queue inflation at all, and it still wedged
+for twelve minutes at 0.04 writes a second. Whatever the wedge is, the rule
+reaches it on more than one kind of link, and the common factor on the
+sender's side is that the lane's precondition, a later same-lane
+acknowledgement, is exactly what a wedged lane cannot produce. A rule whose
+release condition is unreachable from the state it creates has no way out
+of that state by itself, and run 6 is what that looks like when nothing
+external happens to arrive.
+
+That is the defect to fix before this mechanism runs unattended: the rule
+needs a bound that does not depend on the lane it is suppressing. The
+liveness cadence was meant to be that bound and run 6 shows it is not, since
+its head writes are inside those eleven timeout writes. Sizing that bound is
+the next round's work, and it should be sized against the rule-off wedges,
+which clear in 32 to 61 seconds at 57 to 79 recovery writes a second.
