@@ -431,7 +431,7 @@ mechanism could cost a campaign at all.
 
 | Mechanism | Where it was falsified | The measurement against it |
 | --- | --- | --- |
-| `ReliableLaneProvenRecovery`, the lane rule | campaign | 5 of 80 scenario-runs over 100 seconds with it on against 0 of 80 with it off, pooled over three cells and two independently built arms; Fisher two-sided 0.059 |
+| `ReliableLaneProvenRecovery`, the lane rule | campaign | 8 of 100 scenario-runs over 100 seconds with it on against 0 of 80 with it off, pooled over three cells and three independently built arms; Fisher two-sided 0.0092. Every wedge classified in campaign `458b591` is the proof-chain mode: write-to-defer ratios 0.15, 0.25 and 0.21 against the in-process deadlock's lowest reading of 1.97, and the receive-queue drop counter fired zero times in all twenty runs |
 | Size-aware unreliable admission | campaign | goodput 0.8 and 2.0 Mbit/s lower with the cap on; it is not in the shipped tree at all, only its specification behind the build tag |
 | `DeferredItemIsLateForTheScoreboard`, the grace narrowing | measured | it moves the write from the cheap counter to the expensive one and changes nothing on the wire; the result went the wrong way and the design was retracted |
 | `ReliableTimerUsesDeviation`, the deviation timer | in process | a stall yields no samples, so an ack-sampled estimator tightens into the stall: 411 and 425 writes against the scaled mean's 347 |
