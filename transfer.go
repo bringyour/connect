@@ -4169,6 +4169,12 @@ func (self *Client) run() {
 	}
 }
 
+// DestinationSendStats reports what this client's live send sequences to one
+// destination have written, split into first writes and recovery rewrites.
+func (self *Client) DestinationSendStats(destinationId Id) SendDestinationStats {
+	return self.sendBuffer.DestinationSendStats(destinationId)
+}
+
 func (self *Client) ResendQueueSize(destinationId Id, intermediaryIds MultiHopId, companionContract bool, forceStream bool) (int, ByteCount, Id) {
 	count, byteSize, sequenceId, _ := self.ResendQueueSizeAndMessageTypes(destinationId, intermediaryIds, companionContract, forceStream)
 	return count, byteSize, sequenceId
@@ -5282,6 +5288,41 @@ func (self *SendBuffer) ackMessageDetailed(
 	return result
 }
 
+// What every live send sequence to one destination has put on the wire,
+// first writes and recovery rewrites separately (THROUGHPUTFIX §13). A
+// diagnostic read under the buffer lock; the counters themselves are
+// per-sequence atomics advanced at the write.
+type SendDestinationStats struct {
+	SequenceCount        int
+	WriteCount           uint64
+	WriteByteCount       uint64
+	ResendWriteCount     uint64
+	ResendWriteByteCount uint64
+}
+
+func (self *SendBuffer) DestinationSendStats(destinationId Id) SendDestinationStats {
+	self.mutex.Lock()
+	sequences := map[*SendSequence]bool{}
+	for id, sequence := range self.sendSequences {
+		if id.Destination == destinationId {
+			sequences[sequence] = true
+		}
+	}
+	for sequence := range self.sendSequencesByDestination[destinationId] {
+		sequences[sequence] = true
+	}
+	self.mutex.Unlock()
+
+	stats := SendDestinationStats{SequenceCount: len(sequences)}
+	for sequence := range sequences {
+		stats.WriteCount += sequence.writeCount.Load()
+		stats.WriteByteCount += sequence.writeByteCount.Load()
+		stats.ResendWriteCount += sequence.resendWriteCount.Load()
+		stats.ResendWriteByteCount += sequence.resendWriteByteCount.Load()
+	}
+	return stats
+}
+
 func (self *SendBuffer) ResendQueueSizeAndMessageTypes(destinationId Id, _ MultiHopId, companionContract bool, forceStream bool) (int, ByteCount, Id, []protocol.MessageType) {
 	self.mutex.Lock()
 	sequences := make([]*SendSequence, 0, maxLogicalDataLaneCount+1)
@@ -5522,6 +5563,13 @@ type SendSequence struct {
 	rttWindow *RttWindow
 	// lastHeadAckTime is when the cumulative (head) ACK last advanced.
 	lastHeadAckTime time.Time
+	// what this sequence has put on the wire: first writes and recovery
+	// rewrites, counted at the write, so a destination's egress can be
+	// split into delivery and retransmission (THROUGHPUTFIX §13)
+	writeCount           atomic.Uint64
+	writeByteCount       atomic.Uint64
+	resendWriteCount     atomic.Uint64
+	resendWriteByteCount atomic.Uint64
 
 	contractMultiRouteWriter MultiRouteWriter
 	// deliveredBytes is a short history of what this lane has acknowledged:
@@ -7098,6 +7146,8 @@ sendSequenceLoop:
 						item.acks.observeTransportWrite(resendDisposition.transportType)
 					}
 					self.observeCarrierWrite(item, resendDisposition)
+					self.resendWriteCount.Add(1)
+					self.resendWriteByteCount.Add(uint64(len(transferFrameBytes)))
 				}
 				self.client.recordSendRecovery(recoveryKind, resendErr)
 				if recoveryKind == sendRecoverySelectiveGap && 0 < item.timeoutDeferCount {
@@ -8228,6 +8278,8 @@ func (self *SendSequence) sendWithSetContractRecords(
 	if err == nil {
 		item.transportWriteObserved = true
 		item.acks.observeTransportWrite(writeDisposition.transportType)
+		self.writeCount.Add(1)
+		self.writeByteCount.Add(uint64(len(item.transferFrameBytes)))
 	}
 	// The first physical writer attempt is distinct from terminal reliable
 	// acknowledgement. Coalesced records retain one phase per original Pack.
