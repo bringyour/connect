@@ -38,13 +38,19 @@ func TestGossipFeedServesTheSampleAndStreams(t *testing.T) {
 	}
 	tcpPort := tcpListener.Addr().(*net.TCPAddr).Port
 
+	// the extender publishes a documentation address and the dial seam maps it
+	// back to the loopback socket it really listens on, so nothing signs a
+	// live address
+	extenderIp := netip.MustParseAddr("192.0.2.49")
+	connectSettings := newTestLoopbackConnectSettings(t, extenderIp, tcpListener.Addr().String())
+
 	directory := newTestDirectory(t, rootKey)
 	issueTime := time.Now()
 	for _, c := range []struct {
 		key *testKey
 		ip  string
 	}{
-		{key: extenderKey, ip: "127.0.0.1"},
+		{key: extenderKey, ip: extenderIp.String()},
 		{key: otherKey, ip: "192.0.2.50"},
 	} {
 		record := signTestRecord(t, rootKey, c.key, c.ip, tcpPort, issueTime)
@@ -66,14 +72,14 @@ func TestGossipFeedServesTheSampleAndStreams(t *testing.T) {
 	defer dialCancel()
 	stream, err := connect.DialExtenderFeed(
 		dialCtx,
-		connect.DefaultConnectSettings(),
+		connectSettings,
 		&connect.ExtenderConfig{
 			Profile: connect.ExtenderProfile{
 				ConnectMode: connect.ExtenderConnectModeTcpTls,
-				ServerName:  "127.0.0.1",
+				ServerName:  extenderIp.String(),
 				Port:        tcpPort,
 			},
-			Ip: netip.MustParseAddr("127.0.0.1"),
+			Ip: extenderIp,
 			// the outer leaf is verified against the record key (B3, E5)
 			PublicKey: extenderKey.publicKey,
 		},
@@ -237,6 +243,31 @@ type testFeedClient struct {
 
 func newTestFeedClient(t *testing.T, feed *FeedServer, subscribe bool) *testFeedClient {
 	t.Helper()
+	return newTestFeedRequestClient(t, feed, &protocol.ExtenderFeedRequest{
+		SampleCount: 8,
+		Subscribe:   subscribe,
+	})
+}
+
+// The same with the request the caller wants, for the cases that turn on what
+// the client asked for.
+func newTestFeedRequestClient(
+	t *testing.T,
+	feed *FeedServer,
+	request *protocol.ExtenderFeedRequest,
+) *testFeedClient {
+	t.Helper()
+	client := newTestFeedConn(t, feed)
+	if err := connect.WriteExtenderFeedRequest(client.conn, request); err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+// One served stream with nothing sent on it yet, for the cases that turn on
+// the client saying nothing at all.
+func newTestFeedConn(t *testing.T, feed *FeedServer) *testFeedClient {
+	t.Helper()
 	clientConn, serverConn := net.Pipe()
 	client := &testFeedClient{
 		conn: clientConn,
@@ -252,25 +283,27 @@ func newTestFeedClient(t *testing.T, feed *FeedServer, subscribe bool) *testFeed
 		clientConn.Close()
 		<-client.done
 	})
-	if err := connect.WriteExtenderFeedRequest(clientConn, &protocol.ExtenderFeedRequest{
-		SampleCount: 8,
-		Subscribe:   subscribe,
-	}); err != nil {
-		t.Fatal(err)
-	}
 	return client
 }
 
 // Reads through the sample, which leaves the stream on the live subscription.
 func (self *testFeedClient) readEndOfSample(t *testing.T) {
 	t.Helper()
+	self.readSample(t)
+}
+
+// The frames of the sample, which are everything before `end_of_sample`.
+func (self *testFeedClient) readSample(t *testing.T) []*protocol.ExtenderFeedFrame {
+	t.Helper()
+	frames := []*protocol.ExtenderFeedFrame{}
 	for {
 		frame, err := connect.ReadExtenderFeedFrame(self.conn)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if frame.GetEndOfSample() {
-			return
+			return frames
 		}
+		frames = append(frames, frame)
 	}
 }

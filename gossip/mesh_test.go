@@ -3,10 +3,13 @@
 // The fixture stands up what the design describes: an operator listening with
 // the websocket transport, three extenders each running a real extender server
 // with its in-process gossip listener and feed server, and one member app that
-// only dials. Every extender is bound on loopback and reached at an RFC 5737
-// documentation address, which the dial seam maps back to loopback -- so a
-// record names a stable public address the way a real one does, and three
+// only dials. Every extender is bound on loopback and reached at an RFC 5737 or
+// RFC 3849 documentation address, which the dial seam maps back to loopback --
+// so a record names a stable public address the way a real one does, and three
 // extenders on one host still have three distinct addresses.
+//
+// The fixture runs on either family: v4 binds 127.0.0.1 and publishes
+// 192.0.2.0/24, v6 binds ::1 and publishes 2001:db8::/32 (IPV6.md A4).
 //
 // Nothing here sleeps for a result. Progress is observed through the
 // directory's change monitor and the node's status monitor, both of which
@@ -68,15 +71,23 @@ type testMesh struct {
 	extenders         []*testExtender
 
 	connectSettings *connect.ConnectSettings
+	// 4 or 6: the family every extender of this fixture binds and publishes
+	ipVersion int
 
 	stateLock sync.Mutex
 	// documentation ip to the loopback address the extender really listens on
 	ipLoopbacks map[string]string
 }
 
-// Builds the whole fixture: the operator, `extenderCount` extenders and one
-// member, all pointed at the operator.
+// Builds the whole fixture on the v4 family: the operator, `extenderCount`
+// extenders and one member, all pointed at the operator.
 func newTestMesh(t *testing.T, extenderCount int) *testMesh {
+	t.Helper()
+	return newTestMeshFamily(t, extenderCount, 4)
+}
+
+// The same fixture on one address family, 4 or 6.
+func newTestMeshFamily(t *testing.T, extenderCount int, ipVersion int) *testMesh {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -85,6 +96,7 @@ func newTestMesh(t *testing.T, extenderCount int) *testMesh {
 		t:           t,
 		ctx:         ctx,
 		rootKey:     newTestKey(t),
+		ipVersion:   ipVersion,
 		ipLoopbacks: map[string]string{},
 	}
 	mesh.connectSettings = connect.DefaultConnectSettings()
@@ -93,7 +105,7 @@ func newTestMesh(t *testing.T, extenderCount int) *testMesh {
 	}
 
 	mesh.operatorDirectory = newTestDirectory(t, mesh.rootKey)
-	operatorListenAddrs, err := WebsocketListenAddrs("127.0.0.1", 0, false)
+	operatorListenAddrs, err := WebsocketListenAddrs(mesh.loopbackIp(), 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +148,8 @@ func (self *testMesh) newExtender(
 ) *testExtender {
 	t.Helper()
 	key := newTestKey(t)
-	ip := netip.MustParseAddr(fmt.Sprintf("192.0.2.%d", index+1))
-	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	ip := self.documentationIp(index)
+	tcpListener, err := net.Listen("tcp", net.JoinHostPort(self.loopbackIp(), "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +246,24 @@ func (self *testMesh) dialContext(
 	return (&net.Dialer{}).DialContext(ctx, network, address)
 }
 
+// The loopback address of this fixture's family, which is what every extender
+// and the operator really bind.
+func (self *testMesh) loopbackIp() string {
+	if self.ipVersion == 6 {
+		return "::1"
+	}
+	return "127.0.0.1"
+}
+
+// The documentation address one extender publishes, one per index and one per
+// family.
+func (self *testMesh) documentationIp(index int) netip.Addr {
+	if self.ipVersion == 6 {
+		return netip.MustParseAddr(fmt.Sprintf("2001:db8::%x", index+1))
+	}
+	return netip.MustParseAddr(fmt.Sprintf("192.0.2.%d", index+1))
+}
+
 func (self *testMesh) setLoopback(ip netip.Addr, loopback string) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -244,6 +274,39 @@ func (self *testMesh) loopback(host string) string {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	return self.ipLoopbacks[host]
+}
+
+// The same seam for a fixture that is not a whole mesh: one published
+// documentation address mapped back to the loopback socket it really listens
+// on, so a record there names a stable public address too.
+func newTestLoopbackConnectSettings(
+	t *testing.T,
+	ip netip.Addr,
+	loopbackAddr string,
+) *connect.ConnectSettings {
+	t.Helper()
+	loopbackHost, _, err := net.SplitHostPort(loopbackAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectSettings := connect.DefaultConnectSettings()
+	connectSettings.DialContextSettings = &connect.DialContextSettings{
+		DialContext: func(
+			ctx context.Context,
+			network string,
+			address string,
+		) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			if host == ip.String() {
+				address = net.JoinHostPort(loopbackHost, port)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+	}
+	return connectSettings
 }
 
 // Every directory the mesh fills.
@@ -527,7 +590,10 @@ func TestGossipMeshRefusesAMismatchedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	tcpPort := tcpListener.Addr().(*net.TCPAddr).Port
-	ip := netip.MustParseAddr("127.0.0.1")
+	// the record names a documentation address and the dial seam maps it back
+	// to the loopback socket, the same way the whole mesh fixture does
+	ip := netip.MustParseAddr("192.0.2.60")
+	connectSettings := newTestLoopbackConnectSettings(t, ip, tcpListener.Addr().String())
 
 	listenAddrs, err := ExtenderListenAddrs([]netip.Addr{ip}, tcpPort)
 	if err != nil {
@@ -566,8 +632,9 @@ func TestGossipMeshRefusesAMismatchedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	clientTransport, err := newExtenderTransport(&extenderTransportSettings{
-		Directory: clientDirectory,
-		Upgrader:  newTestUpgrader(t, clientKey),
+		Directory:       clientDirectory,
+		ConnectSettings: connectSettings,
+		Upgrader:        newTestUpgrader(t, clientKey),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -577,7 +644,7 @@ func TestGossipMeshRefusesAMismatchedIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", tcpPort))
+	raddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/%s/tcp/%d", ip, tcpPort))
 	if err != nil {
 		t.Fatal(err)
 	}

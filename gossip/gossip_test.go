@@ -54,7 +54,8 @@ func newTestKey(t *testing.T) *testKey {
 	}
 }
 
-// One signed record for an address and tcp port.
+// One signed record for an address and tcp port. The ip version is derived
+// from the address rather than fixed, so a v6 fixture publishes a v6 record.
 func signTestRecord(
 	t *testing.T,
 	rootKey *testKey,
@@ -64,12 +65,20 @@ func signTestRecord(
 	issueTime time.Time,
 ) *protocol.ExtenderRecord {
 	t.Helper()
+	parsedIp, err := netip.ParseAddr(ip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipVersion := 4
+	if parsedIp.Unmap().Is6() {
+		ipVersion = 6
+	}
 	record, err := connect.SignExtenderRecord(rootKey.privateKey, &protocol.ExtenderRecordBody{
 		PublicKey: extenderKey.publicKey,
 		Addresses: []*protocol.ExtenderAddress{
 			{
-				Ip:        ip,
-				IpVersion: 4,
+				Ip:        parsedIp.Unmap().String(),
+				IpVersion: uint32(ipVersion),
 				Carriers:  []string{connect.ExtenderCarrierTcp},
 			},
 		},
