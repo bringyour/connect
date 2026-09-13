@@ -399,6 +399,7 @@ func (self *webRtcFastPath) writeMessage(message []byte) (int, error) {
 			return fragmentIndex, err
 		}
 	}
+	self.dataPlaneStats.observeFastSendFragments(fragmentCount)
 	return fragmentCount, nil
 }
 
@@ -461,6 +462,7 @@ func (self *webRtcFastPath) writeWarmup() error {
 func (self *webRtcFastPath) readTrack(reader p2pFastPathPacketReader) {
 	reassembler := newP2pFastPathReassembler(self.maximumMessageByteCount)
 	reassembler.afterMessageAllocatedForTest = self.afterReceiveMessageAllocatedForTest
+	reassembler.dataPlaneStats = self.dataPlaneStats
 	defer reassembler.close()
 	readDeadlineDone := make(chan struct{})
 	var readDeadlineDoneOnce sync.Once

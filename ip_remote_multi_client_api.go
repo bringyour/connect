@@ -246,8 +246,9 @@ type ApiMultiClientGenerator struct {
 	transportCreation apiTransportCreationLifecycle
 	retirementOnce    sync.Once
 	retirements       *lifecycleAdmission
-	// injectable for deterministic make-before-break tests
-	newPlatformTransport func(
+	// Injectable lifecycle barriers for deterministic ownership tests.
+	beforeRetirementWaitForTest func()
+	newPlatformTransport        func(
 		client *Client,
 		auth *ClientAuth,
 		targetMode TransportMode,
@@ -486,6 +487,9 @@ func (self *ApiMultiClientGenerator) CloseAndWait(ctx context.Context) error {
 
 	retirements := self.retirementLifecycle()
 	retirements.close()
+	if self.beforeRetirementWaitForTest != nil {
+		self.beforeRetirementWaitForTest()
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -770,66 +774,24 @@ func (self *ApiMultiClientGenerator) NewClientArgsForDestinationContext(ctx cont
 }
 
 func (self *ApiMultiClientGenerator) RemoveClientArgs(args *MultiClientGeneratorClientArgs) {
-	// Distinguish a window eviction from a shutdown-caused teardown: every
-	// channel teardown calls remove, but when the generator's ctx is done
-	// the whole device/process is going away. What happens next depends on
-	// whether an identity store is configured:
-	// - store configured (the proxy case): the identities must SURVIVE —
-	//   both in the persisted snapshot and as live network clients — so a
-	//   replacement container can reuse them (PROXYDRAIN1.md §3.5). Skip
-	//   everything.
-	// - no store (plain sdk apps, the default): nothing will ever reuse
-	//   these window clients, so keep the historical best-effort delete —
-	//   otherwise the platform-client rows leak on every app shutdown and
-	//   linger until server-side idle reap.
-	// Window evictions happen while the ctx is live and remove for real.
-	select {
-	case <-self.ctx.Done():
-		if self.identityState.hasStore() {
-			return
+	// Args that never reached a generated Client still own a platform identity.
+	// Admit their asynchronous removal before launch so CloseAndWait cannot
+	// cancel the API underneath it. If close already won, retain the historical
+	// bounded best effort: no owner can join a producer admitted after close.
+	retirements := self.retirementLifecycle()
+	retirementAdmitted := retirements.start()
+	go HandleError(func() {
+		if retirementAdmitted {
+			defer retirements.finish()
 		}
-		// one shot on a Background context (the lifecycle ctx is closed, so
-		// posting on it can never leave the process), mirroring the contract
-		// manager's after-close cleanup; the server's idle client reap
-		// remains the backstop if the attempt fails
-		go HandleError(func() {
-			removeCtx, removeCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer removeCancel()
-			HttpPostWithStrategy(
-				removeCtx,
-				self.clientStrategy,
-				fmt.Sprintf("%s/network/remove-client", self.apiUrl),
-				&RemoveNetworkClientArgs{
-					ClientId: args.ClientId,
-				},
-				self.api.ByJwt(),
-				&RemoveNetworkClientResult{},
-				NewNoopApiCallback[*RemoveNetworkClientResult](),
-			)
-		})
-		return
-	default:
-	}
-
-	// The identity is being torn down for real (window eviction, expired
-	// args), unless a newer channel has already replaced it under the same
-	// client id. InstanceId is the generation token: stale asynchronous
-	// cleanup must neither erase the replacement from the persisted snapshot
-	// nor send remove-client for the replacement's still-live server row.
-	instanceId := Id{}
-	if args.ClientAuth != nil {
-		instanceId = args.ClientAuth.InstanceId
-	}
-	if !self.identityState.RemoveIfCurrent(args.ClientId, instanceId) {
-		return
-	}
-
-	removeNetworkClient := &RemoveNetworkClientArgs{
-		ClientId: args.ClientId,
-	}
-
-	self.api.RemoveNetworkClient(removeNetworkClient, NewApiCallback(func(result *RemoveNetworkClientResult, err error) {
-	}))
+		retireTimeout := self.clientStrategy.settings.RequestTimeout
+		if retireTimeout < 30*time.Second {
+			retireTimeout = 30 * time.Second
+		}
+		removeCtx, removeCancel := context.WithTimeout(context.Background(), retireTimeout)
+		defer removeCancel()
+		self.removeClientArgsAndWait(removeCtx, args)
+	})
 }
 
 // removeClientArgsAndWait is the joined form used by the generated Client's

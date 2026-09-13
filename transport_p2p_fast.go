@@ -70,6 +70,32 @@ type P2pDataPlaneStatsSnapshot struct {
 	FastReceiveQueueDropByteCount   uint64
 	FastFallbackCount               uint64
 	FastDropCount                   uint64
+	// FLIGHTGATEFIX §8 (M5). Fragments per sent message, bucketed
+	// 1, 2-4, 5-8, 9-16, 17+; one lost fragment loses the whole message.
+	FastSendFragmentHistogram [p2pFastPathFragmentHistogramBucketCount]uint64
+	// Incomplete reassembly slots discarded on expiry or slot reuse.
+	FastReassemblyEvictionCount uint64
+	// SelectedCandidatePair is "local->remote" ICE candidate types
+	// (host, srflx, prflx, relay) of the pair the last-written P2P
+	// connection selected, recorded once per connection at its first write.
+	SelectedCandidatePair string
+}
+
+const p2pFastPathFragmentHistogramBucketCount = 5
+
+// p2pFastPathFragmentHistogramBucket maps a fragment count to its bucket.
+func p2pFastPathFragmentHistogramBucket(fragmentCount int) int {
+	switch {
+	case fragmentCount <= 1:
+		return 0
+	case fragmentCount <= 4:
+		return 1
+	case fragmentCount <= 8:
+		return 2
+	case fragmentCount <= 16:
+		return 3
+	}
+	return 4
 }
 
 // P2pDataPlaneStats holds lock-free counters shared by all P2P streams owned
@@ -93,6 +119,26 @@ type P2pDataPlaneStats struct {
 	fastReceiveQueueDropByteCount   atomic.Uint64
 	fastFallbackCount               atomic.Uint64
 	fastDropCount                   atomic.Uint64
+	fastSendFragmentHistogram       [p2pFastPathFragmentHistogramBucketCount]atomic.Uint64
+	fastReassemblyEvictionCount     atomic.Uint64
+	selectedCandidatePair           atomic.Value
+}
+
+// recordSelectedCandidatePair notes the ICE pair types of a connection at
+// its first write; the value is a diagnostic, not a hot-path counter.
+func (self *P2pDataPlaneStats) recordSelectedCandidatePair(pair string) {
+	if self == nil || pair == "" {
+		return
+	}
+	self.selectedCandidatePair.Store(pair)
+}
+
+// observeFastSendFragments buckets one sent message by its fragment count.
+func (self *P2pDataPlaneStats) observeFastSendFragments(fragmentCount int) {
+	if self == nil {
+		return
+	}
+	self.fastSendFragmentHistogram[p2pFastPathFragmentHistogramBucket(fragmentCount)].Add(1)
 }
 
 // Snapshot reads a consistent-enough lock-free view without stopping packet
@@ -102,7 +148,7 @@ func (self *P2pDataPlaneStats) Snapshot() P2pDataPlaneStatsSnapshot {
 	if self == nil {
 		return P2pDataPlaneStatsSnapshot{}
 	}
-	return P2pDataPlaneStatsSnapshot{
+	snapshot := P2pDataPlaneStatsSnapshot{
 		ActiveSendRouteCount:            self.activeSendRouteCount.Load(),
 		ActiveReceiveRouteCount:         self.activeReceiveRouteCount.Load(),
 		FastSendMessageCount:            self.fastSendMessageCount.Load(),
@@ -121,7 +167,15 @@ func (self *P2pDataPlaneStats) Snapshot() P2pDataPlaneStatsSnapshot {
 		FastReceiveQueueDropByteCount:   self.fastReceiveQueueDropByteCount.Load(),
 		FastFallbackCount:               self.fastFallbackCount.Load(),
 		FastDropCount:                   self.fastDropCount.Load(),
+		FastReassemblyEvictionCount:     self.fastReassemblyEvictionCount.Load(),
 	}
+	if pair, ok := self.selectedCandidatePair.Load().(string); ok {
+		snapshot.SelectedCandidatePair = pair
+	}
+	for bucket := range snapshot.FastSendFragmentHistogram {
+		snapshot.FastSendFragmentHistogram[bucket] = self.fastSendFragmentHistogram[bucket].Load()
+	}
+	return snapshot
 }
 
 // A p2pFastPathFragmentHeader precedes every RTP payload. Every fragment
@@ -220,6 +274,9 @@ type p2pFastPathReassemblySlot struct {
 type p2pFastPathReassembler struct {
 	maximumMessageByteCount int
 	slots                   [p2pFastPathReassemblySlotCount]p2pFastPathReassemblySlot
+	// dataPlaneStats, when set, counts incomplete messages this reassembler
+	// discards on slot reuse or expiry.
+	dataPlaneStats *P2pDataPlaneStats
 
 	// Tests retain the exact allocated buffer before ownership can move to the
 	// complete-message queue. Nil is a production no-op.
@@ -251,6 +308,9 @@ func (self *p2pFastPathReassembler) accept(packet []byte, now time.Time) ([]byte
 	slot := &self.slots[int(header.messageId)%len(self.slots)]
 	if slot.messageId != 0 &&
 		(slot.messageId != header.messageId || slot.expirationTime.Before(now)) {
+		if slot.message != nil && self.dataPlaneStats != nil {
+			self.dataPlaneStats.fastReassemblyEvictionCount.Add(1)
+		}
 		clearP2pFastPathReassemblySlot(slot)
 	}
 	if slot.messageId == 0 {

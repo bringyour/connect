@@ -184,7 +184,7 @@ type sctpPathMeasureResult struct {
 }
 
 func newVnetWebRtcPeerConnectionFactory(
-	t *testing.T,
+	t testing.TB,
 	network *vnet.Net,
 	settings *WebRtcSettings,
 ) *webRtcPeerConnectionFactory {

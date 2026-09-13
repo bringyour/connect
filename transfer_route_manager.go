@@ -384,6 +384,18 @@ type transferCarrierRouteStateProvider interface {
 	transferRouteActive(route Route) bool
 }
 
+// transferReliableCapacityProvider answers, without locking, whether a route
+// whose carrier is not potentially unreliable can accept a frame right now.
+type transferReliableCapacityProvider interface {
+	reliableRouteHasCapacity() bool
+}
+
+// transferRouteAckProgressObserver receives Transfer acknowledgement evidence
+// per route, the only delivery proof an unreliable lane ever produces.
+type transferRouteAckProgressObserver interface {
+	observeRouteAckProgress(route Route)
+}
+
 type transferCarrierH1TimeoutFailoverProvider interface {
 	transferPreferH3AfterH1Timeout(route Route) bool
 }
@@ -1458,6 +1470,10 @@ type MultiRouteSelector struct {
 
 	destination    TransferPath
 	weightedRoutes bool
+	// routeAckProgress holds one clock per route: the unix nanos of the newest
+	// Transfer acknowledgement of an item written on it. Stored from the
+	// sender goroutine, read by watchdogs and stats.
+	routeAckProgress sync.Map
 
 	transportUpdate *Monitor
 
@@ -1869,6 +1885,47 @@ func (self *MultiRouteSelector) transferRouteActive(route Route) bool {
 	snapshot := self.activeRoutesSnapshot.Load()
 	_, ok := snapshot.routeCarrierProperties[route]
 	return ok
+}
+
+// reliableRouteHasCapacity reads the immutable snapshot; a route is a
+// buffered channel, so its free capacity is a length read.
+func (self *MultiRouteSelector) reliableRouteHasCapacity() bool {
+	snapshot := self.activeRoutesSnapshot.Load()
+	if snapshot == nil {
+		return false
+	}
+	for _, route := range snapshot.routes {
+		if snapshot.routeCarrierProperties[route].Unreliable {
+			continue
+		}
+		if len(route) < cap(route) {
+			return true
+		}
+	}
+	return false
+}
+
+// observeRouteAckProgress stamps the newest acknowledgement seen for a route.
+// The clock survives snapshot rebuilds and is dropped with the route.
+func (self *MultiRouteSelector) observeRouteAckProgress(route Route) {
+	now := time.Now().UnixNano()
+	if clock, ok := self.routeAckProgress.Load(route); ok {
+		clock.(*atomic.Int64).Store(now)
+		return
+	}
+	clock := &atomic.Int64{}
+	clock.Store(now)
+	self.routeAckProgress.Store(route, clock)
+}
+
+// RouteAckProgressAge is the time since the newest acknowledgement of an
+// item written on the route; ok is false when none was ever observed.
+func (self *MultiRouteSelector) RouteAckProgressAge(route Route) (time.Duration, bool) {
+	clock, ok := self.routeAckProgress.Load(route)
+	if !ok {
+		return 0, false
+	}
+	return time.Since(time.Unix(0, clock.(*atomic.Int64).Load())), true
 }
 
 func (self *MultiRouteSelector) canPreferH3AfterH1Timeout(route Route) bool {
@@ -2407,6 +2464,7 @@ func (self *MultiRouteSelector) updateTransportWithProperties(
 				delete(self.routeStats, currentRoute)
 				delete(self.routeActive, currentRoute)
 				delete(self.routeWeight, currentRoute)
+				self.routeAckProgress.Delete(currentRoute)
 			}
 			delete(self.transportRoutes, transport)
 			delete(self.transportProperties, transport)

@@ -1309,6 +1309,7 @@ func (self *P2pSendTransport) run() {
 		}
 	}()
 
+	pairRecorded := false
 	for {
 		select {
 		case <-self.ctx.Done():
@@ -1340,6 +1341,10 @@ func (self *P2pSendTransport) run() {
 					fragmentCount, err := fastConn.WriteFastPathMessage(transferFrameBytes)
 					if err == nil {
 						if stats := self.settings.DataPlaneStats; stats != nil && !probeMessage {
+							if !pairRecorded {
+								recordP2pSelectedPair(stats, self.conn)
+								pairRecorded = true
+							}
 							stats.fastSendMessageCount.Add(1)
 							stats.fastSendByteCount.Add(uint64(messageByteCount))
 							stats.fastSendFragmentCount.Add(uint64(fragmentCount))
@@ -1378,6 +1383,10 @@ func (self *P2pSendTransport) run() {
 				return
 			}
 			if stats := self.settings.DataPlaneStats; stats != nil && !probeMessage {
+				if !pairRecorded {
+					recordP2pSelectedPair(stats, self.conn)
+					pairRecorded = true
+				}
 				stats.legacySendMessageCount.Add(1)
 				stats.legacySendByteCount.Add(uint64(messageByteCount))
 			}

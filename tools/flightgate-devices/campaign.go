@@ -1,0 +1,930 @@
+package main
+
+import (
+	"bufio"
+	"encoding/csv"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// windowRecord is one measurement window of a run, written while the run is
+// live (before any log is parsed) so a crash still leaves the throughput.
+type windowRecord struct {
+	Index         int     `json:"index"`
+	StartMillis   int64   `json:"start_millis"`
+	EndMillis     int64   `json:"end_millis"`
+	Seconds       float64 `json:"seconds"`
+	ClientTunRx   int64   `json:"client_tun_rx_bytes"`
+	ClientTunTx   int64   `json:"client_tun_tx_bytes"`
+	Mbps          float64 `json:"mbps"`
+	ClientRadio   string  `json:"client_radio"`
+	ProviderRadio string  `json:"provider_radio"`
+}
+
+type runMeta struct {
+	Tag             string   `json:"tag"`
+	ClientRole      string   `json:"client_role"`
+	ProviderRole    string   `json:"provider_role"`
+	Windows         int      `json:"windows"`
+	WindowSeconds   int      `json:"window_seconds"`
+	Streams         int      `json:"streams"`
+	Url             string   `json:"url"`
+	AppVersion      string   `json:"app_version"`
+	ConnectCommit   string   `json:"connect_commit"`
+	SdkCommit       string   `json:"sdk_commit"`
+	ClientProfile   string   `json:"client_profile"`
+	ProviderProfile string   `json:"provider_profile"`
+	StartMillis     int64    `json:"start_millis"`
+	DirectMode      string   `json:"direct_mode"`
+	Build           string   `json:"build"`
+	LoadBytes       int64    `json:"load_bytes"`
+	TunRxBytes      int64    `json:"tun_rx_bytes"`
+	Valid           bool     `json:"valid"`
+	Notes           []string `json:"notes"`
+}
+
+func gitShort(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// tunCounters reads the client's tun interface rx/tx bytes.
+func tunCounters(serial string) (string, int64, int64) {
+	out, _ := adbShell(serial, "cat /proc/net/dev")
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok || !isTunName(name) {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) < 9 {
+			continue
+		}
+		rx, _ := strconv.ParseInt(fields[0], 10, 64)
+		tx, _ := strconv.ParseInt(fields[8], 10, 64)
+		return name, rx, tx
+	}
+	return "", 0, 0
+}
+
+// isTunName accepts the VPN tunnel (tun0, tun1, ...) and not the kernel's
+// ip-in-ip tunl0 device.
+func isTunName(name string) bool {
+	if !strings.HasPrefix(name, "tun") || len(name) < 4 {
+		return false
+	}
+	for _, c := range name[3:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// radio reports "wifi" when Wi-Fi is on and associated, else the cellular
+// network type.
+func radio(serial string) string {
+	wifiOn, _ := adbShell(serial, "settings get global wifi_on")
+	ssid, _ := adbShell(serial, "dumpsys wifi 2>/dev/null | grep -m1 'mWifiInfo' | sed 's/.*SSID: \\([^,]*\\),.*/\\1/'")
+	network, _ := adbShell(serial, "getprop gsm.network.type")
+	if strings.TrimSpace(wifiOn) == "1" && ssid != "" && !strings.Contains(ssid, "unknown") && !strings.Contains(ssid, "<none>") {
+		return "wifi"
+	}
+	return "cell:" + strings.Split(network, ",")[0]
+}
+
+func runCampaign(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	client := fs.String("client", "", "client device serial")
+	provider := fs.String("provider", "", "provider device serial")
+	out := fs.String("out", "", "run directory (created)")
+	windows := fs.Int("windows", 12, "measurement windows")
+	windowSeconds := fs.Int("window-seconds", 15, "seconds per window")
+	streams := fs.Int("streams", 4, "parallel download streams")
+	url := fs.String("url", defaultLoadUrl, "download URL")
+	tag := fs.String("tag", "", "run tag")
+	directMode := fs.String("direct-mode", "stock", "recorded in meta: stock|relay-only|direct-forced")
+	buildLabel := fs.String("build", "", "recorded in meta: the build under test")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	clientRole, err := role(*client)
+	if err != nil {
+		return fmt.Errorf("client: %w", err)
+	}
+	providerRole, err := role(*provider)
+	if err != nil {
+		return fmt.Errorf("provider: %w", err)
+	}
+	if *out == "" {
+		return errors.New("--out is required")
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return err
+	}
+	appVersion, _ := adbShell(*client, "dumpsys package "+appPackage+" | grep -m1 versionName | sed 's/.*=//'")
+	meta := runMeta{
+		Tag:             *tag,
+		ClientRole:      clientRole,
+		ProviderRole:    providerRole,
+		Windows:         *windows,
+		WindowSeconds:   *windowSeconds,
+		Streams:         *streams,
+		Url:             *url,
+		AppVersion:      strings.TrimSpace(appVersion),
+		ConnectCommit:   gitShort("../.."),
+		SdkCommit:       gitShort("../../../sdk"),
+		ClientProfile:   radio(*client),
+		ProviderProfile: radio(*provider),
+		StartMillis:     time.Now().UnixMilli(),
+		DirectMode:      *directMode,
+		Build:           *buildLabel,
+		Notes:           []string{},
+	}
+
+	// fresh logcat on both ends, then a full capture each
+	for _, serial := range []string{*client, *provider} {
+		_, _ = adbShell(serial, "logcat -c")
+	}
+	captures := []*exec.Cmd{}
+	for _, side := range []struct{ serial, name string }{{*client, "client"}, {*provider, "provider"}} {
+		file, err := os.Create(filepath.Join(*out, side.name+".logcat"))
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command("adb", "-s", side.serial, "logcat", "-v", "epoch")
+		cmd.Stdout = file
+		cmd.Stderr = file
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("logcat %s: %w", side.name, err)
+		}
+		captures = append(captures, cmd)
+	}
+	defer func() {
+		for _, cmd := range captures {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+
+	tunName, rx0, tx0 := tunCounters(*client)
+	if tunName == "" {
+		meta.Notes = append(meta.Notes, "client has no tun interface at start; is the tunnel connected?")
+	}
+	writeJson(filepath.Join(*out, "meta.json"), meta)
+
+	// the workload, on the client, for the whole run plus one window of slack
+	loadSeconds := (*windows + 1) * *windowSeconds
+	loadFile, err := os.Create(filepath.Join(*out, "load.log"))
+	if err != nil {
+		return err
+	}
+	load := exec.Command("adb", "-s", *client, "shell",
+		fmt.Sprintf("%s -url %s -streams %d -seconds %d", loadBinary, *url, *streams, loadSeconds))
+	load.Stdout = loadFile
+	load.Stderr = loadFile
+	if err := load.Start(); err != nil {
+		return fmt.Errorf("load: %w", err)
+	}
+	loadClosed := false
+	defer func() {
+		_, _ = adbShell(*client, "pkill -f flightgate-load")
+		if !loadClosed {
+			_ = load.Wait()
+			loadFile.Close()
+		}
+	}()
+
+	records := []windowRecord{}
+	fmt.Printf("run %s: client=%s(%s) provider=%s(%s) tun=%s\n", *tag, clientRole, meta.ClientProfile, providerRole, meta.ProviderProfile, tunName)
+	for i := 0; i < *windows; i++ {
+		start := time.Now()
+		time.Sleep(time.Duration(*windowSeconds) * time.Second)
+		_, rx, tx := tunCounters(*client)
+		end := time.Now()
+		seconds := end.Sub(start).Seconds()
+		record := windowRecord{
+			Index:         i,
+			StartMillis:   start.UnixMilli(),
+			EndMillis:     end.UnixMilli(),
+			Seconds:       seconds,
+			ClientTunRx:   rx - rx0,
+			ClientTunTx:   tx - tx0,
+			Mbps:          float64(rx-rx0) * 8 / seconds / 1e6,
+			ClientRadio:   radio(*client),
+			ProviderRadio: radio(*provider),
+		}
+		rx0, tx0 = rx, tx
+		records = append(records, record)
+		fmt.Printf("  window %2d: %6.1f Mb/s  client=%s provider=%s\n", i, record.Mbps, record.ClientRadio, record.ProviderRadio)
+		writeJson(filepath.Join(*out, "windows.json"), records)
+	}
+	// A workload that bypassed the tunnel measures the radio, not the product:
+	// compare what the helper moved with what crossed the tun interface.
+	time.Sleep(3 * time.Second)
+	_ = load.Wait()
+	loadFile.Close()
+	loadClosed = true
+	meta.LoadBytes = loadLogTotalBytes(filepath.Join(*out, "load.log"))
+	for _, record := range records {
+		meta.TunRxBytes += record.ClientTunRx
+	}
+	meta.Valid = meta.LoadBytes == 0 || float64(meta.TunRxBytes) >= 0.5*float64(meta.LoadBytes)
+	if !meta.Valid {
+		meta.Notes = append(meta.Notes, "workload bypassed the tunnel: tun rx is far below the bytes the helper moved")
+		fmt.Printf("  INVALID: helper moved %d bytes, tun carried %d\n", meta.LoadBytes, meta.TunRxBytes)
+	}
+	writeJson(filepath.Join(*out, "meta.json"), meta)
+	return report([]string{*out})
+}
+
+func writeJson(path string, value any) {
+	b, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, b, 0o644)
+}
+
+// glogRecordStart matches the prefix of a fresh glog record (severity,
+// month, day, and a space), which ends any pending continuation.
+var glogRecordStart = regexp.MustCompile(`^[IWEF][0-9]{4} `)
+
+// diagSample is the decoded [flightgate] line; counters stay generic maps so
+// the tool follows whatever fields the SDK build carries.
+type diagSample struct {
+	Millis  int64
+	Payload map[string]any
+}
+
+// parseDiag reads every [flightgate] part line and rejoins the parts that
+// share unix_millis into one payload shaped like:
+//
+//	{state fields..., "p2p": {...}, "provider": {"send_recovery": {...},
+//	 "receive": {...}}, "windows": [{"window", "destination",
+//	 "send_recovery", "receive"}, ...]}
+func parseDiag(path string) ([]diagSample, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	byMillis := map[int64]map[string]any{}
+	windowsByMillis := map[int64]map[string]map[string]any{}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	// gomobile's stdout bridge splits one glog record into 1,024-byte logcat
+	// entries; a record's continuation is the next GoLog entry that does not
+	// itself start a glog record. Join until the JSON parses.
+	pending := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		message := line
+		if i := strings.Index(line, "GoLog   : "); i >= 0 {
+			message = line[i+len("GoLog   : "):]
+		}
+		var body string
+		if i := strings.Index(message, "[flightgate] "); i >= 0 {
+			body = message[i+len("[flightgate] "):]
+			pending = ""
+		} else if pending != "" && !glogRecordStart.MatchString(message) {
+			body = pending + message
+		} else {
+			continue
+		}
+		var part map[string]any
+		if err := json.Unmarshal([]byte(body), &part); err != nil {
+			pending = body
+			continue
+		}
+		pending = ""
+		millisValue, _ := part["unix_millis"].(float64)
+		millis := int64(millisValue)
+		payload := byMillis[millis]
+		if payload == nil {
+			payload = map[string]any{"windows": []any{}}
+			byMillis[millis] = payload
+		}
+		kind, _ := part["part"].(string)
+		switch kind {
+		case "state", "memory":
+			for k, v := range part {
+				if k != "part" {
+					payload[k] = v
+				}
+			}
+		case "provider_send", "provider_receive":
+			provider, _ := payload["provider"].(map[string]any)
+			if provider == nil {
+				provider = map[string]any{}
+				payload["provider"] = provider
+			}
+			if kind == "provider_send" {
+				provider["send_recovery"] = part["send_recovery"]
+			} else {
+				provider["receive"] = part["receive"]
+			}
+		case "window_send", "window_receive":
+			destination, _ := part["destination"].(string)
+			windows := windowsByMillis[millis]
+			if windows == nil {
+				windows = map[string]map[string]any{}
+				windowsByMillis[millis] = windows
+			}
+			window := windows[destination]
+			if window == nil {
+				window = map[string]any{"window": part["window"], "destination": destination}
+				windows[destination] = window
+			}
+			if kind == "window_send" {
+				window["send_recovery"] = part["send_recovery"]
+			} else {
+				window["receive"] = part["receive"]
+			}
+		}
+	}
+	samples := []diagSample{}
+	for millis, payload := range byMillis {
+		windows := []any{}
+		for _, window := range windowsByMillis[millis] {
+			windows = append(windows, window)
+		}
+		payload["windows"] = windows
+		samples = append(samples, diagSample{Millis: millis, Payload: payload})
+	}
+	sort.Slice(samples, func(a, b int) bool { return samples[a].Millis < samples[b].Millis })
+	return samples, scanner.Err()
+}
+
+func num(m map[string]any, keys ...string) float64 {
+	var current any = m
+	for _, key := range keys {
+		next, ok := current.(map[string]any)
+		if !ok {
+			return 0
+		}
+		current = next[key]
+	}
+	switch v := current.(type) {
+	case float64:
+		return v
+	case bool:
+		if v {
+			return 1
+		}
+	}
+	return 0
+}
+
+// sumWindows adds one counter over every window client of a client-side sample.
+func sumWindows(sample map[string]any, group string, key string) float64 {
+	total := 0.0
+	if windows, ok := sample["windows"].([]any); ok {
+		for _, w := range windows {
+			if m, ok := w.(map[string]any); ok {
+				total += num(m, group, key)
+			}
+		}
+	}
+	return total
+}
+
+// The counters reported per window, as (column, side, group, key). "provider"
+// reads the providing device's provider client; "client" sums the client
+// device's window clients; "p2p" reads the named device's data-plane counters.
+type counterSpec struct {
+	column string
+	side   string
+	group  string
+	key    string
+}
+
+var counterSpecs = []counterSpec{
+	{"prov_flight_wait", "provider", "send_recovery", "UnreliableFlightWaitCount"},
+	{"prov_flight_blocked_reliable_cap", "provider", "send_recovery", "UnreliableFlightBlockedWithReliableCapacity"},
+	{"prov_flight_gap", "provider", "send_recovery", "UnreliableFlightGapCount"},
+	{"prov_flight_gap_reorder", "provider", "send_recovery", "UnreliableFlightGapReorderSuspected"},
+	{"prov_flight_timeout", "provider", "send_recovery", "UnreliableFlightTimeoutCount"},
+	{"prov_flight_reduction", "provider", "send_recovery", "UnreliableFlightReductionCount"},
+	{"prov_timeout_resend", "provider", "send_recovery", "TimeoutResendWriteCount"},
+	{"prov_timeout_resend_recent_progress", "provider", "send_recovery", "TimeoutResendWithRecentCumulativeProgress"},
+	{"prov_selective_gap_write", "provider", "send_recovery", "SelectiveGapWriteCount"},
+	{"prov_ack_write_blocked", "provider", "receive", "AckRouteWriteBlockedCount"},
+	{"prov_p2p_fast_send", "p2p-provider", "p2p", "FastSendMessageCount"},
+	{"prov_p2p_fast_recv", "p2p-provider", "p2p", "FastReceiveMessageCount"},
+	{"prov_p2p_legacy_send", "p2p-provider", "p2p", "LegacySendMessageCount"},
+	{"prov_p2p_fast_fallback", "p2p-provider", "p2p", "FastFallbackCount"},
+	{"prov_p2p_fast_recv_drop", "p2p-provider", "p2p", "FastReceiveQueueDropCount"},
+	{"cli_flight_wait", "client", "send_recovery", "UnreliableFlightWaitCount"},
+	{"cli_flight_blocked_reliable_cap", "client", "send_recovery", "UnreliableFlightBlockedWithReliableCapacity"},
+	{"cli_flight_gap", "client", "send_recovery", "UnreliableFlightGapCount"},
+	{"cli_flight_gap_reorder", "client", "send_recovery", "UnreliableFlightGapReorderSuspected"},
+	{"cli_flight_timeout", "client", "send_recovery", "UnreliableFlightTimeoutCount"},
+	{"cli_flight_reduction", "client", "send_recovery", "UnreliableFlightReductionCount"},
+	{"cli_timeout_resend", "client", "send_recovery", "TimeoutResendWriteCount"},
+	{"cli_ack_write_blocked", "client", "receive", "AckRouteWriteBlockedCount"},
+	{"cli_p2p_fast_send", "p2p-client", "p2p", "FastSendMessageCount"},
+	{"cli_p2p_fast_recv", "p2p-client", "p2p", "FastReceiveMessageCount"},
+	{"cli_p2p_legacy_send", "p2p-client", "p2p", "LegacySendMessageCount"},
+	{"cli_p2p_fast_recv_drop", "p2p-client", "p2p", "FastReceiveQueueDropCount"},
+}
+
+func counterValue(spec counterSpec, clientSample map[string]any, providerSample map[string]any) float64 {
+	switch spec.side {
+	case "provider":
+		if providerSample == nil {
+			return 0
+		}
+		return num(providerSample, "provider", spec.group, spec.key)
+	case "client":
+		if clientSample == nil {
+			return 0
+		}
+		return sumWindows(clientSample, spec.group, spec.key)
+	case "p2p-provider":
+		if providerSample == nil {
+			return 0
+		}
+		return num(providerSample, "p2p", spec.key)
+	case "p2p-client":
+		if clientSample == nil {
+			return 0
+		}
+		return num(clientSample, "p2p", spec.key)
+	}
+	return 0
+}
+
+func baselineSample(samples []diagSample, millis int64) map[string]any {
+	if found := lastBefore(samples, millis); found != nil {
+		return found
+	}
+	if len(samples) > 0 {
+		return samples[0].Payload
+	}
+	return nil
+}
+
+// lastBefore returns the newest sample at or before millis.
+func lastBefore(samples []diagSample, millis int64) map[string]any {
+	var found map[string]any
+	for _, sample := range samples {
+		if sample.Millis > millis {
+			break
+		}
+		found = sample.Payload
+	}
+	return found
+}
+
+type runSummary struct {
+	Tag                   string  `json:"tag"`
+	Valid                 bool    `json:"valid"`
+	Windows               int     `json:"windows"`
+	DeadWindows           int     `json:"dead_windows_under_5mbps"`
+	MedianMbps            float64 `json:"median_mbps"`
+	MinMbps               float64 `json:"min_mbps"`
+	MaxMbps               float64 `json:"max_mbps"`
+	P2pActive             bool    `json:"p2p_active"`
+	P2pFirstWindow        int     `json:"p2p_first_window"`
+	DeadWindowsAfterP2p   int     `json:"dead_windows_after_p2p"`
+	ClientDiagSamples     int     `json:"client_diag_samples"`
+	ProviderDiagSamples   int     `json:"provider_diag_samples"`
+	ProviderFlightWait    float64 `json:"provider_flight_wait_total"`
+	ProviderBlockedRelCap float64 `json:"provider_flight_blocked_with_reliable_capacity_total"`
+	ProviderGapReorder    float64 `json:"provider_gap_reorder_suspected_total"`
+	ProviderTimeouts      float64 `json:"provider_flight_timeout_total"`
+	ProviderAckBlocked    float64 `json:"provider_ack_write_blocked_total"`
+	ProviderFastSend      float64 `json:"provider_p2p_fast_send_total"`
+	ClientFastRecv        float64 `json:"client_p2p_fast_recv_total"`
+	ClientFastRecvDrops   float64 `json:"client_p2p_fast_recv_drop_total"`
+	DirectMode            string  `json:"direct_mode"`
+	Build                 string  `json:"build"`
+	ProviderPairTypes     string  `json:"provider_selected_pair"`
+	ClientPairTypes       string  `json:"client_selected_pair"`
+}
+
+// report derives windows.csv and summary.json from a run directory's raw
+// files. Counter columns are deltas over the window from the newest
+// diagnostic sample at or before each boundary.
+func report(args []string) error {
+	if len(args) < 1 {
+		return errors.New("report needs a run directory")
+	}
+	dir := args[0]
+	var meta runMeta
+	if b, err := os.ReadFile(filepath.Join(dir, "meta.json")); err == nil {
+		_ = json.Unmarshal(b, &meta)
+		// runs recorded before the workload-validity check have no such key;
+		// unknown is not invalid
+		var raw map[string]any
+		if json.Unmarshal(b, &raw) == nil {
+			if _, ok := raw["valid"]; !ok {
+				meta.Valid = true
+			}
+		}
+	}
+	var records []windowRecord
+	b, err := os.ReadFile(filepath.Join(dir, "windows.json"))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, &records); err != nil {
+		return err
+	}
+	clientSamples, _ := parseDiag(filepath.Join(dir, "client.logcat"))
+	providerSamples, _ := parseDiag(filepath.Join(dir, "provider.logcat"))
+
+	csvFile, err := os.Create(filepath.Join(dir, "windows.csv"))
+	if err != nil {
+		return err
+	}
+	defer csvFile.Close()
+	writer := csv.NewWriter(csvFile)
+	header := []string{"window", "mbps", "client_radio", "provider_radio"}
+	for _, spec := range counterSpecs {
+		header = append(header, spec.column)
+	}
+	_ = writer.Write(header)
+
+	summary := runSummary{Tag: meta.Tag, Windows: len(records), P2pFirstWindow: -1,
+		ClientDiagSamples: len(clientSamples), ProviderDiagSamples: len(providerSamples),
+		DirectMode: meta.DirectMode, Build: meta.Build, Valid: meta.Valid}
+	if n := len(clientSamples); n > 0 {
+		if p2p, ok := clientSamples[n-1].Payload["p2p"].(map[string]any); ok {
+			summary.ClientPairTypes, _ = p2p["SelectedCandidatePair"].(string)
+		}
+	}
+	if n := len(providerSamples); n > 0 {
+		if p2p, ok := providerSamples[n-1].Payload["p2p"].(map[string]any); ok {
+			summary.ProviderPairTypes, _ = p2p["SelectedCandidatePair"].(string)
+		}
+	}
+	mbps := []float64{}
+	// counters are process-lifetime; the run's baseline is the newest sample
+	// before the run started, or the first sample of the capture when the
+	// capture began with the run
+	previousClient := baselineSample(clientSamples, meta.StartMillis)
+	previousProvider := baselineSample(providerSamples, meta.StartMillis)
+	for _, record := range records {
+		clientSample := lastBefore(clientSamples, record.EndMillis)
+		providerSample := lastBefore(providerSamples, record.EndMillis)
+		row := []string{strconv.Itoa(record.Index), fmt.Sprintf("%.1f", record.Mbps), record.ClientRadio, record.ProviderRadio}
+		p2pInWindow := false
+		for _, spec := range counterSpecs {
+			delta := counterValue(spec, clientSample, providerSample) - counterValue(spec, previousClient, previousProvider)
+			row = append(row, strconv.FormatInt(int64(delta), 10))
+			if delta > 0 && (spec.group == "p2p" && strings.Contains(spec.key, "Fast") && strings.Contains(spec.key, "MessageCount")) {
+				p2pInWindow = true
+			}
+			switch spec.column {
+			case "prov_flight_wait":
+				summary.ProviderFlightWait += delta
+			case "prov_flight_blocked_reliable_cap":
+				summary.ProviderBlockedRelCap += delta
+			case "prov_flight_gap_reorder":
+				summary.ProviderGapReorder += delta
+			case "prov_flight_timeout":
+				summary.ProviderTimeouts += delta
+			case "prov_ack_write_blocked":
+				summary.ProviderAckBlocked += delta
+			case "prov_p2p_fast_send":
+				summary.ProviderFastSend += delta
+			case "cli_p2p_fast_recv":
+				summary.ClientFastRecv += delta
+			case "cli_p2p_fast_recv_drop":
+				summary.ClientFastRecvDrops += delta
+			}
+		}
+		_ = writer.Write(row)
+		mbps = append(mbps, record.Mbps)
+		if record.Mbps < 5 {
+			summary.DeadWindows++
+			if summary.P2pActive {
+				summary.DeadWindowsAfterP2p++
+			}
+		}
+		if p2pInWindow && !summary.P2pActive {
+			summary.P2pActive = true
+			summary.P2pFirstWindow = record.Index
+		}
+		previousClient, previousProvider = clientSample, providerSample
+	}
+	writer.Flush()
+	if len(mbps) > 0 {
+		sorted := append([]float64{}, mbps...)
+		sort.Float64s(sorted)
+		summary.MedianMbps = sorted[len(sorted)/2]
+		summary.MinMbps = sorted[0]
+		summary.MaxMbps = sorted[len(sorted)-1]
+	}
+	writeJson(filepath.Join(dir, "summary.json"), summary)
+	fmt.Printf("summary %s: windows=%d dead=%d (after p2p %d) median=%.1f min=%.1f max=%.1f p2p_active=%t first_window=%d diag client/provider=%d/%d\n",
+		summary.Tag, summary.Windows, summary.DeadWindows, summary.DeadWindowsAfterP2p, summary.MedianMbps, summary.MinMbps, summary.MaxMbps,
+		summary.P2pActive, summary.P2pFirstWindow, summary.ClientDiagSamples, summary.ProviderDiagSamples)
+	fmt.Printf("  provider: flight_wait=%.0f blocked_with_reliable_capacity=%.0f gap_reorder=%.0f timeouts=%.0f ack_write_blocked=%.0f fast_send=%.0f\n",
+		summary.ProviderFlightWait, summary.ProviderBlockedRelCap, summary.ProviderGapReorder, summary.ProviderTimeouts, summary.ProviderAckBlocked, summary.ProviderFastSend)
+	fmt.Printf("  client: fast_recv=%.0f fast_recv_drops=%.0f  mode=%s pairs provider=%q client=%q\n", summary.ClientFastRecv, summary.ClientFastRecvDrops, summary.DirectMode, summary.ProviderPairTypes, summary.ClientPairTypes)
+	return nil
+}
+
+// runSeries repeats `runs` measurement runs of one role assignment. Every run
+// starts from a fresh tunnel (disconnect, settle, reconnect to the peer,
+// settle) so the direct-path negotiation is exercised each time, as the
+// reporter's per-run provider restart did.
+// armList collects repeatable --arm values.
+type armList []string
+
+func (self *armList) String() string { return strings.Join(*self, ",") }
+
+func (self *armList) Set(value string) error {
+	*self = append(*self, value)
+	return nil
+}
+
+// armSpec is one arm of a series: a build to install and, optionally, a
+// runtime setting to apply before the run. Two arms may share a build and
+// differ only by the setting.
+type armSpec struct {
+	label    string
+	apk      string
+	laneRule string
+}
+
+func parseArmSpec(value string) (armSpec, error) {
+	label, rest, ok := strings.Cut(value, "=")
+	if !ok {
+		return armSpec{}, fmt.Errorf("bad --arm %q, want label=apk[:lane=on|off]", value)
+	}
+	spec := armSpec{label: label}
+	apk, settings, hasSettings := strings.Cut(rest, ":")
+	spec.apk = apk
+	if hasSettings {
+		for _, setting := range strings.Split(settings, ";") {
+			key, v, ok := strings.Cut(setting, "=")
+			if !ok {
+				return armSpec{}, fmt.Errorf("bad --arm setting %q", setting)
+			}
+			switch key {
+			case "lane":
+				if v != "on" && v != "off" {
+					return armSpec{}, fmt.Errorf("lane must be on or off, got %q", v)
+				}
+				spec.laneRule = v
+			default:
+				return armSpec{}, fmt.Errorf("unknown --arm setting %q", key)
+			}
+		}
+	}
+	return spec, nil
+}
+
+func runSeries(args []string) error {
+	fs := flag.NewFlagSet("campaign", flag.ExitOnError)
+	client := fs.String("client", "", "client device serial")
+	provider := fs.String("provider", "", "provider device serial")
+	peerName := fs.String("peer-name", "", "provider's device name substring, as the client sees it")
+	out := fs.String("out", "", "series directory (created)")
+	runs := fs.Int("runs", 6, "runs")
+	windows := fs.Int("windows", 12, "measurement windows per run")
+	windowSeconds := fs.Int("window-seconds", 15, "seconds per window")
+	streams := fs.Int("streams", 4, "parallel download streams")
+	settleSeconds := fs.Int("settle-seconds", 25, "seconds after connect before measuring")
+	tag := fs.String("tag", "", "series tag")
+	interleaveRelay := fs.Bool("interleave-relay", false, "alternate relay-only (direct mode forced off) and stock runs; --runs counts each kind")
+	alternateApk := fs.String("alternate-apk", "", "label=apk,label=apk: alternate two builds run by run, reinstalling in place before each; --runs counts each build")
+	buildLabel := fs.String("build", "", "build label recorded on every run when not alternating")
+	relayOnly := fs.Bool("relay-only", false, "force direct mode off for every run, so the series measures the exchange path alone")
+	var armValues armList
+	fs.Var(&armValues, "arm", "repeatable: label=apk[:lane=on|off]; arms rotate run by run and --runs counts each arm")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	type arm struct{ label, apk string }
+	arms := []arm{}
+	specs := []armSpec{}
+	for _, value := range armValues {
+		spec, err := parseArmSpec(value)
+		if err != nil {
+			return err
+		}
+		specs = append(specs, spec)
+	}
+	if len(specs) != 0 && *alternateApk != "" {
+		return errors.New("--arm and --alternate-apk do not combine")
+	}
+	if *alternateApk != "" {
+		if *interleaveRelay {
+			return errors.New("--alternate-apk and --interleave-relay do not combine")
+		}
+		for _, spec := range strings.Split(*alternateApk, ",") {
+			label, apk, ok := strings.Cut(spec, "=")
+			if !ok {
+				return fmt.Errorf("bad --alternate-apk entry %q", spec)
+			}
+			arms = append(arms, arm{label, apk})
+		}
+		if len(arms) != 2 {
+			return errors.New("--alternate-apk needs exactly two builds")
+		}
+	}
+	if _, err := role(*client); err != nil {
+		return fmt.Errorf("client: %w", err)
+	}
+	if _, err := role(*provider); err != nil {
+		return fmt.Errorf("provider: %w", err)
+	}
+	if *out == "" || *peerName == "" {
+		return errors.New("--out and --peer-name are required")
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return err
+	}
+	for _, spec := range specs {
+		arms = append(arms, arm{spec.label, spec.apk})
+	}
+	total := *runs
+	if *interleaveRelay {
+		total = 2 * *runs
+	} else if 0 < len(arms) {
+		total = len(arms) * *runs
+	}
+	installed := ""
+	for i := 0; i < total; i++ {
+		runTag := fmt.Sprintf("%s-%02d", *tag, i)
+		directMode := "stock"
+		if *relayOnly {
+			directMode = "relay-only"
+		}
+		build := *buildLabel
+		if 0 < len(arms) {
+			current := arms[i%len(arms)]
+			build = current.label
+			runTag += "-" + current.label
+			if installed != current.apk {
+				fmt.Printf("== %s: installing %s on both devices\n", runTag, current.label)
+				if err := install([]string{"--update", "--apk", current.apk}); err != nil {
+					return fmt.Errorf("%s: install: %w", runTag, err)
+				}
+				installed = current.apk
+				for _, serial := range []string{*client, *provider} {
+					_, _ = adbShell(serial, "monkey -p "+appPackage+" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1")
+				}
+				// the provider re-registers after its restart; connect-peer
+				// below retries until it is visible again
+				time.Sleep(20 * time.Second)
+			}
+			if index := i % len(arms); index < len(specs) && specs[index].laneRule != "" {
+				for _, serial := range []string{*client, *provider} {
+					if err := laneRule([]string{"--serial", serial, "--mode", specs[index].laneRule}); err != nil {
+						return fmt.Errorf("%s: lane-rule: %w", runTag, err)
+					}
+				}
+			} else if 0 < len(specs) {
+				// an arm without the setting must not inherit the previous
+				// arm's override
+				for _, serial := range []string{*client, *provider} {
+					_ = laneRule([]string{"--serial", serial, "--mode", "off"})
+				}
+			}
+		}
+		if *interleaveRelay {
+			if i%2 == 0 {
+				directMode = "relay-only"
+				runTag += "-relay"
+			} else {
+				runTag += "-stock"
+			}
+		}
+		fmt.Printf("== %s: fresh tunnel (%s)\n", runTag, directMode)
+		if err := disconnect([]string{"--serial", *client}); err != nil {
+			fmt.Printf("%s: disconnect: %v\n", runTag, err)
+		}
+		// the provider must not also be a client of this client: that loops the
+		// tunnel back on itself and the measurement is meaningless
+		if err := disconnect([]string{"--serial", *provider}); err != nil {
+			fmt.Printf("%s: provider disconnect: %v\n", runTag, err)
+		}
+		if *interleaveRelay || *relayOnly {
+			mode := "clear"
+			if directMode == "relay-only" {
+				mode = "off"
+			}
+			if err := allowDirect([]string{"--serial", *client, "--mode", mode}); err != nil {
+				return fmt.Errorf("%s: allow-direct: %w", runTag, err)
+			}
+		}
+		time.Sleep(8 * time.Second)
+		if err := connectPeer([]string{"--serial", *client, "--name", *peerName}); err != nil {
+			// a lost provider registration is a rig fault, not a measurement:
+			// retry this run once the peer is back rather than burning it
+			fmt.Printf("%s: connect: %v; waiting for the provider to reappear\n", runTag, err)
+			recovered := false
+			for attempt := 0; attempt < 12; attempt++ {
+				time.Sleep(15 * time.Second)
+				if err := connectPeer([]string{"--serial", *client, "--name", *peerName}); err == nil {
+					recovered = true
+					break
+				}
+			}
+			if !recovered {
+				return fmt.Errorf("%s: the provider never came back", runTag)
+			}
+		}
+		time.Sleep(time.Duration(*settleSeconds) * time.Second)
+		err := runCampaign([]string{
+			"--client", *client, "--provider", *provider,
+			"--out", filepath.Join(*out, runTag),
+			"--windows", strconv.Itoa(*windows),
+			"--window-seconds", strconv.Itoa(*windowSeconds),
+			"--streams", strconv.Itoa(*streams),
+			"--tag", runTag,
+			"--direct-mode", directMode,
+			"--build", build,
+		})
+		if err != nil {
+			fmt.Printf("%s: run: %v\n", runTag, err)
+		}
+	}
+	return nil
+}
+
+// seriesReport prints one row per run directory under dir from its
+// summary.json, then the series medians.
+func seriesReport(args []string) error {
+	if len(args) < 1 {
+		return errors.New("series-report needs a series directory")
+	}
+	entries, err := os.ReadDir(args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%-14s %-14s %7s %5s %9s %7s %7s %6s %6s %8s %8s %8s %8s  %s\n", "run", "mode", "median", "dead", "dead>p2p", "min", "max", "p2p", "first", "fl_wait", "blk_cap", "reorder", "ack_blk", "pair(prov/cli)")
+	medians := []float64{}
+	deadTotal, deadAfter, active := 0, 0, 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(args[0], entry.Name(), "summary.json"))
+		if err != nil {
+			continue
+		}
+		var s runSummary
+		if err := json.Unmarshal(b, &s); err != nil {
+			continue
+		}
+		mode := s.DirectMode
+		if s.Build != "" {
+			mode = s.Build + "/" + s.DirectMode
+		}
+		if !s.Valid {
+			mode = "INVALID"
+		}
+		fmt.Printf("%-14s %-14s %7.1f %5d %9d %7.1f %7.1f %6t %6d %8.0f %8.0f %8.0f %8.0f  %s/%s\n", entry.Name(), mode, s.MedianMbps, s.DeadWindows, s.DeadWindowsAfterP2p, s.MinMbps, s.MaxMbps, s.P2pActive, s.P2pFirstWindow, s.ProviderFlightWait, s.ProviderBlockedRelCap, s.ProviderGapReorder, s.ProviderAckBlocked, s.ProviderPairTypes, s.ClientPairTypes)
+		if !s.Valid {
+			continue
+		}
+		medians = append(medians, s.MedianMbps)
+		deadTotal += s.DeadWindows
+		deadAfter += s.DeadWindowsAfterP2p
+		if s.P2pActive {
+			active++
+		}
+	}
+	if len(medians) > 0 {
+		sort.Float64s(medians)
+		fmt.Printf("series: runs=%d median_of_medians=%.1f dead_windows=%d dead_after_p2p=%d p2p_active_runs=%d\n", len(medians), medians[len(medians)/2], deadTotal, deadAfter, active)
+	}
+	return nil
+}
+
+// loadLogTotalBytes reads the helper's final "done total_bytes=N" line.
+func loadLogTotalBytes(path string) int64 {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if _, rest, ok := strings.Cut(line, "done total_bytes="); ok {
+			value, _, _ := strings.Cut(rest, " ")
+			n, _ := strconv.ParseInt(value, 10, 64)
+			return n
+		}
+	}
+	return 0
+}

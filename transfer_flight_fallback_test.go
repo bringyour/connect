@@ -309,43 +309,56 @@ func TestSelectiveAckGapSkipsReliableItemsNotYetLateInMixedLanes(t *testing.T) {
 	}
 }
 
-// A timed-out reliable-carried item waits (at most twice) while cumulative
-// acks are still advancing; it is re-sent at once when acks have stalled or
-// when it rode the unreliable lane.
+// Main's TestSendSequenceDefersTimeoutResendWhileAcksProgress, rewritten
+// against this branch's implementation of the same rule. Main landed
+// deferTimeoutResend, keyed on the head-ack clock with a hardcoded limit of
+// two; this branch evolved the same design into shouldDeferTimeoutResend,
+// keyed on the cumulative-ack clock with the limit and the
+// since-last-deferral term as settings, and the backoff of §24. The
+// behaviour main asserted is preserved here: a timed-out reliable-carried
+// item waits while cumulative acknowledgements are still advancing, is
+// re-sent at once when they have stalled, and is never deferred when it
+// rode the unreliable lane.
 func TestSendSequenceDefersTimeoutResendWhileAcksProgress(t *testing.T) {
 	settings := DefaultSendBufferSettings()
 	sequence := testUnreliableRecoverySequence(settings)
 	sequence.client = &Client{}
 	sequence.flightController = newSendFlightController(settings)
 	now := time.Now()
+	scaledRtt := sequence.rttWindow.ScaledRtt()
 
-	item := &sendItem{transferFrameBytes: make([]byte, 64)}
+	item := &sendItem{transferFrameBytes: make([]byte, 64), sendTime: now}
 	sequence.observeCarrierWrite(item, transferWriteDisposition{reliable: true})
-	sequence.lastHeadAckTime = now.Add(-50 * time.Millisecond)
-	if !sequence.deferTimeoutResend(item, now) || item.timeoutDeferCount != 1 || !item.resendTime.After(now) {
-		t.Fatalf("first deferral: count=%d resendTime=%s", item.timeoutDeferCount, item.resendTime)
+	sequence.lastCumulativeAckTime = now.Add(-50 * time.Millisecond)
+	if !sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatal("first deferral was refused while the cumulative ack was still advancing")
 	}
-	if !sequence.deferTimeoutResend(item, now) || item.timeoutDeferCount != 2 {
-		t.Fatalf("second deferral: count=%d", item.timeoutDeferCount)
+	// each further deferral requires the ack to have advanced since the last
+	item.timeoutDeferCount = 1
+	item.timeoutDeferAckTime = sequence.lastCumulativeAckTime
+	if sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatal("a second deferral was granted with no cumulative progress since the first")
 	}
-	if sequence.deferTimeoutResend(item, now) {
-		t.Fatal("third deferral granted; must resend")
+	sequence.lastCumulativeAckTime = now.Add(-10 * time.Millisecond)
+	if !sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatal("a second deferral was refused though the cumulative ack had advanced")
 	}
-	if sequence.client.SendRecoveryStats().TimeoutResendDeferCount != 2 {
-		t.Fatalf("deferral stat = %d, want 2", sequence.client.SendRecoveryStats().TimeoutResendDeferCount)
+	item.timeoutDeferCount = settings.TimeoutResendDeferLimit
+	if sequence.shouldDeferTimeoutResend(item, scaledRtt) {
+		t.Fatalf("a deferral was granted past the limit of %d", settings.TimeoutResendDeferLimit)
 	}
 
-	stalled := &sendItem{transferFrameBytes: make([]byte, 64)}
+	stalled := &sendItem{transferFrameBytes: make([]byte, 64), sendTime: now}
 	sequence.observeCarrierWrite(stalled, transferWriteDisposition{reliable: true})
-	sequence.lastHeadAckTime = now.Add(-30 * time.Second)
-	if sequence.deferTimeoutResend(stalled, now) {
+	sequence.lastCumulativeAckTime = now.Add(-30 * time.Second)
+	if sequence.shouldDeferTimeoutResend(stalled, scaledRtt) {
 		t.Fatal("deferred a timeout while acks were stalled")
 	}
 
-	unreliable := &sendItem{transferFrameBytes: make([]byte, 64)}
+	unreliable := &sendItem{transferFrameBytes: make([]byte, 64), sendTime: now}
 	sequence.observeCarrierWrite(unreliable, transferWriteDisposition{unreliable: true})
-	sequence.lastHeadAckTime = now
-	if sequence.deferTimeoutResend(unreliable, now) {
+	sequence.lastCumulativeAckTime = now
+	if sequence.shouldDeferTimeoutResend(unreliable, scaledRtt) {
 		t.Fatal("deferred a timeout of an unreliable-carried item")
 	}
 	sequence.releaseUnreliableFlight(unreliable)
