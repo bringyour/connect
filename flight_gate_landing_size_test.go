@@ -3,8 +3,8 @@ package connect
 // FLIGHTGATEFIX §20.3. The landing's memory against merged's. Everything
 // this program added to the ack path is gone, so the two acknowledgement
 // structs are merged's to the byte. sendItem carries §13.5's per-item
-// deferral state, which is the one mechanism the landing keeps, and that
-// state is what the extra bytes are.
+// deferral state and §34.3's per-item lane position, which are the two
+// mechanisms the landing keeps, and that state is what the extra bytes are.
 
 import (
 	"testing"
@@ -17,6 +17,15 @@ const (
 	mergedReceiveAckMessageByteCount = 72
 	// §13.5's timeoutDeferCount and timeoutDeferAckTime
 	deferStateByteCount = 32
+	// §34.3's laneAckedAtLastFiring: where this item's own lane had got to
+	// when it last looked. §34.5 expected the rule to need no new bytes,
+	// because the per-route slots already hold the sequence numbers its
+	// rules read. They do not hold this one: rule 2 asks what moved on the
+	// lane since this item last looked, which is per item and per position,
+	// and a slot holds one number for the whole lane. The field is placed
+	// against the struct's 8-byte tail, so it costs its own 8 bytes and no
+	// padding.
+	lanePositionStateByteCount = 8
 )
 
 func TestLandingStructsMatchMergedLessTheDeferState(t *testing.T) {
@@ -27,12 +36,14 @@ func TestLandingStructsMatchMergedLessTheDeferState(t *testing.T) {
 	if got, want := unsafe.Sizeof(receiveAckMessage{}), uintptr(mergedReceiveAckMessageByteCount); got != want {
 		t.Errorf("receiveAckMessage is %d bytes, want merged's %d", got, want)
 	}
-	want := uintptr(mergedSendItemByteCount + deferStateByteCount)
+	want := uintptr(
+		mergedSendItemByteCount + deferStateByteCount + lanePositionStateByteCount)
 	if got := unsafe.Sizeof(sendItem{}); got != want {
 		t.Errorf(
-			"sendItem is %d bytes, want merged's %d plus %d for the deferred retransmit's own state; "+
+			"sendItem is %d bytes, want merged's %d plus %d for the deferred retransmit's own state "+
+				"and %d for the lane position it last looked at; "+
 				"anything else means a removed mechanism left a field behind",
-			got, mergedSendItemByteCount, deferStateByteCount,
+			got, mergedSendItemByteCount, deferStateByteCount, lanePositionStateByteCount,
 		)
 	}
 }

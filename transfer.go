@@ -1476,9 +1476,14 @@ type ClientSendRecoveryStatsSnapshot struct {
 	// own route had acknowledged past it, which is an endpoint drop. Probes
 	// also count in TimeoutResendWriteCount, so a campaign's total recovery
 	// writes sees them (FLIGHTGATEFIX §27.4).
+	// LaneHeadPromotionCount is how many times an acknowledgement moved a
+	// lane's new oldest unacknowledged item forward to one probe round trip,
+	// which is the interval a dropped batch then drains at, one position per
+	// promotion (FLIGHTGATEFIX §34.3).
 	LaneProbeWriteCount         uint64
 	LaneProbeRideCount          uint64
 	LaneProvenTimeoutWriteCount uint64
+	LaneHeadPromotionCount      uint64
 	// The longest stretch a reliable lane went without acknowledging
 	// anything, and, at the first timer firing of that stretch, the resend
 	// interval the timer read, how many items the sequence held, and how far
@@ -1605,6 +1610,7 @@ type Client struct {
 	routeGenerationChangeCount                  atomic.Uint64
 	laneProbeWriteCount                         atomic.Uint64
 	laneProbeRideCount                          atomic.Uint64
+	laneHeadPromotionCount                      atomic.Uint64
 	laneProvenTimeoutWriteCount                 atomic.Uint64
 	routeUnacknowledgedNanos                    atomic.Uint64
 	routeRetainedItemCount                      atomic.Uint64
@@ -1993,6 +1999,7 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 		RouteGenerationChangeCount:  self.routeGenerationChangeCount.Load(),
 		LaneProbeWriteCount:         self.laneProbeWriteCount.Load(),
 		LaneProbeRideCount:          self.laneProbeRideCount.Load(),
+		LaneHeadPromotionCount:      self.laneHeadPromotionCount.Load(),
 		LaneProvenTimeoutWriteCount: self.laneProvenTimeoutWriteCount.Load(),
 		RouteUnacknowledgedDuration: time.Duration(self.routeUnacknowledgedNanos.Load()),
 		RouteRetainedItemCount:      self.routeRetainedItemCount.Load(),
@@ -2342,85 +2349,61 @@ const (
 	// the route delivered something sent after this item, so this item was
 	// dropped at an endpoint
 	laneTimerEndpointDrop
-	// the route has acknowledged something within the cold floor, or holds
-	// nothing older than that: the round-trip scale, where the only action
-	// is a re-arm with backoff
+	// something below this item was acknowledged on its own lane since this
+	// item last looked: on a FIFO lane the lane is draining toward it and it
+	// is next, so re-arm with backoff
 	laneTimerDraining
-	// the route has acknowledged nothing at all for the cold floor: the
-	// liveness scale, where its head is written once and the rest ride
+	// nothing on this item's lane has moved since it last looked: if it is
+	// the lane's oldest unacknowledged item it is written, otherwise it
+	// rides that head
 	laneTimerSilent
 )
 
-// laneTimerVerdictFor reads the item's own route's clocks. Beside the
-// verdict it reports the route's liveness due time, the moment the route
-// will have acknowledged nothing for MinResendInterval, so the resend loop
-// can hold the sequence head's re-arm at it.
+// laneTimerVerdictFor reads this item's own lane and its position in it.
 //
-// §32: an alive-but-slow lane and a stalled one are not separable during a
-// gap, because a queue whose depth grows by some interval pauses its
-// acknowledgements for that interval and is observationally identical to
-// a stall of the same length until it resumes. Every threshold tried here,
-// the scaled round trip, the item's own interval, and progress since the
-// last deferral, was a test on that same gap, and a step larger than the
-// threshold reproduced the failure each time.
+// §32 established that an alive-but-slow lane and a stalled one are not
+// separable by any test on a gap: the scaled round trip, the item's own
+// interval and progress since the last deferral each reproduced the failure
+// at a queue step larger than the threshold. §34.2 then showed why the
+// answer that replaced them, re-arming any firing that no later same-lane
+// acknowledgement had proven, wedges. That proof is a chain: a later
+// same-lane item has to exist, be delivered, and have its acknowledgement
+// credited to this lane. The receiver's own queue drops break every link at
+// once, because an arrival above a hole it cannot queue is dropped
+// unacknowledged, so an item whose successors were all dropped is deferred
+// forever with nothing but silence to read.
 //
-// So nothing on the round-trip scale reads this at all: a firing that no
-// later same-lane acknowledgement has proven is re-armed with backoff,
-// which costs nothing in either regime. Silence is load-bearing for one
-// thing only, and on a different scale: a receiver that has silently lost
-// a sequence drops every non-head Pack, so rewriting the head is the only
-// path that re-establishes it, and that is liveness rather than recovery.
-// The bound is therefore fixed rather than estimated: a route that has
-// acknowledged nothing at all for MinResendInterval, the cold floor the
-// sender already accepts with no evidence, writes its head once. A queue
-// step under that never reaches it.
-func (self *SendSequence) laneTimerVerdictFor(
-	item *sendItem,
-	now time.Time,
-) (laneTimerVerdict, time.Time) {
+// §34.3 keeps the estimate as the pacer and decides by position, which no
+// drop can destroy. It is the item's own lane throughout, never the route as
+// a whole and never a window: any acknowledgement anywhere on a busy route
+// satisfies a route-level test while this item's own position goes
+// unexamined, which is the same error in a new place.
+func (self *SendSequence) laneTimerVerdictFor(item *sendItem) laneTimerVerdict {
 	if !self.laneProvenRecovery(item) {
-		return laneTimerNotApplicable, time.Time{}
+		return laneTimerNotApplicable
 	}
-	if highest, acked := self.laneHighestAcked(item.carrierRoute); acked &&
-		item.sequenceNumber < highest {
-		return laneTimerEndpointDrop, time.Time{}
-	}
-	reference, ok := self.laneLastAck(item.carrierRoute)
-	if !ok {
-		// nothing has ever been acknowledged on this route: measure from the
-		// oldest thing it is holding
-		reference = item.sendTime
-		if head := self.laneOldestOutstanding(item.carrierRoute); head != nil {
-			reference = head.sendTime
-		}
-	}
-	due := reference.Add(self.sendBufferSettings.MinResendInterval)
-	if !now.Before(due) {
-		return laneTimerSilent, due
-	}
-	return laneTimerDraining, due
-}
+	highest, acked := self.laneHighestAcked(item.carrierRoute)
 
-// laneLivenessInterval is the wait after a silent route's head write
-// (FLIGHTGATEFIX §32.4), given the head's send count once that write is
-// counted: the cold floor, doubling with each write of the head and
-// capped at MaxResendInterval, so a route that fell silent at its last
-// acknowledgement is probed 2, 6, 14 and 22 s after it and every 8 s from
-// there. It reads no estimate. It is the cadence the sender already runs
-// when it has no evidence at all, and it is counted on the head's own
-// writes, which on a fixed head are the route's probe count; a head that
-// had been written before the silence begins one step further along,
-// which is the conservative side. The cap is what bounds re-establishment:
-// a receiver that comes back after any outage sees a head within one cap.
-func (self *SendSequence) laneLivenessInterval(sendCount int) time.Duration {
-	maxInterval := self.sendBufferSettings.MaxResendInterval
-	interval := min(self.sendBufferSettings.MinResendInterval, maxInterval)
-	// the first send is count one, so the first probe is count two and
-	// waits one doubling
-	if shift := uint(min(max(sendCount-1, 0), 16)); 0 < shift {
-		interval = min(interval<<shift, maxInterval)
+	// 1. anything acknowledged above this item, ever. Either it was
+	// delivered and its own acknowledgement was lost, or it was dropped;
+	// either way it is written, a duplicate into a live lane at worst.
+	if acked && item.sequenceNumber < highest {
+		return laneTimerEndpointDrop
 	}
-	return interval
+
+	// 2. anything acknowledged below it since it last looked. On a FIFO lane
+	// the lane is draining toward it and it is next, so it waits. This is a
+	// fact about position rather than a test on a gap: a lane whose
+	// acknowledgements are arbitrarily slow still satisfies it, which is why
+	// it holds where every threshold failed. An item that has never looked
+	// has everything to look at, so its first firing on a lane that has
+	// acknowledged anything is one free deferral.
+	if acked && item.laneAckedAtLastFiring < highest {
+		return laneTimerDraining
+	}
+
+	// 3. nothing on this lane has moved since it last looked.
+	return laneTimerSilent
 }
 
 // laneProvenRecovery reports whether this sequence reads a reliable lane's
@@ -2445,6 +2428,67 @@ func (self *SendSequence) laneOldestOutstanding(route Route) *sendItem {
 		}
 	}
 	return nil
+}
+
+// promoteLaneHeads brings the new oldest unacknowledged item of each named
+// lane forward to one probe round trip from now, and tells it where its lane
+// has got to (FLIGHTGATEFIX §34.3).
+//
+// The two halves are one act: the item is told what the lane has
+// acknowledged and asked to look again in a round trip. If nothing further
+// moves in that round trip, rule 2 no longer holds and rule 3 writes it,
+// because it is its lane's oldest unacknowledged item. So a batch the
+// receiver dropped drains at one round trip per item: each write is
+// acknowledged, and that acknowledgement promotes the next position. A lane
+// that is really draining answers within the round trip instead, and the
+// item is acknowledged and gone before its promoted firing arrives, so the
+// drain writes nothing.
+//
+// Only an acknowledgement of a retransmit promotes. That is what separates a
+// batch being dragged forward one write at a time from a lane making its own
+// forward progress: in the first the acknowledgement exists because the
+// sender wrote the position again, and the next position needs the same
+// treatment; in the second the lane delivered on the first write and the
+// next position is owed rule 2's free deferral, which is M4's profile and
+// where promoting regardless writes an item on a lane that is answering. The
+// test is the acknowledged item's send count, which counts its own timer's
+// writes; a position the scoreboard recovered instead is not promoted, and
+// does not need to be, since the scoreboard writes every position it proves
+// in one round.
+//
+// The firing is set to the round trip in both directions, never only pulled
+// in. A new lane head has usually been riding the old one and carries that
+// head's firing time, which is stale the moment the head is acknowledged:
+// left alone it fires almost at once, is given rule 2's free deferral for
+// an acknowledgement it has just been shown, and waits out a doubled
+// backoff. Measured on a drain of seven dropped positions that alternated,
+// a round trip for one position and up to eight seconds for the next.
+// Setting the firing outright is also what makes the drain write nothing:
+// a lane delivering faster than a round trip acknowledges the head before
+// the firing it was given.
+//
+// The probe round trip is the scaled minimum rather than the mean: this is
+// the interval in which a live lane must answer, and one deep queue must not
+// turn it into the multi-second retransmit timeout it precedes.
+func (self *SendSequence) promoteLaneHeads(lanes uint32, at time.Time) {
+	promoteTime := at.Add(self.rttWindow.probeRtt(at))
+	for index := range self.laneAcks {
+		if lanes&(uint32(1)<<uint(index)) == 0 {
+			continue
+		}
+		slot := &self.laneAcks[index]
+		head := self.laneOldestOutstanding(slot.route)
+		if head == nil || !self.laneProvenRecovery(head) {
+			continue
+		}
+		if self.resendQueue.RemoveByMessageId(head.messageId) == nil {
+			continue
+		}
+		head.laneAckedAtLastFiring = slot.highestAckedSequenceNumber
+		head.resendTime = promoteTime
+		self.resendQueue.Add(head)
+		self.client.laneHeadPromotionCount.Add(1)
+	}
 }
 
 // gapHoleCarrier indexes a recovery counter by the lane that carried the
@@ -6836,18 +6880,22 @@ sendSequenceLoop:
 				// ordinary cadence. Any resend awaits fresh acknowledgement state.
 				recoveryKind := item.recoveryKind
 				item.recoveryKind = sendRecoveryNone
-				// §26.2: a firing on a route that has acknowledged nothing past
-				// this item is a lane event, not an item event. The route's
-				// oldest outstanding item is probed with backoff and every
-				// other item on it is held behind that probe, counting
-				// neither a send nor a deferral, which is TCP's timer applied
-				// to the lane. A firing on a route that has acknowledged past
-				// the item is an endpoint drop and is written as today.
+				// §34.3: what this firing means is decided by this item's own
+				// lane and by its position in it. Anything acknowledged above
+				// it means write it; anything below it since it last looked
+				// means the lane is draining toward it, so wait; neither means
+				// write it if it is the lane's oldest unacknowledged item and
+				// otherwise ride that head.
 				laneVerdict := laneTimerNotApplicable
-				var laneDue time.Time
-				laneProbe := false
 				if recoveryKind == sendRecoveryNone {
-					laneVerdict, laneDue = self.laneTimerVerdictFor(item, sendTime)
+					laneVerdict = self.laneTimerVerdictFor(item)
+					if laneVerdict != laneTimerNotApplicable {
+						// this firing has now looked: the next one asks what
+						// moved on this lane since
+						if highest, acked := self.laneHighestAcked(item.carrierRoute); acked {
+							item.laneAckedAtLastFiring = highest
+						}
+					}
 					self.observeReliableLaneFiring(
 						item,
 						self.resendIntervalForItem(item, item.sendCount),
@@ -6859,24 +6907,28 @@ sendSequenceLoop:
 					// an endpoint: written with backoff, as today
 					self.client.laneProvenTimeoutWriteCount.Add(1)
 				} else if laneVerdict == laneTimerSilent {
-					// §32.4, the liveness scale. A receiver that has silently
-					// lost this sequence drops every non-head Pack, so
-					// rewriting the head through setHead is the only path that
-					// re-establishes it. One write, of the head, once the
-					// route has acknowledged nothing at all for the cold
-					// floor; every other item on the route rides it. §29.4's
-					// wider probe set was measured and delivers nothing extra,
-					// because the receive stream is ordered.
+					// §34.3 rule 3. Nothing on this item's lane has moved
+					// since it last looked, so no acknowledgement is coming to
+					// prove it and none will: the receiver's own drops can
+					// remove every later same-lane item, which is how the
+					// proof chain breaks. The lane's oldest unacknowledged
+					// item is written on its own timer, with setHead where it
+					// is the sequence head, which is also the only path that
+					// re-establishes a receiver that silently lost the
+					// sequence. Everything else on the lane rides that head,
+					// so one write recovers a dropped batch a position at a
+					// time rather than a window at a time.
 					head := self.laneOldestOutstanding(item.carrierRoute)
 					if head != nil && head != item {
-						// Held until the head's next write. When the head is
+						// Held until the head's next firing. When the head is
 						// due in this pass and not yet written, that is the
 						// interval its write is about to schedule; never a
 						// time already past, which would spin this item
 						// through the loop.
 						holdUntil := head.resendTime
 						if !sendTime.Before(holdUntil) {
-							holdUntil = sendTime.Add(self.laneLivenessInterval(head.sendCount + 1))
+							holdUntil = sendTime.Add(
+								self.resendIntervalForItem(head, head.sendCount+1))
 						}
 						item.resendTime = holdUntil
 						item.recoveryKind = sendRecoveryNone
@@ -6884,34 +6936,35 @@ sendSequenceLoop:
 						self.client.laneProbeRideCount.Add(1)
 						continue
 					}
-					laneProbe = true
 					self.client.laneProbeWriteCount.Add(1)
 				} else if laneVerdict == laneTimerDraining {
-					// §32.4, the round-trip scale: a firing that no later
-					// same-lane acknowledgement has proven is re-armed with
-					// backoff, unconditionally. No limit, no since-last term
-					// and no estimate read, because during a gap an
-					// alive-but-slow lane and a stalled one are not separable
-					// and the re-arm is the action that costs nothing in
-					// either. This is §13.5's deferral and §27.3's ride
-					// collapsed into the one action they were both answers to.
+					// §34.3 rule 2. Something below this item was
+					// acknowledged on its own lane since it last looked, so
+					// on a FIFO lane the lane is draining toward it and it is
+					// next: re-armed with backoff, no limit, no since-last
+					// term and no estimate read. §32.4 re-armed here on the
+					// absence of a later same-lane acknowledgement instead,
+					// which is unbounded when the receiver's own drops remove
+					// every item that could carry that proof; this re-arm
+					// rests on an acknowledgement that arrived, so a lane
+					// that stops answering leaves it at once. This is §13.5's
+					// deferral and §27.3's ride collapsed into the one action
+					// they were both answers to.
 					// The count is advanced before the interval is read, so
 					// the re-arms keep the rewrite's own timer: a timer that
 					// fired at one interval is next due at three, then seven.
 					item.timeoutDeferCount += 1
 					item.timeoutDeferAckTime = self.lastCumulativeAckTime
 					item.deferralOutstanding = true
-					resendTime := sendTime.Add(
+					// No bound on this re-arm, and in particular no
+					// liveness due time to clamp the sequence head to.
+					// Re-establishing a receiver that silently lost the
+					// sequence needs a setHead rewrite, and rule 3 is what
+					// produces it: a receiver in that state acknowledges
+					// nothing, so nothing on the lane ever moves, so the head
+					// is never held here in the first place.
+					item.resendTime = sendTime.Add(
 						self.deferredResendInterval(item, self.rttWindow.ScaledRtt()))
-					if laneDue.Before(resendTime) && 0 < len(self.sendItems) &&
-						self.sendItems[0] == item {
-						// The sequence head's re-arm never overshoots the
-						// liveness due time: its write is the one that
-						// re-establishes a receiver, and the due time is a
-						// fixed bound, not the backoff's.
-						resendTime = laneDue
-					}
-					item.resendTime = resendTime
 					self.resendQueue.Add(item)
 					self.client.timeoutResendDeferCount.Add(1)
 					continue
@@ -7047,14 +7100,15 @@ sendSequenceLoop:
 				// delayed (not lost) by queueing, a flat timeout re-sends the
 				// whole in-flight window every interval, and the duplicates
 				// feed the congestion that delayed the acks in the first place.
+				// §34.3: a lane head written under rule 3 is re-armed on its
+				// own backed-off interval. eeca11f re-armed it on a fixed
+				// cold cadence instead, justified as a constant that cannot
+				// lag, and that justification is true but not sufficient: a
+				// constant still fires while the lane is demonstrably
+				// draining, which is the M4 failure in a new place. Rule 2
+				// already answers that with a fact about position, and a fact
+				// beats a constant, so the cadence goes.
 				itemResendTimeout := self.resendIntervalForItem(item, item.sendCount)
-				if laneProbe && !item.hybridReliableCarrierObserved {
-					// The head of a silent route is re-armed on the liveness
-					// cadence, which reads no estimate (§32.4). A hybrid H3
-					// head keeps its flat cap, which is never shorter, so it
-					// does not race the QUIC stream's own recovery.
-					itemResendTimeout = self.laneLivenessInterval(item.sendCount)
-				}
 				if !retainPastAckTimeout && itemAckTimeout <= itemResendTimeout {
 					item.resendTime = sendTime.Add(itemAckTimeout)
 				} else {
@@ -8652,6 +8706,10 @@ func (self *SendSequence) receiveAck(
 			self.releaseUnreliableFlight(item)
 		}
 		ackTime := time.Now()
+		// §34.3: whether this item was its lane's oldest unacknowledged has
+		// to be read before it is marked, because that is what the mark
+		// changes.
+		laneHeadAcked := self.laneOldestOutstanding(item.carrierRoute) == item
 		self.observeLaneAck(item, ackTime)
 		self.observeReliableLaneAck(item, ackTime)
 		// refresh sendTime so the ack-timeout deadline includes the selective-ack window
@@ -8659,6 +8717,11 @@ func (self *SendSequence) receiveAck(
 		item.resendTime = item.sendTime.Add(self.sendBufferSettings.SelectiveAckTimeout)
 		item.selectiveAcked = true
 		self.resendQueue.Add(item)
+		if laneHeadAcked && !item.carrierChanged && 1 < item.sendCount {
+			if slot := self.laneSlotFor(item.carrierRoute); 0 <= slot {
+				self.promoteLaneHeads(uint32(1)<<uint(slot), ackTime)
+			}
+		}
 		return
 	}
 
@@ -8675,6 +8738,11 @@ func (self *SendSequence) receiveAck(
 	// FLIGHTGATEFIX §22: what this lane delivered, the measure the reliable
 	// admission bound reads.
 	cumulativeByteCount := ByteCount(0)
+	// §34.3: an acknowledgement is cumulative, so every lane it touches has
+	// had its oldest unacknowledged item acknowledged. Collect those lanes
+	// and promote their new heads once the acknowledged prefix is gone.
+	promoteLanes := uint32(0)
+	var promoteRoute Route
 	// acks are cumulative
 	// implicitly ack all earlier items in the sequence
 	i := 0
@@ -8703,6 +8771,18 @@ func (self *SendSequence) receiveAck(
 		cumulativeByteCount += implicitItem.MessageByteCount()
 		self.observeLaneAck(implicitItem, self.lastCumulativeAckTime)
 		self.observeReliableLaneAck(implicitItem, self.lastCumulativeAckTime)
+		if implicitItem.carrierRoute != nil && !implicitItem.carrierChanged &&
+			implicitItem.carrierRoute != promoteRoute {
+			promoteRoute = implicitItem.carrierRoute
+			// this is the lane's oldest unacknowledged item, since the
+			// acknowledged items are a prefix of the sequence. Its send
+			// count is above one exactly when the sender had to write it
+			// again to get this acknowledgement.
+			if slot := self.laneSlotFor(promoteRoute); 0 <= slot &&
+				1 < implicitItem.sendCount {
+				promoteLanes |= uint32(1) << uint(slot)
+			}
+		}
 		if !implicitItem.selectiveAcked {
 			self.observeItemAck(implicitItem)
 			self.releaseUnreliableFlight(implicitItem)
@@ -8732,6 +8812,9 @@ func (self *SendSequence) receiveAck(
 		}
 	}
 	self.sendItems = self.sendItems[i:]
+	if promoteLanes != 0 {
+		self.promoteLaneHeads(promoteLanes, self.lastCumulativeAckTime)
+	}
 	self.observeDeliveredBytes(cumulativeByteCount, self.lastCumulativeAckTime)
 	if self.log.V(2).Enabled() {
 		a, b := self.resendQueue.QueueSize()
@@ -9220,6 +9303,16 @@ type sendItem struct {
 	// carrierRoute is the route of the newest successful write, any carrier;
 	// acknowledgement progress is reported per route from it (M6 watchdog).
 	carrierRoute Route
+	// laneAckedAtLastFiring is the highest sequence number this item's own
+	// lane had acknowledged when this item last looked, which is its timer's
+	// last firing or the promotion that moved that firing forward. The next
+	// firing asks whether anything below it has moved since. §34.5 expected
+	// the per-route slots to carry this and they cannot: "since X's last
+	// firing" is per item and per position, and a slot holds one number for
+	// the whole lane. It sits against the 8-byte fields at the end of the
+	// struct, so the item grows by its own 8 bytes and no padding
+	// (FLIGHTGATEFIX §34.3).
+	laneAckedAtLastFiring uint64
 	// timeoutDeferCount is how many RTOs of this item were deferred while the
 	// cumulative ack kept advancing (§13.5), and timeoutDeferAckTime is the
 	// cumulative ack the last deferral saw: the next one requires the ack to

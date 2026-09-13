@@ -92,6 +92,22 @@ var laneRecoveryLongestGapForTree = func(ClientSendRecoveryStatsSnapshot) (time.
 	return 0, false
 }
 
+// laneRecoveryStallOnsetIntervalForTree reports the resend interval the
+// timer read at the first firing of a lane's longest silence, where the tree
+// exports it. Without it a row cannot state the cadence it expects, only
+// that something was written.
+var laneRecoveryStallOnsetIntervalForTree = func(
+	ClientSendRecoveryStatsSnapshot,
+) (time.Duration, bool) {
+	return 0, false
+}
+
+func laneRecoveryStallOnsetInterval(
+	stats ClientSendRecoveryStatsSnapshot,
+) (time.Duration, bool) {
+	return laneRecoveryStallOnsetIntervalForTree(stats)
+}
+
 // laneRecoveryDetailForTree adds the tree's own recovery counters to a row's
 // log line.
 var laneRecoveryDetailForTree = func(ClientSendRecoveryStatsSnapshot) string { return "" }
@@ -847,17 +863,20 @@ func TestLaneRecoveryRow13AnItemOnTwoLanesProvesNothingAboutEither(t *testing.T)
 	}
 }
 
-// Row 12, the liveness scale (FLIGHTGATEFIX §32.4). A route silent well past
-// the cap: its head is written on the cold cadence, at 2 s from the last
-// acknowledgement, then 4 s later, then every 8 s, and nothing else is
-// written. A 20 s stall from a last acknowledgement near 1.6 s puts the
-// probes near 3.6, 7.6 and 15.6 s with the fourth due past the stall and its
-// drain, so three; the row allows one either side. The lower bound is the
-// re-establishment guarantee, that a silent route keeps being probed within
-// the cap; the upper bound is what separates this cadence from one paced by
-// the estimate, which on this 300 ms lane would write six times, and from
-// one per interval, which would write dozens.
-func TestLaneRecoveryRow12SilentRouteIsProbedOnTheLivenessCadence(t *testing.T) {
+// Row 12, a lane silent well past the cap (FLIGHTGATEFIX §34.3, rule 3).
+// Its oldest unacknowledged item is written on its own backed-off timer and
+// nothing else is written into it. eeca11f wrote the head on a cold cadence
+// instead, a fixed 2 s from the last acknowledgement then doubling, and this
+// row asserted that cadence; §34.3 removed it, because a constant that
+// cannot lag still fires while rule 2 shows the lane draining. The row keeps
+// its purpose and states the cadence it now measures: the first firing of a
+// stall is rule 2's free deferral, the write lands one doubled interval
+// after it, and each write doubles again to the cap. Both bounds still
+// matter. The lower one is the re-establishment guarantee, that a silent
+// lane's head keeps being rewritten within the cap, which is the only path
+// back for a receiver that lost the sequence. The upper one separates a
+// logarithmic cadence from one write per interval, which would be dozens.
+func TestLaneRecoveryRow12SilentLaneHeadIsWrittenOnItsOwnBackedOffCadence(t *testing.T) {
 	if testing.Short() {
 		t.Skip("lane recovery contract, live link, 20 s stall")
 	}
@@ -875,6 +894,7 @@ func TestLaneRecoveryRow12SilentRouteIsProbedOnTheLivenessCadence(t *testing.T) 
 		stats := laneRecoverySend(t, link, 3000)
 		rides, probes := laneRecoveryRidesAndProbes(stats)
 		gap, _ := laneRecoveryLongestGapForTree(stats)
+		onset, haveOnset := laneRecoveryStallOnsetInterval(stats)
 		t.Logf("%s: row 12: a %s stall (longest gap %s) wrote %d, of which %d probes, %d rides%s",
 			arm.name, stallFor, gap.Truncate(time.Millisecond), stats.TimeoutResendWriteCount,
 			probes, rides, laneRecoveryDetailForTree(stats))
@@ -883,24 +903,90 @@ func TestLaneRecoveryRow12SilentRouteIsProbedOnTheLivenessCadence(t *testing.T) 
 				"row measured nothing", arm.name, gap)
 			continue
 		}
+		if !haveOnset || onset <= 0 {
+			t.Errorf("%s: row 12: the tree does not report the interval its timer read at the "+
+				"stall's first firing, so the cadence cannot be stated", arm.name)
+			continue
+		}
 		settings := DefaultSendBufferSettings()
-		// the cadence from the last acknowledgement: floor, then doubling to
-		// the cap, then the cap
+		// §34.3's cadence from the stall's first firing: that firing is rule
+		// 2's free deferral, so the first write lands one doubled interval
+		// later, and each write doubles again to the cap.
 		expected := 0
-		for at := settings.MinResendInterval; at < stallFor; {
+		interval := onset
+		for at := 2 * onset; at < stallFor; {
 			expected += 1
-			step := min(settings.MinResendInterval<<uint(expected), settings.MaxResendInterval)
-			at += step
+			interval = min(2*interval, settings.MaxResendInterval)
+			at += interval
 		}
 		if int(probes) < expected-1 || expected+1 < int(probes) {
 			t.Errorf("%s: row 12: %d probes over a %s stall, want %d, one either side: the head "+
-				"is not on the liveness cadence of %s doubling to %s",
+				"is not on its own interval of %s doubling to %s",
 				arm.name, probes, stallFor, expected,
-				settings.MinResendInterval, settings.MaxResendInterval)
+				onset.Truncate(time.Millisecond), settings.MaxResendInterval)
 		}
 		if probes+1 < stats.TimeoutResendWriteCount {
 			t.Errorf("%s: row 12: %d writes against %d probes: something other than the head "+
 				"was written into a silent route", arm.name, stats.TimeoutResendWriteCount, probes)
+		}
+	}
+}
+
+// Row 15 (FLIGHTGATEFIX §34.5). The other side of the promotion. During a
+// stall the lane's head is written on its own backed-off cadence, which row
+// 12 measures; when the stall ends, each acknowledgement promotes the next
+// head to one probe round trip, and a lane that is really draining
+// acknowledges it well inside that, so the drain writes nothing. The row
+// samples the write count at the moment the stall ends and again when the
+// transfer completes: the difference is what the drain cost.
+func TestLaneRecoveryRow15PostStallDrainWritesNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("lane recovery contract, live link, 10 s stall")
+	}
+	const (
+		stallAfter = 1500 * time.Millisecond
+		stallFor   = 10 * time.Second
+	)
+	for _, arm := range laneRecoveryArms() {
+		if !arm.readsLanes {
+			continue
+		}
+		link := newLaneRecoveryLink(
+			t, 100*time.Millisecond, 3*time.Millisecond,
+			stallAfter, stallFor, 2048, 0, 0, 0, arm.configure)
+		var atStallEnd ClientSendRecoveryStatsSnapshot
+		sampled := make(chan struct{})
+		go func() {
+			defer close(sampled)
+			time.Sleep(stallAfter + stallFor)
+			atStallEnd = link.sender.SendRecoveryStats()
+		}()
+		stats := laneRecoverySend(t, link, 3000)
+		<-sampled
+		gap, _ := laneRecoveryLongestGapForTree(stats)
+		drained := stats.TimeoutResendWriteCount - atStallEnd.TimeoutResendWriteCount
+		t.Logf("%s: row 15: a %s stall (longest gap %s) wrote %d, and the drain after it wrote %d%s",
+			arm.name, stallFor, gap.Truncate(time.Millisecond),
+			atStallEnd.TimeoutResendWriteCount, drained, laneRecoveryDetailForTree(stats))
+		if gap < stallFor/2 {
+			t.Errorf("%s: row 15: the longest lane gap was %s, so the stall did not bite and the "+
+				"row measured nothing", arm.name, gap)
+			continue
+		}
+		if atStallEnd.TimeoutResendWriteCount == 0 {
+			t.Errorf("%s: row 15: nothing was written during the stall, so the drain's cost is "+
+				"not being compared against anything", arm.name)
+		}
+		// one for the head firing that the stall's end raced, and nothing
+		// else: every other position is acknowledged before the round trip
+		// its promotion gave it
+		const bound = 1
+		if bound < drained {
+			t.Errorf(
+				"%s: row 15: the drain after the stall wrote %d retransmits, want at most %d; "+
+					"the promotion is firing ahead of a lane that is delivering",
+				arm.name, drained, bound,
+			)
 		}
 	}
 }
@@ -916,9 +1002,15 @@ func TestLaneRecoveryRow11HeldItemsDoNotSpin(t *testing.T) {
 		if !arm.readsLanes {
 			continue
 		}
+		// §34.3 took the cold cadence out, so the stall has to outlast the
+		// head's own backed-off timer for a probe to be written at all: this
+		// lane's queue inflates its interval to about two seconds at onset,
+		// the first firing is rule 2's free deferral, and the write lands on
+		// the doubled interval after it. A stall shorter than that measures
+		// nothing, which is what 2750ms did once the cadence went.
 		link := newLaneRecoveryLink(
 			t, 100*time.Millisecond, 3*time.Millisecond,
-			1500*time.Millisecond, 2750*time.Millisecond, 2048, 0, 0, 0, arm.configure)
+			1500*time.Millisecond, 10*time.Second, 2048, 0, 0, 0, arm.configure)
 		stats := laneRecoverySend(t, link, 3000)
 		rides, probes := laneRecoveryRidesAndProbes(stats)
 		t.Logf("%s: row 11: %d rides against %d probes", arm.name, rides, probes)

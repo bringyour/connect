@@ -3639,6 +3639,143 @@ zero. The receiver-state export stays on the list, because if row 14
 holds and the campaign still wedges, the wedge is not the shape the
 invariants pick out, and that export is what would say what it is.
 
+## 35. Sixteenth round: §34.3 built, the cold cadence weighed and removed, and the two places the design was wrong
+
+Implementation, 2026-09-13, of §34.3 behind `ReliableLaneProvenRecovery`,
+which stays off by default.
+
+### 35.1 What the timer now decides
+
+`laneTimerVerdictFor` reads the item's own lane and its position in it,
+and nothing else. No route-level test, no window, no estimate:
+
+1. the lane has acknowledged something above this item, ever, so it was
+   dropped at an endpoint or its own acknowledgement was lost. Written
+   with backoff either way, a duplicate into a live lane at worst.
+2. the lane has acknowledged something below it since it last looked, so
+   on a FIFO lane it is draining toward it and it is next. Re-armed with
+   backoff, no limit and no since-last term.
+3. neither, so nothing on this lane has moved since it last looked. If it
+   is the lane's oldest unacknowledged item it is written, with `setHead`
+   where it is also the sequence head; otherwise it rides that head.
+
+"Since it last looked" is per item and per position, so the item carries
+the lane position its last judged firing saw. An item that has never
+looked has everything to look at, so rule 2 holds at its first firing on
+any lane that has acknowledged anything: one free deferral per item,
+paced by its own timer. That is not an accident of the encoding. It is
+what makes M4 pass, and it is what §34.3 means by "a pause in
+acknowledgements longer than twice the head's interval writes the head
+once": the first firing defers, the write lands on the doubled interval
+after it.
+
+### 35.2 The cold cadence: weighed, and removed for a stronger reason
+
+eeca11f re-armed a silent lane's head on a fixed cadence, 2 s from the
+last acknowledgement then doubling to the cap, rather than on the item's
+own interval. Its justification was sound as far as it went: the cadence
+is literally the sender's own no-evidence timer, `MinResendInterval`, and
+reads nothing that can lag. §34 called it redundant under the positional
+rules. Both are true and neither is the reason it goes.
+
+A constant that cannot lag can still fire while the lane is demonstrably
+draining. That is M4's failure with a different clock, and rule 2 is a
+fact about position that beats a constant in exactly the regime the
+constant was introduced for. The one thing silence was load-bearing for,
+re-establishing a receiver that silently lost the sequence, is covered
+without it: such a receiver drops every non-head Pack and acknowledges
+nothing, so nothing on its lane ever moves, so rule 3 applies to the
+sequence head at every firing and rewrites it with `setHead` on its own
+backed-off timer, which reaches the 8 s cap and stays there. Row 12 now
+measures that cadence instead of the cold one, and asserts it from the
+interval the timer actually read at the stall's first firing.
+
+### 35.3 Two places §34.3 was wrong, and what was built instead
+
+**The promotion sets the firing; it does not pull it in.** §34.3 says the
+new lane head's next firing "is set to `now + probeRtt`". Read as "moved
+earlier when its own timer is later", the drain alternates: a round trip
+for one position, then up to the 8 s cap for the next. The cause is that
+a new lane head has usually been riding the old one and carries the old
+head's firing time, which is stale the moment that head is acknowledged.
+Left alone it fires almost at once, is handed rule 2's free deferral for
+an acknowledgement it has just been shown, and waits out a doubled
+backoff. Measured on a seven-position drain: steps of 2.42, 1.22, 3.79,
+1.21, 7.06, 1.21 and 8.44 s. Setting the firing outright in both
+directions gives seven steps of 1.21 s. It is also what makes the drain
+write nothing, since a lane delivering faster than a round trip
+acknowledges the head before the firing it was given.
+
+**Only an acknowledgement of a retransmit promotes.** §34.3 promotes on
+any lane head's acknowledgement. That writes on M4's profile: the
+acknowledgement of item N-1 arrives while item N is outstanding, N is
+promoted, its position is recorded, and its first firing is rule 3
+instead of rule 2's free deferral. Two writes on a four-item profile
+whose whole point is that there are none. The discriminator is factual
+and per item: the acknowledged position's send count is above one exactly
+when the sender had to write it again to get that acknowledgement. A
+batch dragged forward one write at a time promotes the next position; a
+lane delivering on first write does not, and the next position keeps its
+free deferral. A position the scoreboard recovered is not promoted and
+does not need to be, since the scoreboard writes every position it proves
+in one round.
+
+An earlier attempt at the same separation, promoting only a position
+whose timer had already fired once, is recorded as rejected: it holds M4
+but reintroduces a backed-off step for every position that had not yet
+fired when its turn came, which under `-race` was one step in eight at
+3.7 s against a mean of 1.5 s.
+
+### 35.4 The size claim in §34.5 is wrong
+
+§34.5 says "sizes and allocation unchanged: the per-route slots already
+hold the sequence numbers the rules read". They do not hold this one.
+Rule 2 asks what moved on the lane *since this item last looked*, which
+is per item and per position; a slot holds one number for the whole lane.
+`sendItem` therefore carries `laneAckedAtLastFiring uint64`, placed
+against the struct's 8-byte tail so it costs 8 bytes and no padding: 560
+against merged's 520 plus §13.5's 32. The landing size test states the
+three parts rather than one total. Nothing else is added: the promotion
+reuses the existing per-route slots and the resend queue, and allocates
+nothing on any path.
+
+### 35.5 What is proven in process, and what is not
+
+Proven here, under `-race`, on the instrument:
+
+| Claim | Where | Measured |
+|---|---|---|
+| a batch no later same-lane item can prove drains at one round trip per position | row 14's drain half | 9 steps, mean 1.217 s, longest 1.221 s, against a lane round trip of 400 ms and a probe round trip of 800 ms |
+| the same promotion writes nothing while a lane is really draining | row 15 | a 10 s stall wrote 2, the drain after it wrote 0 |
+| a silent lane writes only its head, on its own backed-off cadence | rows 11 and 12 | 3 writes over a 20 s stall against 1,566 rides; 2 writes against 912 rides over 10 s |
+| acknowledgements below the head keep it unwritten however far the estimate lags | row 16, M4's profile with the rule on | 0 writes, 3 deferrals |
+| a lane that stops answering writes its head once per pause, not once per item | row 16's second half | exactly 1 write, still 1 one interval later |
+| an endpoint drop is written at its next firing | rows 4, 6 and 9 | unchanged |
+| a held item is never re-armed into the past | row 11 | 912 rides against 2 probes |
+
+Not proven here, and the campaign decides it: that the wedge is gone.
+§34.2's mechanism is reachable in process and instrumented, and row 14's
+reproduction attempt showed that with a budget-enforcing receiver the
+wedges that appear are not rule-attributable and their write-to-defer
+ratio is the opposite of the campaign's. So the in-process evidence shows
+the bound behaves as specified; it cannot show the wedge is gone. The bar
+stays what §34.6 set: twenty repetitions per state against `175d82a`,
+judged on total recovery writes, dead windows, and a count of runs over
+100 s that must be zero.
+
+The trade is recorded rather than hidden. On row 14's drain, merged
+rewrites the whole window and recovers the batch in one round, 3.57 s
+against the rule's 12.9 s for ten positions. That whole-window rewrite is
+the duplicate storm this program exists to remove, and one round trip per
+position is what writing only what the lane's own acknowledgements place
+costs. Row 12's cadence and row 15's silent drain are where it is paid
+back.
+
+### 35.6 Now
+
+The rule stays off. The campaign cells of §34.6 are unchanged and are
+what decides the default.
+
 ## 36. The merged tree, measured
 
 This section consolidates the measurements for the configuration that

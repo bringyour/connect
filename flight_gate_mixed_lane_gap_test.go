@@ -97,6 +97,7 @@ type mixedLaneGapHarness struct {
 	fastCarried atomic.Uint64
 	slowCarried atomic.Uint64
 	fastDropped atomic.Uint64
+	slowDropped atomic.Uint64
 	// laneRoutes are the seven routes by name, so a stalled run can say
 	// whether a route is full, which is the harness wedging, or empty,
 	// which is the transfer layer stalling.
@@ -114,6 +115,39 @@ type mixedLaneRoute struct {
 // decodeFlightGatePackIsData reports whether this frame carries an
 // application Pack, so a test can drop a numbered data frame without
 // counting control traffic. It never consumes the buffer.
+// decodeFlightGatePackSequenceNumber reports a data Pack's sequence number,
+// so a test can drop a named run of positions once each rather than a count
+// of frames, which would also catch their rewrites.
+func decodeFlightGatePackSequenceNumber(transferFrameBytes []byte) (uint64, bool) {
+	if transferFrameBytes == nil {
+		return 0, false
+	}
+	var transferFrame protocol.TransferFrame
+	if err := ProtoUnmarshal(transferFrameBytes, &transferFrame); err != nil {
+		return 0, false
+	}
+	pack := transferFrame.Pack
+	if pack == nil {
+		frame := transferFrame.GetFrame()
+		if frame == nil || frame.GetMessageType() != protocol.MessageType_TransferPack {
+			return 0, false
+		}
+		pack = &protocol.Pack{}
+		if err := ProtoUnmarshal(frame.MessageBytes, pack); err != nil {
+			return 0, false
+		}
+	}
+	for _, frame := range pack.Frames {
+		if frame.GetMessageType() == protocol.MessageType_TransferClientKey {
+			return 0, false
+		}
+	}
+	if len(pack.Frames) == 0 {
+		return 0, false
+	}
+	return pack.SequenceNumber, true
+}
+
 func decodeFlightGatePackIsData(transferFrameBytes []byte) bool {
 	if transferFrameBytes == nil {
 		return false
@@ -212,6 +246,15 @@ type mixedLaneOptions struct {
 	// a drop at an endpoint rather than on the wire: the only reliable-lane
 	// loss Transfer's own recovery is responsible for (FLIGHTGATEFIX §26.2).
 	slowDropFraction float64
+	// slowDropRunAt and slowDropRunCount drop a run of consecutive relay
+	// sequence positions, once each, starting at that sequence number. That
+	// is the wedge's shape made deterministic: a batch the receiver never
+	// acknowledges, whose later same-lane items went with it, so nothing can
+	// prove any of them (FLIGHTGATEFIX §34.2). The rewrite of a dropped
+	// position gets through, so what the row measures is the drain's pace
+	// and not a lane that keeps losing. Zero drops nothing.
+	slowDropRunAt    int
+	slowDropRunCount int
 }
 
 // newMixedLaneGapHarness connects a sender to a receiver over a fast
@@ -391,6 +434,32 @@ func newMixedLaneHarnessWithOptions(
 		}
 		return fastDataSeen.Add(1) == int64(options.fastDropOnce)
 	}
+	// a run of consecutive relay sequence positions is dropped, once each:
+	// the batch nothing can prove. Dropping by position rather than by a
+	// count of frames is what makes the rewrite get through, which is the
+	// whole of what the row measures.
+	var slowRunLock sync.Mutex
+	slowRunDropped := map[uint64]bool{}
+	dropRun := func(frameBytes []byte) bool {
+		if options.slowDropRunAt <= 0 || options.slowDropRunCount <= 0 {
+			return false
+		}
+		sequenceNumber, ok := decodeFlightGatePackSequenceNumber(frameBytes)
+		if !ok {
+			return false
+		}
+		if sequenceNumber < uint64(options.slowDropRunAt) ||
+			uint64(options.slowDropRunAt+options.slowDropRunCount) <= sequenceNumber {
+			return false
+		}
+		slowRunLock.Lock()
+		defer slowRunLock.Unlock()
+		if slowRunDropped[sequenceNumber] {
+			return false
+		}
+		slowRunDropped[sequenceNumber] = true
+		return true
+	}
 	var fastLoss, fastReplyLoss *laneLossProcess
 	if options.fastBurstLoss != nil {
 		fastLoss = newLaneLossProcess(20260911, 0, options.fastBurstLoss)
@@ -420,6 +489,11 @@ func newMixedLaneHarnessWithOptions(
 		deliver := func(b []byte) {
 			if to == receiverInFast && dropOnce(b) {
 				harness.fastDropped.Add(1)
+				MessagePoolReturn(b)
+				return
+			}
+			if to == receiverInSlow && dropRun(b) {
+				harness.slowDropped.Add(1)
 				MessagePoolReturn(b)
 				return
 			}

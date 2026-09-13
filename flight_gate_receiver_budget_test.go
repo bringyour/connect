@@ -96,21 +96,44 @@ func TestReceiverBudgetDropsDoNotWedgeEitherArm(t *testing.T) {
 	const messageCount = 150
 	offElapsed, offStats, offDropped := receiverBudgetRun(t, 8<<10, messageCount, false)
 	onElapsed, onStats, onDropped := receiverBudgetRun(t, 8<<10, messageCount, true)
-	t.Logf("rule off: %s, %d dropped, rto=%d deferred=%d",
+	t.Logf("rule off: %s, %d dropped, rto=%d deferred=%d probes=%d rides=%d promo=%d gap=%d",
 		offElapsed.Truncate(time.Millisecond), offDropped,
-		offStats.TimeoutResendWriteCount, offStats.TimeoutResendDeferCount)
-	t.Logf("rule on : %s, %d dropped, rto=%d deferred=%d",
+		offStats.TimeoutResendWriteCount, offStats.TimeoutResendDeferCount,
+		offStats.LaneProbeWriteCount, offStats.LaneProbeRideCount,
+		offStats.LaneHeadPromotionCount, offStats.SelectiveGapWriteCount)
+	t.Logf("rule on : %s, %d dropped, rto=%d deferred=%d probes=%d rides=%d promo=%d gap=%d",
 		onElapsed.Truncate(time.Millisecond), onDropped,
-		onStats.TimeoutResendWriteCount, onStats.TimeoutResendDeferCount)
+		onStats.TimeoutResendWriteCount, onStats.TimeoutResendDeferCount,
+		onStats.LaneProbeWriteCount, onStats.LaneProbeRideCount,
+		onStats.LaneHeadPromotionCount, onStats.SelectiveGapWriteCount)
 	if offDropped == 0 || onDropped == 0 {
 		t.Fatal("the receiver dropped nothing on one arm, so the arms are not comparable")
 	}
-	// neither arm may stop: a drop run is recovered, not fatal
-	if 20*time.Second < offElapsed || 20*time.Second < onElapsed {
+	// Neither arm may stop: a drop run is recovered, not fatal. The ceiling
+	// is derived rather than flat, because §34.3 recovers a dropped run at
+	// one lane round trip per position and this run's length is what the
+	// receiver dropped. The relay's round trip here is 400 ms and its probe
+	// round trip 800 ms, the first write waits at most the resend cap, and
+	// the factor of two is the allowance for running inside the whole suite,
+	// where a flat twenty seconds was exceeded at 20.07 s by the rule arm on
+	// a run that takes seven seconds alone. The sharp bound on the drain's
+	// own pace is row 14's drain half, which measures the gap between
+	// consecutive recovered positions directly; what this row asserts is
+	// that neither arm stops.
+	settings := DefaultSendBufferSettings()
+	const laneRoundTrip = 400 * time.Millisecond
+	probeRoundTrip := max(
+		time.Duration(float32(laneRoundTrip)*settings.RttScale),
+		settings.RttMinResendInterval,
+	)
+	bound := settings.MaxResendInterval +
+		2*time.Duration(max(offDropped, onDropped))*(laneRoundTrip+probeRoundTrip)
+	if bound < offElapsed || bound < onElapsed {
 		t.Errorf(
-			"a run did not finish within twenty seconds (off %s, on %s) over %d messages; that is "+
-				"the wedge, and if it appears here reliably this instrument has reached it",
-			offElapsed, onElapsed, messageCount,
+			"a run did not finish within %s (off %s, on %s) over %d messages with %d and %d "+
+				"arrivals dropped; that is the wedge, and if it appears here reliably this "+
+				"instrument has reached it",
+			bound, offElapsed, onElapsed, messageCount, offDropped, onDropped,
 		)
 	}
 }

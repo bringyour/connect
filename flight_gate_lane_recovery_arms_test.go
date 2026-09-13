@@ -38,6 +38,11 @@ func init() {
 	) (time.Duration, bool) {
 		return stats.ReliableLaneLongestAckGap, true
 	}
+	laneRecoveryStallOnsetIntervalForTree = func(
+		stats ClientSendRecoveryStatsSnapshot,
+	) (time.Duration, bool) {
+		return stats.ReliableLaneStallOnsetInterval, true
+	}
 	laneRecoveryDetailForTree = func(stats ClientSendRecoveryStatsSnapshot) string {
 		return fmt.Sprintf(
 			", deferred %d, probes %d, rides %d, endpoint %d, longest lane gap %s at interval %s with %d outstanding",
@@ -71,7 +76,7 @@ func init() {
 		}
 	}
 	laneRecoveryTimerVerdictForTree = func(sequence *SendSequence, item *sendItem) string {
-		verdict, _ := sequence.laneTimerVerdictFor(item, time.Now())
+		verdict := sequence.laneTimerVerdictFor(item)
 		switch verdict {
 		case laneTimerEndpointDrop:
 			return "endpoint drop"
