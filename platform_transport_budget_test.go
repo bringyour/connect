@@ -658,10 +658,15 @@ func TestPlatformTransportBudgetTransportCountThrottlesCandidates(t *testing.T) 
 // A slotless Auto-H3 lease can resolve only the bytes; preempting it makes that
 // lease yield and immediately reacquire forever without admitting the H1.
 func TestPlatformTransportBudgetDoesNotPreemptForUnresolvableSlotDeficit(t *testing.T) {
-	budget := NewPlatformTransportBudget(10, 1)
-	h1 := budget.register(platformTransportBudgetH1, 2, true)
-	if !h1.Acquire(t.Context()) {
-		t.Fatal("initial H1 claim was not admitted")
+	const h1Count = 16
+	budget := NewPlatformTransportBudget(24, h1Count)
+	h1Claims := make([]*platformTransportBudgetReservation, 0, h1Count)
+	for range h1Count {
+		h1 := budget.register(platformTransportBudgetH1, 1, true)
+		if !h1.Acquire(t.Context()) {
+			t.Fatal("initial H1 claim was not admitted")
+		}
+		h1Claims = append(h1Claims, h1)
 	}
 	h3 := budget.register(platformTransportBudgetH3Auto, 8, false)
 	if !h3.Acquire(t.Context()) {
@@ -687,7 +692,9 @@ func TestPlatformTransportBudgetDoesNotPreemptForUnresolvableSlotDeficit(t *test
 
 	blockedH1.Release()
 	h3.Release()
-	h1.Release()
+	for _, h1 := range h1Claims {
+		h1.Release()
+	}
 }
 
 func TestPlatformTransportBudgetCanceledH1ClaimUnblocksH3(t *testing.T) {
