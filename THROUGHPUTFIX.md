@@ -1168,3 +1168,299 @@ edited under them.
    the bound it asserts is what the timer already does, and the row's
    value is as the instrument that decides whether the report's 8 Mb/s
    is a steady state (§13.1).
+
+## 15. The buffer rule: an explicit request only where it beats the kernel's own ceiling
+
+Design and build, 2026-09-13, after the measurement round: twelve
+campaigns, 490 runs. This supersedes §9.3's unconditional deletion and
+applies to the receive side on main as well.
+
+### 15.1 What the measurement showed, and what it means
+
+The deletion of the send request against main, upload cell, by provider
+budget: +363 to +403 per cent at the 1 MiB budget, 17 of 17 paired
+repetitions; null at 8 MiB; −20.8 per cent at 32 MiB, 0 of 5 better,
+p = 0.006; −11.5 per cent at the default inside a ±43 per cent null band.
+The host has `net.core.wmem_max = 4 MiB` and `tcp_wmem[2] = 4 MiB`.
+
+Read against §11.1's table this is one inequality. What an explicit
+request obtains is `2 × min(request, wmem_max)` on Linux; what autotuning
+reaches is `tcp_wmem[2]`. At 1 MiB the request is 256 KiB, obtains 512 KiB,
+below the 4 MiB ceiling: the deletion wins by the ratio. At 8 MiB the
+request is 2 MiB and obtains exactly the ceiling: null. At 32 MiB and at
+the default the request obtains 8 MiB, above the ceiling: the pin was
+carrying twice what autotuning may, and at the cell's round trip that was
+a fifth of the upload. §9.3 said the bad case needs `wmem_max` raised
+above `tcp_wmem[2]`; this host has them equal, and equal is enough,
+because the doubling puts the obtained value above the ceiling. So §9.3's
+"closer to unconditionally better" was wrong by exactly that doubling, and
+the measurement caught it before it landed.
+
+The receive side has the same exposure, and one more finding sharpens it.
+On the runner's kernel (`7.0.12`) a post-connect `SO_RCVBUF` does **not**
+freeze the window at its SYN-time value: with an 8 MiB pin `rcv_ssthresh`
+grew to 8,354,736 under load, with the stock-sized pin to 415,524, against
+919,873 to 1,052,478 unpinned, sized by autotuning to what a loopback flow
+needed. The reporter's 3.2x was therefore a 415 KB pinned window against
+autotuning on a stock host, and the same inequality decides its sign:
+`2 × min(request, rmem_max)` against `tcp_rmem[2]`. On stock hosts
+(425,984 against 6 MiB) the reporter's deletion wins, which is what was
+measured; on a host with `rmem_max` at or above half of `tcp_rmem[2]` and
+a path whose bandwidth-delay product exceeds `tcp_rmem[2]`, it loses. That
+is a finding about the baseline on main, stated plainly: the receive fix
+was measured on one host where the inequality happens to favour it, and
+its sign flips on hosts where it does not, exactly as the send deletion's
+did here. Neither direction is unconditionally better; both are decided
+by numbers the process can read.
+
+The kernel generation matters for one thing only. On the reporter's
+kernel a post-connect receive pin froze the clamp near 64 KB; on `7.0.12`
+it did not. A pre-connect pin sets the SYN-time clamp from the buffer on
+every generation, so where a receive pin is right it is applied before
+connect and never after.
+
+### 15.2 The rule, as built
+
+`socketBufferPolicy` (`upstream_socket_buffer.go`), read once from the
+kernel: on Linux `net.core.{w,r}mem_max` and `tcp_{w,r}mem[2]` from
+`/proc`, with `doubled`; on Darwin `kern.ipc.maxsockbuf` and
+`net.inet.tcp.auto{snd,rcv}bufmax`; elsewhere unknown. Per direction,
+`explicitSend(request)` and `explicitReceive(request)` are true exactly
+when the obtained value, `min(request, coreMax)` doubled on Linux, exceeds
+the ceiling; an unknown policy never pins. The request is
+`TcpBufferSettings.MaxWindowSize`, as before.
+
+Two application points. `DefaultTcpBufferSettingsWithBufferSize` sets
+`ConnectSettings.DialControl`, a new hook the default dialer runs on every
+socket before connecting (chained ahead of the egress binding control), to
+`upstreamSocketBufferControl(request, policy)`: it sets `SO_SNDBUF` and
+`SO_RCVBUF` to the request where the rule says so, and is nil when it says
+nothing, so a host that pins nothing keeps no hook. `configureUpstreamTcpConn`
+takes the request, the policy and whether the pre-connect hook ran, which
+is `DialContextSettings == nil`; a host-supplied dial is opaque to the
+hook, and there only the send pin is applied after connect, since a
+post-connect receive pin is the generation-dependent freeze and is never
+applied. Keepalive and no-delay stay.
+
+On the measurement host this gives: 1 MiB budget, kernel in both
+directions (the +380 per cent stands); 8 MiB, kernel (null stands); 32 MiB
+and default, send pinned at 8 MiB pre-connect (the −20.8 per cent is
+recovered, the −11.5 becomes the pin it measured), receive left to the
+kernel since 8 MiB is under a 32 MiB `tcp_rmem[2]`. On a stock host,
+kernel in both directions at every budget. On this macOS, 2 MiB requests
+to the kernel and 8 MiB ones pinned, per §11.2's numbers.
+
+Rejected: a fixed choice either way. Unconditional deletion costs a fifth
+of upload on a host class that exists in the fleet and every tuned rig;
+unconditional pinning costs 3.2x of download and 4x of upload on every
+stock host. The condition is two integers the process reads once, and no
+fixed choice is right on both. Also rejected: deciding from a bandwidth-
+delay estimate, which would decide on an estimate where a fact is
+available.
+
+### 15.3 Tests, in the contract shape
+
+The landed rows U1 and U2 (§9.4) and the receive rows assert "left to the
+kernel", which is now the rule's answer only where it holds; they must
+take an injected policy so their outcome does not depend on the host's
+sysctls. The call sites moved to `configureUpstreamTcpConn(conn, request,
+socketBufferPolicy{}, false)`, an unknown policy that never pins, which
+keeps each row's meaning (nothing is set when the rule says kernel) and
+its failure on the pre-fix code.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| R1 | `TestSocketBufferRuleFollowsTheKernelCeiling` | the pure rule on the four measured points: request 256 KiB, 2 MiB, 8 MiB, 16 MiB against core max 4 MiB and ceiling 4 MiB doubled read kernel, kernel, explicit, explicit; against a stock 212,992 core max and 4 MiB ceiling all four read kernel; on an undoubled Darwin policy with max 8 MiB and ceiling 4 MiB, 2 MiB reads kernel and 8 MiB explicit; an unknown policy never pins | a tree without the rule | pure |
+| R2 | `TestUpstreamDialPinsBothBuffersBeforeConnectWhenTheRuleSays` (Linux only) | a `TcpBufferSettings` whose `DialControl` is built from an injected policy that pins both at 8 MiB: after the dial `SO_SNDBUF` and `SO_RCVBUF` read `2 × min(8 MiB, rmem_max)` from `/proc`, and under 512 MiB of inbound load `rcv_ssthresh` (`TCP_INFO`) exceeds the stock clamp, which shows the pin was applied at SYN time | a tree that pins after connect on a kernel that freezes, or that never pins | Linux runner |
+| R3 | `TestUpstreamDialLeavesBothBuffersWhenTheRuleSaysKernel` (Linux only) | the same dial under an injected policy that pins nothing: no `DialControl`, both buffers read their defaults after connect, and both grow under load to their `tcp_{w,r}mem[2]` | a tree that pins unconditionally | Linux runner |
+| R4 | `TestOpaqueDialPinsOnlyTheSendBufferAfterConnect` | a `TcpBufferSettings` with a `DialContextSettings` dial and a policy that pins both: after `configureUpstreamTcpConn` the send buffer reads the pin and the receive buffer its default | a tree that pins receive after connect | any |
+| R5 | `TestSocketBufferPolicyReadsThisKernel` (Linux and Darwin) | the process policy agrees with `/proc` or `sysctl` on the running host, and reads unknown where a value is missing | a mis-parsed sysctl | host |
+
+The measurement that calls this landed: the same twelve campaigns on the
+same host, where the rule must reproduce the 1 MiB gain, the 8 MiB null
+and turn the 32 MiB loss into a null, and one campaign on a stock-sysctl
+host where it must reproduce the deletion's gain at every budget. Both
+before any of it merges.
+
+## 16. The bistable receive window at 104,448 bytes: diagnosis plan
+
+Debugging round, 2026-09-13. Not fixed here; this says what the state is,
+what would produce it, and which readings decide between the candidates.
+
+### 16.1 What the number is
+
+104,448 is `131,072 × 204 / 256`: the default `tcp_rmem[1]` buffer through
+the kernel's default scaling ratio, which is `tcp_win_from_space` of the
+establishment-time receive buffer. It is the window the socket advertises
+before autotuning has ever grown the buffer. 15.4 to 16.1 Mb/s is
+104,448 × 8 divided by 52 to 54 ms, so the cell's round trip is about
+50 ms and the flow is window-limited at its initial window for the whole
+run. On both arms, since neither pins receive at that budget.
+
+So the state is: `sk_rcvbuf` never grew past 131,072, or grew while
+`rcv_ssthresh` was held at the initial window. Those are different
+failures with different signatures.
+
+### 16.2 The candidates and their signatures
+
+`ss -tmi` on the upstream socket in a stuck run and in an engaged run of
+the same cell, read twice ten seconds apart, decides among three:
+
+1. Autotuning blocked outright: `skmem rb` stays 131,072 and `rcv_space`
+   stays near its initial value (10 segments, about 14,600). Autotuning
+   (`tcp_rcv_space_adjust`) grows the buffer only at a read at least one
+   receiver round trip after the previous measurement and only when the
+   bytes copied since exceed the previous measurement. It cannot run at
+   all while the receiver's own round-trip estimate is zero, and it
+   cannot grow while the socket is under memory pressure. Readings:
+   `rcv_rtt` zero, or `rb` fixed with `rcv_space` fixed.
+2. Autotuning engaged but the window held: `rb` and `rcv_space` grew,
+   `rcv_ssthresh` stayed at 104,448. The advertised window grows in
+   `tcp_grow_window` only while the socket is not under memory pressure
+   and while the arriving segments are "efficient" (payload at least the
+   window their truesize would buy). Readings: `rb` above 131,072 with
+   `rcv_ssthresh` at 104,448; `nstat TcpExtTCPRcvCollapsed`,
+   `TcpExtPruneCalled` and the `tcp_mem` pressure state on the host.
+3. A lock set by something other than the provider: `rb` fixed at a
+   value that is not the default. Readings: `SO_RCVBUF` on the socket
+   against `tcp_rmem[1]`; the sdk's supplied dialer if any.
+
+Candidate 1 is where the provider's own behaviour enters. The socket
+reader parks in its first callback while the return sequence acquires a
+contract, about 350 ms in earlier device measurements, and the origin
+fills the initial window and stalls; when the reader resumes it drains
+that window in a burst and then reads continuously at the delivery rate.
+The receiver's round-trip estimate without timestamps is the time for one
+advertised window to arrive, which a parked reader inflates by the park,
+and the measurement interval follows that estimate. Whether the first
+measurement after the park sees a burst larger than the previous
+measurement, or a trickle smaller than it, depends on when the contract
+arrived relative to the first data. That is a coin flip on timing, which
+is the bistability's shape, and it is testable: log the first ten read
+sizes and their timestamps on the upstream socket, and `TCP_INFO`'s
+`rcv_rtt` and `rcv_space` after each, in a stuck and an engaged run. The
+prediction to hold me to: stuck runs show `rcv_space` never exceeding
+the first measurement's copied bytes and `rb` at 131,072; engaged runs
+show `rcv_space` doubling within the first three measurements.
+
+### 16.3 What follows from each
+
+If candidate 1 holds, the fix is app-side and in the reader's start-up:
+the first reads after the park must be one burst of at least the initial
+window, which the reader can arrange by reading with a buffer at least the
+initial window (the 32 MiB budget reads 32 KiB, the default 64 KiB, and
+the initial window is 104 KiB; that budget dependence is itself a signal)
+and by not returning to the socket until the queued batch is admitted, so
+the next read is again a burst. `SO_RCVLOWAT` is not the tool: it holds
+interactive responses until the low-water mark, and a fixed mark gives
+autotuning one doubling and then equality, which does not grow. If
+candidate 2 holds, it is host memory pressure and the provider is a
+bystander. If candidate 3, it is the dial path.
+
+Whatever holds, §15's rule already removes the exposure on hosts where a
+receive pin beats the ceiling, because a pre-connect pin sets the clamp
+without autotuning; it does nothing on stock hosts, where autotuning is
+the only way to a large window and must be made to engage.
+
+Row for the test stream once the signature is known:
+`TestUpstreamReceiveWindowEngagesAfterAParkedFirstRead` (Linux only): a
+loopback origin with 50 ms of netem delay is not available in process, so
+this row asserts the reader's read pattern rather than the kernel's
+response: after a first callback held for 300 ms, the reader's first read
+returns at least the socket's queued bytes in one call, and the second
+read does not occur before the first batch is admitted.
+
+## 17. What exercises the abandon change
+
+The upstream cell never abandons a flow, so 41d5045 has no measurement of
+its own. Three shapes exercise it; the first is the reporter's and the
+other two are the false positives it removes.
+
+1. Dead clients. N clients downloading through the provider, killed with
+   `SIGKILL` at t0 (no FIN, no RST from the client host: block the
+   client's egress with a firewall rule before the kill so the transport
+   dies silently). Record, per killed client id, `DestinationSendStats`
+   every 5 s and the release time from the provider's log
+   (`releaseUnreachableSource`). Prediction: every release lands between
+   120 and 150 s after the client's last acknowledgement on this tree,
+   120 to 210 s on main; the live clients' throughput recovers at the
+   release on both.
+2. A slow live client with many flows. One client shaped to 50 kb/s
+   (`tc tbf` on its ingress) opening 40 concurrent downloads of 1 MiB
+   each. Prediction: main releases and resets that client at least once
+   inside five minutes (its inner connections fail with a reset and the
+   downloads restart); this tree completes all 40 with no release. The
+   other clients' throughput is unchanged on both.
+3. A provider carrier outage. Twenty live clients downloading; the
+   provider's exchange connection blackholed for 150 s (a firewall rule
+   on the provider host toward the exchange, then removed). Prediction:
+   main releases every source at about 120 s and every client's downloads
+   reset when the carrier returns; this tree releases none, and the
+   downloads resume where they stalled.
+
+Each is a cell the measurement stream can build from its existing pieces;
+the log line and the counters are the instruments, and 1 to 3 are also
+the order in which a wrong prediction would be cheapest to learn from.
+
+## 18. The TCP-path ceiling: one UDP flow at 1.34 Gb/s, one TCP flow at 0.3, sixteen at 0.7
+
+The same provider, NAT and kernel socket deliver a single UDP flow
+losslessly at 1.34 to 1.39 Gb/s, flat in flow count, and TCP at 0.26 to
+0.33 Gb/s for one flow and 0.59 to 0.80 for sixteen. That excludes the
+socket layer, dispatch, NAT flow tables and the device stack, and puts the
+ceiling in what the TCP path does that the UDP path does not. From the
+source, the differences are these, in the order I would measure them.
+
+1. Synchronous admission on the flow's own reader. A TCP return is
+   `receiveRecoveryModeTcpSocket`: the socket reader's batch is admitted
+   to Transfer synchronously, and the reader does not read again until
+   it is (`readPackets` holds at most `min(SequenceBufferSize,
+   WriteBatchSize)`, 64 packets, of read-ahead). A UDP return is
+   nonblocking and the poller shard never waits. So one TCP flow's rate is
+   at most its read-ahead per admission latency: 64 packets of 1,500
+   bytes is 96 KB, and at 0.3 Gb/s that is one admission every 2.5 ms.
+   The instrument: the time each `retryReturnSend` attempt spends in
+   `sendGroupWithTimeoutDetailed` on a socket-owned item, exported as a
+   per-provider histogram, and the occupancy of `readPackets` when the
+   reader blocks on it. Prediction: the admission wait is the flow's
+   duty cycle; a single flow spends more than half its time in it.
+2. The per-flow reliable window. A TCP flow's return items are `Ack`
+   packs bounded by the destination's `ResendQueueMaxByteCount`, 2 MiB,
+   and the client's tunnel-side acknowledgements pace it; UDP is NoAck
+   and bypasses the queue. At the cell's round trip the 2 MiB bound is
+   itself about 2 MiB × 8 / RTT, which at 50 ms is 335 Mb/s: the single-
+   flow number. Sixteen flows to one client share one sequence and one
+   bound, so they cannot exceed it together; sixteen flows to sixteen
+   clients have sixteen bounds. The instrument is already there:
+   `ReliableAdmissionWaitCount` and duration, and `ResendQueueSize` per
+   destination. Prediction: with one client, sixteen flows read the same
+   aggregate as one plus what the acknowledgement clock allows; with
+   sixteen clients they scale. Whether the cell's sixteen flows share a
+   client decides which reading it took, and the design must say which
+   before the number is read.
+3. Batch shape on the reliable carrier. A TCP return group is at most
+   `providerReturnBatchMaxBytes`, 24 KiB, per admission; H1 then frames
+   and encrypts per group. UDP datagrams ride the poller's shard batches.
+   The instrument: frames per admission and bytes per H1 write, both
+   countable at `sendReturnBatchWithLimits`.
+4. The inner TCP itself: the NAT's window ladder toward the client
+   (`InitialWindowSize` 1 MiB doubling to `MaxWindowSize`), its
+   acknowledgement compression (`AckCompressTimeout` 50 ms), and the
+   client's own receive window through a tun with the tunnel's round
+   trip. UDP has none of these. The instrument: the NAT's advertised
+   window and the client's, read from the packets, and the sequence's
+   round-trip window (`RttWindow`).
+
+The first measurement is the split between 1 and 2, because it needs no
+new code: one client with sixteen flows against sixteen clients with one
+flow each, with `ReliableAdmissionWaitDuration` and the per-destination
+resend queue size beside the throughput. If sixteen clients scale and one
+client does not, the ceiling is the per-destination reliable bound and
+the follow-up is a per-destination lane count (`LogicalDataLaneCount`,
+built and off, gives independent 2 MiB bounds per lane). If neither
+scales, it is the reader's synchronous admission, and the follow-up is a
+bounded admission queue between the socket reader and the sender on the
+socket-owned path, which CODESTYLE allows for exactly this lane as "the
+narrow shared-pump exception" provided the queue has independent byte and
+count bounds, cancellation joins the worker, and every pooled buffer is
+returned before lifecycle completion.
