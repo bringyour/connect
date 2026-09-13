@@ -2728,3 +2728,112 @@ route-generation changes seen in the earlier stalled seeds, which are the
 transport's, and the mobile envelope on devices, which is §17's. If a
 mixed cell comes back behind merged outside the band, the reading should
 start from those, not from the rows the contract already holds.
+
+## 31. Twelfth round: the exchange-h3 hang is merged's on every step, §13.1 is not reached in it, and the missing bound is the multi-client's
+
+Written 2026-09-12 from the source at HEAD and at 89e1633, before the
+sixty-five-repetition rerun.
+
+### 31.1 What is ours in the hang: nothing on the send path
+
+The attribution of the escape to §13.1 does not hold on this route. In
+both trees `observeUnreliableResendTimeout` halves the flight and then
+returns before the release or the forget whenever no reliable route is
+available (89e1633 transfer.go 7592 to 7596; HEAD 8437 to 8441). On
+`exchange-h3` the hybrid transport publishes `Unreliable`, so
+`reliableRoutes` is empty and `reliableRouteAvailable` is false for the
+whole run: merged's release is never called either, the item stays
+tracked in both, and the window sits at its floor in both. The forget and
+the release differ only with a reliable sibling present, and the record
+says there was none. So on this route in this state the send path is
+merged's byte for byte, which is what the stream's diff of the blocking
+machinery found, and the deferral cannot engage (no cumulative progress),
+the backoff has nothing to back off, and §13.4 is on the client's receive
+path. Three hangs against none are a rate, not a mechanism, until the
+rerun says otherwise.
+
+Is §13.1 still right where it is live? Yes, and the proposed softer
+forms are backwards. Regrowth is admission, and a lane that acknowledges
+nothing is the one lane into which admitting more is pure waste; a window
+that "recovers between timeouts" on a dead lane writes more into the
+void. The escape from a dead lane is not the flight's to provide.
+
+### 31.2 Why the wait is unbounded: by design, and whose design
+
+The recovery path has a lifetime: `AckTimeout` 60 s and
+`UnreliableAckTimeout` 90 s from the item's original send, which a
+whole-window rewrite does not refresh (the only refresh of `sendTime`
+outside a selective acknowledgement is `receiveContractMissing`). A
+non-retained item past its lifetime exits the sequence ("exit ack
+timeout"), which surfaces the failure to the caller within ninety seconds.
+The twenty items in the hang did not exit because they were retained:
+`ip.go:7096` sets `retainAfterAckTimeout` on every Pack of a TCP-socket
+recovery-mode flow, deliberately, so that a slow provider does not tear
+down a flow whose own TCP recovery owns its lifetime. For those items
+`retainPastAckTimeout` skips the exit and the timer rewrites them at its
+8 s cap indefinitely: 127 firings across twenty items is the 2,541 to
+3,082 writes. So the recovery path did not fail to bound the wait; it
+delegated the bound, by design, to the layer that asked for retention.
+
+That layer is the multi-client. It has the signal, a send stall past its
+3 s bar, and it reached the verdict, and held it: `markStallHoldOnce`,
+"no receiving sibling: uplink unproven". On a route with one lane there is
+never a receiving sibling to prove the uplink against, so the hold is
+permanent by construction on exactly the route where it matters most, and
+the same hold, with the same counter, is in merged. That is the missing
+bound, and it is the route manager's and the multi-client's business:
+the recovery path can say "this route has acknowledged nothing for T
+while holding N retained items", and should say it plainly as a counter,
+but the decision to retire a provider that has no sibling is the
+multi-client's, and today it declines to make it.
+
+One alternative to a dead path must be checked in the three records
+before the report: `MissingContractWriteCount`. A new resident that
+receives the rewritten head and answers contract-missing would loop
+through `receiveContractMissing`, which refreshes `sendTime` and rewrites
+the head with the full contract, without ever advancing the cumulative
+acknowledgement; that would be a contract that the churned provider
+cannot accept, a different product defect with the same silhouette. If
+the counter is zero the path was dead; if it is in the hundreds the head
+was answered and refused.
+
+### 31.3 The test, in the contract shape, and no mechanism
+
+No recovery-path change. The deterministic test is a two-client route
+with one lane and TCP-socket-mode Packs whose far side stops
+acknowledging at a chosen point: it asserts that the sequence exposes the
+route's unacknowledged duration and retained count, that no item exits
+within the lifetime (the retention holding as designed), that every
+rewrite carries the head, and that the multi-client retires the route
+within a stated bound of the stall verdict. Merged fails the last row by
+construction, since it holds the verdict without a sibling, and the row
+is the product finding made assertable. Whether the bound should be the
+verdict's bar times a small factor or the transport's own liveness is
+the multi-client's design question, not this program's; the row states
+the bound so it cannot be forgotten.
+
+### 31.4 What the report should assert
+
+- The mechanism as traced: provider churn during the join leaves a
+  single-lane route that never acknowledges again; the flight halves to
+  its floor and admission blocks in 2 s waits with nothing on the
+  reliable side to offer (`blocked-with-reliable-capacity` zero); TCP
+  flow Packs are retained past their lifetime by design; the multi-
+  client's stall verdict is held for want of a sibling; every step is
+  merged's, including the counters.
+- §13.1 is not reached on this route in either tree, so it is not a
+  mechanism by which the hangs land on our arm; and it stays right where
+  it is reached.
+- Three of thirty-three against zero of thirty-three and zero of ten is
+  not significant; the rerun at sixty-five decides whether the rate
+  differs. If it does not, this is merged's product defect at the rig's
+  rate. If it does, the ours-only candidates on this route are exhausted
+  on the send path, and the reading should turn to the client's receive
+  path and the transport, with the records' `MissingContractWriteCount`
+  read first.
+- The product finding, independent of the rate: a client pinned to a
+  provider that churns during the join can hold a dead route for the
+  whole of a workload, because the layer that owns the flow's lifetime
+  declines to retire a route it cannot prove against a sibling. The fix
+  belongs to the multi-client's verdict, and the test above makes merged
+  fail it.
