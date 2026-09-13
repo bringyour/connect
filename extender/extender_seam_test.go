@@ -490,6 +490,11 @@ func TestExtenderListenSeamOwnsEveryPartialFactoryResult(t *testing.T) {
 	if carriers := server.Carriers(); !slices.Equal(carriers, []string{connect.ExtenderCarrierTcp}) {
 		t.Fatalf("carriers = %v, expected tcp", carriers)
 	}
+	// and a carrier that is serving carries no standing failure, whichever
+	// order its ports were bound in (G2)
+	if listenErrs := server.ListenErrors(); len(listenErrs) != 0 {
+		t.Fatalf("listen errors = %v, expected none for a serving carrier", listenErrs)
+	}
 	select {
 	case <-firstListener.closed:
 		t.Fatal("a failed bind released a listener that had bound")
@@ -574,6 +579,15 @@ func TestExtenderBindsEachCarrierIndependently(t *testing.T) {
 	}
 	if carrier := <-listenErrors; carrier != connect.ExtenderCarrierTcp {
 		t.Fatalf("listen error carrier = %q, expected tcp", carrier)
+	}
+	// the failure is kept beside the handler call, which is what a status read
+	// long after the bind sees (G2, F3)
+	serverListenErrors := server.ListenErrors()
+	if len(serverListenErrors) != 1 {
+		t.Fatalf("listen errors = %v, expected the tcp carrier only", serverListenErrors)
+	}
+	if serverListenErrors[connect.ExtenderCarrierTcp] == nil {
+		t.Fatalf("listen errors = %v, expected a tcp entry", serverListenErrors)
 	}
 	select {
 	case carrier := <-listenErrors:

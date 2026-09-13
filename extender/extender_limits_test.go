@@ -82,6 +82,31 @@ func TestExtenderRefusesASourceOverItsConcurrentCap(t *testing.T) {
 	}
 }
 
+// The tracked connection count is what the caps are counted against and what a
+// provider status renders (A9, F3). Nothing here waits on a clock: a completed
+// outer handshake proves the connection was counted, and CloseAndWait joins
+// every connection worker, which is what releases the count.
+func TestExtenderCountsItsConnections(t *testing.T) {
+	fixture := newExtenderFixture(t, "127.0.0.1", nil)
+
+	if count := fixture.server.ConnectionCount(); count != 0 {
+		t.Fatalf("connections before any dial = %d, expected none", count)
+	}
+	dialHandshakedExtenderConn(t, fixture)
+	if count := fixture.server.ConnectionCount(); count != 1 {
+		t.Fatalf("connections = %d, expected one", count)
+	}
+	dialHandshakedExtenderConn(t, fixture)
+	if count := fixture.server.ConnectionCount(); count != 2 {
+		t.Fatalf("connections = %d, expected two", count)
+	}
+
+	fixture.server.CloseAndWait()
+	if count := fixture.server.ConnectionCount(); count != 0 {
+		t.Fatalf("connections after shutdown = %d, expected none", count)
+	}
+}
+
 // The total cap refuses a connection from any source (A9).
 func TestExtenderRefusesOverTheTotalCap(t *testing.T) {
 	fixture := newExtenderFixture(t, "127.0.0.1", func(settings *ExtenderSettings) {

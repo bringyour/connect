@@ -303,12 +303,14 @@ func newExtenderRun(ctx context.Context, options *extenderOptions) (*extenderRun
 	activatorSettings := connect.DefaultExtenderActivatorSettings()
 	activatorSettings.ApiUrlV4 = familyServiceUrl(options.apiUrl, 4)
 	activatorSettings.ApiUrlV6 = familyServiceUrl(options.apiUrl, 6)
+	// a url with no service label to suffix has no api-v4 or api-v6 host; the
+	// plain url activates one family per cycle instead, which the operator
+	// derives from the caller address (C2)
+	activatorSettings.ApiUrl = options.apiUrl
 	if activatorSettings.ApiUrlV4 == "" && activatorSettings.ApiUrlV6 == "" {
-		// an activation must name the family it is for, which is what the
-		// api-v4 and api-v6 hosts are (C2). A url with no service label to
-		// suffix has neither, and nothing can be activated against it.
-		Err.Printf(
-			"extender: %s has no api-v4 or api-v6 host to activate against", options.apiUrl)
+		Out.Printf(
+			"extender: %s has no api-v4 or api-v6 host; activating one family per cycle",
+			options.apiUrl)
 	}
 	activatorSettings.HelloUrl = options.apiUrl
 	activatorSettings.ByJwt = func() string { return options.jwt }
@@ -365,15 +367,20 @@ func (self *extenderRun) run(ctx context.Context) error {
 }
 
 // One family's activation state as a log line, empty before its first attempt.
+// A family of 0 is an outcome the operator named no family for, which only the
+// plain api url can produce.
 func extenderFamilyStatusLine(family *connect.ExtenderFamilyActivationStatus) string {
+	name := "extender"
+	if 0 < family.IpVersion {
+		name = fmt.Sprintf("extender v%d", family.IpVersion)
+	}
 	switch {
 	case family.Activated:
 		return fmt.Sprintf(
-			"extender v%d activated at %s until %s",
-			family.IpVersion, family.Ip, family.ExpireTime.Format(time.RFC3339))
+			"%s activated at %s until %s",
+			name, family.Ip, family.ExpireTime.Format(time.RFC3339))
 	case family.LastError != "":
-		return fmt.Sprintf(
-			"extender v%d is not activated: %s", family.IpVersion, family.LastError)
+		return fmt.Sprintf("%s is not activated: %s", name, family.LastError)
 	default:
 		return ""
 	}

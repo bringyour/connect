@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -224,8 +225,12 @@ type ExtenderServer struct {
 	// the carriers whose bind succeeded, in wire order. Empty until
 	// ListenAndServe has bound them, because a carrier that did not bind must
 	// not be offered to a client or to an activation (G2).
-	carriers      []string
-	forwardDialer *net.Dialer
+	carriers []string
+	// the last bind failure of each carrier that has one, which is what a
+	// provider role renders beside the carrier list (G2, F3). A carrier that
+	// binds clears its entry.
+	carrierListenErrs map[string]error
+	forwardDialer     *net.Dialer
 
 	// closed once every carrier bind has been attempted, and at the latest
 	// when serving ends. A caller that reports the carriers -- the activation
@@ -301,6 +306,7 @@ func NewExtenderServer(
 		allowedHosts:           allowedHosts,
 		ports:                  ports,
 		carriers:               []string{},
+		carrierListenErrs:      map[string]error{},
 		forwardDialer:          forwardDialer,
 		listening:              make(chan struct{}),
 		settings:               settings,
@@ -686,6 +692,15 @@ func (self *ExtenderServer) ListenAndServe() error {
 		// nothing was configured to bind; there is nothing to serve
 		return fmt.Errorf("extender has no carrier to listen on")
 	}
+	// a carrier that is serving has no standing bind failure, whichever order
+	// its ports were bound in
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		for _, carrier := range self.carriers {
+			delete(self.carrierListenErrs, carrier)
+		}
+	}()
 	// the carrier list is complete, so nothing served below can report a
 	// partial one
 	self.markListening()
@@ -773,6 +788,8 @@ func (self *ExtenderServer) addCarrier(carrier string) {
 	slices.SortFunc(self.carriers, func(a string, b string) int {
 		return slices.Index(extenderCarrierOrder, a) - slices.Index(extenderCarrierOrder, b)
 	})
+	// a carrier that is serving has no standing bind failure
+	delete(self.carrierListenErrs, carrier)
 }
 
 // Reports one carrier bind failure (G2). The carrier is disabled; the log line
@@ -780,6 +797,11 @@ func (self *ExtenderServer) addCarrier(carrier string) {
 // operator needs, and the handler is what the sdk provider role reads.
 func (self *ExtenderServer) reportListenError(carrier string, err error) {
 	log.Printf("[extender] listen error (%s): %s", carrier, err)
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		self.carrierListenErrs[carrier] = err
+	}()
 	if self.settings.ListenErrorHandler != nil {
 		self.settings.ListenErrorHandler(carrier, err)
 	}
@@ -1005,6 +1027,24 @@ func (self *ExtenderServer) Carriers() []string {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	return slices.Clone(self.carriers)
+}
+
+// The last bind failure of each carrier that has one (G2). A carrier that bound
+// has no entry, so an empty map with a full carrier list is a fully listening
+// extender. The failures are kept rather than only handed to
+// ListenErrorHandler because a status is read long after the bind.
+func (self *ExtenderServer) ListenErrors() map[string]error {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return maps.Clone(self.carrierListenErrs)
+}
+
+// Connections open over every carrier right now, which is what the per-source
+// and total caps of A9 are counted against.
+func (self *ExtenderServer) ConnectionCount() int {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return self.connectionCount
 }
 
 // Connection errors are observable only when a caller installs the test seam.

@@ -783,6 +783,99 @@ func TestExtenderActivatorHoldsWithNoCarrier(t *testing.T) {
 	}
 }
 
+// With neither family api url set the activator posts once per cycle to the
+// plain api url and records the outcome under the family the answer reports,
+// which is the family the operator derived from the caller address (C2, G3).
+func TestExtenderActivatorUsesThePlainApiUrl(t *testing.T) {
+	// the plain url is the v6 host of the fixture, so the family in the status
+	// can only have come from the answer and never from a default
+	fixture := newTestActivatorFixture(t, func(settings *ExtenderActivatorSettings) {
+		settings.ApiUrl = settings.ApiUrlV6
+		settings.ApiUrlV4 = ""
+		settings.ApiUrlV6 = ""
+	})
+
+	fixture.waitPass()
+	if post := fixture.waitPost(); post.ipVersion != 6 {
+		t.Fatalf("posted to v%d, expected the plain api url", post.ipVersion)
+	}
+	if ipVersion := fixture.waitActivation(); ipVersion != 6 {
+		t.Fatalf("activated v%d, expected the family the answer reported", ipVersion)
+	}
+
+	status := fixture.activator.Status()
+	if len(status.Families) != 1 {
+		t.Fatalf("families = %+v, expected only the family the answer named", status.Families)
+	}
+	family := status.Family(6)
+	if family == nil || !family.Activated {
+		t.Fatalf("v6 status = %+v, expected activated", family)
+	}
+	if ip := family.Ip.String(); ip != testActivateIpv6 {
+		t.Fatalf("v6 ip = %s, expected %s", ip, testActivateIpv6)
+	}
+	if state := fixture.directoryState(testActivateIpv6); state != ExtenderStateActive {
+		t.Fatalf("%s state = %q, expected active", testActivateIpv6, state)
+	}
+
+	// one post per cycle: there is no second url to reach the other family with
+	fixture.clock.advance(25 * time.Hour)
+	fixture.wake()
+	fixture.waitPost()
+	fixture.waitActivation()
+	fixture.step(1 * time.Minute)
+	if count := fixture.operator.postCount(6); count != 2 {
+		t.Fatalf("posts = %d, expected one per cycle", count)
+	}
+	if count := fixture.operator.postCount(4); count != 0 {
+		t.Fatalf("posts to the v4 host = %d, expected none", count)
+	}
+}
+
+// A refusal through the plain api url, which names no family, is still visible
+// in the status: it is held under the placeholder family until an answer names
+// one (C2, F3).
+func TestExtenderActivatorRecordsAPlainApiUrlRefusal(t *testing.T) {
+	fixture := newTestActivatorFixture(t, func(settings *ExtenderActivatorSettings) {
+		settings.ApiUrl = settings.ApiUrlV4
+		settings.ApiUrlV4 = ""
+		settings.ApiUrlV6 = ""
+	})
+	fixture.operator.setRefusal("the tcp carrier did not answer")
+
+	fixture.waitPass()
+	fixture.waitPost()
+	fixture.step(1 * time.Minute)
+
+	status := fixture.activator.Status()
+	if len(status.Families) != 1 {
+		t.Fatalf("families = %+v, expected the placeholder only", status.Families)
+	}
+	placeholder := status.Families[0]
+	if placeholder.IpVersion != 0 || placeholder.Activated {
+		t.Fatalf("placeholder = %+v, expected an unactivated family 0", placeholder)
+	}
+	if placeholder.LastError != "the tcp carrier did not answer" {
+		t.Fatalf("last error = %q", placeholder.LastError)
+	}
+
+	// the first answer that names a family replaces the placeholder
+	fixture.operator.setRefusal("")
+	fixture.clock.advance(25 * time.Hour)
+	fixture.wake()
+	fixture.waitPost()
+	if ipVersion := fixture.waitActivation(); ipVersion != 4 {
+		t.Fatalf("activated v%d, expected v4", ipVersion)
+	}
+	status = fixture.activator.Status()
+	if len(status.Families) != 1 || status.Families[0].IpVersion != 4 {
+		t.Fatalf("families = %+v, expected v4 alone", status.Families)
+	}
+	if !status.Families[0].Activated || status.Families[0].LastError != "" {
+		t.Fatalf("v4 status = %+v, expected activated", status.Families[0])
+	}
+}
+
 // The posted args are the server's json contract field for field (C2). The
 // literal document is the shape `controller.ExtenderActivateArgs` declares.
 func TestExtenderActivateArgsJsonContract(t *testing.T) {

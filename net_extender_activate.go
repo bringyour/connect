@@ -26,7 +26,10 @@ import (
 // address the operator actually saw. That is why the activation is posted once
 // per family, to the family api url, and why it must never cross an extender --
 // the operator would see the extender's address and publish a record for the
-// wrong host.
+// wrong host. An operator that has no family api hosts is activated through the
+// plain api url instead, once per cycle: the operator derives the family from
+// the caller address either way, so the answer names the family that was
+// activated and the outcome is recorded under it.
 //
 // The loop runs on five triggers (G3): start, the 24 hour tick, the own key
 // observed revoked in the directory, a changed caller address from hello, and a
@@ -113,6 +116,12 @@ type ExtenderActivatorSettings struct {
 	// a known family. Either may be empty, which skips that family.
 	ApiUrlV4 string
 	ApiUrlV6 string
+	// The plain api url, used only when neither family url is set. The
+	// operator derives the family from the caller address, so one post per
+	// cycle reaches whichever family this host's egress used and the answer
+	// names it. An operator with api-v4 and api-v6 hosts never takes this
+	// path, because a family url is exact for the family it names.
+	ApiUrl string
 	// The api url whose `/hello` reports the caller address this extender is
 	// published under (G3). Empty disables the address check.
 	HelloUrl string
@@ -238,9 +247,16 @@ type ExtenderActivator struct {
 	wakeMonitor        *Monitor
 	unsubNetworkChange func()
 
+	// true when neither family api url is set, so one post per cycle goes to
+	// the plain api url and the answer names the family it activated
+	fallback bool
+
 	stateLock sync.Mutex
 	version   uint64
-	families  map[int]*ExtenderFamilyActivationStatus
+	// keyed by ip version. In the fallback mode an entry is created when an
+	// answer names its family, and key 0 is the placeholder of an outcome that
+	// named none.
+	families map[int]*ExtenderFamilyActivationStatus
 	// true while a revocation of this key is standing in the directory, so the
 	// re-activation triggers on the edge and the backoff governs the retry
 	revokedObserved bool
@@ -289,6 +305,7 @@ func NewExtenderActivator(
 		wakeMonitor:   NewMonitor(),
 		families:      map[int]*ExtenderFamilyActivationStatus{},
 	}
+	self.fallback = len(self.ipVersions()) == 0 && self.fallbackApiUrl() != ""
 	for _, ipVersion := range self.ipVersions() {
 		self.families[ipVersion] = &ExtenderFamilyActivationStatus{IpVersion: ipVersion}
 	}
@@ -328,6 +345,11 @@ func (self *ExtenderActivator) apiUrl(ipVersion int) string {
 	return strings.TrimSpace(self.settings.ApiUrlV4)
 }
 
+// The plain api url an operator without family api hosts is activated through.
+func (self *ExtenderActivator) fallbackApiUrl() string {
+	return strings.TrimSpace(self.settings.ApiUrl)
+}
+
 // The status as a consumer reads it. The entries are copies, so a renderer
 // cannot alias the loop's state.
 func (self *ExtenderActivator) Status() *ExtenderActivatorStatus {
@@ -335,7 +357,9 @@ func (self *ExtenderActivator) Status() *ExtenderActivatorStatus {
 	defer self.stateLock.Unlock()
 
 	status := &ExtenderActivatorStatus{Families: []*ExtenderFamilyActivationStatus{}}
-	for _, ipVersion := range []int{4, 6} {
+	// 0 is the fallback placeholder, which carries the outcome of an answer
+	// that named no family and is dropped as soon as one does
+	for _, ipVersion := range []int{0, 4, 6} {
 		family, ok := self.families[ipVersion]
 		if !ok {
 			continue
@@ -573,6 +597,10 @@ func (self *ExtenderActivator) activate(now time.Time) bool {
 		carriers = self.settings.Carriers()
 	}
 
+	if self.fallback {
+		return self.activateFallback(carriers, now)
+	}
+
 	attempted := false
 	succeeded := true
 	for _, ipVersion := range self.ipVersions() {
@@ -587,7 +615,7 @@ func (self *ExtenderActivator) activate(now time.Time) bool {
 			succeeded = false
 			continue
 		}
-		if !self.activateFamily(ipVersion, carriers, now) {
+		if !self.activateUrl(ipVersion, self.apiUrl(ipVersion), carriers, now) {
 			succeeded = false
 		}
 	}
@@ -601,9 +629,29 @@ func (self *ExtenderActivator) ipVersionSupported(ipVersion int) bool {
 	return FamilySupported(ipVersion)
 }
 
-// Posts one family's activation and records what came back (C2).
-func (self *ExtenderActivator) activateFamily(
+// Posts one activation to the plain api url, which is what an operator with no
+// family api hosts offers. One post per cycle: there is no second url to reach
+// the other family with, and the operator derives the family from the caller
+// address, so the answer names whichever family this host's egress used. A host
+// with no global address of either family is skipped exactly as a family
+// without one is (G3).
+func (self *ExtenderActivator) activateFallback(carriers []string, now time.Time) bool {
+	if !self.ipVersionSupported(4) && !self.ipVersionSupported(6) {
+		return false
+	}
+	if len(carriers) == 0 {
+		self.recordFailure(0, now, "no carrier is listening")
+		return false
+	}
+	return self.activateUrl(0, self.fallbackApiUrl(), carriers, now)
+}
+
+// Posts one activation and records what came back (C2). `ipVersion` is the
+// family the outcome belongs to; 0 takes it from the answer, which is the
+// fallback mode.
+func (self *ExtenderActivator) activateUrl(
 	ipVersion int,
+	apiUrl string,
 	carriers []string,
 	now time.Time,
 ) bool {
@@ -620,7 +668,7 @@ func (self *ExtenderActivator) activateFamily(
 	result, err := PostExtenderActivate(
 		ctx,
 		self.settings.ClientStrategy,
-		self.apiUrl(ipVersion),
+		apiUrl,
 		self.byJwt(),
 		args,
 	)
@@ -633,6 +681,9 @@ func (self *ExtenderActivator) activateFamily(
 		self.recordFailure(ipVersion, now, "the operator sent no activation result")
 		return false
 	}
+	if ipVersion == 0 {
+		ipVersion = extenderActivateResultIpVersion(result)
+	}
 	if !result.Activated {
 		message := result.Error
 		if message == "" {
@@ -643,12 +694,38 @@ func (self *ExtenderActivator) activateFamily(
 		return false
 	}
 
+	// the record is applied either way: it is signed and carries its own
+	// addresses, which the directory keys by the public key rather than by the
+	// family this loop tracks
 	self.applyRecords(result)
+	if ipVersion == 0 {
+		// an activation with no family cannot be attributed to one, and the
+		// mesh address of D2 has no family to be published under
+		self.recordFailure(ipVersion, now, "the operator named no address family")
+		return false
+	}
 	self.recordSuccess(ipVersion, now, result)
 	if self.settings.OnActivated != nil {
 		self.settings.OnActivated(ipVersion, result)
 	}
 	return true
+}
+
+// The family an activation answer belongs to: what the operator reported, else
+// the family of the address it published, else 0.
+func extenderActivateResultIpVersion(result *ExtenderActivateResult) int {
+	switch result.IpVersion {
+	case 4, 6:
+		return result.IpVersion
+	}
+	ip, err := netip.ParseAddr(result.Ip)
+	if err != nil {
+		return 0
+	}
+	if ip.Unmap().Is6() {
+		return 6
+	}
+	return 4
 }
 
 // Applies this extender's own record and the bootstrap sample into the
@@ -683,6 +760,26 @@ func (self *ExtenderActivator) applyRecords(result *ExtenderActivateResult) {
 	}
 }
 
+// The entry one outcome is recorded under. Every family this activator runs
+// has an entry from construction, so an unknown family records nothing. In the
+// fallback mode the family is whatever the answer named, so the entry is
+// created on first use and the placeholder of an answer that named none is
+// dropped by the first one that does.
+func (self *ExtenderActivator) familyWithLock(ipVersion int) *ExtenderFamilyActivationStatus {
+	if family, ok := self.families[ipVersion]; ok {
+		return family
+	}
+	if !self.fallback {
+		return nil
+	}
+	if 0 < ipVersion {
+		delete(self.families, 0)
+	}
+	family := &ExtenderFamilyActivationStatus{IpVersion: ipVersion}
+	self.families[ipVersion] = family
+	return family
+}
+
 func (self *ExtenderActivator) recordSuccess(
 	ipVersion int,
 	now time.Time,
@@ -692,7 +789,7 @@ func (self *ExtenderActivator) recordSuccess(
 
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	family := self.families[ipVersion]
+	family := self.familyWithLock(ipVersion)
 	if family == nil {
 		return
 	}
@@ -712,12 +809,24 @@ func (self *ExtenderActivator) recordSuccess(
 func (self *ExtenderActivator) recordFailure(ipVersion int, now time.Time, message string) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	family := self.families[ipVersion]
-	if family == nil {
+
+	families := []*ExtenderFamilyActivationStatus{}
+	if ipVersion == 0 && 0 < len(self.families) {
+		// the answer named no family, and in the fallback mode every family
+		// was activated through the one url this failure came from
+		for _, family := range self.families {
+			families = append(families, family)
+		}
+	} else if family := self.familyWithLock(ipVersion); family != nil {
+		families = append(families, family)
+	}
+	if len(families) == 0 {
 		return
 	}
-	family.Activated = false
-	family.LastActivationTime = now
-	family.LastError = message
+	for _, family := range families {
+		family.Activated = false
+		family.LastActivationTime = now
+		family.LastError = message
+	}
 	self.changedWithLock()
 }
