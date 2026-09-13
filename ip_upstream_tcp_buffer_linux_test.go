@@ -203,3 +203,82 @@ func tcpSocketBufferSize(t *testing.T, tcpConn *net.TCPConn, option int) int {
 	}
 	return size
 }
+
+// THROUGHPUTFIX §9.4 U2. The row above is the value-unchanged proxy: it says
+// the call was not made. This says what the call cost. An explicit SO_SNDBUF
+// sets SOCK_SNDBUF_LOCK, and the kernel refuses to expand a locked send
+// buffer, so the socket stops following the congestion window for the life of
+// the flow at whatever the clamped request happened to be. Left alone the
+// buffer grows to tcp_wmem's maximum, which is the ceiling an upload through
+// the provider can fill; this drives a flow until it gets there.
+func TestUpstreamTcpSendBufferGrowsUnderLoad(t *testing.T) {
+	sendAutotuneMax := upstreamSysctlValues(t, "net/ipv4/tcp_wmem")[2]
+	tcpConn := dialDrainingUpstreamTestTcpConn(t)
+	// read before the setup, not after: a tree that pins the buffer has
+	// already replaced the establishment value by then, and a pin above the
+	// tcp_wmem maximum would make the skip below swallow the failure
+	establishment := tcpSocketSendBufferSize(t, tcpConn)
+	if sendAutotuneMax <= establishment {
+		t.Skipf(
+			"the socket is established with a %d byte send buffer against a net.ipv4.tcp_wmem maximum of %d, so there is nothing to grow into",
+			establishment,
+			sendAutotuneMax,
+		)
+	}
+	configureUpstreamTcpConn(tcpConn)
+
+	// enough writes to take the congestion window past the point where the
+	// kernel's own sizing exceeds the maximum; it stops there, so the loop
+	// stops there too rather than writing a fixed volume
+	const maxWriteByteCount = 512 * 1024 * 1024
+	block := make([]byte, 1024*1024)
+	sendBufferSize := establishment
+	for writtenByteCount := 0; writtenByteCount < maxWriteByteCount; writtenByteCount += len(block) {
+		if _, err := tcpConn.Write(block); err != nil {
+			t.Fatal(err)
+		}
+		if sendBufferSize = tcpSocketSendBufferSize(t, tcpConn); sendBufferSize == sendAutotuneMax {
+			return
+		}
+	}
+
+	t.Fatalf(
+		"upstream socket send buffer settled at %d from %d over %d bytes written, want the net.ipv4.tcp_wmem maximum %d; an explicit SO_SNDBUF locks the buffer at its clamped request and the flow can never hold more than that unacknowledged",
+		sendBufferSize,
+		establishment,
+		maxWriteByteCount,
+		sendAutotuneMax,
+	)
+}
+
+// a connected loopback client socket whose peer drains continuously, so the
+// flow's congestion window can grow and the send buffer with it
+func dialDrainingUpstreamTestTcpConn(t *testing.T) *net.TCPConn {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- conn
+		io.Copy(io.Discard, conn)
+		conn.Close()
+	}()
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if _, ok := <-accepted; !ok {
+		t.Fatal("the upstream test peer did not accept")
+	}
+	return conn.(*net.TCPConn)
+}
