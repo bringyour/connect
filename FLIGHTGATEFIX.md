@@ -3429,10 +3429,17 @@ both builds plus these two, one unit per scenario-run:
 Fisher two-sided on the deep count is 0.059. Three cells, two independently
 built arms, and the rule-off column empty in every one.
 
-This changes what 33.8 asked for. The question is no longer only why a
-suppressed recovery path cannot clear a queue-inflated relay; run 6 was on
-a lossy direct profile with no queue inflation at all, and it still wedged
-for twelve minutes at 0.04 writes a second. Whatever the wedge is, the rule
+Run 6's environment is worth stating exactly, because it is benign. The
+direct lane was 1 Gbit/s, 10 ms, 1 per cent independent loss. The relay lane
+was 1 Gbit/s, 100 ms, no loss. No queue inflation on either, no blackhole,
+no processing delay, no scheduled events at all. A 1 per cent loss link at
+gigabit rates is the mildest impairment in the whole matrix, and the rule
+wedged a transfer on it for twelve minutes and then failed it.
+
+This changes what 33.8 asked for. The question is no longer why a suppressed
+recovery path cannot clear a queue-inflated relay, because run 6 had no
+inflation anywhere and still wedged for twelve minutes at 0.04 writes a
+second. Whatever the wedge is, the rule
 reaches it on more than one kind of link, and the common factor on the
 sender's side is that the lane's precondition, a later same-lane
 acknowledgement, is exactly what a wedged lane cannot produce. A rule whose
