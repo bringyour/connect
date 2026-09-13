@@ -23,10 +23,10 @@ import (
 // recover the list, which is expected, since a probe can also discover any one
 // name by connecting.
 //
-// The initial content is an operator decision. The bundled resource ships an
-// empty list, which makes EnumerateExtenderProfiles yield nothing, so random
-// extender discovery is inert until operations provide the list with
-// scripts/extender_spoof.
+// The content is an operator decision, rebuilt with scripts/extender_spoof. A
+// resource that decodes to nothing leaves every dial with no outer name at all
+// rather than the operator's, which is the deliberate fallback of A10, so a
+// list that is missing or unreadable degrades instead of leaking.
 
 // The resource is `mask || xor(gzip(one domain per line), repeat(mask))`.
 const extenderSpoofMaskByteCount = 8
