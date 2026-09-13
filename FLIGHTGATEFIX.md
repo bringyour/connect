@@ -3326,3 +3326,60 @@ waiting on. Rows 12 and 13 assert the probe's cadence in process and pass,
 so the in-process instrument does not reach the condition; the cell does.
 The exports of §27.1 remain what we have, and 33.4 says they are not enough
 on their own.
+
+### 33.7 The suppression is across every recovery category, not just timeouts
+
+§33.5 uses whole-window timeout writes because that is where the rule acts.
+Total recovery writes, this program's designated primary, says the same
+thing and says it about the whole recovery path. Per wedged run, the sum of
+timeout, selective-gap, ack-tail-probe, cumulative-probe and carrier-change
+writes divided by the wedge's length:
+
+| State | run | wedge s | total recovery writes/s |
+| --- | ---: | ---: | ---: |
+| rule off | 61c 11 | 31.9 | 78.8 |
+| rule off | fix 12 | 52.0 | 63.9 |
+| rule off | 61c 20 | 61.2 | 57.4 |
+| rule on | fix 7 | 34.7 | 36.1 |
+| rule on | fix 8 | 290.7 | 13.5 |
+| rule on | fix 6 | 193.3 | 11.1 |
+| rule on | 61c 7 | 262.7 | 10.3 |
+| rule on | 61c 17 | 727.6 | 1.7 |
+| rule on | 61c 13 | 41.3 | 0.3 |
+
+A normal run of this cell writes 0.06 a second, so every row here is the
+recovery path running hot; what differs is how hot. The three rule-off
+wedges occupy 57 to 79 and all cleared inside a minute. The four deep wedges
+occupy 1.7 to 13.5, a band that does not touch the rule-off band. The rule
+is not merely deferring timeouts during a wedge, it is running the entire
+recovery path at a fifth to a fortieth of the rate the rule-off runs use to
+get out.
+
+Two rows do not fit a rate-only story and are stated rather than smoothed.
+The 34.7-second rule-on wedge wrote 36.1 a second, between the bands, and
+cleared quickly. The 41.3-second rule-on wedge wrote 0.3 a second and also
+cleared quickly, so something other than writing can end a wedge. Any
+mechanism proposed for 33.8 has to allow that.
+
+### 33.8 Where the next round should look
+
+The head probe is not obviously the culprit and the counters say so. During
+the deep wedges the selective-gap path is live, 1,490 and 701 writes, 5.1
+and 3.6 a second, so holes are being addressed and not only heads rewritten.
+The gap rate is a third of the rule-off runs' 16 a second, which is the same
+proportional suppression as everything else rather than a distinct defect.
+
+So the question is not "which item does the probe target". It is why a
+recovery path running at 10 to 13 writes a second cannot clear a queue-
+inflated relay that the same path clears in under a minute at 57 to 79. Two
+readings fit and the instruments here cannot separate them: the relay's
+queue drains only when offered more than some rate, so a suppressed sender
+never reaches the drain threshold; or the suppression is incidental and the
+wedge is a receiver state that only a burst dislodges. The 41-second wedge
+that cleared at 0.3 writes a second argues against the first being the whole
+story.
+
+Deciding between them needs an instrument this package does not have: the
+relay's own queue depth over the wedge, alongside the sender's offered rate.
+That is a harness change, not another twenty-repetition campaign on this
+shape, and it is the recommendation this round ends on.
