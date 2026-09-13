@@ -1,9 +1,9 @@
 // The topic validator's trust boundary (EXTENDER.md D1).
 //
-// The validator is what stops a forgery before it is relayed, so a message it
-// accepts costs the whole mesh and a message it rejects costs its sender peer
-// score. These tests drive it directly, with no host and no topic, because the
-// decision is a pure function of the message and the directory's key set.
+// The validator is what stops a forgery before it is relayed: a message it
+// accepts costs the whole mesh, and one it rejects goes no further. These tests
+// drive it directly, with no host and no topic, because the decision is a pure
+// function of the message and the directory's key set.
 
 package gossip
 

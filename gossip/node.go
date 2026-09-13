@@ -451,8 +451,11 @@ func (self *Node) newHost(privateKey crypto.PrivKey) (host.Host, error) {
 }
 
 // Joins the space's topic with strict signing and the root-signature validator
-// (D1). The validator runs before a message is relayed, so a forgery costs its
-// sender peer score and goes no further.
+// (D1). The validator runs before a message is relayed, so a forgery goes no
+// further than the node that received it. Peer scoring is left at the library
+// default, which is off, so a rejection costs its sender nothing beyond the
+// relay it did not get; the root signature on every message is what bounds a
+// hostile member, not a score.
 func (self *Node) joinTopic() error {
 	pubSub, err := pubsub.NewGossipSub(
 		self.ctx,
