@@ -1478,6 +1478,17 @@ type ClientSendRecoveryStatsSnapshot struct {
 	// campaign seed from another independently of any candidate: §27.1
 	// predicts the collapsing seed reads the smallest interval at onset.
 	// No behaviour depends on them.
+	// RouteUnacknowledgedDuration is how long the route carrying this
+	// sequence's oldest outstanding item has gone without acknowledging
+	// anything, and RouteRetainedItemCount how many of its items are still
+	// held. Together they make the exchange-h3 hang visible in a campaign
+	// without a log dive: a route that has acknowledged nothing for the
+	// whole of a workload while holding items their flow retains past their
+	// acknowledgement timeout. Observation only; no behaviour depends on
+	// either, and the decision to retire such a route belongs to the
+	// multi-client rather than to the recovery path (FLIGHTGATEFIX §31).
+	RouteUnacknowledgedDuration       time.Duration
+	RouteRetainedItemCount            uint64
 	ReliableLaneLongestAckGap         time.Duration
 	ReliableLaneStallOnsetInterval    time.Duration
 	ReliableLaneStallOnsetOutstanding uint64
@@ -1585,6 +1596,8 @@ type Client struct {
 	laneProbeWriteCount                         atomic.Uint64
 	laneProbeRideCount                          atomic.Uint64
 	laneProvenTimeoutWriteCount                 atomic.Uint64
+	routeUnacknowledgedNanos                    atomic.Uint64
+	routeRetainedItemCount                      atomic.Uint64
 	reliableLaneLongestAckGapNanos              atomic.Uint64
 	reliableLaneStallOnsetIntervalNanos         atomic.Uint64
 	reliableLaneStallOnsetOutstanding           atomic.Uint64
@@ -1969,6 +1982,8 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 		LaneProbeWriteCount:         self.laneProbeWriteCount.Load(),
 		LaneProbeRideCount:          self.laneProbeRideCount.Load(),
 		LaneProvenTimeoutWriteCount: self.laneProvenTimeoutWriteCount.Load(),
+		RouteUnacknowledgedDuration: time.Duration(self.routeUnacknowledgedNanos.Load()),
+		RouteRetainedItemCount:      self.routeRetainedItemCount.Load(),
 		ReliableLaneLongestAckGap: time.Duration(
 			self.reliableLaneLongestAckGapNanos.Load()),
 		ReliableLaneStallOnsetInterval: time.Duration(
@@ -2242,6 +2257,46 @@ func (self *SendSequence) laneLoneTail(item *sendItem) bool {
 		return false
 	}
 	return self.laneOldestOutstanding(item.carrierRoute) == item
+}
+
+// observeRouteStall records how long the route carrying the oldest
+// outstanding item has gone without acknowledging anything, and how many of
+// its items are still held. Observation only (FLIGHTGATEFIX §31.3).
+func (self *SendSequence) observeRouteStall(now time.Time) {
+	var oldest *sendItem
+	for _, item := range self.sendItems {
+		if item == nil || item.selectiveAcked || item.carrierRoute == nil {
+			continue
+		}
+		oldest = item
+		break
+	}
+	if oldest == nil {
+		return
+	}
+	retained := 0
+	for _, item := range self.sendItems {
+		if item != nil && item.carrierRoute == oldest.carrierRoute {
+			retained += 1
+		}
+	}
+	unacknowledged := now.Sub(oldest.sendTime)
+	if lastAck, ok := self.laneLastAck(oldest.carrierRoute); ok {
+		unacknowledged = now.Sub(lastAck)
+	}
+	if unacknowledged <= 0 {
+		return
+	}
+	for {
+		current := self.client.routeUnacknowledgedNanos.Load()
+		if uint64(unacknowledged) <= current {
+			break
+		}
+		if self.client.routeUnacknowledgedNanos.CompareAndSwap(current, uint64(unacknowledged)) {
+			self.client.routeRetainedItemCount.Store(uint64(retained))
+			break
+		}
+	}
 }
 
 // laneLastAck reports when this route last acknowledged anything.
@@ -6912,6 +6967,7 @@ sendSequenceLoop:
 			0,
 			self.sendBufferSettings.ResendQueueMaxByteCount,
 		)
+		self.observeRouteStall(sendTime)
 		// FLIGHTGATEFIX §22: a reliable lane may hold what it has shown it
 		// can carry. Beyond that the queue only adds delay, the scaled timer
 		// fires on depth rather than on loss, and the whole window is

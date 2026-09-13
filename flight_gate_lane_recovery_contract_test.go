@@ -62,6 +62,14 @@ var metricRouteGenerationsForTree = func(ClientSendRecoveryStatsSnapshot) (uint6
 	return 0, false
 }
 
+// deadRouteExposureForTree reports the route's unacknowledged duration and
+// retained item count where the tree exposes them.
+var deadRouteExposureForTree = func(
+	ClientSendRecoveryStatsSnapshot,
+) (time.Duration, uint64, bool) {
+	return 0, 0, false
+}
+
 func laneRecoveryRecordSends(sequence *SendSequence, items []*sendItem) {
 	laneRecoveryRecordSendsForTree(sequence, items)
 }

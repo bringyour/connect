@@ -55,6 +55,11 @@ func init() {
 			stats.SelectiveGapWritesOfDeferredItems[gapHoleCarrierUnreliable],
 			true, true
 	}
+	deadRouteExposureForTree = func(
+		stats ClientSendRecoveryStatsSnapshot,
+	) (time.Duration, uint64, bool) {
+		return stats.RouteUnacknowledgedDuration, stats.RouteRetainedItemCount, true
+	}
 	metricRouteGenerationsForTree = func(
 		stats ClientSendRecoveryStatsSnapshot,
 	) (uint64, bool) {
