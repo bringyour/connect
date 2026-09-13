@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"net"
 	"net/netip"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -35,10 +34,10 @@ import (
 // what comes back (G3).
 //
 // Everything is derived from one `--api_url`. The family activation urls come
-// from it by the sdk's label suffix rule, the extender dns name by the sdk's
-// service label rule, and the network host -- which names the gossip topic and
-// gates which records this directory accepts (B2, D1) -- is the space host
-// under the api host.
+// from it by the sdk's label suffix rule, and the extender dns name and the
+// network host -- which names the gossip topic and gates which records this
+// directory accepts (B2, D1) -- come from connect's shared label rule, so this
+// command and an sdk url-only space key the same network the same way.
 //
 // One identity key is the whole identity (B1): it signs the certificate
 // authority the carrier leaves are issued under, it is what the operator signs
@@ -188,14 +187,14 @@ func runExtender(ctx context.Context, options *extenderOptions) error {
 // Builds every part of the extender and starts it. On any failure the parts
 // already built are released before returning.
 func newExtenderRun(ctx context.Context, options *extenderOptions) (*extenderRun, error) {
-	apiHost, err := extenderApiHost(options.apiUrl)
+	apiHost, err := connect.ExtenderApiHostName(options.apiUrl)
 	if err != nil {
 		return nil, err
 	}
 	run := &extenderRun{
 		options:     options,
 		apiHost:     apiHost,
-		networkHost: extenderNetworkHost(apiHost),
+		networkHost: connect.ExtenderNetworkHostName(apiHost),
 		serveDone:   make(chan error, 1),
 	}
 	success := false
@@ -507,7 +506,7 @@ func (self *extenderRun) ports() map[int][]connect.ExtenderConnectMode {
 // literal: there is no service label to derive an extender dns name from, and
 // nothing to resolve.
 func (self *extenderRun) networkClientSettings() *connect.ExtenderNetworkClientSettings {
-	extenderDnsName := extenderServiceHostName(self.options.apiUrl, "extender")
+	extenderDnsName := connect.ExtenderServiceHostName(self.options.apiUrl, "extender")
 	if extenderDnsName == "" {
 		return nil
 	}
@@ -570,52 +569,4 @@ func (self *extenderFileStore) Load() ([]byte, error) {
 
 func (self *extenderFileStore) Save(stateBytes []byte) error {
 	return os.WriteFile(self.path, stateBytes, 0600)
-}
-
-// The host of an api url, which every other name here is derived from.
-func extenderApiHost(apiUrl string) (string, error) {
-	parsedUrl, err := url.Parse(strings.TrimSpace(apiUrl))
-	if err != nil {
-		return "", err
-	}
-	hostName := strings.ToLower(strings.TrimSuffix(parsedUrl.Hostname(), "."))
-	if hostName == "" {
-		return "", fmt.Errorf("--api_url names no host")
-	}
-	return hostName, nil
-}
-
-// The space host under an api host: everything below the service label, which
-// is what the operator signs a record's network host with (B2). An ip literal
-// or a single label is its own space host.
-func extenderNetworkHost(apiHost string) string {
-	if net.ParseIP(apiHost) != nil {
-		return apiHost
-	}
-	_, domain, ok := strings.Cut(apiHost, ".")
-	if !ok || domain == "" || !strings.Contains(domain, ".") {
-		return apiHost
-	}
-	return domain
-}
-
-// extenderServiceHostName derives the host name of another service under the
-// same space as an api url, by the sdk's env prefix rule: the api url's own
-// service label carries the env prefix, so `api.x` yields `extender.x` and
-// `g2-api.x` yields `g2-extender.x`. "" when there is no service label to
-// replace -- an ip literal, a single-label host, or a bare space host.
-func extenderServiceHostName(apiUrl string, service string) string {
-	apiHost, err := extenderApiHost(apiUrl)
-	if err != nil || net.ParseIP(apiHost) != nil {
-		return ""
-	}
-	label, domain, ok := strings.Cut(apiHost, ".")
-	if !ok || label == "" || !strings.Contains(domain, ".") {
-		return ""
-	}
-	serviceLabel := service
-	if envName, _, ok := strings.Cut(label, "-"); ok && envName != "" {
-		serviceLabel = fmt.Sprintf("%s-%s", envName, service)
-	}
-	return fmt.Sprintf("%s.%s", serviceLabel, domain)
 }

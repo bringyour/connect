@@ -3,22 +3,89 @@ package connect
 import (
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 )
 
-// The bundled resource decodes, and ships empty until operations provide the
-// list (A10).
-func TestSpoofDomainsBundledResourceIsEmpty(t *testing.T) {
+// The bundled resource decodes to the operator's list (A10). A shipped client
+// fronts every extender dial with one of these names, so the list must be
+// large enough that one name is not a fingerprint, must be syntactically
+// dialable, and must never carry a name of the operator's own -- a spoof name
+// that resolves back to the operator would announce exactly what the outer
+// name exists to hide.
+func TestSpoofDomainsBundledResourceIsPopulated(t *testing.T) {
 	spoofDomains, err := DecodeSpoofDomainsResource(extenderSpoofResource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(spoofDomains) != 0 {
-		t.Fatalf("the bundled spoof list has %d entries, expected none", len(spoofDomains))
+	if len(spoofDomains) <= spoofDomainsMinimumCount {
+		t.Fatalf(
+			"the bundled spoof list has %d entries, expected more than %d",
+			len(spoofDomains), spoofDomainsMinimumCount)
 	}
-	if len(SpoofDomains()) != 0 {
-		t.Fatalf("SpoofDomains has %d entries, expected none", len(SpoofDomains()))
+	if bundledCount := len(SpoofDomains()); bundledCount != len(spoofDomains) {
+		t.Fatalf("SpoofDomains has %d entries, expected the %d of the resource",
+			bundledCount, len(spoofDomains))
 	}
+
+	visited := map[string]bool{}
+	for _, spoofDomain := range spoofDomains {
+		if !isSpoofHostName(spoofDomain) {
+			t.Errorf("%q is not a lowercase host name", spoofDomain)
+		}
+		for _, operatorName := range []string{"bringyour", "ur.network", "ur.io", "ur.xyz"} {
+			if strings.Contains(spoofDomain, operatorName) {
+				t.Errorf("%q carries the operator name %q", spoofDomain, operatorName)
+			}
+		}
+		if visited[spoofDomain] {
+			t.Errorf("%q appears more than once", spoofDomain)
+		}
+		visited[spoofDomain] = true
+	}
+}
+
+// The bundled list is one name out of many, so a dial that picks one is not
+// picking from a set small enough to identify the client.
+const spoofDomainsMinimumCount = 3000
+
+// Reports whether a name is a lowercase syntactic host name: at least two
+// labels of letters, digits, underscores and inner hyphens, each 1 to 63
+// bytes, and no trailing dot. This is what crypto/tls will carry as a server
+// name and what a resolver would accept, which is the whole requirement on a
+// spoof name. The underscore is deliberate: real names in the list carry one
+// (the nist time servers), and both dns and sni carry it unchanged.
+func isSpoofHostName(hostName string) bool {
+	if hostName == "" || 253 < len(hostName) {
+		return false
+	}
+	labels := strings.Split(hostName, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || 63 < len(label) {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			switch {
+			case 'a' <= c && c <= 'z', '0' <= c && c <= '9', c == '-', c == '_':
+			default:
+				return false
+			}
+		}
+	}
+	// the last label is a tld, which is never all digits
+	tld := labels[len(labels)-1]
+	for _, c := range tld {
+		if c < '0' || '9' < c {
+			return true
+		}
+	}
+	return false
 }
 
 // The generator's encoding round-trips, and the resource does not carry the
