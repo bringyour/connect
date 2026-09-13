@@ -760,3 +760,125 @@ it already decides the backend state explicitly, because the fixture's
 client registers no transport. The scratch file is not a delivered test;
 its shapes are the rows of 10.9 and a copy is in the scratchpad for the
 test stream.
+
+## 11. The memory-scaled window: what a mobile provider asked for, and what each kernel did with it
+
+Design, 2026-09-13. H3. The numbers are from `scaledPow2WindowSize` and
+`MemoryScaledByteCount` as shipped, the budgets the apps actually set, and
+two kernels observed directly: Linux `7.0.12` in the runner and Darwin
+`25.6.0` on this host, which shares XNU with iOS.
+
+### 11.1 What the policy requests
+
+`MaxWindowSize` for TCP is `scaledPow2WindowSize(16 MiB, 64 KiB, 256 KiB)`:
+the budget's share of 16 MiB, floored at 256 KiB, rounded down to a power
+of two multiple of 64 KiB. The UDP `MaxWindowSize` is
+`MemoryScaledByteCount(1 MiB, 256 KiB)`, not rounded. The reference budget
+is 64 MiB; a budget at or above it is unscaled. The apps set
+(`PacketTunnelProvider.swift`, `AppDelegate.swift`, `MainApplication.kt`):
+
+| Budget | Host | Scale | TCP `MaxWindowSize` | UDP `MaxWindowSize` |
+|---:|---|---:|---:|---:|
+| unset | bare provider, server | 1 | 16 MiB | 1 MiB |
+| 64 MiB | macOS app | 1 | 16 MiB | 1 MiB |
+| 48 MiB | iOS app process, larger packet tunnel | 0.75 | 8 MiB (12 rounded down) | 768 KiB |
+| 32 MiB | iOS packet tunnel, Android cap (`SDK_PROCESS_MEMORY_LIMIT_MIB`) | 0.5 | 8 MiB | 512 KiB |
+| 24 MiB | Android, three quarters of a 32 MiB heap class | 0.375 | 4 MiB (6 rounded down) | 384 KiB |
+| 8 MiB | older iOS packet tunnel | 0.125 | 2 MiB | 256 KiB |
+| 1 MiB or less | no shipping host | — | 256 KiB floor | 256 KiB floor |
+
+So §3's "possibly 256 KiB" does not occur on any shipping host: the phone
+case is 2 to 8 MiB. The test stream's `TestUpstreamBufferSizingUnderMobilePolicy`
+(commit `4ead474`) pins this table.
+
+### 11.2 What the old code's request became
+
+The request was made after connect, so what matters is the kernel's
+treatment of an explicit buffer on an established socket.
+
+Linux, stock (`net.core.rmem_max = wmem_max = 212992`): every row of the
+table is above 208 KiB, so every request clamped to 212,992 and stored as
+425,984, and the lock froze it there. The memory scaling was inert: a phone
+and a server got the same 425,984 in both directions. The receive window
+clamp was frozen at its SYN-time value from the default buffer, near 64 KB,
+and that value does not depend on the request at all. So under the old
+code an Android provider was exactly as bad as a server provider, no worse
+and no better, and the reporter's 3.2x is the phone's number too.
+
+Linux, `rmem_max = wmem_max = 4 MiB` (the runner, and a tuned rig): the
+request lands, doubled: 16 MiB requests 8,388,608, the 4 and 8 MiB rows
+also 8,388,608, the 2 MiB row 4,194,304. Receive is still frozen at the
+SYN-time clamp whatever the buffer. Send is pinned at a value at or above
+`tcp_wmem[2]`, so there was no send ceiling on such a host.
+
+Android's `rmem_max` and `wmem_max` vary by build and were not measured
+here; whatever they are, the request clamped to them and locked, and the
+receive clamp froze regardless. Android sets `tcp_rmem` and `tcp_wmem` per
+network type at connectivity time (`net.tcp.buffersize.wifi`, `.lte`, and
+so on), so after the fix the autotuning ceiling on a phone is the ceiling
+of the network it is on. The test reads all four sysctls at runtime rather
+than assuming any of them.
+
+Darwin, observed on this host (`kern.ipc.maxsockbuf = 8388608`,
+`net.inet.tcp.autorcvbufmax = autosndbufmax = 4194304`), one loopback flow
+moving 512 MiB:
+
+| Request | `SO_SNDBUF` after, under load | `SO_RCVBUF` after, under load |
+|---:|---:|---:|
+| none | 146,988 grows to 4,194,304 | 408,300 grows to 4,194,240 |
+| 2 MiB (the 8 MiB profile) | 2,097,152, never moves | 2,097,152, never moves (one transient reading of 2,481,812) |
+| 8 MiB (the 32 and 48 MiB profiles) | 8,388,608, never moves | 8,388,608, never moves |
+| 16 MiB (unscaled) | 8,388,608, no error, never moves | 8,388,608, no error, never moves |
+
+Two corrections follow. The reporter's Linux-only tests say macOS refuses
+an oversized `SO_RCVBUF` with `ENOBUFS` and keeps autotuning; on this
+macOS it does not refuse, it clamps silently to `kern.ipc.maxsockbuf` and
+locks. And on XNU the request in the mobile range is not oversized at all:
+the 8 MiB iOS profile pinned both buffers at 2 MiB, half the autoscaling
+maximum, with autoscaling off, and the 32 and 48 MiB profiles pinned them
+at 8 MiB, above it. XNU derives the receive window from the buffer rather
+than freezing a clamp, so the receive side on an iOS provider was a fixed
+2 or 8 MiB window rather than Linux's 64 KB one; the reporter's 3.2x would
+not reproduce on an iOS provider, and the fix there restores autoscaling
+and releases memory rather than raising a ceiling. A 2 MiB send pin at a
+phone's 50 to 100 ms round trip is 160 to 330 Mb/s per flow, above any
+phone uplink, so no upload harm is expected from the old code on iOS
+either. What is unmeasured is iOS's own `autorcvbufmax` and
+`autosndbufmax`; macOS has them at 4 MiB. If a supported iOS release has
+them below 2 MiB, the old pin was above the ceiling autoscaling now
+reaches there, and the answer would be a pre-connect fixed buffer on that
+platform only, which §9.3 rejects in general and which nothing measured
+yet justifies. That is a measurement item, not a change.
+
+### 11.3 Does the new code need a floor
+
+No. There is no lever that raises a kernel's autotuning maximum from
+inside the process: `tcp_rmem[2]` and `tcp_wmem[2]` on Linux and the
+`auto*bufmax` sysctls on Darwin are the operator's, and an app on a phone
+cannot set them. The only way to make a socket's buffer larger than
+autotuning would reach is an explicit set, which is the lock this program
+removed, and setting it before connect (§9.3) commits the memory per flow
+with no adaptation and is still clamped by `rmem_max`. A floor in this
+code would therefore be either a no-op or the bug reintroduced. The
+memory-scaled `MaxWindowSize` keeps its real job, which is the tunnel-side
+window the NAT advertises to the client; it never should have sized a
+kernel buffer, and after §9 it does not.
+
+The one thing the process should do is say what it got: the provider host
+report should include the four Linux sysctls or the three Darwin ones, so
+a throughput reading can be judged against the kernel's ceiling rather
+than against a number this code never controls.
+
+### 11.4 Tests, in the contract shape
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| M1 | `TestUpstreamBufferSizingUnderMobilePolicy` (test stream, `4ead474`) | the table of 11.1 at every shipping budget, and the Linux clamp-then-double of the counterfactual request | none by design; a table ratchet and a kernel characterisation | Linux |
+| M2 | `TestUpstreamTcpConnLeavesBuffersToAutoscalingDarwin` (Darwin only) | `SO_RCVBUF` and `SO_SNDBUF` unchanged across `configureUpstreamTcpConn` on a connected loopback socket, under `SetMemoryBudget(8 MiB)` and unbudgeted | main, on which the 2 MiB and 16 MiB requests land at 2,097,152 and 8,388,608; this is the Darwin row the reporter's Linux-only rows omitted on a premise that does not hold | macOS |
+| M3 | `TestUpstreamBufferPinsOnDarwinUnderMobilePolicy` (Darwin only) | characterisation of 11.2: an explicit 2 MiB set succeeds and neither buffer moves under 512 MiB of load while an unpinned socket grows to `net.inet.tcp.autorcvbufmax` and `autosndbufmax`; a 16 MiB request returns no error and reads back as `kern.ipc.maxsockbuf` | none; documents the kernel | macOS |
+
+The measurement that closes H3: `sysctl net.inet.tcp.autorcvbufmax
+autosndbufmax` on the oldest and newest supported iOS, from the packet
+tunnel, and one phone-provider download and upload cell on main against
+this tree, which 11.2 predicts as unchanged within noise on iOS and as the
+reporter's 3.2x on Android for download.
