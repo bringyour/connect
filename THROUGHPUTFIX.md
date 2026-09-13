@@ -251,3 +251,143 @@ Before the upstream PRs: the send-buffer mirror in fix 1, and the live-but-
 stalled client in fix 2. The second is the one that could hurt a real user,
 because this transfer layer is measured to go minutes without acknowledging
 under conditions that have nothing to do with the client being gone.
+
+## 9. The upload mirror: the send buffer is pinned on the same socket, and goes
+
+Design, 2026-09-13, from the source and from a Linux kernel rather than from
+the manual page. Everything numeric below was observed on `7.0.12-linuxkit`
+(the Docker Desktop VM the runner `scratchpad/linuxtest.sh` uses), with
+`net.core.wmem_max = 4194304` and `net.ipv4.tcp_wmem = 4096 16384 4194304`.
+Where a stock host differs, the stock value is `net.core.wmem_max = 212992`
+with the same `tcp_wmem`; that is Debian, Ubuntu, Fedora and Amazon Linux
+as shipped, and it is the fleet's common case.
+
+### 9.1 What the line does
+
+`configureUpstreamTcpConn` runs after `DialContext` returns, so the socket is
+established. The reporter's fix removed `SetReadBuffer` from it and left
+`SetWriteBuffer(MaxWindowSize)` in place. In the kernel that call is
+`sk_setsockopt(SO_SNDBUF)`: the value is clamped to `wmem_max`, doubled,
+stored as `sk_sndbuf`, and `SOCK_SNDBUF_LOCK` is set on the socket.
+`tcp_should_expand_sndbuf` returns false while that lock is set, and
+`tcp_init_buffer_space` skips `tcp_sndbuf_expand` for it, so the socket's
+send buffer never again follows the congestion window. That is the send
+half of autotuning, and it is the only thing that raises `sk_sndbuf` from
+its establishment value toward `tcp_wmem[2]`.
+
+Observed, one loopback flow writing 512 MiB into a draining peer, sampling
+`SO_SNDBUF`:
+
+| pin requested | before | after the call | maximum under load |
+|---|---:|---:|---:|
+| none (the fix) | 2,626,560 | 2,626,560 | 4,194,304 |
+| 16 MiB (main, `MaxWindowSize` unscaled) | 2,626,560 | 8,388,608 | 8,388,608 |
+| 212,992 (main on a stock host, where `wmem_max` clamps it) | 2,626,560 | 425,984 | 425,984 |
+
+Unpinned, the buffer grows to exactly `tcp_wmem[2]` and stops there. Pinned,
+it never moves, whatever it was pinned at. This is the direct observation
+the handover said was still assumed: the lock does disable send-buffer
+growth, on this kernel, in the direction this code cares about.
+
+### 9.2 What it costs, and where it does not
+
+The send buffer bounds the bytes a flow may hold unacknowledged plus what
+it has queued unsent. When that bound is below the path's bandwidth-delay
+product the flow cannot fill the pipe, and single-flow throughput is capped
+near `sndbuf / RTT`, discounted by the fraction of the buffer that is
+payload rather than skb accounting. On a stock host main pins that at
+425,984 bytes for every upstream flow, against the 4,194,304 autotuning
+would reach: a ceiling roughly ten times lower than the kernel's own, and
+independent of `MaxWindowSize`, because 208 KiB is below every value the
+memory policy can produce (§11).
+
+This is the upload mirror of the receive bug and nothing else. A download
+through the provider writes only the client's inner acknowledgements to the
+origin, a few bytes per segment, and never approaches 425 KB in flight.
+An upload writes the payload, and is the direction nothing in the report
+measured.
+
+The severity is asymmetric although the fix is not. Receive was a freeze:
+the window clamp was fixed at SYN time from the default buffer and only
+autotuning raises it, so the window advertised to the origin stayed near
+64 KB for the life of the flow and the 3.2x was the whole clamp. Send is a
+ceiling with no clamp analogue: it bites only when the pinned number is
+below the BDP. Two consequences for the measurement stream:
+
+- At the rig's roughly 2 ms origin round trip, the BDP at 640 Mb/s is about
+  160 KB, under the 425 KB pin. **On that rig the upload fix measures as no
+  change**, and that reading would be correct, not a failed fix. The cell
+  that exercises it needs an origin-side delay: at 50 ms RTT the pinned
+  ceiling is about 40 to 60 Mb/s (425,984 × 8 / 0.05 s, times a payload
+  fraction of 0.6 to 0.9 depending on segment size and GSO), and the
+  unpinned ceiling is bounded by `tcp_wmem[2]` at about 670 Mb/s, so the
+  effect is large and four repetitions decide it. The prediction to hold me
+  to: pinned single-flow upload at 50 ms lands between 40 and 60 Mb/s,
+  unpinned between 300 and 600 Mb/s.
+- On a host with `wmem_max` raised to or above `tcp_wmem[2]`, which is what
+  the Docker VM has and what a tuned rig may have, the pin is 8,388,608 and
+  sits **above** the autotuned maximum, so main is not capped there and the
+  fix cannot measure as a gain. The measurement stream must record
+  `net.core.wmem_max` and `net.ipv4.tcp_wmem` on the provider host and run
+  the upload cell with the stock 212,992, which is what fleet hosts have.
+
+The sysctl confirmation the reporter used on the receive side has a send
+mirror, and it is worth one run on the rig: raise `tcp_wmem[2]` on the
+provider host and the unpinned build's upload rises with it while the
+pinned build does not move.
+
+### 9.3 Decision: leave both buffers to the kernel
+
+The send buffer is left entirely to the kernel, the same treatment as the
+receive buffer, and `configureUpstreamTcpConn` no longer takes buffer
+settings because nothing in it may size a socket buffer. I looked for a
+principled reason the write side should differ and found none that
+survives the code:
+
+- "Size the kernel buffers to the max window" was the original comment's
+  rationale, and it conflates two windows. `MaxWindowSize` is the window
+  the NAT advertises to the client on the tunnel side; it bounds how much
+  the client may have in flight toward the provider. The kernel send buffer
+  is on the origin side and needs to track that path's BDP, which the
+  tunnel window says nothing about. When the upstream socket cannot accept
+  a write the NAT's own window closes toward the client, which is the
+  backpressure this path was designed to have.
+- A buffer pinned before connect (a `Dialer.Control` hook) would keep the
+  clamp from freezing at 64 KB on the receive side and give a fixed large
+  send buffer, but it commits that memory per flow with no adaptation, and
+  it is still clamped at `wmem_max`, so on a stock host it produces the same
+  425,984 as today. Rejected.
+- `TCP_NOTSENT_LOWAT` bounds the unsent portion without locking the buffer
+  and is the tool if per-flow kernel memory ever needs a lid. Not needed
+  now: what the provider queues is already bounded by the tunnel window.
+
+The fix is closer to unconditionally better than the receive deletion is.
+THROUGHPUTFIX §3 warned that the receive deletion is worse on a host whose
+`tcp_rmem[2]` is below the explicit request. The send request never reaches
+its nominal value on a stock host, because `wmem_max` clamps it an order of
+magnitude below `tcp_wmem[2]` before it is stored; the bad case needs an
+operator who raised `wmem_max` far above `tcp_wmem[2]` and relied on a
+32 MiB pinned buffer on a path whose BDP exceeds 4 MiB, and tuning guides
+raise the two together. Mobile providers are covered by §11.
+
+Also landed in the same change: the adopted commit `eefa8d8` inserted the
+new function between `scaledPow2WindowSize`'s doc comment and the function,
+so that comment was attached to the wrong declaration. Moved.
+
+### 9.4 Tests, in the contract shape
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| U1 | `TestUpstreamTcpSendBufferIsNotPinned` (Linux only) | `SO_SNDBUF` read before and after `configureUpstreamTcpConn` on a connected loopback socket is unchanged; the message names the two values | main: "changed from 2626560 to 8388608" on the runner, "to 425984" on a stock host | loopback, any Linux; macOS is excluded because it refuses an oversized `SO_SNDBUF` with `ENOBUFS` and keeps autotuning, so there the call is a silent no-op rather than a lock |
+| U2 | `TestUpstreamTcpSendBufferGrowsUnderLoad` (Linux only) | after `configureUpstreamTcpConn`, writing 512 MiB into a draining loopback peer ends with `SO_SNDBUF` equal to `tcp_wmem[2]` read from `/proc/sys/net/ipv4/tcp_wmem`; skipped when that maximum is not above the establishment value, since then there is nothing to grow into | main, in both host regimes: the stock pin ends at 425,984 and the tuned pin at 8,388,608, neither of which is `tcp_wmem[2]`; this row is the direct observation of the lock rather than the value-unchanged proxy of U1 | loopback; the establishment value is 2,626,560 on the runner because loopback's MSS is 65,483 and `tcp_sndbuf_expand` charges ten segments twice over |
+| U3 | `TestUpstreamTcpConnLeavesReceiveBufferToAutotuning` | the reporter's row, adopted as written | main before `eefa8d8` | as before |
+
+A candidate for U1 exists uncommitted in this worktree in
+`ip_upstream_tcp_buffer_linux_test.go`, written by the stream that handed
+over and proven red on the pre-fix line and green on the fix in the runner;
+the test stream may adopt it or rewrite it to this row.
+
+The measurement that calls this fixed: the upload cell of §9.2 at 50 ms
+origin RTT with stock `wmem_max`, four repetitions per arm, main against
+this tree, with `ss -tmi` on the provider's upstream socket confirming that
+the `skmem` `tb` value grows on this tree and stays at 425,984 on main.
