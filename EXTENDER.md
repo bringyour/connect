@@ -708,6 +708,46 @@ ephemeral identity when there is neither.
 - Package layering per CODESTYLE: root never imports `gossip` or
   `extender`; `extender` imports `gossip`; both import root.
 
+### J. Contract parties and payouts
+
+J1. Connection tag. At connect, the server matches the caller address
+against the active extender addresses, cached in process and refreshed
+every 60 s, and stores `extender_id` on `network_client_connection`.
+Address matching is the attribution today. A whitelist of trusted
+extenders forwarding over a dedicated edge port with a PROXY protocol
+header, which also restores real client addresses, is a later step.
+
+J2. Parties. When a contract, a no-escrow contract or a companion contract
+is created, the distinct extenders tagged on the currently connected
+connections of the source client become its source extender parties and
+those of the destination client its destination extender parties, written
+in the creating transaction to `contract_extender (contract_id,
+extender_id, party, client_id, network_id)` with the primary key
+`(contract_id, extender_id, party)`, `party` being `source` or
+`destination`, and `client_id` and `network_id` the extender's provider
+client and network. Zero to many rows per contract; the rows are deleted
+with the contract. A contract need not carry its data over the extender:
+every active extender of an endpoint counts, which is fuzzy but averages
+to the right allocation.
+
+J3. Payout. Participant gathering unions the contract's extender rows into
+the participant set. Every hop has equal weight, intermediary, egress and
+extender alike, so the even split applies unchanged; an extender on the
+payer's own network earns nothing by the existing exclusion, and an
+extender whose provider client is already a participant is counted once,
+since the set is keyed by client id.
+
+J4. Public providers do not use extenders. A provider whose provide mode
+includes public dials the platform directly on every transport, the
+standby included, so the platform observes the provider's own address and
+location; a provider in network mode may keep using extenders, since
+network peers carry no location metadata. Destination extender parties are
+therefore expected to be empty for public providers. A change of provide
+mode that flips this rebuilds the provider transports.
+
+J5. The legacy extender columns of `audit_contract_event` stay unused; the
+join table is the record.
+
 ### I. Tests
 
 Every phase ships tests with it. In-process fixtures only: the extender
@@ -735,6 +775,8 @@ with the database.
 | `sdk.NetworkSpaceValues` | `ExtenderDnsName`, `GossipUrl`, `ExtenderRootPublicKeys` added; `NetExtenderAutoConfigure` removed |
 | sdk local state | `.extenders`, `.extender_key`, `.provide_extender`, gossip mode |
 | `connect.ClientStrategySettings` | `ExtenderDirectory`, `ExtenderInitialSampleTimeout` added; `ExtenderNetworks`, `ExtenderHostnames` removed |
+| `network_client_connection` | `extender_id uuid NULL` |
+| `contract_extender` | new join table, zero to many per contract, source or destination party |
 
 Old clients keep working: the header's new fields are optional, the hello
 field is additive, the tables are new, and a v1 extender client still
@@ -794,6 +836,14 @@ Phase 5b follows 4 because both touch the server.
    own directory, re-activates on an observed revocation and on an
    address change, honors the opt-out, and skips bind failures silently;
    connectctl extender runs the same path.
+7. Contract parties: J1 to J5 in the server, J4 in the sdk. Acceptance: a
+   connection from an active extender address is tagged and one from any
+   other address is not; contract, no-escrow and companion creation write
+   the source and destination parties, zero to many, the same extender on
+   both sides once per party; settlement pays an extender an equal hop
+   share, nothing on the payer's network, and once when it is also the
+   egress; the rows go with the contract; a public provider's transports
+   dial directly and a network provider's keep the extender dialers.
 
 ## 6. Known limitations
 
