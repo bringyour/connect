@@ -959,6 +959,187 @@ QUIC connection over the cap with application error 0x1001. Both answer
 concurrency cap, matching nginx's evaluation order. Excluded subnets are
 exempt.
 
+### M. Statistics and the map
+
+M1. Extender location. At activation the operator already resolves the
+activating address through `GetLocationForIp` for the country code. The
+handler now also passes that location through `model.CreateLocation`,
+exactly as a connection's mmdb path does, and stores `location_id`,
+`city_location_id`, `region_location_id` and `country_location_id` on
+`network_extender` beside `country_code`. City and region are nullable: a
+country-only lookup has neither, and an activation must never fail to
+store for that reason. Each activation of either family rewrites the four
+ids from its own address, so an extender's location is that of the family
+activated last; the two families of one host resolve to the same region
+in practice, and the map counts extenders rather than addresses, so one
+location per extender is the right shape. Rows that predate the columns
+are filled on their next activation, which the 24 hour re-activation
+guarantees within a day.
+
+M2. Definitions. An online extender is a `network_extender` row with
+`active` true and at least one active address row. Its family is
+dualstack when it has active v4 and v6 addresses, else ipv4 or ipv6 for
+the one it has. An online provider is the population
+`CountProvidersByCountry` already counts (active, top-level, connected,
+valid, holding a public provide key); its family is read from the
+reliability row's `ipv4_proven` and `ipv6_proven`: both is dualstack, v6
+alone is ipv6, anything else is ipv4, since rows written before those
+columns existed read as v4-only everywhere else. The family counts of
+either population sum to its total. Gossip carries both families of an
+extender in one record, because the record body lists every active
+address of the extender, and the provider extender role binds dual-stack
+sockets and activates every family the host has a global address for, one
+activation per family api url. A dual-stack host is therefore a dual-stack
+extender without configuration; a host with no global v6 address is ipv4
+only, which is a fact about the host and not a setting.
+
+M3. Contract counts. A gauge is a point in time, so each contract number
+comes in two forms: open now, and created in the trailing 24 hours. The
+open counts read the partial indexes: `open` for contracts, `dispute AND
+outcome IS NULL` for disputes, and the open set with an existence probe
+of `contract_extender` for contracts with an extender party, which is
+cheap because the open set is small. The 24 hour counts are bucketized in
+one hour blocks. A bucket is one hour of `create_time`. The counts of a
+complete bucket (contracts, disputed contracts, contracts with an
+extender party) are computed once, by whichever collector host needs them
+first, and cached in redis for 26 hours under the bucket's start time; a
+cold cache is filled by one grouped query over the missing buckets. The
+current partial bucket is counted live on every refresh. A bucket counts
+as complete only once its hour has been over for a minute, so an in-flight
+insert never leaves a short count in the cache; until then it is counted
+live too. The 24 hour value is the sum of the 23 most recent complete
+buckets and the current partial one, so the window is at most 24 hours
+long and never counts a contract twice. A bucket's contract and dispute
+counts come from one range scan of `transfer_contract_create_time` with
+`count(*) FILTER (WHERE dispute)`; its extender count comes from
+`contract_extender`, which gains `create_time timestamp NOT NULL DEFAULT
+now()`, the same transaction time as the contract it belongs to, and an
+index on `(create_time, contract_id)`, so that count is a range scan of
+the small table rather than a probe per contract. A dispute in the window
+is a contract created in the window that is disputed, decided or not; a
+dispute is raised at close and contracts are short-lived, so the creation
+window is the right window.
+
+M4. Gauges. The collector exports, on its 5 minute db tick, beside what it
+exports today:
+
+- `urnetwork_stats_online_extenders`
+- `urnetwork_stats_online_extenders_by_country{country_code,country}`,
+  per country exactly as providers are, replaced on each refresh so an
+  emptied country goes stale rather than pushing forever; the country
+  label is the country location's name, or the upper-case code for a row
+  not yet filled by M1
+- `urnetwork_stats_online_providers_by_ip_family{ip_family}` and
+  `urnetwork_stats_online_extenders_by_ip_family{ip_family}`, with
+  `ip_family` one of `ipv4`, `ipv6`, `dualstack`, always all three series
+  so a zero is a zero and never an absence
+- `urnetwork_stats_open_contracts`, `urnetwork_stats_contracts_24h`,
+  `urnetwork_stats_open_contracts_with_extender`,
+  `urnetwork_stats_contracts_with_extender_24h`,
+  `urnetwork_stats_open_disputes`, `urnetwork_stats_disputes_24h`
+
+The provider family counts come from the existing per-country provider
+scan, extended with `count(DISTINCT client_id) FILTER (WHERE ...)` per
+family so the population stays one scan; the extender counts come from
+one scan of the online extenders grouped by country with the same filters.
+The extender and family gauges are public: they join the measurement
+lists of `grafana_test.go`, which admits them to `publicSafeMetrics` and
+requires them on both `public-traffic.json` and the signals row. The six
+contract gauges are internal: a new `internalMeasurementMetrics` list
+requires them on the providers dashboard, and they never enter
+`publicSafeMetrics`.
+
+M5. Public dashboard. `public-traffic.json` gains a row `extender network`
+after the provider network row: a stat and a time series of online
+extenders, a stacked time series of providers by family and one of
+extenders by family, each with a stat per family, a geomap `extenders by
+country` with the same markers layer shape as the provider map in a
+distinct color, and a bar gauge of the top extender countries. Everything
+is read with `max(...)` and no template variable, as the public tests
+require. The per-country extender counts publish nothing the directory
+does not already give away.
+
+M6. Providers dashboard. `grafana/dashboards/providers.json`, uid
+`urnetwork-providers`, title `urnetwork / providers`, internal (no public
+tag), with the `env` variable from
+`label_values(urnetwork_stats_online_providers, env)` and no block or
+host variable, since every gauge is read with `max(<metric>{env="$env"})`.
+Rows: population (stat and time series of providers and of extenders, a
+stacked family time series and a stat per family for each), contracts
+(open contracts, contracts 24h, open contracts with an extender,
+contracts with an extender 24h, open disputes, disputes 24h, each a stat
+and a time series), derived ratios as stats (the share of open contracts
+with an extender party, the 24 hour dispute rate), and the top 10
+provider and extender countries as time series.
+
+M7. Feed. `stats.json` gains `online_extenders`,
+`online_providers_ipv4`, `online_providers_ipv6`,
+`online_providers_dualstack`, `online_extenders_ipv4`,
+`online_extenders_ipv6` and `online_extenders_dualstack`, each the `max`
+of its gauge with the family label selected, self-omitting when the
+series has no samples like every other field. The site's parser keeps its
+three required fields and reads the new ones as optional: an absent field
+is absent, a present field that is not a non-negative safe integer
+rejects the snapshot. The parsed shape gains `extenders` and the objects
+`providersByFamily` and `extendersByFamily` with `ipv4`, `ipv6` and
+`dualstack`, each key omitted when the feed omits it. The committed SSR
+snapshot carries them once a build fetches a feed that has them.
+
+M8. Map feed. Each region entry of `/stats/providers-map` gains
+`extender_count`, always present. The export runs the provider aggregate
+and a second aggregate of online extenders grouped by their region
+location, merged by country and region; a region with extenders and no
+providers is included with `provider_count` 0. An extender whose location
+has a country but no region is placed under the country location's own
+name at the country centroid, so it is counted and hoverable rather than
+dropped; one with neither is counted in the totals only. The site's hook
+keeps a region when either count is positive and reads a missing
+`extender_count` as 0, so an old blob still renders.
+
+M9. Dot geometry. One pure helper, `src/components/ip/providerDots.js`,
+replaces the function in the page and is imported by it, so the rule is
+testable. Within a country, a region's dot area is linear in its provider
+count between the country's minimum and maximum region counts, mapped
+onto a fixed band of areas: the areas of the current 4 and 9 unit radii,
+so the smallest and largest dots look as they do today; the radius is the
+square root; a country with one region gets the maximum, as today; a
+region with no providers gets the minimum dot. A region with extenders
+also gets a ring: an annulus outside the dot separated by a gap of 2
+units, whose area is linear in the region's extender count between the
+country's minimum and maximum extender counts over its regions with
+extenders, mapped onto a band of 80 to 280 square units in the globe's
+600 unit viewBox; the inner radius is the dot radius plus the gap and the
+outer radius follows from the area. The ring is a stroked circle in the
+dot's color at the annulus' mid radius with the annulus' thickness, drawn
+under its dot, hoverable like the dot, and sorted with the dots by outer
+radius so the largest draw first. The selection ring of the provider
+picker, when a dot is both selectable and ringed, sits outside the
+extender ring; the picker passes no extender counts, so it is unchanged.
+The hover tip lists the country, then `N providers` and `M extenders`,
+both lines always, singular at 1. The landing globe draws no dots and is
+unchanged. The coverage headline reads `N providers and M extenders in C
+countries` when the feed carries an extender count and keeps its current
+sentence otherwise. The legend gains the ring: `ringed by extender count`.
+
+M10. Tests. Server: model tests for the extender location storage (ids
+present, a country-only row, last activation wins), the extender counts
+by country and family, the provider family counts against rows with each
+proven combination, the contract counts against inserted open, closed,
+disputed and extender-party contracts, the hour bucket cache (a fake
+clock, a cold cache filled by one grouped query, a warm cache counting
+only the partial bucket, a just-ended hour counted live for a minute),
+and the map export merging the two aggregates including a region with
+extenders only; collector tests for the new gauges and the always-three
+family series; grafana tests extended for the new lists, plus a test that
+pins the providers dashboard (every internal metric present, env-scoped,
+replica-safe, no public tag) and the public extender row (the map layer
+shape, `max` reads, no variable). Warp: the feed query and snapshot tests
+extended for every new field including self-omission. Site: node tests
+for the geometry helper (area linearity, the bands, a single region, zero
+providers, ring presence and area, the inner radius, the sort order), the
+map parser (extender-only regions kept, a missing field read as zero) and
+the feed parser (optional fields, rejection of an invalid present field).
+
 ### I. Tests
 
 Every phase ships tests with it. In-process fixtures only: the extender
@@ -999,6 +1180,12 @@ with the database.
 | `connect.PlatformTransportSettings` | `AltUrl` |
 | `services.yml` | `alt` service on the proxy hosts, external udp 443 and 4053; connect dns listener 4053 |
 | DNS | `alt`, `main-alt`, `alt-v4`, `alt-v6`, `main-alt-v4`, `main-alt-v6` per domain |
+| `network_extender` | `location_id`, `city_location_id`, `region_location_id`, `country_location_id` added, nullable |
+| `contract_extender` | `create_time` added with index `(create_time, contract_id)` |
+| `urnetwork_stats_*` | extender, family and contract gauges of M4 |
+| `stats.json` | extender and family fields of M7, optional to consumers |
+| `/stats/providers-map` | `extender_count` per region; regions with extenders only |
+| `grafana/dashboards/providers.json` | new internal dashboard |
 
 Old clients keep working: the header's new fields are optional, the hello
 field is additive, the tables are new, and a v1 extender client still
@@ -1100,6 +1287,21 @@ Phase 5b follows 4 because both touch the server.
    dialed on 4053; records with both ports are dialed 53 first.
    Operations: the router DNAT of 53 to 4053 on the proxy hosts and the
    DNS records of L3.
+10. Statistics and the map: M1 to M10. 10a (server): the two schema
+   changes, the model counts, the hour bucket cache, the collector gauges,
+   the map export, both dashboards and their tests, PUBLICSTATS.md. 10b
+   (warp): the feed fields and their tests. 10c (mmm/ur.io): the feed and
+   map parsers, the geometry helper, the globe rings and hover, the
+   headline and legend, the node tests. The gauge, feed and map field
+   names above are the contract between the three, so 10a, 10b and 10c
+   run concurrently. Acceptance: an activated extender carries its
+   location ids and appears in the by-country and family gauges and in
+   its region's `extender_count`; a dual-stack extender counts once as
+   dualstack; the contract gauges match inserted fixtures in both forms
+   and the bucket cache is consulted rather than rescanned; the feed
+   serves every new field and omits an unset one; the dashboards pass the
+   allowlist and coverage tests; the helper's areas are linear in the
+   counts and a ringed dot renders with the ring under it.
 
 ## 6. Known limitations
 
