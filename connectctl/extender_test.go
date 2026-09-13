@@ -182,6 +182,23 @@ func recordBase64(recordBytes []byte) string {
 // the carriers that bound, runs the mesh node in the extender role, and serves
 // the feed to a phase 3 client through the tcp carrier (G2, G3, G4, D4).
 func TestExtenderCommandServesAndActivates(t *testing.T) {
+	extenderCommandServesAndActivates(t, "127.0.0.1")
+}
+
+// The same over ipv6 loopback. Tests run on dual-stack hosts, so this is
+// required rather than skipped: every carrier binds and the feed dial reaches
+// it on the other family (A7).
+func TestExtenderCommandServesAndActivatesOverIpv6(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("ipv6 loopback is required for dual-stack tests: %v", err)
+	}
+	listener.Close()
+	extenderCommandServesAndActivates(t, "::1")
+}
+
+func extenderCommandServesAndActivates(t *testing.T, loopbackIp string) {
+	t.Helper()
 	operator := newTestExtenderOperator(t)
 	operatorAddress := operator.server.Listener.Addr().String()
 	_, operatorPort, err := net.SplitHostPort(operatorAddress)
@@ -205,15 +222,15 @@ func TestExtenderCommandServesAndActivates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	tcpListener, err := net.Listen("tcp", net.JoinHostPort(loopbackIp, "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	quicPacketConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	quicPacketConn, err := net.ListenPacket("udp", net.JoinHostPort(loopbackIp, "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	dnsPacketConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	dnsPacketConn, err := net.ListenPacket("udp", net.JoinHostPort(loopbackIp, "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +366,7 @@ func TestExtenderCommandServesAndActivates(t *testing.T) {
 				ConnectMode: connect.ExtenderConnectModeTcpTls,
 				Port:        tcpPort,
 			},
-			Ip:        netip.MustParseAddr("127.0.0.1"),
+			Ip:        netip.MustParseAddr(loopbackIp),
 			PublicKey: extenderPublicKey,
 		},
 		&protocol.ExtenderFeedRequest{SampleCount: 16},

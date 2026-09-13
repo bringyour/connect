@@ -85,8 +85,11 @@ func init() {
 	Err = log.New(os.Stderr, "", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
-func main() {
-	usage := fmt.Sprintf(
+// connectCtlUsage is the docopt grammar of every command. It is a function so
+// the grammar itself can be parsed in a test, which is where a flag that no
+// usage line accepts shows up.
+func connectCtlUsage() string {
+	return fmt.Sprintf(
 		`Connect control.
 
 The default urls are:
@@ -152,8 +155,10 @@ Options:
 		DefaultApiUrl,
 		DefaultConnectUrl,
 	)
+}
 
-	opts, err := docopt.ParseArgs(usage, os.Args[1:], ConnectCtlVersion)
+func main() {
+	opts, err := docopt.ParseArgs(connectCtlUsage(), os.Args[1:], ConnectCtlVersion)
 	if err != nil {
 		panic(err)
 	}
