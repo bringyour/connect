@@ -25,30 +25,7 @@ import (
 // Linux only: macOS rejects an oversized SO_RCVBUF with ENOBUFS and keeps
 // autotuning, so there the explicit set is a silent no-op, not a lock.
 func TestUpstreamTcpConnLeavesReceiveBufferToAutotuning(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			close(accepted)
-			return
-		}
-		accepted <- conn
-	}()
-
-	conn, err := net.Dial("tcp", listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	if peer, ok := <-accepted; ok {
-		defer peer.Close()
-	}
-	tcpConn := conn.(*net.TCPConn)
+	tcpConn := dialUpstreamTestTcpConn(t)
 
 	before := tcpSocketReceiveBufferSize(t, tcpConn)
 	configureUpstreamTcpConn(tcpConn)
@@ -143,7 +120,72 @@ func TestUpstreamTcpConnReceiveBufferGrowsThroughDialPath(t *testing.T) {
 	}
 }
 
+// The send mirror. An upload through the provider is carried by the provider's
+// writes to this same upstream socket, and on Linux SO_SNDBUF locks send
+// autotuning exactly as SO_RCVBUF locks receive autotuning (tcp(7)). The locked
+// value is clamped to net.core.wmem_max first, so the explicit call caps the
+// bytes the upstream flow may hold unacknowledged at a number that has nothing
+// to do with the path's bandwidth-delay product, and on a stock host is below
+// where tcp_wmem's maximum would have taken it. There is no window clamp here,
+// so this is a ceiling rather than the receive side's freeze; it went unnoticed
+// because a download barely uses the direction it caps.
+func TestUpstreamTcpSendBufferIsNotPinned(t *testing.T) {
+	tcpConn := dialUpstreamTestTcpConn(t)
+
+	before := tcpSocketSendBufferSize(t, tcpConn)
+	configureUpstreamTcpConn(tcpConn)
+	after := tcpSocketSendBufferSize(t, tcpConn)
+
+	if after != before {
+		t.Fatalf(
+			"upstream socket send buffer changed from %d to %d after connect; an explicit SO_SNDBUF locks send autotuning and caps upload in-flight bytes at a clamped constant",
+			before,
+			after,
+		)
+	}
+}
+
+// a connected loopback client socket, in the state the provider configures its
+// upstream in; both ends live for the test
+func dialUpstreamTestTcpConn(t *testing.T) *net.TCPConn {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- conn
+	}()
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if peer, ok := <-accepted; ok {
+		t.Cleanup(func() { peer.Close() })
+	}
+	return conn.(*net.TCPConn)
+}
+
 func tcpSocketReceiveBufferSize(t *testing.T, tcpConn *net.TCPConn) int {
+	t.Helper()
+	return tcpSocketBufferSize(t, tcpConn, syscall.SO_RCVBUF)
+}
+
+func tcpSocketSendBufferSize(t *testing.T, tcpConn *net.TCPConn) int {
+	t.Helper()
+	return tcpSocketBufferSize(t, tcpConn, syscall.SO_SNDBUF)
+}
+
+func tcpSocketBufferSize(t *testing.T, tcpConn *net.TCPConn, option int) int {
 	t.Helper()
 	rawConn, err := tcpConn.SyscallConn()
 	if err != nil {
@@ -152,7 +194,7 @@ func tcpSocketReceiveBufferSize(t *testing.T, tcpConn *net.TCPConn) int {
 	var size int
 	var sockoptErr error
 	if err := rawConn.Control(func(fd uintptr) {
-		size, sockoptErr = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
+		size, sockoptErr = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, option)
 	}); err != nil {
 		t.Fatal(err)
 	}
