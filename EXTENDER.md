@@ -852,29 +852,45 @@ L1. What alt is. A full connect node and an api server in one process,
 run on the proxy hosts only, one block per proxy host, with no load
 balancer in front. It joins the exchange like any connect node, since the
 proxy hosts already have vault, database and redis access, and serves the
-alternative protocols directly on public udp: H3 on 443 and whodis on 2053
+alternative protocols directly on public udp: H3 on 443 and whodis on 4053
 (and 53 through the router), terminating QUIC with the real certificates
-and no PROXY protocol. One QUIC listener dispatches by SNI: a connect name
-goes to the connect handler, an api name to the api router mounted on an
-http3 server in process, anything else is refused. The whodis listener is
+and no PROXY protocol. One QUIC listener per socket, both address families bound, dispatches by
+SNI: a connect name goes to the connect handler, an api name to the api
+router mounted on an http3 server in process, anything else is refused
+with application error 0x1000. Alt advertises only the `h3` ALPN: an
+http3 client offering `h3` reaches the api front and the platform
+transport, which offers no ALPN, reaches the connect front, so the
+connect transport must never gain an ALPN without alt advertising it in
+the same change. The service names are those of services.yml, env-prefixed
+and family forms and aliases included, matched case-insensitively. Alt
+keeps an http port for the warp status route only, answering 503 until
+every udp front is accepting; a listener failure ends the process for
+warp to replace it. The whodis listener is
 the decode53 translation under the same dispatch, so whodis reaches both
 the api and connect. The H1 websocket stays on the connect service behind
 the lb. Going forward H3 and whodis are canonical on alt; the connect
 service keeps its lb udp listeners for old clients indefinitely.
 
-L2. Ports. Alt's warp service exposes udp 443 and udp 2053 only, never 53:
-warp gains external udp port mapping for host-pinned services, the same
-DNAT it applies to the lb interfaces, from the public port to the
-allocated container port, and the router in front of the proxy hosts
-DNATs public 53 to 2053. The whodis port is 2053 everywhere from now on:
-alt listens on 2053, the connect service's dns listener default moves to
-2053 with the lb forwarding 53 to it (4053 and 8053 kept through a rolling
-migration), and an extender listens on 2053 always and on 53 only where
+L2. Ports. Alt's warp service exposes udp 443 and udp 4053 only, never 53:
+warp gains `external_udp_ports` for host-pinned services, allocating a
+host port per entry through the same `WARP_PORTS` mapping as `ports:` and
+publishing each with the interface-scoped DNAT the lb interfaces use (the
+lb's force map cannot be reused, since it would also DNAT tcp 443 away
+from nginx), while the lb unit on such a host reserves those udp ports so
+two chains never DNAT one tuple; the router in front of the proxy hosts
+DNATs public 53 to 4053. The alt entry is `exposed: false`, one block, no
+aliases and no capabilities, added to `host_services` of both proxy hosts,
+and carried as a new version v22. The whodis port is 4053 everywhere, which is already the
+connect service's dns listener behind the lb (8053 kept for old lbs), so
+alt listens on 4053 and nothing moves; and an extender listens on 4053 always and on 53 only where
 the platform allows it without privilege, the linux daemon and the windows
-service; macOS binds 2053 only. Records carry the list of dns ports that
+service; macOS binds 4053 only. Records carry the list of dns ports that
 passed the activation probe (`DnsPorts`, with `DnsPort` kept for old
-readers); a client dials 53 first when listed, then 2053. Alt is dialed on
-53 first, then 2053.
+readers); a client dials 53 first when listed, then 4053, and a manual or
+unverified address is dialed on 4053 only. Alt is dialed on 53 first,
+then 4053. The extender binds the configured dns port, 4053 in the sdk and
+connectctl, plus 53 under `DnsPrivilegedPort`, and reports what it bound
+so the activator advertises exactly that.
 
 L3. Names. `alt`, `main-alt`, `alt-v4`, `alt-v6`, `main-alt-v4` and
 `main-alt-v6` under bringyour.com and ur.network: static A and AAAA records
@@ -892,22 +908,33 @@ alt names resolve over DoH like the other space names.
 L4. Client strategy. The api gains an "alt h3" dialer (an http3 round
 tripper to the alt addresses with the api name as SNI and the platform's
 verified certificate) and an "alt whodis" dialer (the same over the dns
-translation to 53 then 2053). Priorities: the tcp dialers as today (0 to
+translation to 53 then 4053). Priorities: the tcp dialers as today (0 to
 50), alt h3 60, the extender carriers 100, 110 and 120, alt whodis 130,
 weights learning as today. The platform transport's H3, h3dns and
 h3dnspump modes dial the alt url, per family for the pinned provider
-transports, and the pump host derives from the alt url instead of the
-fixed `whodis` name; H1 keeps the platform url. The extender carriers are unchanged, since they forward the
+transports, and the pump host derives from the alt url when the pump host
+setting is empty (the sdk clears it); H1 keeps the platform url. An
+explicit port on an alt url pins both udp carriers to it, which is how a
+test fixture is reached; the family group derives `alt-v4` and `alt-v6`
+only from an alt url that is itself derived from the platform url, and
+passes any other alt url through unchanged. A family-pinned direct
+strategy carries its family into the udp dials so a v4 activation never
+reaches alt over v6. The 53-then-4053 order is two candidates through the
+existing staggered race. The extender carriers are unchanged, since they forward the
 api and connect over TCP.
 
 L5. Rate limits. Behind the lb nginx enforces the limits and the go
 services enforce none. Alt enforces its own, parsed from `services.yml`'s
 `default_rate_limit` (`requests_per_minute`, `burst`, `net_connections`,
-`exclude_subnets`) through the warp services package: for the api front a
+`exclude_subnets`) through the warp services package, which gains a
+`DefaultRateLimit` field for the top-level anchor: for the api front a
 per-address token bucket with the nginx `nodelay` semantics answering 429,
 and a per-address concurrent request cap; for the connect handler the
 same connection cap and the existing connection rate limit, refusing a
-QUIC connection over the cap. Excluded subnets are exempt.
+QUIC connection over the cap with application error 0x1001. Both answer
+429 like nginx, the bucket holds `burst + 1` and is charged before the
+concurrency cap, matching nginx's evaluation order. Excluded subnets are
+exempt.
 
 ### I. Tests
 
@@ -947,7 +974,7 @@ with the database.
 | `POST /network/extender-activate` args | `dns_ports` |
 | `sdk.NetworkSpaceValues` | `AltUrl` override; `GetAltUrl`, `GetAltUrlV4`, `GetAltUrlV6` |
 | `connect.PlatformTransportSettings` | `AltUrl` |
-| `services.yml` | `alt` service on the proxy hosts, external udp 443 and 2053; connect dns listener 2053 |
+| `services.yml` | `alt` service on the proxy hosts, external udp 443 and 4053; connect dns listener 4053 |
 | DNS | `alt`, `main-alt`, `alt-v4`, `alt-v6`, `main-alt-v4`, `main-alt-v6` per domain |
 
 Old clients keep working: the header's new fields are optional, the hello
@@ -1032,25 +1059,23 @@ Phase 5b follows 4 because both touch the server.
    and import parses the sdk payload.
 9. The alt service: L1 to L5. 9a (warp, vault): external udp port
    mapping for host-pinned services, the `alt` service entry on the proxy
-   hosts with udp 443 and 2053, the connect dns listener moved to 2053 in
-   the lb mapping. Acceptance: warpctl emits the DNAT for a host-pinned
+   hosts with udp 443 and 4053, the lb mapping unchanged. Acceptance: warpctl emits the DNAT for a host-pinned
    service's external udp ports and nothing else changes for the lb. 9b
    (server): the `alt` package and cli (exchange, connect handler without
    H1, api router over http3, SNI dispatch, whodis listener, rate limits
-   from services.yml), the connect dns port default, `dns_ports` in
-   activation with per-port probes. Acceptance: an in-process alt serves an
+   from services.yml), `dns_ports` in activation with per-port probes. Acceptance: an in-process alt serves an
    api call over H3 and over whodis and a platform transport session over
    both, dispatching by SNI and refusing an unknown name; the limits from a
    parsed services.yml fixture apply and excluded subnets bypass them; the
    lb-fronted services enforce nothing. 9c (connect, sdk): alt urls, the
    two api dialers with their priorities, the platform modes on alt,
-   `DnsPorts` on records and the 53-then-2053 dial order, the extender
-   listening on 2053 and 53 where allowed, connectctl and the provider role
+   `DnsPorts` on records and the 53-then-4053 dial order, the extender
+   listening on 4053 and 53 where allowed, connectctl and the provider role
    following. Acceptance: the strategy reaches an in-process alt fixture
    over h3 and whodis in the stated order; the platform H3 modes dial the
-   alt host and H1 the platform host; an extender advertising 2053 only is
-   dialed on 2053; records with both ports are dialed 53 first.
-   Operations: the router DNAT of 53 to 2053 on the proxy hosts and the
+   alt host and H1 the platform host; an extender advertising 4053 only is
+   dialed on 4053; records with both ports are dialed 53 first.
+   Operations: the router DNAT of 53 to 4053 on the proxy hosts and the
    DNS records of L3.
 
 ## 6. Known limitations
