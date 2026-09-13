@@ -127,6 +127,63 @@ the report identifies as why release takes 120 to 210 seconds rather than 120.
 Decisive test: a per-client clock, asserting the release time tracks the kill
 time rather than the last item's.
 
+## 4b. UDP, which the report does not measure at all
+
+The report is entirely about TCP: one download through a provider, the
+provider's upstream TCP socket, and the TCP return path's retry loop. UDP
+carries real traffic through the same provider (QUIC, DNS, games, anything a
+client sends that is not TCP) and none of it is measured here or anywhere in
+the harness.
+
+Three reasons it needs its own place in this plan rather than an assumption
+that TCP results carry over.
+
+The same socket-option pattern is present. `ip.go:3232` sets both the read and
+write buffers on the upstream UDP socket after connect, exactly as the TCP
+path did. UDP has no autotuning, so there is no window to pin and the fix that
+applies to TCP does not apply here. But the sizing question does: the UDP
+window is `MemoryScaledByteCount(1 MiB, 256 KiB)`, a different and much
+smaller budget than TCP's 16 MiB ceiling, and nothing has measured whether it
+is the right size for a provider rather than for a phone. A receive buffer too
+small for the arrival rate drops datagrams in the kernel before the provider
+ever sees them, which is invisible at every layer this program has
+instrumented.
+
+The dead-client mechanism is TCP-only by construction. `retryReturnSend`
+returns immediately unless `item.recoveryMode == receiveRecoveryModeTcpSocket`,
+so a UDP flow whose client dies does not enter the unbounded retry that fix 2
+exists to bound. That is worth stating positively: UDP does not have the
+zombie problem. But it raises the converse question, which is what a UDP flow
+whose client has gone actually does, and whether the provider reclaims it at
+all or leaks it by a different route.
+
+The provider's UDP path has its own sequence and socket lifecycle
+(`UdpSequence`, `startSharedSocket`) that the TCP investigation never touched.
+
+H8. The upstream UDP receive buffer is too small for a provider's arrival
+rate, so datagrams are dropped in the kernel under load. Decisive test: a UDP
+flow at increasing rate through a provider, reading the socket's drop counter
+(`netstat -su` receive errors, or `SO_RXQ_OVFL`) alongside delivered
+throughput, against the 1 MiB scaled default and against a larger one.
+
+H9. A UDP flow whose client disappears is reclaimed promptly, by the idle
+timeout rather than by anything the abandon work added. Decisive test: kill a
+client mid-UDP-flow and assert the flow and its socket are released within the
+idle timeout, with no growth in flow goroutines or sockets across repeated
+kills. This is the UDP mirror of the zombie test and it either confirms UDP is
+clean or finds a second leak.
+
+H10. UDP throughput through a provider is not bounded by the same ceiling TCP
+hits. The report's open item is a 640 Mb/s aggregate ceiling against
+WireGuard's 2,680. If UDP shows the same ceiling, the cause is shared and
+lives below both, which narrows the search sharply; if UDP does not, the cause
+is in the TCP path and the search narrows the other way. Decisive test: the
+same aggregate sweep on UDP.
+
+Tests to build for these: `TestUpstreamUdpBufferSizing`,
+`TestUdpFlowReleasedWhenClientDisappears`, and a UDP cell in the performance
+harness beside the TCP one, in both directions.
+
 ## 5. Deterministic tests to build
 
 Each is an assertion a single run can decide, in the shape the flight-gate
@@ -160,6 +217,9 @@ The gaps that matter for a landing decision:
   single most valuable addition this program can make, because it would have
   caught this bug and will catch the next one of its kind.
 - No upload-direction provider measurement, which is where H2 lives.
+- No UDP measurement at all, in either direction, which is where H8 and H10
+  live. The harness has no UDP provider cell, so a datagram path that drops in
+  the kernel would be invisible to every instrument this program has.
 - No mobile-provider measurement of either fix.
 - The aggregate ceiling at 640 Mb/s against WireGuard's 2,680 is the largest
   remaining gap and has no test. It needs its own investigation with the
