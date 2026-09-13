@@ -652,6 +652,44 @@ func TestPlatformTransportBudgetTransportCountThrottlesCandidates(t *testing.T) 
 	second.Release()
 }
 
+// TestPlatformTransportBudgetDoesNotPreemptForUnresolvableSlotDeficit pins the
+// provider CPU regression from urnetwork/connect#211. Once the process-wide
+// transport count is full, a pending H1 claim has both byte and slot deficits.
+// A slotless Auto-H3 lease can resolve only the bytes; preempting it makes that
+// lease yield and immediately reacquire forever without admitting the H1.
+func TestPlatformTransportBudgetDoesNotPreemptForUnresolvableSlotDeficit(t *testing.T) {
+	budget := NewPlatformTransportBudget(10, 1)
+	h1 := budget.register(platformTransportBudgetH1, 2, true)
+	if !h1.Acquire(t.Context()) {
+		t.Fatal("initial H1 claim was not admitted")
+	}
+	h3 := budget.register(platformTransportBudgetH3Auto, 8, false)
+	if !h3.Acquire(t.Context()) {
+		t.Fatal("slotless Auto-H3 claim was not admitted")
+	}
+	blockedH1 := budget.register(platformTransportBudgetH1, 1, true)
+
+	budget.mutex.Lock()
+	blockedH1.requestPreemptionLocked()
+	preemptRequested := h3.preemptRequested
+	budget.mutex.Unlock()
+	if preemptRequested {
+		t.Fatal("slotless Auto-H3 was preempted even though it cannot free the required slot")
+	}
+	select {
+	case <-h3.PreemptNotify():
+		t.Fatal("slotless Auto-H3 received an unresolvable preemption request")
+	default:
+	}
+	if stats := budget.Stats(); stats.PreemptedH3Count != 0 {
+		t.Fatalf("unresolvable preemption count = %d, want 0", stats.PreemptedH3Count)
+	}
+
+	blockedH1.Release()
+	h3.Release()
+	h1.Release()
+}
+
 func TestPlatformTransportBudgetCanceledH1ClaimUnblocksH3(t *testing.T) {
 	budget := NewPlatformTransportBudget(10, 2)
 	existingH1 := budget.register(platformTransportBudgetH1, 6, true)

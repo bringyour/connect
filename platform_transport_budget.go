@@ -478,6 +478,7 @@ func (self *platformTransportBudgetReservation) requestPreemptionLocked() {
 		}
 		return 0
 	})
+	selectedVictims := []*platformTransportBudgetReservation{}
 	for _, victim := range victims {
 		if byteDeficit <= 0 && transportDeficit <= 0 {
 			break
@@ -486,13 +487,28 @@ func (self *platformTransportBudgetReservation) requestPreemptionLocked() {
 		if byteDeficit <= 0 && (transportDeficit <= 0 || !victim.usesSlot) {
 			continue
 		}
-		victim.preemptRequested = true
-		close(victim.preempt)
-		budget.preemptedH3Count += 1
+		selectedVictims = append(selectedVictims, victim)
 		byteDeficit -= victim.byteCount
 		if victim.usesSlot {
 			transportDeficit -= 1
 		}
+	}
+	// Do not tear down a useful carrier for an H1 claim unless the complete
+	// selected set can make that claim admissible. In particular, a slotless
+	// Auto-H3 carrier can resolve a byte deficit but cannot resolve a simultaneous
+	// transport-count deficit. Partially preempting it lets it reacquire
+	// immediately, causing an endless yield/reacquire cycle while an over-cap H1
+	// claim remains pending. An H3 policy replacement may deliberately drain its
+	// old optional H3 carrier while it waits for an H1 slot to close, so retain
+	// that make-before-break behavior for the H3 classes.
+	if self.class == platformTransportBudgetH1 &&
+		(0 < byteDeficit || 0 < transportDeficit) {
+		return
+	}
+	for _, victim := range selectedVictims {
+		victim.preemptRequested = true
+		close(victim.preempt)
+		budget.preemptedH3Count += 1
 	}
 }
 
