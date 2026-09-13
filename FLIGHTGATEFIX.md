@@ -4123,9 +4123,10 @@ for lack of evidence; each has a measurement against it.
 The lane rule, `ReliableLaneProvenRecovery`. It withholds a firing until a
 later same-lane acknowledgement proves it. Measured on the relay
 queue-inflation cell and the storm cells at twenty repetitions per state,
-it wedges transfers. Pooled over three cells and two independently built
-arms, runs over 100 seconds were 0 of 80 with it off and 5 of 80 with it
-on, Fisher two-sided 0.116 on the relay cell alone and 0.059 pooled. The
+it wedges transfers. Pooled over four cells and three independently built
+arms, and counting a wedge by mechanism rather than by duration alone, 0 of
+120 runs with it off and 8 of 120 with it on, Fisher two-sided 0.0069; by
+the plain over-100-seconds proxy, 1 of 120 against 8 of 120 at 0.036. The
 worst was 712.8 seconds on a link carrying nothing worse than 1 per cent
 loss, with 142 of 143 windows dead, 11 timeout writes against 1,146
 deferrals, and the run failed. The mechanism is sound where its release
@@ -4201,8 +4202,9 @@ arms the separation is exact, every wedge sitting at a ratio of 0.01 to
 | by mechanism | 0 of 120 | 8 of 120 | 0.0069 |
 | by the 100-second proxy | 1 of 120 | 8 of 120 | 0.036 |
 
-That supersedes the 5 of 80 against 0 of 80 at 0.059 quoted in §36.10 and
-in `FLIGHTGATE-REPORT.md`. The finding moves from suggestive to
+That supersedes the 5 of 80 against 0 of 80 at 0.059 that §36.10 and
+`FLIGHTGATE-REPORT.md` were written against; §36.10 now carries the final
+figure and the report still needs correcting. The finding moves from suggestive to
 significant; its direction and mechanism are unchanged.
 
 The clean re-run of the forced-direct rule-off block: not needed, and
