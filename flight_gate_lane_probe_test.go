@@ -282,3 +282,77 @@ func TestEndpointDropOnAReliableLaneIsStillRecovered(t *testing.T) {
 			perLane, asLanded)
 	}
 }
+
+// FLIGHTGATEFIX §33. The campaign's deep wedge, in process. A relay that
+// goes silent for longer than the liveness cadence's cap leaves the lane
+// rule with no reachable release condition: the rule withholds a firing
+// until a later same-lane acknowledgement proves it, and a silent lane
+// produces none by construction. The campaign measured what that costs,
+// five runs over a hundred seconds in eighty with the rule on against none
+// in eighty with it off, one of them twelve minutes on a link carrying
+// nothing worse than one per cent loss.
+//
+// The row holds the relay for twenty seconds, well past the eight-second
+// cap on the head probe's cadence, and asks what the two arms do once the
+// lane comes back. The stall is common to both, so it is subtracted: what
+// is measured is recovery after the impairment ends, which is where the
+// campaign's wedges lived.
+func TestSilentLaneLongerThanTheProbeCadenceStillDrains(t *testing.T) {
+	if testing.Short() {
+		t.Skip("relay stall")
+	}
+	const stall = 20 * time.Second
+	measure := func(laneRule bool) (time.Duration, ClientSendRecoveryStatsSnapshot) {
+		harness := newMixedLaneHarnessWithOptions(t, mixedLaneOptions{
+			slowLatency:                200 * time.Millisecond,
+			slowSerialization:          time.Millisecond,
+			slowQueueFrames:            1024,
+			directLaneDisabled:         true,
+			deferTimeoutResend:         true,
+			slowStallAfter:             1500 * time.Millisecond,
+			slowStallFor:               stall,
+			reliableLaneProvenRecovery: laneRule,
+		})
+		start := time.Now()
+		snapshot := harness.run(t, 3000)
+		return time.Since(start), snapshot
+	}
+	perItemElapsed, perItem := measure(false)
+	perLaneElapsed, perLane := measure(true)
+	t.Logf("per item: %s rto=%d deferred=%d", perItemElapsed,
+		perItem.TimeoutResendWriteCount, perItem.TimeoutResendDeferCount)
+	t.Logf("per lane: %s rto=%d deferred=%d probes=%d held=%d", perLaneElapsed,
+		perLane.TimeoutResendWriteCount, perLane.TimeoutResendDeferCount,
+		perLane.LaneProbeWriteCount, perLane.LaneProbeRideCount)
+
+	// Both arms wait out the stall; only what follows it is theirs.
+	perItemAfter := perItemElapsed - stall
+	perLaneAfter := perLaneElapsed - stall
+	if perItemAfter <= 0 || perLaneAfter <= 0 {
+		t.Fatalf("the stall did not bind: per item %s, per lane %s against a %s stall",
+			perItemElapsed, perLaneElapsed, stall)
+	}
+	// The campaign's wedges ran one to two orders of magnitude past the
+	// rule-off runs of the same cell. A factor of four is well clear of
+	// run-to-run spread here and well under anything the campaign saw.
+	if 4*perItemAfter < perLaneAfter {
+		t.Fatalf(
+			"reading the lane took %s to drain after the stall against %s per item, more than "+
+				"four times: the rule's release condition is a later same-lane acknowledgement, "+
+				"which a silent lane cannot produce, so the sender has no bound of its own "+
+				"(FLIGHTGATEFIX §33.9)",
+			perLaneAfter, perItemAfter,
+		)
+	}
+	// A wedge is visible in the counters even when the clock happens to
+	// escape: the sender holds recovery work it never writes.
+	if perLane.TimeoutResendDeferCount != 0 &&
+		100*perLane.TimeoutResendWriteCount < perLane.TimeoutResendDeferCount {
+		t.Fatalf(
+			"reading the lane wrote %d recovery messages against %d deferred, a write-to-defer "+
+				"ratio under one per cent: the campaign's failed wedge sat at 0.01 for twelve "+
+				"minutes (FLIGHTGATEFIX §33.9)",
+			perLane.TimeoutResendWriteCount, perLane.TimeoutResendDeferCount,
+		)
+	}
+}

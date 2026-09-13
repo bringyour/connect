@@ -3453,3 +3453,53 @@ liveness cadence was meant to be that bound and run 6 shows it is not, since
 its head writes are inside those eleven timeout writes. Sizing that bound is
 the next round's work, and it should be sized against the rule-off wedges,
 which clear in 32 to 61 seconds at 57 to 79 recovery writes a second.
+
+### 33.10 The wedge does not reproduce in process, and that is the useful part
+
+A root-cause row for §33 is added,
+`TestSilentLaneLongerThanTheProbeCadenceStillDrains`. It holds the relay
+silent for twenty seconds, well past the eight-second cap on the head
+probe's cadence, and measures what each arm does once the lane returns,
+subtracting the stall both arms wait out. It asserts two things: that the
+rule-on arm drains within four times the rule-off arm's post-stall time, and
+that its write-to-defer ratio does not fall under one per cent, the figure
+the campaign's failed wedge sat at for twelve minutes.
+
+It passes, and it passes comfortably. Rule off drains in 23.9 seconds
+writing 1,027 whole-window retransmits; rule on drains in 23.0, faster, on
+seven writes and seven probes. The rule does exactly what it is for.
+
+Three further shapes were probed and none of them wedge either:
+
+| Shape | rule off | rule on |
+| --- | --- | --- |
+| mixed lanes, 1 % direct loss | 3.80 s, 1 write | 3.81 s, 1 write |
+| mixed lanes, 1 % direct loss, 20 s relay stall | 24.5 s, 474 writes | 23.4 s, 9 writes |
+| relay only, 1 % endpoint loss | 2.70 s, 1 write | 2.69 s, 1 write |
+
+The second row is the campaign's `loss-100bp` shape with a stall added, and
+it is the closest this package can get to run 6. The rule-on arm wrote nine
+recovery messages against 1,152 deferred, a write-to-defer ratio of 0.008,
+lower than the wedged run's 0.01 — and it still drained a second faster than
+the rule-off arm.
+
+So the suppression reproduces exactly and the wedge does not. The deep mode
+is not a property of the rule's arithmetic, which this package can exercise
+completely; it is a property of the rule's arithmetic meeting something
+these links do not model. What they do not model is enumerable: the
+in-process peers carry no contract, there is one send sequence rather than
+many, the receiver is a test sink rather than a Resident with a head slot
+and Pack reassembly, and the relay is a channel rather than an Exchange.
+
+That is the localisation worth having, and it redirects 33.8. The
+instrument the next round needs is not the relay's queue depth, which run 6
+says is not the variable, but a perfvar-side export of the receiver's own
+state during a wedge: whether its head slot advanced, what it was waiting
+on, and whether a contract event coincided with the release. The wedges all
+end abruptly at full rate, so something arrives; the sender's counters
+cannot say what, and this package cannot produce the condition to ask.
+
+Until that exists the rule stays off by default, which is where §33.6 and
+the revert have already put it. The row above is kept as a guard: if a later
+change makes a silent lane fail to drain in process, it is caught here
+rather than in a twenty-repetition campaign.
