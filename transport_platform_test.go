@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1580,5 +1581,68 @@ func TestPlatformTransportExtenderIpsShareOneChangeCounter(t *testing.T) {
 	}
 	if ips := first.ExtenderIps(); len(ips) != 0 {
 		t.Fatalf("extender ips = %v, want none", ips)
+	}
+}
+
+// The published set is sorted and deduplicated across both families, so the
+// grid point of a provider reached through several extenders is a stable list
+// rather than map order (K1, K2).
+func TestPlatformTransportExtenderIpsAreSortedAcrossFamilies(t *testing.T) {
+	transport := &PlatformTransport{
+		extenderIpCounts:   map[netip.Addr]int{},
+		extenderIpsMonitor: NewMonitorValue[uint64](0),
+	}
+	// held out of order, and one held twice
+	held := []netip.Addr{
+		netip.MustParseAddr("2001:db8::20"),
+		netip.MustParseAddr("192.0.2.142"),
+		netip.MustParseAddr("2001:db8::10"),
+		netip.MustParseAddr("192.0.2.141"),
+		netip.MustParseAddr("192.0.2.142"),
+	}
+	for _, ip := range held {
+		transport.changeExtenderIp(ip, 1)
+	}
+	want := []netip.Addr{
+		netip.MustParseAddr("192.0.2.141"),
+		netip.MustParseAddr("192.0.2.142"),
+		netip.MustParseAddr("2001:db8::10"),
+		netip.MustParseAddr("2001:db8::20"),
+	}
+	if ips := transport.ExtenderIps(); !slices.Equal(ips, want) {
+		t.Fatalf("extender ips = %v, expected %v", ips, want)
+	}
+
+	// a direct connection has no address to hold, so the hold is a no-op and
+	// so is its release -- a transport with no strategy behind it is never
+	// dereferenced on that path either
+	_, change := transport.extenderIpsMonitor.Get()
+	var direct netip.Addr
+	release := transport.holdExtenderIp(direct)
+	release()
+	select {
+	case <-change:
+		t.Fatal("a direct connection notified the extender set")
+	default:
+	}
+	if ips := transport.ExtenderIps(); !slices.Equal(ips, want) {
+		t.Fatalf("extender ips after a direct connection = %v", ips)
+	}
+
+	// a v4-mapped address is held as the v4 form, so one extender is one entry
+	// however the dial reported it
+	mappedRelease := transport.holdExtenderIp(netip.MustParseAddr("::ffff:192.0.2.143"))
+	mapped := netip.MustParseAddr("192.0.2.143")
+	if ips := transport.ExtenderIps(); !slices.Contains(ips, mapped) {
+		t.Fatalf("extender ips = %v, expected the unmapped %s", ips, mapped)
+	}
+	mappedRelease()
+
+	// releasing every hold empties the set
+	for _, ip := range held {
+		transport.changeExtenderIp(ip, -1)
+	}
+	if ips := transport.ExtenderIps(); 0 < len(ips) {
+		t.Fatalf("extender ips after every release = %v", ips)
 	}
 }

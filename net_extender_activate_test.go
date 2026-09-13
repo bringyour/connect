@@ -593,7 +593,13 @@ func TestExtenderActivatorSkipsEmptyAndUnsupportedFamilies(t *testing.T) {
 	}
 }
 
-// A refusal holds the next attempt for ten minutes and doubles from there (G3).
+// A refusal holds the next attempt for ten minutes and doubles from there,
+// then holds at the six hour cap; a success resets the hold to the floor (G3).
+//
+// The clock is never advanced while a post may be in flight: the operator
+// stamps a post with the clock it reads when it handles the request, so
+// advancing between the wake and the post would stamp the next time instead of
+// the one under test.
 func TestExtenderActivatorBacksOffOnRefusal(t *testing.T) {
 	fixture := newTestActivatorFixture(t, func(settings *ExtenderActivatorSettings) {
 		settings.ApiUrlV6 = ""
@@ -607,32 +613,39 @@ func TestExtenderActivatorBacksOffOnRefusal(t *testing.T) {
 		t.Fatalf("first post at %s, expected %s", first.postTime, startTime)
 	}
 
-	// short of the ten minute hold, nothing is posted
-	fixture.step(5 * time.Minute)
-	fixture.step(1 * time.Minute)
-	if count := fixture.operator.postCount(4); count != 1 {
-		t.Fatalf("posts after 6 minutes = %d, expected the first only", count)
+	// each refusal doubles the hold from the ten minute floor, so the posts
+	// land at a cumulative 10, 30, 70, 150 and 310 minutes, and then every six
+	// hours once the cap is reached
+	holds := []time.Duration{
+		10 * time.Minute,
+		20 * time.Minute,
+		40 * time.Minute,
+		80 * time.Minute,
+		160 * time.Minute,
+		320 * time.Minute,
+		6 * time.Hour,
+		6 * time.Hour,
 	}
-
-	fixture.clock.advance(4 * time.Minute)
-	fixture.wake()
-	second := fixture.waitPost()
-	if second.postTime != startTime.Add(10*time.Minute) {
-		t.Fatalf("second post at %s, expected +10m", second.postTime.Sub(startTime))
-	}
-
-	// the hold doubled: nineteen minutes later is still too soon
-	fixture.step(19 * time.Minute)
-	fixture.step(1 * time.Minute)
-	if count := fixture.operator.postCount(4); count != 2 {
-		t.Fatalf("posts after +30m of holding = %d, expected two", count)
-	}
-
-	fixture.clock.advance(10 * time.Minute)
-	fixture.wake()
-	third := fixture.waitPost()
-	if third.postTime != startTime.Add(40*time.Minute) {
-		t.Fatalf("third post at %s, expected +40m", third.postTime.Sub(startTime))
+	postTime := startTime
+	for i, hold := range holds {
+		// one minute short of the hold nothing is posted; the pass barrier is
+		// the caller address check, which runs before the activation would,
+		// so a post cannot be in flight when the count is read
+		fixture.step(hold - time.Minute)
+		if count := fixture.operator.postCount(4); count != i+1 {
+			t.Fatalf(
+				"posts one minute short of the %s hold = %d, expected %d",
+				hold, count, i+1)
+		}
+		fixture.clock.advance(time.Minute)
+		fixture.wake()
+		post := fixture.waitPost()
+		postTime = postTime.Add(hold)
+		if post.postTime != postTime {
+			t.Fatalf(
+				"post %d at %s, expected %s",
+				i+2, post.postTime.Sub(startTime), postTime.Sub(startTime))
+		}
 	}
 
 	status := fixture.activator.Status().Family(4)
@@ -641,6 +654,41 @@ func TestExtenderActivatorBacksOffOnRefusal(t *testing.T) {
 	}
 	if status.LastError != "the tcp carrier did not answer" {
 		t.Fatalf("last error = %q", status.LastError)
+	}
+
+	// a success resets the hold: the operator stops refusing, a network change
+	// forces the pass, and the refusal after it holds the floor again rather
+	// than the cap
+	fixture.operator.setRefusal("")
+	fixture.clock.advance(time.Minute)
+	fixture.networkChanged()
+	successTime := fixture.clock.Now()
+	if post := fixture.waitPost(); post.postTime != successTime {
+		t.Fatalf("the forced post is at %s", post.postTime.Sub(startTime))
+	}
+	if ipVersion := fixture.waitActivation(); ipVersion != 4 {
+		t.Fatalf("activated family = %d", ipVersion)
+	}
+
+	fixture.operator.setRefusal("the tcp carrier did not answer")
+	fixture.clock.advance(24 * time.Hour)
+	fixture.wake()
+	tickTime := fixture.clock.Now()
+	if post := fixture.waitPost(); post.postTime != tickTime {
+		t.Fatalf("the daily post is at %s", post.postTime.Sub(successTime))
+	}
+	// the hold is the floor again, not the cap it had reached
+	fixture.step(9 * time.Minute)
+	beforeCount := fixture.operator.postCount(4)
+	fixture.clock.advance(time.Minute)
+	fixture.wake()
+	if post := fixture.waitPost(); post.postTime != tickTime.Add(10*time.Minute) {
+		t.Fatalf(
+			"the post after the reset is at %s, expected the ten minute floor",
+			post.postTime.Sub(tickTime))
+	}
+	if count := fixture.operator.postCount(4); count != beforeCount+1 {
+		t.Fatalf("posts after the reset = %d, expected %d", count, beforeCount+1)
 	}
 }
 

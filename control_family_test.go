@@ -346,10 +346,14 @@ func TestFamilySupportedReadsTheInterfaceTable(t *testing.T) {
 		flags: net.FlagUp | net.FlagLoopback,
 		addrs: []net.Addr{ipNet("127.0.0.1/8"), ipNet("::1/128")},
 	}
+	// 198.18.0.0/15 (RFC 2544) and 3fff::/20 (RFC 9637) are global unicast and
+	// are not among controlFamilyReservedPrefixes, which the documentation
+	// ranges deliberately are -- so these read as connectivity while naming no
+	// real network.
 	dualStack := controlFamilyInterface{
 		name:  "en0",
 		flags: net.FlagUp,
-		addrs: []net.Addr{ipNet("192.168.1.20/24"), ipNet("2600:1700:1234:5678::1/64")},
+		addrs: []net.Addr{ipNet("198.18.7.20/24"), ipNet("3fff:db8::1/64")},
 	}
 
 	restore := swapControlFamilyInterfaces(

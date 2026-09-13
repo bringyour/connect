@@ -64,6 +64,14 @@ func (self *testAltServer) clientHello(t *testing.T) (string, []string) {
 
 func newTestAltServer(t *testing.T, whodis bool) *testAltServer {
 	t.Helper()
+	return newTestAltServerFamily(t, whodis, "127.0.0.1")
+}
+
+// The same fixture on one loopback family. Tests run on dual-stack hosts, so
+// the v6 form is required rather than skipped: the alt carriers open their own
+// udp endpoint per dial and must narrow it to the destination's family.
+func newTestAltServerFamily(t *testing.T, whodis bool, loopbackIp string) *testAltServer {
+	t.Helper()
 	certPem, keyPem, err := selfSign([]string{testAltApiHost}, "alt-test", 1*time.Hour, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +86,7 @@ func newTestAltServer(t *testing.T, whodis bool) *testAltServer {
 	}
 	altServer := &testAltServer{rootCAs: rootCAs}
 
-	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	packetConn, err := net.ListenPacket("udp", net.JoinHostPort(loopbackIp, "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +156,7 @@ func newTestAltServer(t *testing.T, whodis bool) *testAltServer {
 		carrierPacketConn.Close()
 	})
 
-	altServer.altUrl = fmt.Sprintf("https://%s", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)))
+	altServer.altUrl = fmt.Sprintf("https://%s", net.JoinHostPort(loopbackIp, fmt.Sprintf("%d", port)))
 	return altServer
 }
 
@@ -334,4 +342,39 @@ func TestAltWhodisTldMatchesThePlatformDnsTld(t *testing.T) {
 			t.Fatalf("whodis tld %q, platform dns tld %q", strategyTlds[i], platformTlds[i])
 		}
 	}
+}
+
+// The same two carriers over ipv6 loopback. The alt dial opens its own udp
+// endpoint per attempt and must narrow it to the destination's family, so a
+// v6 alt is only reachable when that narrowing is right (L4).
+func TestAltH3DialerGetOverIpv6(t *testing.T) {
+	requireTestAltIpv6Loopback(t)
+	altServer := newTestAltServerFamily(t, false, "::1")
+	clientStrategy := newTestAltStrategy(t, altServer)
+	dialer := testAltDialer(t, clientStrategy, "alt h3")
+	if body := testAltGet(t, dialer); body != testAltBodyText {
+		t.Fatalf("body = %q", body)
+	}
+	testAltAssertClientHello(t, altServer)
+}
+
+func TestAltWhodisDialerGetOverIpv6(t *testing.T) {
+	requireTestAltIpv6Loopback(t)
+	altServer := newTestAltServerFamily(t, true, "::1")
+	clientStrategy := newTestAltStrategy(t, altServer)
+	dialer := testAltDialer(t, clientStrategy, "alt whodis")
+	if body := testAltGet(t, dialer); body != testAltBodyText {
+		t.Fatalf("body = %q", body)
+	}
+	testAltAssertClientHello(t, altServer)
+}
+
+// Fails rather than skips: the extender tests require a dual-stack host.
+func requireTestAltIpv6Loopback(t *testing.T) {
+	t.Helper()
+	packetConn, err := net.ListenPacket("udp", "[::1]:0")
+	if err != nil {
+		t.Fatalf("ipv6 loopback is required for the alt tests: %v", err)
+	}
+	packetConn.Close()
 }
