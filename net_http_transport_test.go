@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +17,234 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+func TestClientDialerWebSocketUsesConnectSettingsResolver(t *testing.T) {
+	forEachIpVersion(t, func(t *testing.T, ipVersion int) {
+		for _, secure := range []bool{false, true} {
+			name := "ws"
+			if secure {
+				name = "wss"
+			}
+			accepted := make(chan struct{}, 1)
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			server := newFamilyHttptestUnstartedServer(t, ipVersion, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				connection, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer connection.Close()
+				accepted <- struct{}{}
+			}))
+			if secure {
+				server.StartTLS()
+			} else {
+				server.Start()
+			}
+
+			settings := DefaultClientStrategySettings()
+			settings.ConnectSettings.Resolver = newFamilyTestResolver(t, testLoopbackAddr(ipVersion))
+			if secure {
+				serverTransport, ok := server.Client().Transport.(*http.Transport)
+				if !ok {
+					server.Close()
+					t.Fatalf("unexpected test server transport type %T", server.Client().Transport)
+				}
+				settings.TlsConfig = serverTransport.TLSClientConfig.Clone()
+				settings.TlsConfig.InsecureSkipVerify = true // test-only certificate has a different synthetic name
+			}
+			dialer := &clientDialer{
+				dialTlsContext: newNormalDialTlsContext(settings, clientWebSocketNextProtos),
+				settings:       settings,
+			}
+			port := server.Listener.Addr().(*net.TCPAddr).Port
+			url := fmt.Sprintf("%s://websocket-resolver.example.test:%d", name, port)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			connection, response, err := dialer.WsDialer(settings).DialContext(ctx, url, nil)
+			if response != nil && response.Body != nil {
+				response.Body.Close()
+			}
+			if err != nil {
+				cancel()
+				server.Close()
+				t.Fatalf("%s websocket through the configured resolver: %s", name, err)
+			}
+			select {
+			case <-accepted:
+			case <-ctx.Done():
+				connection.Close()
+				cancel()
+				server.Close()
+				t.Fatal(ctx.Err())
+			}
+			connection.Close()
+			cancel()
+			server.Close()
+		}
+	})
+}
+
+func TestClientDialerPlainWebSocketPreservesInjectedDialContext(t *testing.T) {
+	forEachIpVersion(t, func(t *testing.T, ipVersion int) {
+		accepted := make(chan struct{}, 1)
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		server := newFamilyHttptestUnstartedServer(t, ipVersion, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			connection, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer connection.Close()
+			accepted <- struct{}{}
+		}))
+		server.Start()
+		defer server.Close()
+
+		var resolverCalls atomic.Int32
+		var dialCalls atomic.Int32
+		settings := DefaultClientStrategySettings()
+		settings.ConnectSettings.Resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(context.Context, string, string) (net.Conn, error) {
+				resolverCalls.Add(1)
+				return nil, errors.New("unexpected resolver call")
+			},
+		}
+		settings.ConnectSettings.DialContextSettings = &DialContextSettings{
+			DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+				dialCalls.Add(1)
+				if network != "tcp" {
+					t.Errorf("network = %q, want tcp", network)
+				}
+				if address != "injected-websocket.example.test:443" {
+					t.Errorf("address = %q, want the original authority", address)
+				}
+				return (&net.Dialer{}).DialContext(ctx, testTcpNetwork(ipVersion), server.Listener.Addr().String())
+			},
+		}
+		dialer := &clientDialer{settings: settings}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		connection, response, err := dialer.WsDialer(settings).DialContext(
+			ctx,
+			"ws://injected-websocket.example.test:443",
+			nil,
+		)
+		if response != nil && response.Body != nil {
+			defer response.Body.Close()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		select {
+		case <-accepted:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if got := dialCalls.Load(); got != 1 {
+			t.Fatalf("injected dial calls = %d, want 1", got)
+		}
+		if got := resolverCalls.Load(); got != 0 {
+			t.Fatalf("resolver calls = %d, want 0: explicit dial must remain authoritative", got)
+		}
+	})
+}
+
+func TestClientDialerPlainHttpUsesConnectSettingsResolver(t *testing.T) {
+	forEachIpVersion(t, func(t *testing.T, ipVersion int) {
+		server := newFamilyHttptestUnstartedServer(t, ipVersion, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		}))
+		server.Start()
+		defer server.Close()
+
+		settings := DefaultClientStrategySettings()
+		settings.ConnectSettings.Resolver = newFamilyTestResolver(t, testLoopbackAddr(ipVersion))
+		dialer := &clientDialer{settings: settings}
+		client := dialer.HttpClient()
+		defer client.CloseIdleConnections()
+
+		port := server.Listener.Addr().(*net.TCPAddr).Port
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		request, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodGet,
+			fmt.Sprintf("http://http-resolver.example.test:%d", port),
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("plain http through the configured resolver: %s", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
+		}
+	})
+}
+
+func TestClientDialerPlainHttpPreservesInjectedDialContext(t *testing.T) {
+	forEachIpVersion(t, func(t *testing.T, ipVersion int) {
+		server := newFamilyHttptestUnstartedServer(t, ipVersion, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		server.Start()
+		defer server.Close()
+
+		var resolverCalls atomic.Int32
+		var dialCalls atomic.Int32
+		settings := DefaultClientStrategySettings()
+		settings.ConnectSettings.Resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(context.Context, string, string) (net.Conn, error) {
+				resolverCalls.Add(1)
+				return nil, errors.New("unexpected resolver call")
+			},
+		}
+		settings.ConnectSettings.DialContextSettings = &DialContextSettings{
+			DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+				dialCalls.Add(1)
+				if network != "tcp" {
+					t.Errorf("network = %q, want tcp", network)
+				}
+				if address != "injected-http.example.test:80" {
+					t.Errorf("address = %q, want the original authority", address)
+				}
+				return (&net.Dialer{}).DialContext(ctx, testTcpNetwork(ipVersion), server.Listener.Addr().String())
+			},
+		}
+		dialer := &clientDialer{settings: settings}
+		client := dialer.HttpClient()
+		defer client.CloseIdleConnections()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		request, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodGet,
+			"http://injected-http.example.test:80",
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if got := dialCalls.Load(); got != 1 {
+			t.Fatalf("injected dial calls = %d, want 1", got)
+		}
+		if got := resolverCalls.Load(); got != 0 {
+			t.Fatalf("resolver calls = %d, want 0: explicit dial must remain authoritative", got)
+		}
+	})
+}
 
 func TestClientDialerHttpClientUsesHttp2WithCustomTlsDialer(t *testing.T) {
 	forEachIpVersion(t, func(t *testing.T, ipVersion int) {

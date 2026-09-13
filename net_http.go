@@ -1895,11 +1895,12 @@ func (self *clientDialer) HttpClient() *http.Client {
 			transport.HTTP2.MaxReceiveBufferPerConnection = self.settings.Http2MaxReceiveBufferPerConnection
 			transport.HTTP2.MaxReceiveBufferPerStream = self.settings.Http2MaxReceiveBufferPerStream
 		}
-		// a custom dial context applies to plain (non-tls) connections;
-		// tls connections use the dialTlsContext chain above
-		if dialContextSettings := self.settings.ConnectSettings.DialContextSettings; dialContextSettings != nil {
-			transport.DialContext = dialContextSettings.DialContext
-		}
+		// Plain http:// has no tls dialer through which to reach ConnectSettings.
+		// Always install its DialContext seam so an explicit caller dial remains
+		// authoritative and, without one, the configured resolver, family policy,
+		// proxy, and address race still apply. https:// uses the dialTlsContext
+		// chain above, which reaches the same ConnectSettings.DialContext boundary.
+		transport.DialContext = self.settings.ConnectSettings.DialContext
 		self.httpClient = &http.Client{
 			Transport: transport,
 			Timeout:   self.settings.RequestTimeout,
@@ -1939,26 +1940,21 @@ func (self *clientDialer) WsDialer(settings *ClientStrategySettings) *websocket.
 			// WriteBufferPool: pool,
 			EnableCompression: false,
 		}
-		// Plain ws:// must also use an explicitly configured resolver. Keep
-		// injected dialers first; wss:// uses the TLS chain above, and an
-		// ordinary unconfigured ws:// dial retains gorilla's default path.
-		dialContextSettings := settings.ConnectSettings.DialContextSettings
-		if dialContextSettings != nil || settings.ConnectSettings.Resolver != nil {
-			dialContext := settings.ConnectSettings.DialContext
-			if dialContextSettings != nil {
-				dialContext = dialContextSettings.DialContext
+		// Plain ws:// has no tls dialer through which to reach ConnectSettings.
+		// Always install its DialContext seam so an explicit caller dial remains
+		// authoritative and, without one, the configured resolver, family policy,
+		// proxy, and address race still apply. wss:// uses the dialTlsContext chain
+		// above, which reaches the same ConnectSettings.DialContext boundary.
+		self.websocketDialer.NetDialContext = func(
+			ctx context.Context,
+			network string,
+			address string,
+		) (net.Conn, error) {
+			conn, err := settings.ConnectSettings.DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
 			}
-			self.websocketDialer.NetDialContext = func(
-				ctx context.Context,
-				network string,
-				address string,
-			) (net.Conn, error) {
-				conn, err := dialContext(ctx, network, address)
-				if err != nil {
-					return nil, err
-				}
-				return NewWebSocketWriteBatchConn(conn), nil
-			}
+			return NewWebSocketWriteBatchConn(conn), nil
 		}
 	}
 	return self.websocketDialer

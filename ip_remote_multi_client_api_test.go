@@ -706,6 +706,123 @@ func testRemoveClientWithArgsJoinsOobBeforeIdentityRevocation(t *testing.T, ipVe
 	}
 }
 
+// Unused client args still own a platform identity. Their direct asynchronous
+// removal must enter the same retirement gate as generated Clients, or closing
+// the generator can cancel the request and leave the row active.
+func TestApiMultiClientGeneratorCloseAndWaitJoinsDirectClientArgsRemoval(t *testing.T) {
+	forEachIpVersion(t, func(t *testing.T, ipVersion int) {
+		testApiMultiClientGeneratorCloseAndWaitJoinsDirectClientArgsRemoval(t, ipVersion)
+	})
+}
+
+func testApiMultiClientGeneratorCloseAndWaitJoinsDirectClientArgsRemoval(t *testing.T, ipVersion int) {
+	removeStarted := make(chan struct{})
+	removeRelease := make(chan struct{})
+	var startOnce sync.Once
+	var releaseOnce sync.Once
+	removeCount := &atomic.Int32{}
+
+	apiServer := newFamilyHttptestServer(t, ipVersion, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hello":
+			w.WriteHeader(http.StatusOK)
+		case "/network/remove-client":
+			removeCount.Add(1)
+			startOnce.Do(func() { close(removeStarted) })
+			select {
+			case <-removeRelease:
+				_, _ = w.Write([]byte("{}"))
+			case <-r.Context().Done():
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(apiServer.Close)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(removeRelease) }) })
+
+	strategyCtx, strategyCancel := context.WithCancel(t.Context())
+	defer strategyCancel()
+	strategySettings := DefaultClientStrategySettings()
+	strategySettings.EnableNormal = true
+	strategySettings.EnableResilient = false
+	strategySettings.RequestTimeout = 5 * time.Second
+	strategy := NewClientStrategy(strategyCtx, strategySettings)
+
+	generatorCtx, generatorCancel := context.WithCancel(t.Context())
+	defer generatorCancel()
+	generator := NewApiMultiClientGenerator(
+		generatorCtx,
+		nil,
+		strategy,
+		nil,
+		apiServer.URL,
+		"synthetic-network-jwt",
+		apiServer.URL,
+		"synthetic-description",
+		"synthetic-spec",
+		"0.0.0-test",
+		nil,
+		DefaultClientSettings,
+		DefaultApiMultiClientGeneratorSettings(),
+	)
+	retirementWaitEntered := make(chan struct{})
+	var retirementWaitOnce sync.Once
+	generator.beforeRetirementWaitForTest = func() {
+		retirementWaitOnce.Do(func() { close(retirementWaitEntered) })
+	}
+	args := &MultiClientGeneratorClientArgs{
+		ClientId: NewId(),
+		ClientAuth: &ClientAuth{
+			InstanceId: NewId(),
+		},
+	}
+
+	// Admission happens synchronously before the request worker launches.
+	generator.RemoveClientArgs(args)
+	select {
+	case <-removeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("direct remove-client request did not reach the synthetic server")
+	}
+
+	closeCtx, closeCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer closeCancel()
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- generator.CloseAndWait(closeCtx)
+	}()
+	retirements := generator.retirementLifecycle()
+	select {
+	case <-retirementWaitEntered:
+	case <-closeCtx.Done():
+		t.Fatalf("generator close did not reach direct-removal join: %v", closeCtx.Err())
+	}
+	select {
+	case <-retirements.Done():
+		t.Fatal("direct-removal retirement became terminal before its response")
+	default:
+	}
+	select {
+	case err := <-closeResult:
+		t.Fatalf("generator close returned before direct removal completed: %v", err)
+	default:
+	}
+
+	releaseOnce.Do(func() { close(removeRelease) })
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-closeCtx.Done():
+		t.Fatalf("wait for joined direct remove-client request: %v", closeCtx.Err())
+	}
+	if count := removeCount.Load(); count != 1 {
+		t.Fatalf("direct remove-client request count = %d, want 1", count)
+	}
+}
+
 // A short-lived provider probe closes its generated Client and then the
 // generator. The final remove-client request is part of that retirement: if
 // the retirement worker merely launches it and returns, CloseAndWait cancels
