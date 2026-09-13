@@ -436,16 +436,12 @@ The claim releases its row locks when the claim transaction commits, so
 guaranteeing at-most-once delivery; a duplicate after a crash between claim
 and mark is harmless to gossip, and the single replica makes it rare.
 
-C6a. Gossip records. The `gossip_dns:` block of `extender.yml` lists,
-per record, the zone name, the gossip name and a source name:
-`{enabled, aws_region, records: [{hosted_zone_name, name, source_name}]}`.
-A taskworker task runs at start and every 24 hours and mirrors the source
-name's A and AAAA record sets, alias targets included, onto the gossip
-name in its zone through the aws sdk, one change batch per zone, so
-`gossip.bringyour.com` and `gossip.ur.network` follow `connect.<host>`
-without operator steps; both zones are on Route 53. The certificate for
-the gossip aliases comes from the existing warp certificate flow, which
-issues for every alias in `services.yml`.
+C6a. Gossip names. `gossip.bringyour.com` and `gossip.ur.network` are
+ordinary warp service aliases, created once as aliases of each zone's
+`main-lb` name like every other service name in `services.yml`, and the
+certificate follows from the aliases through the warp certificate flow.
+Only the extender name of C5 is published by a task, because it is a
+rotating regional record.
 
 C7. Hello. `HelloResult.ExtenderRootPublicKeys []string` from
 `root_public_keys_hex`, and `GossipPeerId string` (json
@@ -994,8 +990,7 @@ costs 1.4 MiB of binary.
 Done the same day: the spoof list is bundled, `vault/main/extender.yml`
 holds the generated root and gossip keys, the network hosts, the api url,
 the named zone and the gossip record block, the sdk bundles the root
-public key, the zone is resolved by name and the gossip records are
-mirrored by the server through the aws sdk with the host's credentials,
+public key, the zone is resolved by name and the gossip names are warp aliases created once,
 and the sn miner runs the role with a persisted identity. What remains
 for operations: aws credentials on the taskworker hosts with Route 53
 access to both zones, no plain A or AAAA record at
