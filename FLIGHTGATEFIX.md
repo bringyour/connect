@@ -2837,3 +2837,43 @@ the bound so it cannot be forgotten.
   declines to retire a route it cannot prove against a sibling. The fix
   belongs to the multi-client's verdict, and the test above makes merged
   fail it.
+
+### 31.5 Closure of §31, and where the hang belongs in the report
+
+The two facts §31 waited on are in. The source claim was verified
+independently: on both trees `observeUnreliableResendTimeout` counts,
+halves and returns at `!policy.reliableRouteAvailable` before either the
+forget or the release, so in the hang state the send path is identical
+and the attribution to §13.1 is withdrawn with the implementation stream.
+And `missing_contract_write_count` and `missing_contract_request_count`
+are zero in all three hung runs, so the contract-missing loop of 31.2 is
+excluded and the path was dead. §31.2's last paragraph and the third
+bullet of 31.4 are therefore unconditional: provider churn during the
+join left a single-lane route that never acknowledged again, TCP-flow
+Packs were retained past their lifetime by design, and the multi-client
+held its verdict for want of a sibling. Nothing in either diff created
+it, and nothing in either diff bounds it.
+
+Where it belongs in the report. Not in the verdict on the pull requests,
+which it does not bear on, and not in the first line of the summary,
+which is about the collapse the reporter found. It should be its own
+finding, at the same rank as the other product findings the program
+carries (the relay's routine 2.75 s stall of §25, the mobile ceiling of
+§17), with the seventeen minutes in its title, because a hang that
+outlasts a workload on a route users run is not made smaller by having no
+author in this diff. The deflection reading is avoided by saying three
+things in its first paragraph: that it is a pre-existing condition in a
+third layer, the multi-client's stall verdict, which both diffs leave
+untouched; that our arm hit it three times in thirty-three and merged
+none, that this is not significant, and that the sixty-five-repetition
+rerun decides the rate; and that the program's contribution is the
+mechanism traced to its source lines, the deterministic test in the
+contract shape that makes merged fail the retirement row, and one
+counter, the route's unacknowledged duration and retained count, with the
+decision left where it belongs. The burial reading is avoided by the
+title and by placing the finding beside the reporter's own M6: their
+report's dead-lane theme, that a lane with no liveness signal is never
+retired, is the same defect one layer down, and this is its multi-client
+analogue, a dead route with no sibling that is never retired. Read that
+way it confirms the reporter's line of analysis rather than deflecting
+from it, and it tells them where the next liveness signal has to live.
