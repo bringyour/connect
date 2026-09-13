@@ -3163,3 +3163,163 @@ in process, writes 0 over 6,000 messages with the rule on, and the
 prediction for the re-run is that the tail is gone and the medians stay
 level. If the re-run keeps the tail, it is not the second firing, and the
 exports of 27.1 are what remain.
+
+## 33. Fourteenth round: the re-run kept the tail, the tail is a wedge, and the rule's suppression is what holds it
+
+§32 closed on a prediction and a branch: the relay queue-inflation cell
+re-run against `eeca11f` would lose its long-tail runs, and "if the re-run
+keeps the tail, it is not the second firing". The re-run kept the tail. This
+section records what the tail actually is, which is not what either side of
+that branch assumed.
+
+### 33.1 The measurement
+
+Arm `9668969`, that is `eeca11f` plus the default-on flip, sdk `4fcce9f`,
+server `bf9fac6a`. Both states built from that one commit through the
+feature dimension, so nothing but the setting differs. Route `exchange-h1`,
+profile `mixed-relay-queue-inflation-3s`, workload `tcp`, download, twenty
+repetitions per state on seeds 20260910..20260929, the same seeds as the
+`61c1281` run. Recorded as `flightgate-fixlane-20260913` in
+`tests/PERFVAR-MEASUREMENTS.md`.
+
+Medians held, as predicted: 16.08 Mbit/s with the rule off against 16.04
+with it on, 16.7 seconds in both. The tail did not go. Three runs over 30
+seconds with the rule on, at 291, 193 and 35 seconds, against the old
+build's 728, 263 and 41.
+
+What `eeca11f` did buy is real and should be kept in view: no failed runs in
+either state, where `61c1281` failed one per state; the worst run 291
+seconds rather than 728; dead windows on the rule-on state 94 rather than
+200. The two-lane attribution fix and the backoff re-arm made the mode
+shallower and stopped it killing a run. They did not make it stop happening.
+
+### 33.2 The tail is two modes, and only one of them is ours
+
+Splitting at 100 seconds separates two behaviours that one "over 30 seconds"
+count hides. Pooled over both builds, forty runs per state:
+
+| Mode | rule off | rule on | Fisher two-sided |
+| --- | ---: | ---: | ---: |
+| deep, over 100 s | 0 of 40 | 4 of 40 | 0.116 |
+| shallow, 30 to 100 s | 3 of 40 | 2 of 40 | 1.000 |
+
+The shallow mode is the cell's. It occurs at the same rate in both states
+and it predates the rule. The deep mode has never occurred with the rule
+off, in forty runs across two independently built arms, and occurs twice in
+twenty in each build with it on. Fisher does not reach 0.05 at these counts,
+so this is an association and not yet a proof; it is, however, the same
+result twice, and the counts are 0 against 2 both times.
+
+Dead windows separate the modes with no overlap. The four deep runs carry
+35, 55, 49 and 145 dead windows. Every other run of all eighty carries 0 to
+7.
+
+### 33.3 The deep mode is a wedge, not slowness
+
+The per-window trace is the important artefact, because "193 seconds" and
+"1.4 Mbit/s" both suggest a transfer that ran slowly, and it did not. Rate
+per five-second window, rule on, the 291-second run:
+
+```
+2 0 0 0 7 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 0 0 0 0 0 18 17
+```
+
+and the 193-second run:
+
+```
+8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0 2 0 0 0 0 12 17 15
+```
+
+Against a normal run of the same cell, `14 17 17`, and the 52-second shallow
+run, `8 0 3 1 0 4 0 0 11 17 14`.
+
+The transfer wedges within the first ten seconds, moves nothing at all for
+two hundred to two hundred and fifty seconds, then releases and completes at
+the cell's full rate, 17 to 18 Mbit/s, in the last two or three windows.
+Nothing degrades. Something holds, and then stops holding.
+
+That rules out the readings this program has been carrying. It is not the
+relay being slow, because the release rate is the healthy rate. It is not a
+lost route, because no route changes at the release. And it is not a longer
+relay stall, which 33.4 shows directly.
+
+### 33.4 The cumulative-ack gap does not discriminate, and this corrects §27.1
+
+The two relay-stall exports were added to explain runs like these, and on
+this cell they do not. The gap maximum is a per-run lifetime statistic
+spanning route setup and every workload, not the measured transfer, and its
+values overlap completely: with the rule off, runs that finish in 16.7
+seconds reach 26.7 and 28.3 seconds of cumulative-ack gap, as large as
+anything the deep runs show. Median gap on a normal run is 10 to 15 seconds
+in every state.
+
+So every run of this cell contains a long relay stall, including the ones
+that finish in 16.7 seconds. The stall is the cell. What separates a
+16.7-second run from a 291-second one is what the sender does during it.
+
+The resend timer reads between 0.30 and 8.00 seconds in every run of every
+state while the relay goes 10 to 36 seconds without advancing its cumulative
+acknowledgement. A stall three to four times the timer's own ceiling is a
+product finding independent of any arm in this program, it is unchanged by
+`eeca11f`, and it belongs in the final report on its own.
+
+### 33.5 The rule's suppression is what holds the wedge
+
+The ratio of whole-window timeout writes to deferrals is the direct measure
+of the rule doing its job: of the recovery work the sender has queued and
+could write, what fraction does it actually write. On the nine wedged runs
+across both builds it separates the two states with no overlap at all.
+
+| State | run | wedge s | timeout writes/s | write-to-defer ratio |
+| --- | ---: | ---: | ---: | ---: |
+| rule off | fix 12 | 52.0 | 43.7 | 0.60 |
+| rule off | 61c 11 | 31.9 | 62.5 | 0.76 |
+| rule off | 61c 20 | 61.2 | 40.7 | 0.65 |
+| rule on | fix 7 | 34.7 | 13.3 | 0.07 |
+| rule on | fix 6 | 193.3 | 5.9 | 0.18 |
+| rule on | fix 8 | 290.7 | 6.3 | 0.20 |
+| rule on | 61c 13 | 41.3 | 0.3 | 0.00 |
+| rule on | 61c 7 | 262.7 | 6.1 | 0.23 |
+| rule on | 61c 17 | 727.6 | 0.8 | 0.20 |
+
+Rule off, 0.60 to 0.76; rule on, 0.00 to 0.23. Every wedge that cleared in
+under a minute with the rule off was writing 41 to 63 recovery messages a
+second while it did. Every deep wedge was writing 6 or fewer, while
+deferring 27 to 32 a second, which is the sender holding work it has, not a
+sender with nothing to send.
+
+This is the rule behaving exactly as designed. It withholds a firing that no
+later same-lane acknowledgement has proven. During a relay stall no
+acknowledgement arrives on that lane by construction, so the rule's
+precondition is the stall's own definition, and the rule withholds precisely
+the traffic that the rule-off runs use to get out. The mechanism is
+self-sustaining: the longer the lane stays unproven, the longer it stays
+suppressed.
+
+State the limit of this honestly. Wedge length against write rate over the
+nine runs is Spearman −0.50, not −1.0, and two rule-on wedges cleared in 35
+and 41 seconds while writing almost nothing. Suppression is not the whole
+account of how long a wedge lasts; there is at least one other release path.
+What the ratio establishes is that the rule is suppressing, cleanly and
+without overlap, and that the deep mode only exists where it suppresses.
+
+### 33.6 What this means for the default, and what to measure next
+
+The rule is not ready to ship on by default. §32 said the relay
+queue-inflation cell's re-run was the measurement that decides it; the
+measurement is in and it decides against, and turning the default back off
+is the one revert §32 arranged for.
+
+The cold-cadence head probe added in `eeca11f`, every 8 seconds after 22,
+was the intended escape hatch from exactly this state and it did not open
+it: four deep wedges lasted 193 to 728 seconds with it in place. So the next
+question is not another campaign on this shape. It is why an 8-second head
+probe against a queue-inflated relay does not clear the wedge that 40-odd
+writes a second clears in under a minute, and whether the answer is the
+probe's rate, its target, or that the head is not the item the receiver is
+waiting on. Rows 12 and 13 assert the probe's cadence in process and pass,
+so the in-process instrument does not reach the condition; the cell does.
+The exports of §27.1 remain what we have, and 33.4 says they are not enough
+on their own.
