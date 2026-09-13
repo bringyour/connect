@@ -3257,7 +3257,15 @@ func (self *UdpSequence) openSocket() (net.Conn, error) {
 	self.UpdateLastActivityTime()
 	self.log.V(2).Infof("[init]connect success\n")
 	if udpConn, ok := socket.(*net.UDPConn); ok {
-		// The OS may cap these requests at its configured limits.
+		// Deliberate, and not the TCP case (THROUGHPUTFIX §12): UDP has no
+		// autotuning to lock, so this is a plain request for a larger buffer
+		// than the default. The kernel clamps it to net.core.{r,w}mem_max and
+		// doubles it, so on a stock host every profile gets 425,984, twice
+		// the default; where the operator allows more, the request lands.
+		// A datagram is charged its skb size, about 2,304 bytes for 1,400 of
+		// payload, so the buffer holds about 0.6 of its number in payload.
+		// Drops here are invisible above the socket and are counted at close
+		// (closeSocket).
 		udpConn.SetReadBuffer(int(self.udpBufferSettings.MaxWindowSize))
 		udpConn.SetWriteBuffer(int(self.udpBufferSettings.MaxWindowSize))
 	}
