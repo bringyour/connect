@@ -6,6 +6,8 @@ import (
 	mathrand "math/rand"
 	"net"
 	"net/netip"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,6 +80,14 @@ type ExtenderNetworkClientSettings struct {
 	// subscription would never reconnect, because nothing else ends the read.
 	SubscribeIdleTimeout time.Duration
 
+	// ManualHosts are hostnames or ip literals configured by hand (K6). An ip
+	// literal is added as a manual address at start; a hostname is resolved
+	// through the resolver seam below at start and on every rebootstrap, and
+	// its answers are added the same way. They supplement discovery: manual
+	// addresses union with the dns bootstrap and with everything the feed and
+	// the mesh deliver, and are never removed by policy.
+	ManualHosts []string
+
 	// DohSettings configures the bootstrap resolution. Nil takes the strategy
 	// settings.
 	DohSettings *DohSettings
@@ -114,7 +124,10 @@ func DefaultExtenderNetworkClientSettings() *ExtenderNetworkClientSettings {
 // MonitorValue and a consumer is woken only on an actual change.
 type ExtenderNetworkClientStatus struct {
 	FeedConnected bool
-	FeedIp        netip.Addr
+	// True while a sample or subscribe dial is in flight and no stream is up
+	// yet, which is the app's yellow connecting state (K4).
+	Connecting bool
+	FeedIp     netip.Addr
 	// The time of the last completed sample, zero when there has been none.
 	LastSampleTime time.Time
 	LastError      string
@@ -125,6 +138,43 @@ type ExtenderNetworkClientStatus struct {
 	// the operator serves one (C6, D3). The member role's node dials the
 	// operator only once this is known.
 	GossipPeerId string
+}
+
+// The state of the gossip network as the app's status dot shows it (K4, K5).
+// The two roles read different evidence -- a feed app has a stream, a member
+// has a mesh -- so the derivation lives here, once, rather than in each app.
+const (
+	ExtenderGossipStateConnected    = "connected"
+	ExtenderGossipStateConnecting   = "connecting"
+	ExtenderGossipStateDisconnected = "disconnected"
+)
+
+// The feed role's state: green while the stream is up, yellow while a dial is
+// in flight, red otherwise -- backoff, no candidate, or disabled.
+func ExtenderGossipStateForFeed(status ExtenderNetworkClientStatus) string {
+	switch {
+	case status.FeedConnected:
+		return ExtenderGossipStateConnected
+	case status.Connecting:
+		return ExtenderGossipStateConnecting
+	default:
+		return ExtenderGossipStateDisconnected
+	}
+}
+
+// The member role's state, from a gossip node status: green with at least one
+// mesh peer, yellow while a peering round has dials in flight. The node status
+// is passed as its two fields rather than as the value, because connect root
+// cannot import its own gossip subpackage.
+func ExtenderGossipStateForMember(meshPeerCount int, connecting bool) string {
+	switch {
+	case 0 < meshPeerCount:
+		return ExtenderGossipStateConnected
+	case connecting:
+		return ExtenderGossipStateConnecting
+	default:
+		return ExtenderGossipStateDisconnected
+	}
 }
 
 type ExtenderNetworkClient struct {
@@ -148,6 +198,11 @@ type ExtenderNetworkClient struct {
 	// the open subscription, so a network change can end it at once rather
 	// than leaving the loop parked on a stream bound to the old path
 	feedStream *ExtenderFeedStream
+	// the manually configured hosts and the version that changes with them,
+	// which is what makes `SetManualHosts` re-resolve at once rather than at
+	// the next tick (K6)
+	manualHosts        []string
+	manualHostsVersion uint64
 }
 
 // The client is running when this returns: the directory has been told a first
@@ -177,6 +232,7 @@ func NewExtenderNetworkClient(
 		settings:       settings,
 		statusMonitor:  NewMonitorValue[ExtenderNetworkClientStatus](ExtenderNetworkClientStatus{}),
 		wakeMonitor:    NewMonitor(),
+		manualHosts:    slices.Clone(settings.ManualHosts),
 	}
 	directory.SetInitialSamplePending()
 	// a path change invalidates the feed connection and the addresses that
@@ -258,6 +314,10 @@ func (self *ExtenderNetworkClient) run() {
 	backoff := self.settings.MinBackoff
 	var lastBootstrapTime time.Time
 	var lastHelloTime time.Time
+	var lastManualTime time.Time
+	// the manual host list this loop has already applied; a reconfiguration
+	// changes the version and re-resolves at once (K6)
+	var manualHostsVersion uint64
 
 	for {
 		select {
@@ -281,6 +341,12 @@ func (self *ExtenderNetworkClient) run() {
 			self.directory.ActiveCount(0) < self.settings.LowWaterCount {
 			self.bootstrap()
 			lastBootstrapTime = now
+		}
+		if version := self.manualHostsVersionValue(); lastManualTime.IsZero() ||
+			version != manualHostsVersion ||
+			self.settings.RebootstrapTimeout <= now.Sub(lastManualTime) {
+			manualHostsVersion = self.applyManualHosts()
+			lastManualTime = now
 		}
 		self.directory.Expire(self.settings.Now())
 
@@ -385,6 +451,80 @@ func (self *ExtenderNetworkClient) hello(ctx context.Context) (*ExtenderHelloRes
 	}, nil
 }
 
+// Replaces the manually configured hosts and re-resolves them at once (K6).
+// The addresses the previous list produced stay in the directory: a manual
+// address is only removed by the directory being rebuilt, which is what
+// saving the setting does.
+func (self *ExtenderNetworkClient) SetManualHosts(hosts []string) {
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		self.manualHosts = slices.Clone(hosts)
+		self.manualHostsVersion += 1
+	}()
+	// the resolution runs here rather than only at the next pass: in the feed
+	// role the loop is parked on a live subscription for as long as it lasts,
+	// and a reconfiguration must not wait that out. It is bounded by the
+	// client context, and the loop's own apply of the same version is
+	// idempotent, so the overlap costs at most one resolution.
+	go HandleError(func() {
+		self.applyManualHosts()
+	})
+	self.wakeMonitor.NotifyAll()
+}
+
+// The configured hosts and the version they are at, read together so the loop
+// records exactly the version it applied.
+func (self *ExtenderNetworkClient) manualHostsValue() ([]string, uint64) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return slices.Clone(self.manualHosts), self.manualHostsVersion
+}
+
+func (self *ExtenderNetworkClient) manualHostsVersionValue() uint64 {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return self.manualHostsVersion
+}
+
+// Adds the manually configured hosts (K6). An ip literal is added as it
+// stands; a name is resolved through the same seam the dns bootstrap uses, so
+// a host that configured DoH resolves manual hosts over DoH too. Every answer
+// becomes a manual address, which the removal policy never takes away, and
+// unions with the dns bootstrap and with everything the feed and the mesh
+// deliver. Returns the version applied.
+func (self *ExtenderNetworkClient) applyManualHosts() uint64 {
+	hosts, version := self.manualHostsValue()
+	if len(hosts) == 0 {
+		return version
+	}
+	resolve := self.settings.ResolveDns
+	if resolve == nil {
+		resolve = self.resolveDns
+	}
+	ctx, cancel := context.WithTimeout(self.ctx, self.settings.HelloTimeout)
+	defer cancel()
+	for _, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		if ip, err := netip.ParseAddr(host); err == nil {
+			self.directory.AddManual(ip)
+			continue
+		}
+		ips, err := resolve(ctx, host)
+		if err != nil {
+			self.log.Infof("[extender]manual host %s err = %s\n", host, err)
+			continue
+		}
+		for _, ip := range ips {
+			self.directory.AddManual(ip)
+		}
+	}
+	return version
+}
+
 // Resolves the extender dns name and adds every answer as an unverified
 // address with source dns (E3). A record naming one of these upgrades it.
 func (self *ExtenderNetworkClient) bootstrap() {
@@ -471,13 +611,26 @@ func (self *ExtenderNetworkClient) ipVersionSupported(ipVersion int) bool {
 func (self *ExtenderNetworkClient) sample() bool {
 	candidates := self.candidates()
 	if len(candidates) == 0 {
+		// nothing to dial is not connecting, it is disconnected (K4)
 		self.updateStatus(func(status *ExtenderNetworkClientStatus) {
 			status.FeedConnected = false
+			status.Connecting = false
 			status.FeedIp = netip.Addr{}
 			status.LastError = "no extender candidate"
 		})
 		return false
 	}
+
+	// the whole pass is the connecting state, from the first dial to the last
+	// candidate; a dial that connects clears it inside `runFeed`, so a live
+	// subscription never reads as connecting (K4)
+	self.updateStatus(func(status *ExtenderNetworkClientStatus) {
+		status.Connecting = true
+	})
+	defer self.updateStatus(func(status *ExtenderNetworkClientStatus) {
+		status.Connecting = false
+	})
+
 	for _, candidate := range candidates {
 		select {
 		case <-self.ctx.Done():
@@ -577,6 +730,7 @@ func (self *ExtenderNetworkClient) runFeed(
 	defer self.directory.SetInUse(extenderConfig.Ip, -1)
 	self.updateStatus(func(status *ExtenderNetworkClientStatus) {
 		status.FeedConnected = true
+		status.Connecting = false
 		status.FeedIp = extenderConfig.Ip
 		status.LastError = ""
 	})

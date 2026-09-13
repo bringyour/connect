@@ -45,6 +45,11 @@ const (
 	ExtenderSourceGossip    = "gossip"
 	ExtenderSourceBootstrap = "bootstrap"
 	ExtenderSourceManual    = "manual"
+	// An address taken from a shared payload (K7). It is an ordinary
+	// unverified bootstrap entry -- the removal policy applies to it, and it
+	// upgrades when a record naming it arrives -- and is kept distinct from
+	// `manual` so the status can say where it came from.
+	ExtenderSourceImport = "import"
 )
 
 // The address states reported by the status (F2), in precedence order: trust
@@ -66,6 +71,10 @@ const ExtenderDirectoryStoreVersion = 1
 // The bounded buffer of one Subscribe consumer (D4). A consumer that falls
 // this far behind is cut off rather than waited on.
 const ExtenderDirectorySubscribeBufferCount = 64
+
+// Cap of the apply-time ring (K4). The window prunes it long before this on
+// any normal feed; the cap is what bounds a flood.
+const ExtenderDirectoryEventRingCount = 1024
 
 // The progress of the network client's first feed sample, which is what the
 // startup gate waits on (E4). `None` means no network client is running, so
@@ -118,6 +127,10 @@ type ExtenderDirectorySettings struct {
 	MaxAddressCount int
 	// A change is saved this long after it lands, so a burst costs one write.
 	SaveTimeout time.Duration
+	// The trailing window the applied-record and applied-revocation rate is
+	// kept and reported over (K4). The app panel shows the count over the
+	// last minute, which is the default.
+	EventWindowTimeout time.Duration
 
 	// The only clock the policy reads. Tests install a fake one.
 	Now func() time.Time
@@ -134,6 +147,7 @@ func DefaultExtenderDirectorySettings() *ExtenderDirectorySettings {
 		RecordExpireSkew:               5 * time.Minute,
 		MaxAddressCount:                512,
 		SaveTimeout:                    1 * time.Second,
+		EventWindowTimeout:             60 * time.Second,
 		Now:                            time.Now,
 	}
 }
@@ -215,6 +229,10 @@ type ExtenderDirectorySnapshot struct {
 	ActiveCount  int
 	WarningCount int
 	HoldCount    int
+	// Addresses carrying at least one live platform transport connection right
+	// now, which is what the app panel draws a ring for (K4). It counts
+	// addresses, not connections.
+	InUseCount int
 }
 
 type ExtenderDirectory struct {
@@ -234,6 +252,11 @@ type ExtenderDirectory struct {
 
 	stateLock  sync.Mutex
 	rootKeySet *ExtenderRootKeySet
+	// The apply times of the records and revocations that arrived over the
+	// feed or the mesh, oldest first, pruned to the event window (K4). Only
+	// those two sources count: a stored record loaded at start and an address
+	// added by hand are not network events.
+	eventTimes []time.Time
 	// verified identities by hex public key
 	keyHexRecords map[string]*extenderDirectoryRecord
 	// every known address
@@ -404,7 +427,7 @@ func (self *ExtenderDirectory) ApplySource(
 	case message.GetRecord() != nil:
 		return self.ApplyRecord(message.GetRecord(), source)
 	case message.GetRevocation() != nil:
-		return self.ApplyRevocation(message.GetRevocation())
+		return self.ApplyRevocationSource(message.GetRevocation(), source)
 	default:
 		return false, fmt.Errorf("extender gossip message carries neither a record nor a revocation")
 	}
@@ -470,6 +493,7 @@ func (self *ExtenderDirectory) ApplyRecord(
 		address.publicKeyHex = keyHex
 	}
 	self.enforceAddressCapWithLock(now)
+	self.noteEventWithLock(source, now)
 	self.publishWithLock(&protocol.ExtenderGossipMessage{
 		Message: &protocol.ExtenderGossipMessage_Record{Record: record},
 	})
@@ -477,10 +501,20 @@ func (self *ExtenderDirectory) ApplyRecord(
 	return true, nil
 }
 
-// Applies one signed revocation. A revocation with an issue time at or after
-// the held record's issue time makes the key inactive at once (B5).
+// Applies one signed revocation that arrived over the feed, which is what
+// every caller that does not name its source is.
 func (self *ExtenderDirectory) ApplyRevocation(
 	revocation *protocol.ExtenderRevocation,
+) (changed bool, err error) {
+	return self.ApplyRevocationSource(revocation, ExtenderSourceFeed)
+}
+
+// Applies one signed revocation. A revocation with an issue time at or after
+// the held record's issue time makes the key inactive at once (B5). The source
+// decides only whether the apply counts as a network event (K4).
+func (self *ExtenderDirectory) ApplyRevocationSource(
+	revocation *protocol.ExtenderRevocation,
+	source string,
 ) (changed bool, err error) {
 	keySet := self.RootKeys()
 	body, err := keySet.VerifyRevocation(revocation)
@@ -511,6 +545,7 @@ func (self *ExtenderDirectory) ApplyRevocation(
 	}
 	keyRecord.revocation = revocation
 	keyRecord.revocationBody = body
+	self.noteEventWithLock(source, self.settings.Now())
 	self.publishWithLock(&protocol.ExtenderGossipMessage{
 		Message: &protocol.ExtenderGossipMessage_Revocation{Revocation: revocation},
 	})
@@ -650,6 +685,38 @@ func (self *ExtenderDirectory) AddBootstrap(ip netip.Addr, source string) (chang
 	self.ipAddresses[ip] = &extenderDirectoryAddress{
 		ip:      ip,
 		source:  source,
+		addTime: now,
+	}
+	self.enforceAddressCapWithLock(now)
+	self.changedWithLock()
+	return true
+}
+
+// Adds or promotes an address configured by hand (K6). An address already
+// known from another source keeps every piece of local evidence it has
+// collected and becomes manual, which is what takes it out of the removal
+// policy: a hand-configured extender is only removed by a reconfiguration.
+func (self *ExtenderDirectory) AddManual(ip netip.Addr) (changed bool) {
+	if !ip.IsValid() {
+		return false
+	}
+	ip = ip.Unmap()
+	now := self.settings.Now()
+
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	if address, ok := self.ipAddresses[ip]; ok {
+		if address.source == ExtenderSourceManual {
+			return false
+		}
+		address.source = ExtenderSourceManual
+		self.changedWithLock()
+		return true
+	}
+	self.ipAddresses[ip] = &extenderDirectoryAddress{
+		ip:      ip,
+		source:  ExtenderSourceManual,
 		addTime: now,
 	}
 	self.enforceAddressCapWithLock(now)
@@ -1089,6 +1156,9 @@ func (self *ExtenderDirectory) Snapshot() *ExtenderDirectorySnapshot {
 		}
 		snapshot.Entries = append(snapshot.Entries, entry)
 		snapshot.KnownCount += 1
+		if 0 < entry.InUse {
+			snapshot.InUseCount += 1
+		}
 		switch state {
 		case ExtenderStateActive, ExtenderStateUnverified:
 			snapshot.ActiveCount += 1
@@ -1197,6 +1267,75 @@ func (self *ExtenderDirectory) addressStateWithLock(
 		return ExtenderStateUnverified
 	}
 	return ExtenderStateActive
+}
+
+// The trailing window the event rate is kept over. A settings value of zero
+// falls back to the default rather than keeping nothing, so a partially filled
+// settings struct still reports a rate.
+func (self *ExtenderDirectory) eventWindowTimeout() time.Duration {
+	if 0 < self.settings.EventWindowTimeout {
+		return self.settings.EventWindowTimeout
+	}
+	return DefaultExtenderDirectorySettings().EventWindowTimeout
+}
+
+// Records one applied record or revocation (K4). Only the feed and the mesh
+// count: they are the two paths that carry what other participants published,
+// which is what the app's rate is a measure of. A stored record loaded at
+// start, a manual address and an imported one are not events.
+func (self *ExtenderDirectory) noteEventWithLock(source string, now time.Time) {
+	switch source {
+	case ExtenderSourceFeed, ExtenderSourceGossip:
+	default:
+		return
+	}
+	self.eventTimes = append(self.eventTimes, now)
+	self.pruneEventsWithLock(now)
+}
+
+// Drops the apply times that have aged out of the window, and anything beyond
+// the ring cap.
+func (self *ExtenderDirectory) pruneEventsWithLock(now time.Time) {
+	windowStartTime := now.Add(-self.eventWindowTimeout())
+	i := 0
+	for i < len(self.eventTimes) && self.eventTimes[i].Before(windowStartTime) {
+		i += 1
+	}
+	if 0 < i {
+		self.eventTimes = slices.Delete(self.eventTimes, 0, i)
+	}
+	if ExtenderDirectoryEventRingCount < len(self.eventTimes) {
+		self.eventTimes = slices.Delete(
+			self.eventTimes,
+			0,
+			len(self.eventTimes)-ExtenderDirectoryEventRingCount,
+		)
+	}
+}
+
+// The number of records and revocations applied from the feed or the mesh at
+// or after `since` (K4). Nothing older than the event window is kept, so a
+// `since` further back than the window reports what the window holds.
+func (self *ExtenderDirectory) EventCountSince(since time.Time) int {
+	now := self.settings.Now()
+
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	self.pruneEventsWithLock(now)
+	count := 0
+	for _, eventTime := range self.eventTimes {
+		if !eventTime.Before(since) {
+			count += 1
+		}
+	}
+	return count
+}
+
+// The count over the trailing event window, which is the minute the app panel
+// shows (K4).
+func (self *ExtenderDirectory) EventCountLastMinute() int {
+	return self.EventCountSince(self.settings.Now().Add(-self.eventWindowTimeout()))
 }
 
 func (self *ExtenderDirectory) changedWithLock() {

@@ -1,6 +1,8 @@
 package connect
 
 import (
+	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -88,6 +90,13 @@ type ProviderEvent struct {
 	// (empty) reads as v4-only. This is what the apps' histogram and provider
 	// rows show.
 	IpFamily IpFamily
+	// ExtenderIps are the extender addresses carrying this client's live
+	// platform transports to the exit right now (K1) -- usually none or one,
+	// briefly two across a transport migration, none over a P2P route. They
+	// are the local client's extenders and never the provider's own. Events
+	// are shallow-cloned, so the slice is copied on every write and treated
+	// as immutable by readers.
+	ExtenderIps []netip.Addr
 }
 
 func DefaultRemoteUserNatMultiClientMonitorSettings() *RemoteUserNatMultiClientMonitorSettings {
@@ -451,6 +460,22 @@ func (self *RemoteUserNatMultiClientMonitor) SetStallStatus(reason string, faile
 
 // provider events are serialized per `clientId`
 func (self *RemoteUserNatMultiClientMonitor) AddProviderEvent(clientId Id, state ProviderState, egressClientId Id, location *ProviderLocation, ipFamily IpFamily) {
+	self.AddProviderEventWithExtenderIps(clientId, state, egressClientId, location, ipFamily, nil)
+}
+
+// AddProviderEventWithExtenderIps is the same event, carrying the extenders
+// that were on this client's transports when it was raised (K1). A later
+// change rides `SetProviderExtenderIps`; every event that replaces a live
+// one must carry the current addresses, or the replacement would blank the
+// dot's rings until the next transport change.
+func (self *RemoteUserNatMultiClientMonitor) AddProviderEventWithExtenderIps(
+	clientId Id,
+	state ProviderState,
+	egressClientId Id,
+	location *ProviderLocation,
+	ipFamily IpFamily,
+	extenderIps []netip.Addr,
+) {
 	var windowExpandEvent WindowExpandEvent
 	clientIdProviderEvents := map[Id]*ProviderEvent{}
 
@@ -465,6 +490,7 @@ func (self *RemoteUserNatMultiClientMonitor) AddProviderEvent(clientId Id, state
 			EgressClientId: egressClientId,
 			Location:       location,
 			IpFamily:       ipFamily,
+			ExtenderIps:    slices.Clone(extenderIps),
 		}
 
 		// self.providerEvents = append(self.providerEvents, providerEvent)
@@ -484,6 +510,45 @@ func (self *RemoteUserNatMultiClientMonitor) AddProviderEvent(clientId Id, state
 			callback.Dispatch(&windowExpandEvent, clientIdProviderEvents, false)
 		}
 	}
+}
+
+// SetProviderExtenderIps rewrites the extender addresses of a provider's
+// current event in place (K1) and dispatches the change. Like the family
+// rewrite above, the event's state and EventTime are untouched: the provider
+// is still Added and its connected-since time must not restart because the
+// transport moved to another extender. Returns whether anything changed;
+// unknown client ids and an unchanged set are no-ops.
+func (self *RemoteUserNatMultiClientMonitor) SetProviderExtenderIps(clientId Id, extenderIps []netip.Addr) bool {
+	var windowExpandEvent WindowExpandEvent
+	clientIdProviderEvents := map[Id]*ProviderEvent{}
+	changed := false
+
+	func() {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+
+		providerEvent, ok := self.clientIdProviderEvents[clientId]
+		if !ok || slices.Equal(providerEvent.ExtenderIps, extenderIps) {
+			return
+		}
+		// shallow clone: events are shared with listeners by pointer, so the
+		// slice is replaced rather than written through
+		updated := *providerEvent
+		updated.ExtenderIps = slices.Clone(extenderIps)
+		self.clientIdProviderEvents[clientId] = &updated
+		windowExpandEvent = self.windowExpandEvent
+		clientIdProviderEvents[clientId] = &updated
+		changed = true
+	}()
+
+	if changed {
+		if callbacks := self.monitorEventCallbacks.Get(); 0 < len(callbacks) {
+			for _, callback := range callbacks {
+				callback.Dispatch(&windowExpandEvent, clientIdProviderEvents, false)
+			}
+		}
+	}
+	return changed
 }
 
 type MergedMultiClientMonitor struct {

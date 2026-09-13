@@ -310,3 +310,279 @@ func TestExtenderNetworkClientCarrierOrder(t *testing.T) {
 		}
 	}
 }
+
+// A strategy whose carrier dial never completes, so a feed attempt stays in
+// flight for as long as the test needs it.
+func newTestBlockingDialStrategy(t *testing.T, ctx context.Context) *ClientStrategy {
+	t.Helper()
+	settings := DefaultClientStrategySettings()
+	settings.ConnectSettings.DialContextSettings = &DialContextSettings{
+		DialContext: func(dialCtx context.Context, network string, addr string) (net.Conn, error) {
+			<-dialCtx.Done()
+			return nil, dialCtx.Err()
+		},
+		PacketConnFactory: func(dialCtx context.Context) (net.PacketConn, error) {
+			<-dialCtx.Done()
+			return nil, dialCtx.Err()
+		},
+	}
+	clientStrategy := NewClientStrategy(ctx, settings)
+	t.Cleanup(clientStrategy.Close)
+	return clientStrategy
+}
+
+// Waits for a network client status, driven by the status monitor.
+func waitForExtenderNetworkStatus(
+	t *testing.T,
+	networkClient *ExtenderNetworkClient,
+	what string,
+	reached func(status ExtenderNetworkClientStatus) bool,
+) ExtenderNetworkClientStatus {
+	t.Helper()
+	timeout := time.After(30 * time.Second)
+	for {
+		status, change := networkClient.StatusMonitor().Get()
+		if reached(status) {
+			return status
+		}
+		select {
+		case <-change:
+		case <-timeout:
+			t.Fatalf("the network client never reached %s, status = %+v", what, networkClient.Status())
+		}
+	}
+}
+
+// Manual hosts are added as manual addresses -- ip literals as they stand,
+// names through the resolver seam -- they union with the dns bootstrap, they
+// are re-resolved on the rebootstrap tick and not before it, and a
+// reconfiguration re-resolves at once (K6).
+func TestExtenderNetworkClientManualHostsResolveAndUnion(t *testing.T) {
+	clock := newTestClock()
+	manualResolved := make(chan string, 64)
+	dnsResolved := make(chan struct{}, 64)
+	networkClient, directory, _ := newTestExtenderNetworkClient(t, clock, func(settings *ExtenderNetworkClientSettings) {
+		// low water is never satisfied here, so the dns bootstrap repeats on
+		// every pass: the manual hosts must not follow it
+		settings.LowWaterCount = 8
+		settings.ManualHosts = []string{"192.0.2.60", " manual.space.example ", ""}
+		settings.ResolveDns = func(ctx context.Context, name string) ([]netip.Addr, error) {
+			switch name {
+			case "extender.space.example":
+				select {
+				case dnsResolved <- struct{}{}:
+				default:
+				}
+				return []netip.Addr{netip.MustParseAddr("192.0.2.61")}, nil
+			case "manual.space.example":
+				select {
+				case manualResolved <- name:
+				default:
+				}
+				return []netip.Addr{netip.MustParseAddr("192.0.2.62")}, nil
+			case "other.space.example":
+				select {
+				case manualResolved <- name:
+				default:
+				}
+				return []netip.Addr{netip.MustParseAddr("192.0.2.63")}, nil
+			default:
+				return nil, fmt.Errorf("unexpected name %q", name)
+			}
+		}
+	})
+
+	select {
+	case name := <-manualResolved:
+		if name != "manual.space.example" {
+			t.Fatalf("resolved %q, expected the manual host", name)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the manual host was never resolved")
+	}
+	waitForDirectoryAddresses(t, directory, map[string]string{
+		"192.0.2.60": ExtenderSourceManual,
+		"192.0.2.61": ExtenderSourceDns,
+		"192.0.2.62": ExtenderSourceManual,
+	})
+
+	// the dns bootstrap keeps running below the low-water mark, and the manual
+	// hosts are not re-resolved with it
+	for range 3 {
+		select {
+		case <-dnsResolved:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the dns bootstrap did not repeat below the low-water mark")
+		}
+	}
+	select {
+	case name := <-manualResolved:
+		t.Fatalf("the manual host %q was re-resolved before its period", name)
+	default:
+	}
+
+	// the rebootstrap period is due: the manual hosts resolve again
+	clock.advance(7 * time.Hour)
+	select {
+	case name := <-manualResolved:
+		if name != "manual.space.example" {
+			t.Fatalf("re-resolved %q, expected the manual host", name)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the manual host was not re-resolved on the tick")
+	}
+
+	// a reconfiguration re-resolves at once, without waiting for the period
+	networkClient.SetManualHosts([]string{"other.space.example"})
+	for {
+		select {
+		case name := <-manualResolved:
+			if name == "other.space.example" {
+				waitForDirectoryAddresses(t, directory, map[string]string{
+					"192.0.2.63": ExtenderSourceManual,
+					// the addresses of the previous list stay: a manual
+					// address is only taken away by a rebuild
+					"192.0.2.62": ExtenderSourceManual,
+				})
+				return
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the reconfigured manual host was not resolved")
+		}
+	}
+}
+
+// Waits for the directory to hold each address with its source.
+func waitForDirectoryAddresses(
+	t *testing.T,
+	directory *ExtenderDirectory,
+	ipSources map[string]string,
+) {
+	t.Helper()
+	timeout := time.After(30 * time.Second)
+	for {
+		_, change := directory.ChangeMonitor().Get()
+		snapshot := directory.Snapshot()
+		missing := ""
+		for ip, source := range ipSources {
+			found := false
+			for _, entry := range snapshot.Entries {
+				if entry.Ip.String() == ip && entry.Source == source {
+					found = true
+					break
+				}
+			}
+			if !found {
+				missing = fmt.Sprintf("%s (%s)", ip, source)
+				break
+			}
+		}
+		if missing == "" {
+			return
+		}
+		select {
+		case <-change:
+		case <-timeout:
+			t.Fatalf("the directory never held %s, entries = %+v", missing, directory.Snapshot().Entries)
+		}
+	}
+}
+
+// A feed dial in flight is the connecting state, and the derived gossip state
+// for the feed role says so (K4).
+func TestExtenderNetworkClientReportsConnectingWhileDialing(t *testing.T) {
+	clock := newTestClock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	directorySettings := DefaultExtenderDirectorySettings()
+	directorySettings.Now = clock.Now
+	directorySettings.NetworkHosts = []string{testExtenderNetworkHost}
+	directory := NewExtenderDirectory(ctx, directorySettings)
+	t.Cleanup(directory.Close)
+
+	settings := DefaultExtenderNetworkClientSettings()
+	settings.Now = clock.Now
+	settings.ExtenderDnsName = "extender.space.example"
+	settings.MinBackoff = time.Millisecond
+	settings.MaxBackoff = 10 * time.Millisecond
+	settings.DialTimeout = 30 * time.Second
+	settings.HelloTimeout = 30 * time.Second
+	settings.IpVersionSupported = func(ipVersion int) bool { return true }
+	settings.Hello = func(ctx context.Context) (*ExtenderHelloResult, error) {
+		return nil, nil
+	}
+	settings.ResolveDns = func(ctx context.Context, name string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("192.0.2.70")}, nil
+	}
+	networkClient := NewExtenderNetworkClient(
+		ctx,
+		newTestBlockingDialStrategy(t, ctx),
+		directory,
+		settings,
+	)
+	t.Cleanup(networkClient.Close)
+
+	status := waitForExtenderNetworkStatus(t, networkClient, "the connecting state", func(status ExtenderNetworkClientStatus) bool {
+		return status.Connecting
+	})
+	if status.FeedConnected {
+		t.Fatal("the feed reported connected while its dial was in flight")
+	}
+	if state := ExtenderGossipStateForFeed(status); state != ExtenderGossipStateConnecting {
+		t.Fatalf("gossip state = %q, want %q", state, ExtenderGossipStateConnecting)
+	}
+}
+
+// The derived state of both roles (K4, K5).
+func TestExtenderGossipStateForBothRoles(t *testing.T) {
+	feedCases := []struct {
+		status ExtenderNetworkClientStatus
+		expect string
+	}{
+		{
+			status: ExtenderNetworkClientStatus{FeedConnected: true},
+			expect: ExtenderGossipStateConnected,
+		},
+		{
+			// a connected stream is connected whatever else is being dialed
+			status: ExtenderNetworkClientStatus{FeedConnected: true, Connecting: true},
+			expect: ExtenderGossipStateConnected,
+		},
+		{
+			status: ExtenderNetworkClientStatus{Connecting: true},
+			expect: ExtenderGossipStateConnecting,
+		},
+		{
+			status: ExtenderNetworkClientStatus{LastError: "no extender candidate"},
+			expect: ExtenderGossipStateDisconnected,
+		},
+	}
+	for _, c := range feedCases {
+		if state := ExtenderGossipStateForFeed(c.status); state != c.expect {
+			t.Errorf("feed state of %+v = %q, want %q", c.status, state, c.expect)
+		}
+	}
+
+	memberCases := []struct {
+		meshPeerCount int
+		connecting    bool
+		expect        string
+	}{
+		{meshPeerCount: 1, expect: ExtenderGossipStateConnected},
+		{meshPeerCount: 2, connecting: true, expect: ExtenderGossipStateConnected},
+		{connecting: true, expect: ExtenderGossipStateConnecting},
+		{expect: ExtenderGossipStateDisconnected},
+	}
+	for _, c := range memberCases {
+		if state := ExtenderGossipStateForMember(c.meshPeerCount, c.connecting); state != c.expect {
+			t.Errorf(
+				"member state of mesh=%d connecting=%v = %q, want %q",
+				c.meshPeerCount,
+				c.connecting,
+				state,
+				c.expect,
+			)
+		}
+	}
+}

@@ -34,6 +34,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -168,6 +169,11 @@ type NodeStatus struct {
 	MeshPeerCount int
 	// True while a configured operator address is connected.
 	OperatorConnected bool
+	// True while a peering round has dials in flight and no mesh peer is held
+	// yet, which is the app's yellow connecting state for the member role
+	// (K4). A node that already has a mesh peer is connected, not connecting,
+	// whatever else it is dialing.
+	Connecting bool
 }
 
 type Node struct {
@@ -197,6 +203,11 @@ type Node struct {
 
 	// the peer choice, read only by the peering loop
 	rand *mathrand.Rand
+
+	// dials the current peering round has in flight (K4). Atomic rather than
+	// state, because the round publishes it through `updateStatus`, which
+	// takes the status lock.
+	dialCount atomic.Int64
 
 	stateLock     sync.Mutex
 	operatorAddrs []ma.Multiaddr
@@ -681,6 +692,17 @@ func (self *Node) peer() {
 		extenderCount += 1
 	}
 
+	if 0 < len(addrInfos) {
+		// the round's dials are in flight from here until they are joined,
+		// which is what the connecting state reports (K4)
+		self.dialCount.Add(int64(len(addrInfos)))
+		self.updateStatus()
+		defer func() {
+			self.dialCount.Add(-int64(len(addrInfos)))
+			self.updateStatus()
+		}()
+	}
+
 	wg := sync.WaitGroup{}
 	for _, addrInfo := range addrInfos {
 		wg.Add(1)
@@ -796,6 +818,7 @@ func (self *Node) updateStatus() {
 		PeerCount:     len(self.host.Network().Peers()),
 		MeshPeerCount: len(self.topic.ListPeers()),
 	}
+	status.Connecting = status.MeshPeerCount == 0 && 0 < self.dialCount.Load()
 	for _, operatorAddr := range self.OperatorAddrs() {
 		addrInfo, err := peer.AddrInfoFromP2pAddr(operatorAddr)
 		if err != nil {

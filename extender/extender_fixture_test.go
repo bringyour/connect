@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	quic "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
@@ -54,6 +55,28 @@ type destination struct {
 	// held, when set, blocks every /hold request until it is closed, which is
 	// how a test holds a proxied exchange open or stalls one mid body
 	held chan struct{}
+
+	// the live /ws upgrades and whether new ones are refused, so a test can
+	// end a platform connection from the server side and keep it ended
+	wsLock    sync.Mutex
+	wsConns   []*websocket.Conn
+	wsRefused bool
+}
+
+// Ends every live websocket and refuses new ones, which is how a test takes a
+// platform connection away and keeps the reconnect from restoring it.
+func (self *destination) refuseWebSockets() {
+	conns := func() []*websocket.Conn {
+		self.wsLock.Lock()
+		defer self.wsLock.Unlock()
+		self.wsRefused = true
+		conns := self.wsConns
+		self.wsConns = nil
+		return conns
+	}()
+	for _, ws := range conns {
+		ws.Close()
+	}
 }
 
 // atomicCount counts handled destination requests without a lock.
@@ -115,6 +138,36 @@ func newDestination(t *testing.T) *destination {
 				}
 				w.Header().Set("Content-Type", "application/octet-stream")
 				w.Write(bytes.Repeat([]byte("x"), byteCount))
+			case "/ws":
+				// a platform stand-in: it upgrades and then stays silent,
+				// which is all a V2H1Auth transport needs
+				refused := func() bool {
+					dest.wsLock.Lock()
+					defer dest.wsLock.Unlock()
+					return dest.wsRefused
+				}()
+				if refused {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				upgrader := websocket.Upgrader{
+					CheckOrigin: func(req *http.Request) bool { return true },
+				}
+				ws, err := upgrader.Upgrade(w, req, nil)
+				if err != nil {
+					return
+				}
+				func() {
+					dest.wsLock.Lock()
+					defer dest.wsLock.Unlock()
+					dest.wsConns = append(dest.wsConns, ws)
+				}()
+				for {
+					if _, _, err := ws.ReadMessage(); err != nil {
+						ws.Close()
+						return
+					}
+				}
 			case "/hold":
 				// headers and a first byte arrive at once; the rest never does
 				w.Header().Set("Content-Type", "application/octet-stream")
@@ -164,6 +217,8 @@ func newDestination(t *testing.T) *destination {
 		})
 	}
 	t.Cleanup(func() {
+		// a hijacked websocket is not closed by the server, so end them here
+		dest.refuseWebSockets()
 		server.Close()
 	})
 	return dest

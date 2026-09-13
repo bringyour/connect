@@ -866,6 +866,11 @@ func TestExtenderDirectorySnapshotCounts(t *testing.T) {
 	if snapshot.HoldCount != 1 {
 		t.Fatalf("hold = %d, expected 1", snapshot.HoldCount)
 	}
+	// the in-use count is the app panel's active extenders (K4): addresses
+	// carrying a live connection, not the addresses in an active state
+	if snapshot.InUseCount != 1 {
+		t.Fatalf("in use = %d, expected 1", snapshot.InUseCount)
+	}
 	for _, entry := range snapshot.Entries {
 		if entry.Ip == activeIp && entry.InUse != 1 {
 			t.Fatalf("in use = %d, expected 1", entry.InUse)
@@ -1055,5 +1060,106 @@ func TestExtenderDirectoryUnsubscribeStopsDelivery(t *testing.T) {
 	)
 	if _, err := directory.ApplyRecord(record, ExtenderSourceGossip); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The event ring counts what the feed and the mesh applied, and nothing else,
+// and it ages out with the window (K4).
+func TestExtenderDirectoryEventRateCountsFeedAndGossip(t *testing.T) {
+	clock := newTestClock()
+	directory, rootPrivateKey := newTestExtenderDirectory(t, clock, nil)
+	startTime := clock.Now()
+	expireTime := startTime.Add(14 * 24 * time.Hour)
+	feedKey := newTestExtenderKey(t)
+	bootstrapKey := newTestExtenderKey(t)
+
+	if _, err := directory.ApplyRecord(
+		signTestRecord(t, rootPrivateKey, feedKey, startTime, expireTime, testExtenderAddress("192.0.2.41")),
+		ExtenderSourceFeed,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if count := directory.EventCountLastMinute(); count != 1 {
+		t.Fatalf("event count = %d, want 1 after a feed record", count)
+	}
+
+	// a record that arrived some other way -- a store load, an import -- is
+	// not a network event
+	bootstrapRecord := signTestRecord(
+		t,
+		rootPrivateKey,
+		bootstrapKey,
+		startTime,
+		expireTime,
+		testExtenderAddress("192.0.2.42"),
+	)
+	if _, err := directory.ApplyRecord(bootstrapRecord, ExtenderSourceBootstrap); err != nil {
+		t.Fatal(err)
+	}
+	if count := directory.EventCountLastMinute(); count != 1 {
+		t.Fatalf("event count = %d, want 1: a bootstrap record is not an event", count)
+	}
+	// and a record the directory already holds applies nothing at all
+	if _, err := directory.ApplyRecord(bootstrapRecord, ExtenderSourceFeed); err != nil {
+		t.Fatal(err)
+	}
+	if count := directory.EventCountLastMinute(); count != 1 {
+		t.Fatalf("event count = %d, want 1: a superseded record is not an apply", count)
+	}
+
+	clock.advance(30 * time.Second)
+	revocationTime := clock.Now()
+	if _, err := directory.ApplySource(&protocol.ExtenderGossipMessage{
+		Message: &protocol.ExtenderGossipMessage_Revocation{
+			Revocation: signTestRevocation(t, rootPrivateKey, feedKey, revocationTime),
+		},
+	}, ExtenderSourceGossip); err != nil {
+		t.Fatal(err)
+	}
+	if count := directory.EventCountLastMinute(); count != 2 {
+		t.Fatalf("event count = %d, want 2 after a mesh revocation", count)
+	}
+	if count := directory.EventCountSince(revocationTime); count != 1 {
+		t.Fatalf("event count since the revocation = %d, want 1", count)
+	}
+
+	// the window is trailing: the record ages out first, then the revocation
+	clock.advance(31 * time.Second)
+	if count := directory.EventCountLastMinute(); count != 1 {
+		t.Fatalf("event count = %d, want 1 once the record aged out", count)
+	}
+	clock.advance(60 * time.Second)
+	if count := directory.EventCountLastMinute(); count != 0 {
+		t.Fatalf("event count = %d, want 0 once the window is empty", count)
+	}
+}
+
+// A hand-configured address is manual whatever it was before, and manual is
+// what takes it out of the removal policy (K6, E1).
+func TestExtenderDirectoryAddManualPromotesAndProtects(t *testing.T) {
+	clock := newTestClock()
+	directory, _ := newTestExtenderDirectory(t, clock, nil)
+	ip := netip.MustParseAddr("192.0.2.51")
+
+	directory.AddBootstrap(ip, ExtenderSourceDns)
+	if source := testDirectoryEntry(t, directory, ip).Source; source != ExtenderSourceDns {
+		t.Fatalf("source = %s, want dns", source)
+	}
+	if !directory.AddManual(ip) {
+		t.Fatal("the promotion to manual reported no change")
+	}
+	if source := testDirectoryEntry(t, directory, ip).Source; source != ExtenderSourceManual {
+		t.Fatalf("source = %s, want manual", source)
+	}
+	if directory.AddManual(ip) {
+		t.Fatal("an address that is already manual reported a change")
+	}
+
+	// the removal policy no longer applies to it
+	directory.RecordFailure(ip, ExtenderConnectModeTcpTls)
+	clock.advance(30 * 24 * time.Hour)
+	directory.Expire(clock.Now())
+	if !testDirectoryKnown(directory, ip) {
+		t.Fatal("a promoted manual address was removed by policy")
 	}
 }

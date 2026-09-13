@@ -501,6 +501,16 @@ func (self *ClientStrategy) SetCustomExtenders(extenderIpSecrets map[netip.Addr]
 	}
 }
 
+// ExtenderDirectory is the directory this strategy draws extenders from, nil
+// when discovery is disabled. The platform transport reads it to report the
+// live connections through each address (K4).
+func (self *ClientStrategy) ExtenderDirectory() *ExtenderDirectory {
+	if self == nil {
+		return nil
+	}
+	return self.settings.ExtenderDirectory
+}
+
 func (self *ClientStrategy) CustomExtenders() map[netip.Addr]string {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1356,7 +1366,25 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	return materializeHttpResult(result)
 }
 
+// DialerInfo describes the dialer a completed dial was won by (K1). The
+// extender ip is the zero value for a direct dial, which is what the platform
+// transport reads to decide whether the connection is carried by an extender.
+type DialerInfo struct {
+	Description string
+	ExtenderIp  netip.Addr
+}
+
+// WsDialContext dials without reporting the winning dialer, which is every
+// caller that does not draw the extender on a connection.
 func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
+	wsConn, response, _, err := self.WsDialContextWithDialer(ctx, url, requestHeader)
+	return wsConn, response, err
+}
+
+// WsDialContextWithDialer is the same dial, plus the description and extender
+// address of the dialer that won it (K1). The info is nil only when no dialer
+// completed at all, which is the same condition that yields the timeout error.
+func (self *ClientStrategy) WsDialContextWithDialer(ctx context.Context, url string, requestHeader http.Header) (*websocket.Conn, *http.Response, *DialerInfo, error) {
 	if 0 < len(self.settings.ExtraHeaders) {
 		// clone so a caller-held header is not mutated across reconnects
 		merged := requestHeader.Clone()
@@ -1394,9 +1422,9 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 
 	result := self.parallelEval(ctx, eval)
 	if result == nil {
-		return nil, nil, fmt.Errorf("Timeout.")
+		return nil, nil, nil, fmt.Errorf("Timeout.")
 	}
-	return result.wsConn, result.response, result.err
+	return result.wsConn, result.response, result.dialer.Info(), result.err
 }
 
 func (self *ClientStrategy) collapseExtenderDialers() {
@@ -1742,6 +1770,22 @@ func nativeHttp2Config(settings *ConnectSettings) *http.HTTP2Config {
 	return &http.HTTP2Config{
 		WriteByteTimeout: settings.ConnectTimeout,
 	}
+}
+
+// Info is the dialer as a completed dial reports it (K1). A nil dialer -- no
+// dial completed -- reports nothing rather than panicking, so a caller can pass
+// the result of a failed eval straight through.
+func (self *clientDialer) Info() *DialerInfo {
+	if self == nil {
+		return nil
+	}
+	info := &DialerInfo{
+		Description: self.description,
+	}
+	if self.extenderConfig != nil {
+		info.ExtenderIp = self.extenderConfig.Ip.Unmap()
+	}
+	return info
 }
 
 func (self *clientDialer) HttpClient() *http.Client {

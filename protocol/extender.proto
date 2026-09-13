@@ -87,3 +87,24 @@ message ExtenderFeedFrame {
         bool Keepalive = 4;
     }
 }
+
+// The optional operator settings of a share (K7). They are applied only when
+// the importer asks for them, since they replace the trust anchor.
+message ExtenderShareSettings {
+    string DnsName = 1;
+    string GossipUrl = 2;
+    // ed25519 root public keys, 32 bytes each
+    repeated bytes RootPublicKeys = 3;
+}
+
+// A shared set of extender addresses (K7). Addresses only: an imported address
+// is an unverified bootstrap entry that upgrades when a record arrives.
+message ExtenderShare {
+    uint32 Version = 1;
+    // the network host of the space that produced the share; an import into
+    // another space is refused unless the settings are taken with it
+    string NetworkHost = 2;
+    // 4 or 16 bytes each
+    repeated bytes Addresses = 3;
+    ExtenderShareSettings Settings = 4;
+}

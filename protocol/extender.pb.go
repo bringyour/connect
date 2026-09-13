@@ -787,6 +787,142 @@ func (*ExtenderFeedFrame_EndOfSample) isExtenderFeedFrame_Frame() {}
 
 func (*ExtenderFeedFrame_Keepalive) isExtenderFeedFrame_Frame() {}
 
+// The optional operator settings of a share (K7). They are applied only when
+// the importer asks for them, since they replace the trust anchor.
+type ExtenderShareSettings struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	DnsName   string                 `protobuf:"bytes,1,opt,name=DnsName,proto3" json:"DnsName,omitempty"`
+	GossipUrl string                 `protobuf:"bytes,2,opt,name=GossipUrl,proto3" json:"GossipUrl,omitempty"`
+	// ed25519 root public keys, 32 bytes each
+	RootPublicKeys [][]byte `protobuf:"bytes,3,rep,name=RootPublicKeys,proto3" json:"RootPublicKeys,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ExtenderShareSettings) Reset() {
+	*x = ExtenderShareSettings{}
+	mi := &file_extender_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExtenderShareSettings) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExtenderShareSettings) ProtoMessage() {}
+
+func (x *ExtenderShareSettings) ProtoReflect() protoreflect.Message {
+	mi := &file_extender_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExtenderShareSettings.ProtoReflect.Descriptor instead.
+func (*ExtenderShareSettings) Descriptor() ([]byte, []int) {
+	return file_extender_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ExtenderShareSettings) GetDnsName() string {
+	if x != nil {
+		return x.DnsName
+	}
+	return ""
+}
+
+func (x *ExtenderShareSettings) GetGossipUrl() string {
+	if x != nil {
+		return x.GossipUrl
+	}
+	return ""
+}
+
+func (x *ExtenderShareSettings) GetRootPublicKeys() [][]byte {
+	if x != nil {
+		return x.RootPublicKeys
+	}
+	return nil
+}
+
+// A shared set of extender addresses (K7). Addresses only: an imported address
+// is an unverified bootstrap entry that upgrades when a record arrives.
+type ExtenderShare struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Version uint32                 `protobuf:"varint,1,opt,name=Version,proto3" json:"Version,omitempty"`
+	// the network host of the space that produced the share; an import into
+	// another space is refused unless the settings are taken with it
+	NetworkHost string `protobuf:"bytes,2,opt,name=NetworkHost,proto3" json:"NetworkHost,omitempty"`
+	// 4 or 16 bytes each
+	Addresses     [][]byte               `protobuf:"bytes,3,rep,name=Addresses,proto3" json:"Addresses,omitempty"`
+	Settings      *ExtenderShareSettings `protobuf:"bytes,4,opt,name=Settings,proto3" json:"Settings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExtenderShare) Reset() {
+	*x = ExtenderShare{}
+	mi := &file_extender_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExtenderShare) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExtenderShare) ProtoMessage() {}
+
+func (x *ExtenderShare) ProtoReflect() protoreflect.Message {
+	mi := &file_extender_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExtenderShare.ProtoReflect.Descriptor instead.
+func (*ExtenderShare) Descriptor() ([]byte, []int) {
+	return file_extender_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ExtenderShare) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ExtenderShare) GetNetworkHost() string {
+	if x != nil {
+		return x.NetworkHost
+	}
+	return ""
+}
+
+func (x *ExtenderShare) GetAddresses() [][]byte {
+	if x != nil {
+		return x.Addresses
+	}
+	return nil
+}
+
+func (x *ExtenderShare) GetSettings() *ExtenderShareSettings {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
 var File_extender_proto protoreflect.FileDescriptor
 
 const file_extender_proto_rawDesc = "" +
@@ -848,7 +984,16 @@ const file_extender_proto_rawDesc = "" +
 	"Revocation\x12\"\n" +
 	"\vEndOfSample\x18\x03 \x01(\bH\x00R\vEndOfSample\x12\x1e\n" +
 	"\tKeepalive\x18\x04 \x01(\bH\x00R\tKeepaliveB\a\n" +
-	"\x05FrameB'Z%github.com/urnetwork/connect/protocolb\x06proto3"
+	"\x05Frame\"w\n" +
+	"\x15ExtenderShareSettings\x12\x18\n" +
+	"\aDnsName\x18\x01 \x01(\tR\aDnsName\x12\x1c\n" +
+	"\tGossipUrl\x18\x02 \x01(\tR\tGossipUrl\x12&\n" +
+	"\x0eRootPublicKeys\x18\x03 \x03(\fR\x0eRootPublicKeys\"\xa7\x01\n" +
+	"\rExtenderShare\x12\x18\n" +
+	"\aVersion\x18\x01 \x01(\rR\aVersion\x12 \n" +
+	"\vNetworkHost\x18\x02 \x01(\tR\vNetworkHost\x12\x1c\n" +
+	"\tAddresses\x18\x03 \x03(\fR\tAddresses\x12<\n" +
+	"\bSettings\x18\x04 \x01(\v2 .bringyour.ExtenderShareSettingsR\bSettingsB'Z%github.com/urnetwork/connect/protocolb\x06proto3"
 
 var (
 	file_extender_proto_rawDescOnce sync.Once
@@ -862,7 +1007,7 @@ func file_extender_proto_rawDescGZIP() []byte {
 	return file_extender_proto_rawDescData
 }
 
-var file_extender_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_extender_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_extender_proto_goTypes = []any{
 	(*ExtenderHeader)(nil),         // 0: bringyour.ExtenderHeader
 	(*ExtenderResponse)(nil),       // 1: bringyour.ExtenderResponse
@@ -874,18 +1019,21 @@ var file_extender_proto_goTypes = []any{
 	(*ExtenderGossipMessage)(nil),  // 7: bringyour.ExtenderGossipMessage
 	(*ExtenderFeedRequest)(nil),    // 8: bringyour.ExtenderFeedRequest
 	(*ExtenderFeedFrame)(nil),      // 9: bringyour.ExtenderFeedFrame
+	(*ExtenderShareSettings)(nil),  // 10: bringyour.ExtenderShareSettings
+	(*ExtenderShare)(nil),          // 11: bringyour.ExtenderShare
 }
 var file_extender_proto_depIdxs = []int32{
-	2, // 0: bringyour.ExtenderRecordBody.Addresses:type_name -> bringyour.ExtenderAddress
-	4, // 1: bringyour.ExtenderGossipMessage.Record:type_name -> bringyour.ExtenderRecord
-	6, // 2: bringyour.ExtenderGossipMessage.Revocation:type_name -> bringyour.ExtenderRevocation
-	4, // 3: bringyour.ExtenderFeedFrame.Record:type_name -> bringyour.ExtenderRecord
-	6, // 4: bringyour.ExtenderFeedFrame.Revocation:type_name -> bringyour.ExtenderRevocation
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	2,  // 0: bringyour.ExtenderRecordBody.Addresses:type_name -> bringyour.ExtenderAddress
+	4,  // 1: bringyour.ExtenderGossipMessage.Record:type_name -> bringyour.ExtenderRecord
+	6,  // 2: bringyour.ExtenderGossipMessage.Revocation:type_name -> bringyour.ExtenderRevocation
+	4,  // 3: bringyour.ExtenderFeedFrame.Record:type_name -> bringyour.ExtenderRecord
+	6,  // 4: bringyour.ExtenderFeedFrame.Revocation:type_name -> bringyour.ExtenderRevocation
+	10, // 5: bringyour.ExtenderShare.Settings:type_name -> bringyour.ExtenderShareSettings
+	6,  // [6:6] is the sub-list for method output_type
+	6,  // [6:6] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_extender_proto_init() }
@@ -909,7 +1057,7 @@ func file_extender_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_extender_proto_rawDesc), len(file_extender_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

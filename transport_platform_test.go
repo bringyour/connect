@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1512,4 +1513,72 @@ func TestPlatformTransportH3CloseDrainsQueuedReceiveOwnership(t *testing.T) {
 			t.Fatalf("join H3 pool test server: %v", closeCtx.Err())
 		}
 	})
+}
+
+// K1: the extender set of a transport is published through a change counter,
+// and an owner may share one counter across transport generations. The counter
+// is therefore incremented from whatever it holds: two transports counting
+// their own changes would write the same value twice, and the second write
+// would notify nobody -- exactly the case where a migration replacement
+// connects through a different extender than the transport it replaces.
+func TestPlatformTransportExtenderIpsShareOneChangeCounter(t *testing.T) {
+	extenderIpsMonitor := NewMonitorValue[uint64](0)
+	first := &PlatformTransport{
+		extenderIpCounts:   map[netip.Addr]int{},
+		extenderIpsMonitor: extenderIpsMonitor,
+	}
+	second := &PlatformTransport{
+		extenderIpCounts:   map[netip.Addr]int{},
+		extenderIpsMonitor: extenderIpsMonitor,
+	}
+	firstIp := netip.MustParseAddr("192.0.2.141")
+	secondIp := netip.MustParseAddr("192.0.2.142")
+
+	notified := func(change chan struct{}) bool {
+		select {
+		case <-change:
+			return true
+		default:
+			return false
+		}
+	}
+
+	_, change := extenderIpsMonitor.Get()
+	first.changeExtenderIp(firstIp, 1)
+	if !notified(change) {
+		t.Fatal("the first connection through an extender did not notify")
+	}
+	if ips := first.ExtenderIps(); len(ips) != 1 || ips[0] != firstIp {
+		t.Fatalf("extender ips = %v, want [%v]", ips, firstIp)
+	}
+
+	// a second connection through the same extender does not change the set
+	_, change = extenderIpsMonitor.Get()
+	first.changeExtenderIp(firstIp, 1)
+	if notified(change) {
+		t.Fatal("a second connection through the same extender notified")
+	}
+
+	// the replacement generation, sharing the counter
+	second.changeExtenderIp(secondIp, 1)
+	if !notified(change) {
+		t.Fatal("the replacement transport's extender did not notify")
+	}
+	if ips := second.ExtenderIps(); len(ips) != 1 || ips[0] != secondIp {
+		t.Fatalf("replacement extender ips = %v, want [%v]", ips, secondIp)
+	}
+
+	// the retired generation releases both of its connections
+	_, change = extenderIpsMonitor.Get()
+	first.changeExtenderIp(firstIp, -1)
+	if notified(change) {
+		t.Fatal("releasing one of two connections through an extender notified")
+	}
+	first.changeExtenderIp(firstIp, -1)
+	if !notified(change) {
+		t.Fatal("releasing the last connection through an extender did not notify")
+	}
+	if ips := first.ExtenderIps(); len(ips) != 0 {
+		t.Fatalf("extender ips = %v, want none", ips)
+	}
 }

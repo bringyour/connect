@@ -5742,6 +5742,19 @@ type MultiClientGeneratorTransportMigrator interface {
 	MigrateClientTransport(client *Client, args *MultiClientGeneratorClientArgs, migrateTime time.Time)
 }
 
+// MultiClientGeneratorWithExtenderIps is an optional generator capability: the
+// extender addresses carrying one window client's live platform transport
+// (K1). The generator owns the transports, so it is the only layer that can
+// answer, and it answers across transport generations -- a migration
+// replacement is a change like any other. A generator without it publishes no
+// extenders, which is what a P2P-only or fixture window does.
+type MultiClientGeneratorWithExtenderIps interface {
+	// The addresses and a channel that closes when they may have changed. The
+	// pair must be taken together, with the subscribe immediately before the
+	// read. A nil channel means there is nothing to watch.
+	ClientExtenderIps(client *Client) ([]netip.Addr, <-chan struct{})
+}
+
 // the icmp send gate is not part of a normal handshake; it flips to a
 // default-on release once the provider fleet broadly parses icmp (see ICMP.md)
 var errIcmpDisabled = errors.New("icmp send is disabled")
@@ -11192,7 +11205,16 @@ func (self *multiClientWindow) expand(
 			// Calling RemoveClientArgs here would revoke the derived JWT first
 			// and turn the channel's final contract closes into 401s.
 			client.Cancel()
-			self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded, args.Destination.Tail(), args.Location, args.IpFamily)
+			self.monitor.AddProviderEventWithExtenderIps(
+				args.ClientId,
+				ProviderStateAdded,
+				args.Destination.Tail(),
+				args.Location,
+				args.IpFamily,
+				// the dot belongs to the live old client, so its extenders are
+				// what the re-emitted event must carry
+				self.clientExtenderIps(existingClient),
+			)
 			return false
 		}
 		if !self.strictWindowAdmissionAllowed(clientId, windowSize) {
@@ -11234,10 +11256,21 @@ func (self *multiClientWindow) expand(
 			// while the client is still routing.
 			replacedClient.Cancel()
 		}
-		self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded, args.Destination.Tail(), args.Location, args.IpFamily)
+		self.monitor.AddProviderEventWithExtenderIps(
+			args.ClientId,
+			ProviderStateAdded,
+			args.Destination.Tail(),
+			args.Location,
+			args.IpFamily,
+			self.clientExtenderIps(client),
+		)
 		// the outcome watchdog stands down: this window has proven it can
 		// install a provider (and a latched failed state is cleared)
 		self.noteClientAdded(client)
+		// K1: the extenders carrying this exit ride its dot from here on
+		go HandleError(func() {
+			self.watchExtenderIps(client)
+		})
 		// reap promptly when the client dies (the continuous ping or blackhole
 		// detection cancels the channel): wake the resize loop instead of
 		// waiting for its next tick
@@ -11527,7 +11560,14 @@ func (self *multiClientWindow) expand(
 						addedP2pOnly += 1
 					}
 
-					self.monitor.AddProviderEvent(args.ClientId, ProviderStateInEvaluation, args.Destination.Tail(), args.Location, args.IpFamily)
+					self.monitor.AddProviderEventWithExtenderIps(
+						args.ClientId,
+						ProviderStateInEvaluation,
+						args.Destination.Tail(),
+						args.Location,
+						args.IpFamily,
+						self.clientExtenderIps(client),
+					)
 
 					success, err := client.SendDetailedMessage(
 						&protocol.IpPing{},
@@ -11865,6 +11905,55 @@ func (self *multiClientWindow) metrics() *reliabilityMetrics {
 		return self.reliabilityMetricsFunc()
 	}
 	return nil
+}
+
+// The extenders carrying one exit's platform transport right now (K1). None
+// when the generator owns no transports, which is every fixture window and
+// every P2P-only client.
+func (self *multiClientWindow) clientExtenderIps(client *multiClientChannel) []netip.Addr {
+	source, ok := self.generator.(MultiClientGeneratorWithExtenderIps)
+	if !ok || client == nil || client.client == nil {
+		return nil
+	}
+	ips, _ := source.ClientExtenderIps(client.client)
+	return ips
+}
+
+// watchExtenderIps republishes one exit's extender addresses on this window's
+// monitor whenever they change (K1), so a provider dot follows the transport
+// it is actually carried by. It ends with the window or with the client. The
+// generator arms the change channel immediately before reading the addresses,
+// so nothing can slip between the two; a generator with no transport for this
+// client returns no channel and the watcher simply waits for the client to
+// end.
+func (self *multiClientWindow) watchExtenderIps(client *multiClientChannel) {
+	source, ok := self.generator.(MultiClientGeneratorWithExtenderIps)
+	if !ok || client == nil || client.client == nil {
+		return
+	}
+	clientId := client.ClientId()
+	for {
+		extenderIps, change := source.ClientExtenderIps(client.client)
+		// the dot belongs to whichever channel currently holds this id: a
+		// same-id replacement installs its own watcher, and this one must not
+		// publish over it
+		owned := func() bool {
+			self.stateLock.Lock()
+			defer self.stateLock.Unlock()
+			return self.clients[clientId] == client
+		}()
+		if !owned {
+			return
+		}
+		self.monitor.SetProviderExtenderIps(clientId, extenderIps)
+		select {
+		case <-self.ctx.Done():
+			return
+		case <-client.Done():
+			return
+		case <-change:
+		}
+	}
 }
 
 // blackholeVerdictErr reports whether a channel's end error is a blackhole

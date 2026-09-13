@@ -623,3 +623,83 @@ func newTestUpgrader(t *testing.T, key *testKey) transport.Upgrader {
 	}
 	return connUpgrader
 }
+
+// A peering round with dials in flight and no mesh peer is the connecting
+// state the app's status dot shows (K4). The operator address here is a socket
+// that accepts and never speaks, so the dial stays in flight rather than
+// failing, and the member holds no mesh peer at all.
+func TestGossipNodeReportsConnectingWhileItDials(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		listener.Close()
+	})
+	acceptedLock := sync.Mutex{}
+	accepted := []net.Conn{}
+	t.Cleanup(func() {
+		acceptedLock.Lock()
+		defer acceptedLock.Unlock()
+		for _, conn := range accepted {
+			conn.Close()
+		}
+	})
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			acceptedLock.Lock()
+			accepted = append(accepted, conn)
+			acceptedLock.Unlock()
+		}
+	}()
+
+	operatorKey := newTestKey(t)
+	operatorPeerId, err := PeerIdForExtenderPublicKey(operatorKey.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenAddrs, err := WebsocketListenAddrs("127.0.0.1", listener.Addr().(*net.TCPAddr).Port, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2pComponent, err := ma.NewComponent("p2p", operatorPeerId.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	settings := DefaultNodeSettings(NodeRoleMember)
+	settings.NetworkHost = testNetworkHost
+	settings.Directory = newTestDirectory(t, newTestKey(t))
+	settings.IdentityKeySeed = newTestKey(t).seed
+	settings.OperatorAddrs = []ma.Multiaddr{listenAddrs[0].Encapsulate(p2pComponent)}
+	// one round, held open by the silent socket for the whole dial budget
+	settings.PeerTimeout = 5 * time.Minute
+	settings.DialTimeout = testMeshTimeout
+	settings.StatusTimeout = 50 * time.Millisecond
+	node, err := NewNode(ctx, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(node.Close)
+
+	waitForNodeStatus(t, node, "the connecting state", func(status NodeStatus) bool {
+		return status.Connecting
+	})
+	status := node.Status()
+	if status.MeshPeerCount != 0 {
+		t.Fatalf("mesh peers = %d, want none while connecting", status.MeshPeerCount)
+	}
+	if state := connect.ExtenderGossipStateForMember(
+		status.MeshPeerCount,
+		status.Connecting,
+	); state != connect.ExtenderGossipStateConnecting {
+		t.Fatalf("gossip state = %q, want %q", state, connect.ExtenderGossipStateConnecting)
+	}
+}
