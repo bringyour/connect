@@ -1,0 +1,78 @@
+//go:build linux
+
+package connect
+
+import (
+	"net"
+	"syscall"
+	"testing"
+)
+
+// The provider terminates TCP and reads the origin through an upstream socket
+// that is already connected when it is configured. On Linux, setting SO_RCVBUF
+// on that socket locks receive autotuning, and autotuning is the only thing
+// that raises the window clamp chosen at SYN time from the default buffer. The
+// advertised window to the origin then stays at about 64 KB for the life of the
+// flow, capping one download near window/RTT (~210 Mb/s at a 2 ms origin RTT)
+// no matter how fast the tunnel is. The upstream socket must leave the receive
+// buffer to the kernel.
+//
+// Linux only: macOS rejects an oversized SO_RCVBUF with ENOBUFS and keeps
+// autotuning, so there the explicit set is a silent no-op, not a lock.
+func TestUpstreamTcpConnLeavesReceiveBufferToAutotuning(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- conn
+	}()
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if peer, ok := <-accepted; ok {
+		defer peer.Close()
+	}
+	tcpConn := conn.(*net.TCPConn)
+
+	before := tcpSocketReceiveBufferSize(t, tcpConn)
+	configureUpstreamTcpConn(tcpConn, DefaultTcpBufferSettings())
+	after := tcpSocketReceiveBufferSize(t, tcpConn)
+
+	if after != before {
+		t.Fatalf(
+			"upstream socket receive buffer changed from %d to %d after connect; an explicit SO_RCVBUF locks autotuning and freezes the window clamp at its SYN-time size",
+			before,
+			after,
+		)
+	}
+}
+
+func tcpSocketReceiveBufferSize(t *testing.T, tcpConn *net.TCPConn) int {
+	t.Helper()
+	rawConn, err := tcpConn.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size int
+	var sockoptErr error
+	if err := rawConn.Control(func(fd uintptr) {
+		size, sockoptErr = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if sockoptErr != nil {
+		t.Fatal(sockoptErr)
+	}
+	return size
+}

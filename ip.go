@@ -482,6 +482,21 @@ func DefaultTcpBufferSettingsWithBufferSize(bufferSize int) *TcpBufferSettings {
 // floor of `floorWindowSize`, rounded down to a power of 2 multiple of
 // `minWindowSize` to preserve the `MaxWindowSize` contract (the window
 // doubling ladder must land exactly on the max)
+// configureUpstreamTcpConn prepares a connected upstream socket for proxying.
+//
+// The receive buffer is deliberately left to the kernel. The socket is already
+// connected here, so its window clamp was fixed at SYN time from the default
+// buffer (about 64 KB). On Linux an explicit SO_RCVBUF locks receive
+// autotuning, which is the only thing that raises that clamp, so the window
+// advertised to the origin stays at 64 KB for the life of the flow and caps a
+// single download near window/RTT. Autotuning grows it to tcp_rmem's maximum.
+func configureUpstreamTcpConn(tcpConn *net.TCPConn, tcpBufferSettings *TcpBufferSettings) {
+	tcpConn.SetKeepAlive(true)
+	tcpConn.SetNoDelay(true)
+	// the os may silently cap this at system limits.
+	tcpConn.SetWriteBuffer(int(tcpBufferSettings.MaxWindowSize))
+}
+
 func scaledPow2WindowSize(maxWindowSize uint32, minWindowSize uint32, floorWindowSize uint32) uint32 {
 	scaledWindowSize := uint32(MemoryScaledByteCount(ByteCount(maxWindowSize), ByteCount(floorWindowSize)))
 	windowSize := minWindowSize
@@ -4792,12 +4807,7 @@ func (self *TcpSequence) Run() {
 
 	defer socket.Close()
 	if tcpConn, ok := socket.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetNoDelay(true)
-		// size the kernel buffers to the max window.
-		// the os may silently cap these at system limits.
-		tcpConn.SetReadBuffer(int(self.tcpBufferSettings.MaxWindowSize))
-		tcpConn.SetWriteBuffer(int(self.tcpBufferSettings.MaxWindowSize))
+		configureUpstreamTcpConn(tcpConn, self.tcpBufferSettings)
 	}
 
 	self.log.V(2).Infof("[init]receive SYN+ACK\n")
