@@ -1002,3 +1002,169 @@ The UDP cell that calls H8 answered: UDP download through the provider at
 sockets, so identical throughput is the prediction), with
 `UdpKernelReceiveDropCount` read at the end of each run and the exchange's
 forward drop counter beside it.
+
+## 13. The coupling: what a dead client's sequence puts on the wire, and what to measure before naming a resource
+
+Design, 2026-09-13. H5 and H6. Nothing here names the resource; it names
+the measurement that will, the prediction it is held to, and the
+instrument landed for it.
+
+### 13.1 The arithmetic, and the prediction
+
+The report: zombies retransmit about 8 Mb/s each and forty of them take a
+639 Mb/s provider to 180. Forty times eight is 320 and the loss is about
+460, so bandwidth does not obviously account for it. Before measuring
+anything, what the source says a zombie should cost.
+
+A client that dies mid-download leaves its return sequence with a full
+resend queue of retained items (`retainAfterAckTimeout`), and with the
+lane rule off, which is how main ships, every item is rewritten when its
+timer fires. `resendIntervalForPolicy` doubles the interval per rewrite
+from the scaled round trip to `MaxResendInterval`, 8 s, which every item
+reaches by its sixth rewrite, within about twenty seconds of the death.
+The queue is bounded by `ResendQueueMaxByteCount`, 2 MiB unscaled on one
+lane (`LogicalDataLaneCount` 0), so the steady state is the whole queue
+rewritten once per 8 s:
+
+**Prediction: 2 MiB / 8 s ≈ 2.1 Mb/s per dead client, plus Transfer
+framing, on an unscaled provider, from about twenty seconds after the
+death.** Per client, not per flow: every flow of one client shares the
+sequence to it. Forty dead clients are about 84 Mb/s, 13 per cent of the
+provider's 640, which cannot be the 460.
+
+Two readings of the report's "8 Mb/s each" and what each would mean. If
+it is per client at steady state, the interval is not reaching its ceiling
+and is sitting near 2 s, the cold floor, and bandwidth then does account
+for most of the loss (320 of 460, before framing); that is a timer finding
+in the transfer layer, and row Z1 below would fail on main. If it is per
+flow of one client, it cannot be resend egress at all, since one sequence
+carries them, and something else was measured. The split below decides
+which, and it is the first thing to run.
+
+### 13.2 The instrument, landed
+
+`Client.DestinationSendStats(destinationId)` sums, over the live send
+sequences to one destination, `WriteCount`, `WriteByteCount`,
+`ResendWriteCount` and `ResendWriteByteCount`: first writes and recovery
+rewrites counted at the write, as per-sequence atomics, so a destination's
+egress splits into delivery and retransmission with no allocation and no
+lock on the path (`transfer: count what each send sequence writes`). The
+measurement stream reads it per killed client id and per live client id
+at intervals; the difference of two readings is the rate.
+
+Already available beside it: `Client.ResendQueueSize` per destination;
+the shared budget's `UsedByteCount()` against `TotalByteCount()` when a
+`ResendQueueBudget` is set; `MessagePoolStats()`; the client's
+`TimeoutResendWriteCount`, `RouteUnacknowledgedDuration` and
+`RouteRetainedItemCount`; on the exchange, `forwardDroppedCounter` and
+`abuseDroppedCounter`; and the provider host's CPU.
+
+### 13.3 The candidates, with what each predicts
+
+The threshold shape is 8 zombies at 719, 16 at 587, 40 at 180 from 639,
+which is 11, 27 and 72 per cent: about 1.4 to 1.8 per cent, 10 to 12 Mb/s
+of live throughput, per zombie, roughly linear and steepening. That is
+four to five times a zombie's own predicted egress, so whatever it is
+costs more than its bytes.
+
+- The shared resend budget, on an sdk-hosted provider only.
+  `configureDeviceLocalProviderMemory` gives every sequence one budget of
+  three sevenths of half the provider target, 4.3 MiB at the 20 MiB
+  desktop default, with `ResendQueueMaxByteCount` as the borrow cap and
+  256 KiB as the guaranteed floor. A zombie holds its borrow forever, so
+  two or three exhaust the budget and every live sequence is held at its
+  256 KiB floor: a per-flow ceiling of 256 KiB × 8 / RTT, 100 Mb/s at
+  20 ms. That predicts a cliff at two or three zombies, not a slope from
+  eight, which is one reason to think the reporter's provider is a bare
+  one with independent per-sequence budgets, where this candidate does
+  not exist. `UsedByteCount` against `TotalByteCount` decides it in one
+  reading.
+- The transport write path. Every rewrite is framed and encrypted again
+  and written into the same carrier as live traffic. At 84 Mb/s that is a
+  13 per cent share of bytes and of the encryption CPU, a slope of about
+  a third of a per cent per zombie. Too shallow by five times unless the
+  interval is stuck at 2 s.
+- The exchange. Forwards are nonblocking in production (`ForwardTimeout`
+  0), so a dead destination's full forward buffer drops and never blocks
+  the resident's ingress shard; there is no head-of-line coupling there.
+  The exchange does spend CPU framing what it drops, and
+  `forwardDroppedCounter` climbing at the zombies' packet rate is the
+  signature.
+- Message pools. Forty resend queues pin about 80 MiB of pool buffers;
+  if the pool's memory target is below that, live flows' gets fall
+  through to the heap and the GC pays. `MessagePoolStats()` shows the
+  occupancy; this predicts a slope that steepens, which is the shape.
+- Not candidates, from the source: the provider's return admission
+  (parked producers wait on their own sequence's notify and zombies of
+  different clients share none of it); the contract manager (a full
+  window requests nothing); the exchange's forward limit per resident,
+  8,192, far above forty.
+
+### 13.4 The matrix
+
+Zombie count in {0, 8, 16, 40}, the same live client set throughout, four
+repetitions, on two provider hosts: a bare provider and an sdk-hosted one
+at the 20 MiB desktop target. Recorded per run: live throughput; per
+destination, the `DestinationSendStats` split for every killed id and
+every live id, sampled every 5 s; the resend budget's used and total where
+one exists; `MessagePoolStats`; the exchange's forward drops; provider
+and exchange CPU; and the kernel's `ss -tmi` on the provider's transport
+socket. The resource named is the one whose counter crosses a bound at
+the same zombie count where live throughput falls; a candidate whose
+counter moves linearly while throughput falls super-linearly is not it.
+
+What the split must show for 13.1 to stand: killed ids at 2.1 Mb/s of
+rewrites each (± 0.5) from twenty seconds after the kill, live ids with
+rewrites under 2 per cent of their first writes. If killed ids show
+8 Mb/s, 13.1 is wrong, the timer is the finding, and row Z1 says where.
+
+### 13.5 Tests, in the contract shape
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| Z1 | `TestZombieFlowEgressIsBounded` | one send sequence to a sink that acknowledges nothing, lane rule off, `ResendQueueMaxByteCount` Q = 256 KiB, `MaxResendInterval` M = 200 ms; once every item has been written seven times, `ResendWriteByteCount` over a window W = 5 M lies within [0.5, 1.25] × Q × W / M | neither tree, by 13.1; a ratchet in §36.13's sense, and the row that fails on main if "8 Mb/s each" is the steady state | transfer layer, in-process |
+| Z2 | `TestDestinationSendStatsSplitFirstWritesFromRewrites` | N packs to one destination written once and then each rewritten once: `WriteByteCount` equals the first-write bytes, `ResendWriteByteCount` the rewrite bytes, `SequenceCount` 1; a second destination reads zero | a tree without the counters | in-process |
+| Z3 | `TestZombieRewritesStopAtRelease` | the same sequence under a provider whose source is released by §10: `ResendWriteByteCount` stops advancing within one M of the release | main only if its release does not join the sequence, which it does; a guard | in-process |
+
+## 14. What this round corrects in sections 1 to 8
+
+Recorded so the earlier text is read with these in hand rather than
+edited under them.
+
+1. §2's table and §4 treat the platform's Reliability verdict as the
+   platform's answer to "is the destination active". It is the answer to
+   "is the destination's identity retired": `contractDestinationActive`
+   reads `network_client.active`, which an offline client keeps. A
+   contract probe cannot detect a dropped client (§10.2).
+2. §4 offers the 209, 264 and 723 s wedges as evidence against a 120 s
+   bound. They were produced with `ReliableLaneProvenRecovery` on, which
+   shipped off after that measurement with 0 of 120 wedges off against 8
+   of 120 on. Nothing measured on the shipped tree is silent for 120 s;
+   the longest is 36 s (§10.3). The bound's danger was real and lay
+   elsewhere: in the quantity it was taken over (§10.1).
+3. §3's "possibly 256 KiB" does not occur on a shipping host; the phone
+   profiles request 2 to 8 MiB (§11.1). On a stock Linux host the request
+   is clamped to 208 KiB whatever the budget, so the memory scaling never
+   reached the kernel and a phone provider was exactly as frozen as a
+   server one (§11.2).
+4. H1's second clause, that the receive deletion lowers throughput where
+   `tcp_rmem[2]` is below what the explicit call requested, does not hold
+   on Linux: the explicit call never raised the receive window at any
+   size, because the window clamp was frozen at its SYN-time value and
+   only autotuning moves it (§9.1's kernel path, §11.2). The buffer the
+   old code obtained was larger than autotuning's ceiling only on a host
+   with `rmem_max` raised, and there it still advertised the frozen
+   window. The comparison H1 asks for is still worth one run for the
+   record; it is not a landing condition.
+5. The reporter's Linux-only test rationale, that macOS refuses an
+   oversized set with `ENOBUFS` and keeps autotuning, is not what this
+   macOS does: it clamps silently to `kern.ipc.maxsockbuf` and locks, and
+   the mobile-profile requests are not oversized there at all (§11.2).
+   The Darwin rows M2 and M3 follow.
+6. §2's "the same pattern appears on the UDP socket" is right that it is
+   the same call and wrong to leave it as a caution only: the UDP call is
+   a real buffer increase on a stock host and stays (§12.1).
+7. §5's row 5, `TestZombieFlowEgressIsBounded`, is kept but reclassified:
+   the bound it asserts is what the timer already does, and the row's
+   value is as the instrument that decides whether the report's 8 Mb/s
+   is a steady state (§13.1).
