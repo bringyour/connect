@@ -518,45 +518,64 @@ throughput at 40 zombies, stays.
 
 ### 10.4 What is built
 
-`providerSourceLifecycle` gains three fields and one method:
+As landed, after the correction recorded in 10.10: the evidence is a
+per-source record that outlives the source's lifecycles, not a clock on
+the lifecycle.
 
-- `createdNanos int64`, the monotonic time the lifecycle was created. A
-  lifecycle exists only while the source has admitted producers
-  (`releaseSourceLifecycle` reclaims an idle one), so this is the moment
-  the provider started having something to deliver to the client in this
-  generation, and the floor for a source that has never acknowledged.
-- `lastAckNanos atomic.Int64`, the monotonic time the destination last
-  acknowledged one of this source's socket-owned return items.
-- `carrierAbsentNanos atomic.Int64`, the last time a parked producer of
-  this source observed the provider without a transport.
-- `sendAckResult(value ByteCount, err error)`, which makes the lifecycle a
-  `sendAckTarget`: on `err == nil` it stores the monotonic time into
-  `lastAckNanos`. Nothing else. It runs on the send-sequence goroutine, one
-  clock read and one atomic store per acknowledged item.
+`sourceAckEvidence`, one per source, held in
+`RemoteUserNatProvider.sourceAckEvidences`, created with the source's first
+lifecycle under the provider lock, bounded by `MaxSourceCount` with the
+same arbitrary eviction as the other per-source maps, and removed on an
+authoritative disconnect. Every field is atomic and every time is
+`monotonicNanos()`, `time.Since` of a package epoch, so a wall-clock step
+on the host cannot read as a silent client:
 
-The lifecycle is the ack target of every socket-owned return item of its
-source. The raw path already takes a `sendAckTarget` argument
-(`sendRawWithTimeoutDetailed`'s fourth parameter, today
-`returnAckTargetForTest`); the group path takes only an `AckFunction`, so a
-`sendAckTargetOption` is added to `resolveSendOptions` and
-`sendGroupToWithTimeoutDetailed` sets `SendPack.ackTarget` from it, which
-`SendPack.ackRecord()` already honours. No closure and no allocation per
-item or per batch: the item already carries its lifecycle.
+- `outstanding` and `outstandingSinceNanos`: the socket-owned returns
+  admitted to Transfer and not yet acknowledged or failed, and when that
+  count last rose from zero. While something is outstanding, silence
+  accrues from there or from the last acknowledgement, whichever is later,
+  so a further admission never restarts it.
+- `parkedSinceNanos`: when a producer first found its return unadmitted
+  with nothing outstanding, recorded once and cleared by an admission. With
+  nothing outstanding that stall is the only silence there is; it covers
+  the source whose sequence refuses every Pack (a session that never
+  establishes), which is the reporter's fixture and a real zombie shape.
+- `lastAckNanos`: when the destination last acknowledged one of the
+  source's returns.
+- `carrierAbsentNanos`: when a parked producer last found the provider
+  without a transport.
 
-`monotonicNanos()` is added, `time.Since` of a package epoch, so the
-stamps are immune to wall-clock steps; a forward step of two minutes on a
-provider host must not release its clients.
+The record is the `sendAckTarget` of every socket-owned return item of its
+source: `sendAckResult` decrements `outstanding` and on success stores the
+time. The raw path already takes a target (`sendRawWithTimeoutDetailed`'s
+fourth parameter, today `returnAckTargetForTest`); the group and legacy
+paths take an `AckFunction`, so `sendAckTargetOption` is added to
+`resolveSendOptions` and the group and single-frame pack literals set
+`SendPack.ackTarget` from it, which `SendPack.ackRecord()` already honours.
+`retryReturnSend` counts an admission (`admitted`) when an attempt returns
+sent for a socket-owned item. No closure and no allocation per item or per
+batch: the item already carries its lifecycle, and the lifecycle carries
+the record. A test target (`returnAckTargetForTest`) takes the item out of
+the accounting entirely, so a test that intercepts acknowledgements never
+sees a release either.
+
+`providerSourceLifecycle` gains only `evidence *sourceAckEvidence`, set at
+creation from the provider's map; a terminal lifecycle has none.
 
 `retryReturnSend` loses `startTime`. Before an attempt and after a failed
-one it evaluates, for socket-owned items with a lifecycle:
+one it calls `abandonSilentSource`, which for a socket-owned item with
+evidence evaluates:
 
-1. If `!self.client.RouteManager().HasActiveTransport()`: store the time
-   into `carrierAbsentNanos` and decide nothing. The provider cannot have
+1. If `!hasActiveTransport()` (`RouteManager.HasActiveTransport()`, or the
+   `hasActiveTransportForTest` seam): store the time into
+   `carrierAbsentNanos` and decide nothing. The provider cannot have
    delivered anything, so the silence is its own.
-2. Else, silence = now − max(`lastAckNanos`, `createdNanos`,
-   `carrierAbsentNanos`). If `0 < ReturnSendAbandonTimeout` and silence is
-   at least it and `!self.backendDegraded()`, call
-   `releaseUnreachableSource` and return false, exactly as today.
+2. Record the stall (`parked`), then silence = now minus the latest of
+   `lastAckNanos`, `outstandingSinceNanos` (or `parkedSinceNanos` when
+   nothing is outstanding; zero silence when neither is set) and
+   `carrierAbsentNanos`. If `0 < ReturnSendAbandonTimeout`, silence is at
+   least it and `!backendDegraded()`, call `releaseUnreachableSource` and
+   return false, exactly as today.
 
 The release path, the readmission, the terminal-during-release handling,
 the backend-degraded guard and the Close join are the reporter's and are
@@ -568,16 +587,28 @@ documentation is rewritten to say what it measures. An item with no
 lifecycle (direct unit fixtures) is never released, which is what
 `releaseUnreachableSource` already does with a nil lifecycle.
 
-Cost: none on the return hot path, the stamp is on the acknowledgement
-path at one monotonic read and one store per acknowledged item, and the
-evaluation runs only on a parked producer's failed attempts, at most once
-per `ReturnSendRetryTimeout` or per `WriteTimeout` when admission waits.
-No retained bytes beyond three words per source lifecycle.
+Cost: none on the return hot path beyond one atomic add per admitted
+socket-owned item; the stamp is on the acknowledgement path at one
+monotonic read and two atomic operations per acknowledged item; the
+evaluation runs only on a parked producer's attempts, at most once per
+`ReturnSendRetryTimeout` or per `WriteTimeout` when admission waits.
+Retained bytes: five words per source that has ever had a lifecycle,
+bounded by `MaxSourceCount` (8,192 unscaled, so at most 320 KiB), which is
+said here because it is new retained state.
 
-Where the release lands, for a dead client: `lastAckNanos` plus 120 s,
-plus at most one attempt's wait (`WriteTimeout`, 30 s) and one retry
-pacing floor, so between 120 and 150 s after the last acknowledgement,
-independent of how many items were admitted in between. That is H7.
+Where the release lands, for a client that was downloading and died: its
+last acknowledgement plus 120 s, plus at most one attempt's wait
+(`WriteTimeout`, 30 s) and one retry pacing floor, so between 120 and 150 s
+after the last acknowledgement, independent of how many items were
+admitted after it. That is H7, and 10.10 shows it measured in process.
+
+A known imprecision, stated: if a queued Pack ever reached no terminal
+disposition, `outstanding` would stay high and silence would be governed
+by `lastAckNanos` alone; that is harmless while the client acknowledges
+anything and would at worst release an idle client once when it next
+parks, after which the record is fresh. Every queued Pack does reach a
+disposition today (the pack lifecycle observer is built on that), and the
+count is dropped with the record on eviction or disconnect.
 
 ### 10.5 Rejected, and why
 
@@ -610,10 +641,20 @@ independent of how many items were admitted in between. That is H7.
 
 ### 10.6 H7
 
-Dissolved rather than fixed: the clock is on the source and is advanced
-only by the destination's acknowledgements, the provider's own carrier
-absence, and the lifecycle's creation. Admission of an item does not touch
-it. Row A3 below pins that.
+Dissolved for the case the report measured, a client that was downloading
+and died: the clock is the source's, advanced only by the destination's
+acknowledgements, and once something is outstanding an admission does not
+touch it. Row A3 pins it: a source acknowledged at t_a, with a slot freed
+and a further item admitted at t_a + 0.6 T, is released at t_a + T on this
+tree and at t_a + 1.6 T on main. Measured in process at 201 ms for
+T = 200 ms (10.10).
+
+One transition does restart the clock, on both trees, and is meant to: a
+source with nothing outstanding whose first parked return is finally
+admitted. Until that admission the provider could deliver nothing, so
+nothing the client failed to acknowledge was ever sent; the silence that
+counts starts when something is outstanding. Row A3b pins that both trees
+give 1.6 T there, so it is not mistaken for a regression.
 
 ### 10.7 An adjacent hazard, found and not fixed here
 
@@ -651,15 +692,19 @@ round.
 The fixture is the reporter's (`newUnreachableSourceTestProvider` with
 `WriteTimeout` 0 and a millisecond retry floor). A test acknowledges an
 admitted item by taking the pack from the installed sequence's `packs`
-channel and invoking `pack.ackRecord().invoke(nil)`, which is the exact
-path a real acknowledgement takes to the lifecycle. T is
+channel and invoking `pack.ackTarget.sendAckResult(0, nil)` (or
+`pack.ackRecord().invoke(nil)`, which reaches the same target), which is
+the exact path a real acknowledgement takes to the source's evidence. The
+target is the source's record, so it stays valid across the source's
+lifecycles. T is
 `ReturnSendAbandonTimeout` at test scale, 50 to 200 ms.
 
 | Row | Test | Pins | Fails on | Regime |
 |---|---|---|---|---|
 | A1 | `TestLiveClientStalledPastAbandonTimeoutIsNotRetired` | one source, an installed sequence with a one-pack buffer; the fixture takes and acknowledges each admitted pack at intervals below T while the next item stays unadmitted for 5 T; no release fires (`afterUnreachableSourceReleaseForTest` never called, no NAT retirement observed); when the fixture resumes draining, the parked producer returns with sent = true | main, which releases at T | in-process |
 | A2 | `TestSlowLiveClientWithManyFlowsIsNotRetired` | eight parked flows of one source; the fixture admits and acknowledges one item per 0.5 T so individual waits exceed 3 T; no release within 6 T; every item is eventually admitted, all with sent = true | main, by 10.1 case 1 | in-process |
-| A3 | `TestReleaseTracksClientDeathNotItemProgress` | a source that is never acknowledged; the fixture admits exactly one item 0.6 T after the lifecycle is created and acknowledges nothing; the release barrier closes within [T, 1.3 T] of creation | main, which releases at 1.6 T | in-process, T = 200 ms |
+| A3 | `TestReleaseTracksClientDeathNotItemProgress` | a client that was downloading and died: item 1 admitted and acknowledged at t_a; item 2 admitted and never acknowledged; item 3 parks; the fixture frees one slot at t_a + 0.6 T so item 3 is admitted and item 4 parks; item 4's producer returns (the release decision cancels the source context) within [T, 1.3 T] of t_a | main, where item 4's own clock starts at t_a + 0.6 T and releases at 1.6 T | in-process, T = 200 ms |
+| A3b | `TestFirstAdmissionAfterAParkedStartRestartsTheClock` | characterisation of 10.6: a source never acknowledged whose first return is parked from t0 and admitted at t0 + 0.6 T, its next return parking; the decision lands at t0 + 1.6 T on both trees | holds on both; documents | in-process |
 | A4 | `TestSilenceIsInadmissibleWithoutACarrier` | a source never acknowledged while the client's route manager holds no transport: no release for 5 T; after `UpdateTransport` registers a stub transport with one route, the release closes within [T, 1.3 T] of registration | main, which releases at T regardless | in-process; needs a stub `Transport` |
 | A5 | `TestRemoteUserNatProviderReleasesUnreachableTcpReturnSource` | the reporter's row, adopted: never acknowledged, released after T, readmitted | holds on both | as before |
 | A6 | `TestNonRetainedAckTimeoutClosesTheSequenceWithRetainedItems` | characterisation of 10.7: a sequence holding one retained item and one non-retained item past `AckTimeout` closes and the retained item's ack record is invoked with the closed error | holds on both; documents | transfer layer, in-process |
@@ -672,3 +717,46 @@ tree against 120 to 210 on main: a slow-client cell, one client shaped to
 that client at least once inside five minutes; this tree completes all 40
 downloads with no release, and the reporter's 40-zombie throughput figure
 on the other clients is unchanged.
+
+### 10.10 Corrected before landing: the evidence is per source, not per lifecycle
+
+The design as first written in 10.4 kept the clock on
+`providerSourceLifecycle`, floored at the lifecycle's creation, and made
+the lifecycle the ack target. A scratch run against it, four shapes with
+`ReturnSendAbandonTimeout` at 60 to 200 ms, gave:
+
+| Shape | Result |
+|---|---|
+| a live client acknowledging its admitted item every T/3 while its next item stays parked for 6 T | **released at T**: failed |
+| a source with no carrier for 5 T, then a carrier | not released, then released 60 ms after the carrier at T = 60 ms: held |
+| two items of one source with a producer held so the lifecycle persists, one admitted at 0.6 T, nothing acknowledged | released at 201 ms for T = 200 ms: held |
+| one flow, no held producer, one admission at 0.6 T | released at 320.8 ms, that is 1.6 T |
+
+The first row is the design's own case and it failed, and the fourth row
+says why: a lifecycle is reclaimed whenever its source has no admitted
+producer, and a single flow's reader has no producer between one item's
+admission and the next item's start, so the acknowledgement of the
+admitted item landed on a reclaimed lifecycle while the next item parked
+under a new one that had seen nothing. The premise "the lifecycle lives
+exactly as long as the provider has producers for the source" was true
+and was not the premise the design needed, which was "as long as the
+provider has anything outstanding for the source". That is the outstanding
+count now on the per-source record, and it is also what makes H7 exact
+rather than approximate: silence is measured from the later of the last
+acknowledgement and the count last rising from zero.
+
+Rerun on the landed design, same shapes plus the H7 shape of row A3:
+
+| Shape | Result |
+|---|---|
+| live client acknowledging while its next item parks 6 T | not released, parked item admitted afterwards with sent = true: held |
+| no carrier for 5 T, then a carrier | released 61 ms after the carrier at T = 60 ms: held |
+| downloading client dies: acknowledged at t_a, further item admitted at t_a + 0.6 T | released at 201 ms after t_a for T = 200 ms: held; main gives 1.6 T |
+| never acknowledged, first return parked from t0 and admitted at 0.6 T | released at 321 ms, 1.6 T, on both trees, by design (10.6) |
+
+The reporter's five rows pass unchanged on the landed design, with the
+fixture holding a carrier explicitly (`hasActiveTransportForTest`) the way
+it already decides the backend state explicitly, because the fixture's
+client registers no transport. The scratch file is not a delivered test;
+its shapes are the rows of 10.9 and a copy is in the scratchpad for the
+test stream.
