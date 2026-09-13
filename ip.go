@@ -478,21 +478,6 @@ func DefaultTcpBufferSettingsWithBufferSize(bufferSize int) *TcpBufferSettings {
 	return tcpBufferSettings
 }
 
-// configureUpstreamTcpConn prepares a connected upstream socket for proxying.
-//
-// The receive buffer is deliberately left to the kernel. The socket is already
-// connected here, so its window clamp was fixed at SYN time from the default
-// buffer (about 64 KB). On Linux an explicit SO_RCVBUF locks receive
-// autotuning, which is the only thing that raises that clamp, so the window
-// advertised to the origin stays at 64 KB for the life of the flow and caps a
-// single download near window/RTT. Autotuning grows it to tcp_rmem's maximum.
-func configureUpstreamTcpConn(tcpConn *net.TCPConn, tcpBufferSettings *TcpBufferSettings) {
-	tcpConn.SetKeepAlive(true)
-	tcpConn.SetNoDelay(true)
-	// the os may silently cap this at system limits.
-	tcpConn.SetWriteBuffer(int(tcpBufferSettings.MaxWindowSize))
-}
-
 // scaledPow2WindowSize scales `maxWindowSize` by the memory budget with a
 // floor of `floorWindowSize`, rounded down to a power of 2 multiple of
 // `minWindowSize` to preserve the `MaxWindowSize` contract (the window
@@ -504,6 +489,29 @@ func scaledPow2WindowSize(maxWindowSize uint32, minWindowSize uint32, floorWindo
 		windowSize *= 2
 	}
 	return windowSize
+}
+
+// Prepares the established upstream socket the provider proxies through. It
+// takes no buffer settings because neither socket buffer may be sized here.
+//
+// The socket is already connected, and on Linux an explicit SO_RCVBUF or
+// SO_SNDBUF on a connected socket locks that direction's autotuning
+// (SOCK_RCVBUF_LOCK / SOCK_SNDBUF_LOCK in the kernel) after clamping the
+// request to net.core.{r,w}mem_max, which on a stock host is 208 KiB against
+// tcp_{r,w}mem maxima in megabytes. The lock therefore pins the buffer below
+// where the kernel would have taken it on its own.
+//
+// Receive is a freeze: the window clamp was fixed at SYN time from the default
+// buffer (about 64 KB) and only autotuning raises it, so a locked receive
+// buffer caps a download near 64 KB per round trip for the life of the flow.
+// Send is a ceiling, the upload mirror: the lock caps the unacknowledged bytes
+// the flow may hold at twice the clamped request, 425,984 on a stock host,
+// instead of letting the buffer track the origin path's bandwidth-delay
+// product up to tcp_wmem's maximum (THROUGHPUTFIX §9). The tunnel window
+// (MaxWindowSize) is a different window and says nothing about that path.
+func configureUpstreamTcpConn(tcpConn *net.TCPConn) {
+	tcpConn.SetKeepAlive(true)
+	tcpConn.SetNoDelay(true)
 }
 
 func DefaultLocalUserNatSettings() *LocalUserNatSettings {
@@ -4807,7 +4815,7 @@ func (self *TcpSequence) Run() {
 
 	defer socket.Close()
 	if tcpConn, ok := socket.(*net.TCPConn); ok {
-		configureUpstreamTcpConn(tcpConn, self.tcpBufferSettings)
+		configureUpstreamTcpConn(tcpConn)
 	}
 
 	self.log.V(2).Infof("[init]receive SYN+ACK\n")

@@ -51,7 +51,7 @@ func TestUpstreamTcpConnLeavesReceiveBufferToAutotuning(t *testing.T) {
 	tcpConn := conn.(*net.TCPConn)
 
 	before := tcpSocketReceiveBufferSize(t, tcpConn)
-	configureUpstreamTcpConn(tcpConn, DefaultTcpBufferSettings())
+	configureUpstreamTcpConn(tcpConn)
 	after := tcpSocketReceiveBufferSize(t, tcpConn)
 
 	if after != before {
@@ -115,7 +115,7 @@ func TestUpstreamTcpConnReceiveBufferGrowsThroughDialPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("upstream dial returned %T, not a TCP connection", socket)
 	}
-	configureUpstreamTcpConn(tcpConn, tcpBufferSettings)
+	configureUpstreamTcpConn(tcpConn)
 
 	before := tcpSocketReceiveBufferSize(t, tcpConn)
 	if err := tcpConn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
