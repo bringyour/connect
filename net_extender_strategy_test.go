@@ -358,7 +358,7 @@ func TestClientStrategyManualExtendersExcludeDiscovery(t *testing.T) {
 		}
 	}
 	// every weighted dialer is an extender while one is configured
-	for dialer := range clientStrategy.dialerWeights() {
+	for dialer := range clientStrategy.dialerWeights(false) {
 		if dialer.extenderConfig == nil {
 			t.Fatal("a manual extender did not exclude the other dialers")
 		}

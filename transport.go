@@ -566,8 +566,18 @@ type PlatformTransportSettings struct {
 	// DnsPumpHost is only the public UDP/53 destination for H3DnsPump. QUIC
 	// authentication and TLS SNI continue to use the platform URL's hostname.
 	// Keeping this explicit avoids deriving an infrastructure hostname from the
-	// packet codec's canonical TLD representation.
+	// packet codec's canonical TLD representation. Empty derives the pump host
+	// from AltUrl instead (L3), since the pump destination is only where the
+	// client's own packets go.
 	DnsPumpHost string
+	// AltUrl, when set, is where the H3, h3dns and h3dnspump carriers send
+	// their packets (L4): the alt url's host replaces the platform url's host
+	// for the dial only, and a port on it pins the carrier. The sni and the
+	// quic authentication stay the platform url's host, which is the connect
+	// name alt serves, and H1 keeps the platform url entirely. Empty keeps
+	// every carrier on the platform host, which is the behavior of every
+	// space with no alt deployment.
+	AltUrl string
 
 	// FIXME
 	DnsTlds        [][]byte
@@ -656,7 +666,7 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		// MaxConnectDelay:      1 * time.Second,
 		ProtocolVersion: DefaultProtocolVersion,
 		H3Port:          443,
-		DnsPort:         53,
+		DnsPort:         DefaultDnsPort,
 		DnsPumpHost:     DefaultDnsPumpHost,
 		// FIXME
 		DnsTlds: [][]byte{[]byte("ur.xyz.")},

@@ -119,7 +119,7 @@ func parallelEvalWithSuccessfulHttpLoser(
 ) *evalResult {
 	releaseLoser := make(chan struct{})
 	loserEvalReturned := make(chan struct{})
-	return strategy.parallelEval(context.Background(), func(
+	return strategy.parallelEval(context.Background(), false, func(
 		_ context.Context,
 		dialer *clientDialer,
 	) *evalResult {
@@ -321,7 +321,7 @@ func TestParallelEvalReservesRequestBudgetFromStalePreferredDialer(t *testing.T)
 		return &evalResult{}
 	}
 
-	result := strategy.parallelEval(context.Background(), eval)
+	result := strategy.parallelEval(context.Background(), false, eval)
 	if result == nil || result.err != nil {
 		t.Fatalf("healthy fallback result = %#v", result)
 	}
@@ -378,7 +378,7 @@ func TestParallelEvalCancellationJoinsAttemptWorker(t *testing.T) {
 	defer requestCancel()
 	result := make(chan *evalResult, 1)
 	go func() {
-		result <- strategy.parallelEval(requestCtx, func(evalCtx context.Context, _ *clientDialer) *evalResult {
+		result <- strategy.parallelEval(requestCtx, false, func(evalCtx context.Context, _ *clientDialer) *evalResult {
 			close(attemptEntered)
 			<-evalCtx.Done()
 			close(attemptCanceled)
