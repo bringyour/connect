@@ -81,6 +81,8 @@ func main() {
 		err = runMemsteady(args)
 	case "memsteady-report":
 		err = memsteadyReport(args)
+	case "memsteady-attribute":
+		err = memsteadyAttribute(args)
 	case "memsteady-series":
 		err = runMemsteadySeries(args)
 	case "build-item":
@@ -96,7 +98,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|defer-timeout-resend|lane-rule|heap-profile|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-series|build-item> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: flightgate-devices <preflight|profile|install|load-build|login|provide|connect-peer|disconnect|status|allow-direct|defer-timeout-resend|lane-rule|heap-profile|run|campaign|report|series-report|memsteady|memsteady-report|memsteady-attribute|memsteady-series|build-item> [flags]")
 }
 
 // role maps a serial to its opaque role, refusing anything off the allowlist.

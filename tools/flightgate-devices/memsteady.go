@@ -503,3 +503,70 @@ func runMemsteadySeries(args []string) error {
 	}
 	return nil
 }
+
+// memsteadyAttribute prints, per block and per side, the quiet window's
+// percentiles and what the worst sample held. The 24 MiB ceiling is a hard
+// product limit and the blocks sit within a fraction of a MiB of it, so the
+// question whoever picks this up will ask is which structure holds the bytes.
+// The answer this readout gives is that the live heap is only a third of the
+// envelope and tracks retained packet-pool ownership, while the rest is Go
+// runtime structure no budget constant guards.
+//
+// Only the fields the periodic sample carries are shown. The split of the
+// envelope into heap slack, goroutine stacks and GC metadata comes from the
+// runtime's memory classes, which are logged with the heap profile rather
+// than every interval, so read those from the "classes=" field of a
+// heap-profile line in the same block.
+func memsteadyAttribute(args []string) error {
+	fs := flag.NewFlagSet("memsteady-attribute", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("memsteady-attribute needs one or more block directories")
+	}
+	fmt.Printf("%-16s %-9s %7s %7s %7s %9s %7s %9s %8s %9s\n",
+		"block", "side", "p50", "p95", "worst", "headroom", "live", "poolMiB", "poolN", "goroutines")
+	for _, dir := range fs.Args() {
+		var meta memsteadyMeta
+		b, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+		if err != nil {
+			continue
+		}
+		if err := json.Unmarshal(b, &meta); err != nil {
+			continue
+		}
+		for _, side := range []string{"client", "provider"} {
+			samples, _, _ := memsteadySamples(filepath.Join(dir, side+".logcat"))
+			quiet := []memsteadySample{}
+			for _, sample := range samples {
+				if meta.QuietStart <= sample.Millis && sample.Millis <= meta.EndMillis {
+					quiet = append(quiet, sample)
+				}
+			}
+			if len(quiet) == 0 {
+				continue
+			}
+			values := []float64{}
+			var peak memsteadySample
+			worst := 0.0
+			for _, sample := range quiet {
+				mib := num(sample.Payload, "go_total_bytes") / 1048576
+				values = append(values, mib)
+				if worst < mib {
+					worst, peak = mib, sample
+				}
+			}
+			sort.Float64s(values)
+			fmt.Printf("%-16s %-9s %7.2f %7.2f %7.2f %+9.2f %7.2f %9.2f %8.0f %9.0f\n",
+				filepath.Base(dir), side,
+				percentile(values, 0.5), percentile(values, 0.95), worst,
+				float64(memsteadyTargetBytes)/1048576-worst,
+				num(peak.Payload, "go_live_bytes")/1048576,
+				num(peak.Payload, "packet_pool_outstanding_bytes")/1048576,
+				num(peak.Payload, "pool_outstanding"),
+				num(peak.Payload, "goroutines"))
+		}
+	}
+	return nil
+}
