@@ -759,12 +759,12 @@ func TestExtenderClientAddressIp(t *testing.T) {
 		clientAddress string
 		want          string
 	}{
-		{"198.51.100.7:41001", "198.51.100.7"},
-		{"198.51.100.7", "198.51.100.7"},
-		{"[2001:db8::7]:41001", "2001:db8::7"},
-		{"2001:db8::7", "2001:db8::7"},
-		{"::ffff:198.51.100.7", "198.51.100.7"},
-		{"", ""},
+		{clientAddress: "198.51.100.7:41001", want: "198.51.100.7"},
+		{clientAddress: "198.51.100.7", want: "198.51.100.7"},
+		{clientAddress: "[2001:db8::7]:41001", want: "2001:db8::7"},
+		{clientAddress: "2001:db8::7", want: "2001:db8::7"},
+		{clientAddress: "::ffff:198.51.100.7", want: "198.51.100.7"},
+		{clientAddress: "", want: ""},
 	}
 	for _, c := range cases {
 		if got := extenderClientAddressIp(c.clientAddress); got != c.want {

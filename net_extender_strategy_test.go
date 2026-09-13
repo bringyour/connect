@@ -373,6 +373,23 @@ func TestClientStrategyManualExtendersExcludeDiscovery(t *testing.T) {
 	}
 }
 
+// Runs the gate and requires it to return. With an hour configured as the
+// wait, a gate that waited would not return inside this bound, so "it returned"
+// is the whole proof -- no elapsed time is measured (E4).
+func requireStartupGateReturns(t *testing.T, clientStrategy *ClientStrategy, what string) {
+	t.Helper()
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		clientStrategy.waitForExtenderInitialSample(context.Background())
+	}()
+	select {
+	case <-released:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the gate waited %s", what)
+	}
+}
+
 // The startup gate waits only while a first sample is in flight and the
 // directory has nothing usable, for at most its timeout (E4).
 func TestClientStrategyStartupGateWaitsAtMostTheTimeout(t *testing.T) {
@@ -381,16 +398,10 @@ func TestClientStrategyStartupGateWaitsAtMostTheTimeout(t *testing.T) {
 		settings.ExtenderInitialSampleTimeout = 200 * time.Millisecond
 	})
 
-	// no network client: nothing will ever complete, so nothing waits
-	start := time.Now()
-	clientStrategy.waitForExtenderInitialSample(context.Background())
-	if 50*time.Millisecond <= time.Since(start) {
-		t.Fatal("the gate waited with no network client running")
-	}
-
-	// a first sample in flight with an empty directory waits out the timeout
+	// a first sample in flight with an empty directory waits out the timeout,
+	// which is the behavior under test rather than a proof by elapsed time
 	directory.SetInitialSamplePending()
-	start = time.Now()
+	start := time.Now()
 	clientStrategy.waitForExtenderInitialSample(context.Background())
 	elapsed := time.Since(start)
 	if elapsed < 200*time.Millisecond {
@@ -401,13 +412,23 @@ func TestClientStrategyStartupGateWaitsAtMostTheTimeout(t *testing.T) {
 	}
 }
 
+// With no network client running there is no first attempt to wait for, so the
+// gate returns whatever its timeout is (E4).
+func TestClientStrategyStartupGateSkipsWithNoNetworkClient(t *testing.T) {
+	clock := newTestClock()
+	clientStrategy, _, _ := newTestExtenderStrategy(t, clock, func(settings *ClientStrategySettings) {
+		settings.ExtenderInitialSampleTimeout = time.Hour
+	})
+	requireStartupGateReturns(t, clientStrategy, "with no network client running")
+}
+
 // The gate returns as soon as the first attempt completes, and never waits
 // once the directory has something to dial (E4).
 func TestClientStrategyStartupGateReleasesOnTheFirstAttempt(t *testing.T) {
 	clock := newTestClock()
 	clientStrategy, directory, _ := newTestExtenderStrategy(t, clock, func(settings *ClientStrategySettings) {
 		// long enough that only the release below can end the wait
-		settings.ExtenderInitialSampleTimeout = 60 * time.Second
+		settings.ExtenderInitialSampleTimeout = time.Hour
 	})
 	directory.SetInitialSamplePending()
 
@@ -424,25 +445,40 @@ func TestClientStrategyStartupGateReleasesOnTheFirstAttempt(t *testing.T) {
 	}
 
 	// a completed attempt never waits again
-	start := time.Now()
-	clientStrategy.waitForExtenderInitialSample(context.Background())
-	if 50*time.Millisecond <= time.Since(start) {
-		t.Fatal("the gate waited after the first attempt completed")
-	}
+	requireStartupGateReturns(t, clientStrategy, "after the first attempt completed")
 }
 
 // A stored directory never waits: there is already something to dial (E4).
 func TestClientStrategyStartupGateSkipsWithAStoredDirectory(t *testing.T) {
 	clock := newTestClock()
 	clientStrategy, directory, _ := newTestExtenderStrategy(t, clock, func(settings *ClientStrategySettings) {
-		settings.ExtenderInitialSampleTimeout = 60 * time.Second
+		settings.ExtenderInitialSampleTimeout = time.Hour
 	})
 	directory.SetInitialSamplePending()
 	directory.AddBootstrap(netip.MustParseAddr("192.0.2.107"), ExtenderSourceDns)
 
-	start := time.Now()
-	clientStrategy.waitForExtenderInitialSample(context.Background())
-	if 50*time.Millisecond <= time.Since(start) {
-		t.Fatal("the gate waited with a usable directory")
+	requireStartupGateReturns(t, clientStrategy, "with a usable directory")
+}
+
+// A gate whose caller is already done returns at once rather than holding the
+// dial behind a sample nobody is waiting for any more (E4).
+func TestClientStrategyStartupGateReleasesOnTheCallerContext(t *testing.T) {
+	clock := newTestClock()
+	clientStrategy, directory, _ := newTestExtenderStrategy(t, clock, func(settings *ClientStrategySettings) {
+		settings.ExtenderInitialSampleTimeout = time.Hour
+	})
+	directory.SetInitialSamplePending()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		clientStrategy.waitForExtenderInitialSample(ctx)
+	}()
+	cancel()
+	select {
+	case <-released:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the gate outlived its caller")
 	}
 }

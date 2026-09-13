@@ -100,12 +100,10 @@ func TestSetProviderExtenderIpsUpdatesInPlace(t *testing.T) {
 	if monitor.SetProviderExtenderIps(clientId, []netip.Addr{extenderIp}) {
 		t.Error("an unchanged set reported a change")
 	}
-	select {
-	case ips := <-dispatched:
-		t.Fatalf("a no-op rewrite dispatched %v", ips)
-	case <-time.After(100 * time.Millisecond):
-	}
 
+	// the no-op is proved by ordering rather than by waiting on it: the very
+	// next real change is made now, and the first thing the callback sees must
+	// be that change. A no-op that had dispatched would be delivered first.
 	if !monitor.SetProviderExtenderIps(clientId, []netip.Addr{extenderIp, otherExtenderIp}) {
 		t.Fatal("a changed set reported no change")
 	}
@@ -117,10 +115,31 @@ func TestSetProviderExtenderIpsUpdatesInPlace(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the change was not dispatched")
 	}
+
+	// and a second change is delivered as itself rather than as a repeat of
+	// the first
+	thirdExtenderIp := netip.MustParseAddr("198.51.100.120")
+	if !monitor.SetProviderExtenderIps(clientId, []netip.Addr{thirdExtenderIp}) {
+		t.Fatal("the second change reported no change")
+	}
 	select {
 	case ips := <-dispatched:
-		t.Fatalf("one change dispatched twice, second = %v", ips)
-	case <-time.After(100 * time.Millisecond):
+		if !slices.Equal(ips, []netip.Addr{thirdExtenderIp}) {
+			t.Fatalf("dispatched %v, want the second change", ips)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second change was not dispatched")
+	}
+	if !monitor.SetProviderExtenderIps(clientId, []netip.Addr{extenderIp, otherExtenderIp}) {
+		t.Fatal("returning to the earlier set reported no change")
+	}
+	select {
+	case ips := <-dispatched:
+		if !slices.Equal(ips, []netip.Addr{extenderIp, otherExtenderIp}) {
+			t.Fatalf("dispatched %v, want both addresses again", ips)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the return was not dispatched")
 	}
 
 	updated := monitor.ProviderEvents()[clientId]

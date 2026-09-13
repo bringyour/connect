@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -43,6 +44,18 @@ func newTestExtenderNetworkClient(
 	configure func(settings *ExtenderNetworkClientSettings),
 ) (*ExtenderNetworkClient, *ExtenderDirectory, ed25519.PrivateKey) {
 	t.Helper()
+	return newTestExtenderNetworkClientWithDirectory(t, clock, nil, configure)
+}
+
+// The same with the directory policy configurable, for a test that needs the
+// failure evidence of every pass rather than one hold.
+func newTestExtenderNetworkClientWithDirectory(
+	t *testing.T,
+	clock *testClock,
+	configureDirectory func(settings *ExtenderDirectorySettings),
+	configure func(settings *ExtenderNetworkClientSettings),
+) (*ExtenderNetworkClient, *ExtenderDirectory, ed25519.PrivateKey) {
+	t.Helper()
 	rootSeed, err := NewExtenderKeySeed()
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +69,9 @@ func newTestExtenderNetworkClient(
 	directorySettings := DefaultExtenderDirectorySettings()
 	directorySettings.Now = clock.Now
 	directorySettings.NetworkHosts = []string{testExtenderNetworkHost}
+	if configureDirectory != nil {
+		configureDirectory(directorySettings)
+	}
 	directory := NewExtenderDirectory(ctx, directorySettings)
 
 	settings := DefaultExtenderNetworkClientSettings()
@@ -125,17 +141,12 @@ func TestExtenderNetworkClientBootstrapsAndAppliesHelloRootKeys(t *testing.T) {
 		t.Fatal("the bootstrap never resolved")
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if testDirectoryKnown(directory, netip.MustParseAddr("192.0.2.200")) &&
-			testDirectoryKnown(directory, netip.MustParseAddr("2001:db8::200")) {
-			break
-		}
-		if deadline.Before(time.Now()) {
-			t.Fatal("the bootstrap addresses never reached the directory")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// the change monitor is the barrier; the pass applies the hello keys before
+	// it adds the bootstrap addresses, so these landing proves the keys did
+	waitForDirectoryAddresses(t, directory, map[string]string{
+		"192.0.2.200":   ExtenderSourceDns,
+		"2001:db8::200": ExtenderSourceDns,
+	})
 	entry := testDirectoryEntry(t, directory, netip.MustParseAddr("192.0.2.200"))
 	if entry.Source != ExtenderSourceDns {
 		t.Fatalf("source = %s, expected dns", entry.Source)
@@ -145,35 +156,28 @@ func TestExtenderNetworkClientBootstrapsAndAppliesHelloRootKeys(t *testing.T) {
 	}
 
 	// the hello keys are the anchor now, so a record signed by them applies
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		record := signTestRecord(
-			t,
-			rootPrivateKey,
-			newTestExtenderKey(t),
-			clock.Now(),
-			clock.Now().Add(14*24*time.Hour),
-			testExtenderAddress("192.0.2.201"),
-		)
-		if _, err := directory.ApplyRecord(record, ExtenderSourceFeed); err == nil {
-			break
-		}
-		if deadline.Before(time.Now()) {
-			t.Fatal("the hello root keys were never applied")
-		}
-		time.Sleep(time.Millisecond)
+	record := signTestRecord(
+		t,
+		rootPrivateKey,
+		newTestExtenderKey(t),
+		clock.Now(),
+		clock.Now().Add(14*24*time.Hour),
+		testExtenderAddress("192.0.2.201"),
+	)
+	if _, err := directory.ApplyRecord(record, ExtenderSourceFeed); err != nil {
+		t.Fatalf("the hello root keys were never applied: %v", err)
 	}
 
 	// the same answer carries the operator's gossip identity, which the member
 	// role's node dials (C6, D3)
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		if networkClient.Status().GossipPeerId == testExtenderGossipPeerId {
-			break
-		}
-		if deadline.Before(time.Now()) {
-			t.Fatalf("the gossip peer id never reached the status")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitForExtenderNetworkStatus(
+		t,
+		networkClient,
+		"the operator gossip peer id",
+		func(status ExtenderNetworkClientStatus) bool {
+			return status.GossipPeerId == testExtenderGossipPeerId
+		},
+	)
 }
 
 // The first attempt is marked complete even when nothing answers, so the
@@ -230,51 +234,68 @@ func TestExtenderNetworkClientRebootstrapsBelowTheLowWaterMark(t *testing.T) {
 
 // Above the low-water mark the bootstrap does not repeat until the
 // re-bootstrap period, however many passes the loop makes (E3).
+//
+// The pass barrier is the directory's change counter: this fixture never holds
+// a failed address, so every pass dials every candidate again and records the
+// failures, and waiting for that counter proves the passes ran without timing
+// deciding it.
 func TestExtenderNetworkClientDoesNotRebootstrapAboveTheLowWaterMark(t *testing.T) {
 	clock := newTestClock()
-	resolved := make(chan struct{}, 64)
-	helloCalls := make(chan struct{}, 64)
-	_, _, _ = newTestExtenderNetworkClient(t, clock, func(settings *ExtenderNetworkClientSettings) {
-		settings.LowWaterCount = 2
-		settings.ResolveDns = func(ctx context.Context, name string) ([]netip.Addr, error) {
-			select {
-			case resolved <- struct{}{}:
-			default:
+	var resolveCount atomic.Int64
+	var helloCount atomic.Int64
+	_, directory, _ := newTestExtenderNetworkClientWithDirectory(
+		t,
+		clock,
+		func(settings *ExtenderDirectorySettings) {
+			// a failure never holds, so the next pass dials the same addresses
+			settings.HoldTimeout = 0
+			settings.MaxHoldTimeout = 0
+		},
+		func(settings *ExtenderNetworkClientSettings) {
+			settings.LowWaterCount = 2
+			settings.ResolveDns = func(ctx context.Context, name string) ([]netip.Addr, error) {
+				resolveCount.Add(1)
+				return []netip.Addr{
+					netip.MustParseAddr("192.0.2.220"),
+					netip.MustParseAddr("192.0.2.221"),
+					netip.MustParseAddr("192.0.2.222"),
+				}, nil
 			}
-			return []netip.Addr{
-				netip.MustParseAddr("192.0.2.220"),
-				netip.MustParseAddr("192.0.2.221"),
-				netip.MustParseAddr("192.0.2.222"),
-			}, nil
-		}
-		settings.Hello = func(ctx context.Context) (*ExtenderHelloResult, error) {
-			select {
-			case helloCalls <- struct{}{}:
-			default:
+			settings.Hello = func(ctx context.Context) (*ExtenderHelloResult, error) {
+				helloCount.Add(1)
+				return nil, nil
 			}
-			return nil, nil
-		}
-	})
+		},
+	)
 
-	select {
-	case <-resolved:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bootstrap never ran")
+	// the bootstrap addresses are the first changes; then every pass records
+	// one failure per candidate and carrier, so this is several whole passes
+	waitForDirectoryChanges(t, directory, 48)
+
+	if count := resolveCount.Load(); count != 1 {
+		t.Fatalf("the bootstrap ran %d times, expected once above the low-water mark", count)
 	}
-	select {
-	case <-helloCalls:
-	case <-time.After(10 * time.Second):
-		t.Fatal("hello never ran")
+	if count := helloCount.Load(); count != 1 {
+		t.Fatalf("hello ran %d times, expected once before its period", count)
 	}
-	// the loop keeps passing -- every pass fails its sample against the dead
-	// dialer -- but neither the bootstrap nor hello is due again
-	for range 4 {
+}
+
+// Waits until the directory's change counter has advanced by count. Every
+// recorded dial outcome bumps it, so it is a pass barrier that needs no sleep.
+func waitForDirectoryChanges(t *testing.T, directory *ExtenderDirectory, count uint64) {
+	t.Helper()
+	start, _ := directory.ChangeMonitor().Get()
+	timeout := time.After(30 * time.Second)
+	for {
+		version, change := directory.ChangeMonitor().Get()
+		if count <= version-start {
+			return
+		}
 		select {
-		case <-helloCalls:
-			t.Fatal("hello repeated before its period")
-		case <-resolved:
-			t.Fatal("the bootstrap repeated above the low-water mark")
-		case <-time.After(20 * time.Millisecond):
+		case <-change:
+		case <-timeout:
+			t.Fatalf(
+				"the directory changed %d times, expected %d", version-start, count)
 		}
 	}
 }
