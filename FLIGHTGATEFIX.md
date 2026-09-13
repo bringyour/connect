@@ -3836,7 +3836,120 @@ twenty repetitions, and still showed zero storm runs
 (`flightgate-fixlane-20260913` stage 2), so the result carries forward
 across the later work rather than belonging to one commit.
 
-### 36.3 The forced-direct low-bar cells, stated before and after
+### 36.3 What the submitted PR costs, and what of it is still live
+
+The subsections around this one measure what the program added against the
+submitted PR as control. This one measures the control itself, because the
+PR is now merged upstream on main: its regressions are in shipping code
+rather than in a candidate, and this document is the only place they are
+traced to a mechanism.
+
+Read one thing off the top. The wedge described in §33 is not the PR's. It
+belongs to a setting this program added and ships off, and attributing it
+here would be wrong.
+
+#### Finding 3: the exchange path on a constrained link
+
+The largest body of evidence. Low-bar matrix, mobile surrogate, the merged
+PR against `92a37c2`'s parent as control, five repetitions, paired per
+seed. Provenance `flightgate-lowbar-20260911`.
+
+| Cell | stock | merged | merged − stock, per seed | seeds merged ahead |
+| --- | ---: | ---: | --- | ---: |
+| exchange-auto / 1m-down-250k-up | 132.5 | 116.6 | −21.5, −9.8, −8.9, −25.0, −7.4 | 0 of 5 |
+| exchange-auto / 5m-down-1m-up | 342.7 | 302.6 | −15.5, +3.0, −9.5, −14.6, −8.4 | 1 of 5 |
+| exchange-auto / 256k-down-64k-up | 24.1 | 29.4 | +48.2, +37.5, +19.0 | 3 of 3 |
+
+Medians are kbit/s over correct runs. So the PR is 7 to 25 per cent slower
+on `1m-down-250k-up` with every seed slower, 8 to 16 per cent slower on
+`5m-down-1m-up` on four of five, and 19 to 48 per cent faster on
+`256k-down-64k-up`, where stock also failed two runs. `exchange-h3` and
+`p2p-fast` are indistinguishable.
+
+What confidence five repetitions carry, stated rather than assumed. The
+A/A puts the exchange low-bar group's paired standard deviations at 2.7 to
+35.0 per cent, which needs 1 to 96 repetitions for a 10 per cent effect
+depending on the cell. So the magnitudes above are not reliable. What
+survives at this sample size is the sign, and only on the first row: five
+of five seeds in the same direction is a two-sided sign test of 0.0625,
+which is suggestive. Four of five, the second row, is 0.375 and is not
+evidence on its own. Quote the 7-to-25 range as a range observed in five
+runs, never as the size of the regression.
+
+The mechanism is the one §13.7 named in advance, which is why this reads
+as more than a slow cell: F1's route-wide `reliableRouteAvailable` rule
+overflows a full datagram flight onto H1 when H1 and hybrid H3 are both
+active on a constrained link. The predicted regime and the regressing
+cells are the same regime.
+
+Status: open. The named remedy is G1, a narrower rule that overflows only
+when the reliable route is a different transport from the unreliable one.
+It was specified, it was never built, and no later design in this program
+touches it. It is owed to the reporter and it is live on main.
+
+#### The device confirmation of the same mechanism
+
+Twelve interleaved runs on the two physical radios with direct mode forced
+off, so the exchange path is isolated. In the three pairs where the relay
+path was healthy, stock beat the PR by 1.5, 8.2 and 18.2 per cent, mean
+9.3, with a consistent sign. The other three pairs are unusable because the
+radio rather than the tunnel was the limit.
+
+Provenance note: this is the device stream's result as reported, and unlike
+every other number in §36 it is not in `tests/PERFVAR-MEASUREMENTS.md`. A
+reader wanting the run records should ask that stream rather than look in
+the ledger.
+
+Three usable pairs is a small sample, and a consistent sign across three is
+worth little alone. Its weight comes from agreeing, on real radios, with
+the simulator result above and with the mechanism §13.7 predicted before
+either was run.
+
+#### The acknowledgement attribution defect
+
+A correctness defect rather than a performance one, and the metric contract
+makes it fail by construction.
+
+The PR records the carrier of the Pack being answered rather than the
+carrier the acknowledgement actually left on. An acknowledgement that takes
+the H1 priority companion is therefore filed under the Pack's lane, and the
+reply lane is judged by a counter that cannot see it.
+`TestMetricAckWriteIsAttributedToTheCarrierItLeftOn` drives exactly that
+write and reads the attribution back.
+
+It has a measurement consequence as well as a behavioural one: the
+`ack_writes_h1` column read zero in every campaign this program ran before
+the fix. Two separate causes produced that zero and both are worth
+recording, because fixing one would not have revealed the other. The PR
+misfiles the acknowledgement. Independently, the campaign harness's own
+route wrapper did not forward `TransportType`, so the exchange lane was
+labelled `unknown` rather than `h1`; the run records of every pre-fix
+campaign show this directly, for example `{'unknown': 7802}` where the
+post-fix arms show `{'h1': 1511}`. The harness half was mine and is fixed;
+the readout now folds the two labels so the older campaigns stay readable.
+
+#### The storm behaviour
+
+Stated plainly because it is the PR's own recovery path. On the two
+`tcp-parallel` cells at twenty repetitions, the PR produces storm runs,
+defined as a run writing more than 200 whole-window timeouts, at 2 of 20
+and 3 of 20, with worst runs of 2,183 and 3,902 timeout writes. The shipped
+tree produces none in 40. The numbers are the same ones tabled in §36.2,
+read from the control's side.
+
+This is what the deferred retransmit and its backoff remove, and it is the
+clearest case in the program where an addition pays for itself: the
+mechanism was built for exactly this and the tail moves by two orders of
+magnitude.
+
+One caution carried from the A/A. A storm run is not rare in a null tree
+either: two identical trees produced 25 storm runs each out of 155 correct
+runs on the mixed cells. What the twenty-repetition comparison establishes
+is the difference between 5 of 40 and 0 of 40 on these two cells, at a
+sample size chosen because the A/A said five repetitions could not resolve
+a one-in-five rate.
+
+### 36.4 The forced-direct low-bar cells, stated before and after
 
 Provenance `flightgate-175-20260912`, low-bar stage, twenty repetitions per
 arm. These are the cells that matter most in this program's history,
@@ -3859,7 +3972,7 @@ The same three cells were measured again on `eeca11f`, both lane-rule
 states, twenty repetitions each, and came back indistinguishable there too,
 with no run over 100 seconds in 120 scenario-runs.
 
-### 36.4 The exchange low-bar cells
+### 36.5 The exchange low-bar cells
 
 Same provenance and sample size.
 
@@ -3878,7 +3991,7 @@ is the recovery traffic: halved on `5m-down-1m-up`, 17,965 writes against
 8,607, and down 38 per cent on `1m-down-250k-up`. This program has twice
 been burned by quoting a marginal rate without its caveat.
 
-### 36.5 The deferred retransmit on the shipped tree
+### 36.6 The deferred retransmit on the shipped tree
 
 Provenance `flightgate-175-20260912` stage 2. The shipped arm only,
 `mixed-relay-queue-inflation-3s`, `tcp`, download, five runs per state.
@@ -3899,7 +4012,7 @@ five still collapses on the relay-only cell with the defer on, to 3.3
 Mbit/s against 13.1 for the same seed with it off; four of five are 15.1 to
 16.1. The collapsing seed is the residue the later rounds chased.
 
-### 36.6 The mixed-route cells on the corrected primary
+### 36.7 The mixed-route cells on the corrected primary
 
 Read this table for its method as much as its numbers, and read its
 provenance caveat first.
@@ -3936,7 +4049,7 @@ And then the A/A retires most of that too: on those same cells two
 identical trees produced total-recovery-write ratios of 0.07, 3.4, 83 and
 495, so a 9-to-599 or 30-to-772 change at five repetitions is not evidence.
 
-### 36.7 The device series, the only evidence from real hardware
+### 36.8 The device series, the only evidence from real hardware
 
 Pixel 8 Pro and Galaxy S24 Ultra pinned to each other as network peers,
 identical diagnostic build, four-stream download, twelve 15-second windows
@@ -3969,7 +4082,7 @@ and 0 to 234 gap resends, but still 1,000 to 17,000 whole-window timeout
 resends per run, which is direct device evidence that the timeout machinery
 misfires on the relay lane alone.
 
-### 36.8 The A/A calibration, and the verdicts it retires
+### 36.9 The A/A calibration, and the verdicts it retires
 
 This subsection is load-bearing. Without it a reader will quote
 five-repetition per-cell verdicts from earlier sections that do not mean
@@ -4002,7 +4115,7 @@ all cells. For a storm rate rather than a median, about 20 repetitions
 separate "no storms" from one in five, and about 60 separate 20 per cent
 from 5 per cent.
 
-### 36.9 What ships off, and why
+### 36.10 What ships off, and why
 
 Two mechanisms are implemented, tested and disabled. Neither is disabled
 for lack of evidence; each has a measurement against it.
@@ -4032,7 +4145,7 @@ holds the resend queue below its budget as designed but costs about twice
 the transfer time in every arm and is inert on the arm its own design calls
 the target case.
 
-### 36.10 The resend ceiling is eight seconds, not two
+### 36.11 The resend ceiling is eight seconds, not two
 
 This corrects a figure that appears in earlier sections and that was also
 stated wrongly to the user.
@@ -4059,7 +4172,7 @@ where the 2 s floor was binding. The conclusion that survives is narrower
 and still worth acting on, that the relay routinely stalls for longer than
 the sender's timer will ever wait once the floor binds.
 
-### 36.11 Not yet measured
+### 36.12 Not yet measured
 
 Three things are outstanding and this section is not complete without
 saying so.
@@ -4074,7 +4187,7 @@ which is the proof-chain signature, but the sample is partial.
 
 The clean re-run of the forced-direct rule-off block. Two short in-process
 test runs overlapped three of its twenty repetitions, which breaks the
-host-idle rule this program measures under. The verdict in §36.3 does not
+host-idle rule this program measures under. The verdict in §36.4 does not
 turn on those three, but the block is being re-run and the verdict should
 be re-read against it.
 
@@ -4083,7 +4196,7 @@ run yet. Connect main `b8f72dd` has had a build check and a reading of the
 affected tests but no test run; the server merge has not been made. Both
 are queued behind the campaign.
 
-### 36.12 The deterministic tests this program added
+### 36.13 The deterministic tests this program added
 
 Counted on connect main `b8f72dd`: 26 files matching `flight_gate_*_test.go`
 carrying 103 test functions and 3 benchmarks. Seven of those files, holding
