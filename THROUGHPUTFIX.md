@@ -391,3 +391,284 @@ The measurement that calls this fixed: the upload cell of §9.2 at 50 ms
 origin RTT with stock `wmem_max`, four repetitions per arm, main against
 this tree, with `ss -tmi` on the provider's upstream socket confirming that
 the `skmem` `tb` value grows on this tree and stays at 425,984 on main.
+
+## 10. The abandon signal: what the provider can know about a silent client, and what it may decide on
+
+Design, 2026-09-13. H4 and H7 together, because H7 dissolves once the
+quantity is per source. Read with the previous program's rule in hand: an
+estimate may pace but never decide. Elapsed time cannot distinguish a dead
+client from a live one that has been unreachable for exactly that long, so
+whatever this section builds is still a decision on an estimate; what it
+changes is the quantity the estimate is taken over, the scope it is taken
+at, and when it is admissible at all.
+
+### 10.1 What the reporter's clock measures
+
+`retryReturnSend` takes `startTime` when it is entered, once per item, and
+releases the source when `time.Since(startTime)` reaches
+`ReturnSendAbandonTimeout` after a failed attempt. It measures "this item
+has not been admitted for 120 s". Admission fails when the destination's
+send sequence cannot accept a Pack: its resend queue is at its byte bound
+(`ResendQueueMaxByteCount`, 2 MiB per lane, or the shared budget's floor on
+an sdk-hosted provider) or its pack channel is full. That is a fact about
+the occupancy of the provider's own queue, and three things other than a
+dead client hold it for 120 s:
+
+1. A live client that acknowledges slowly, with several flows parked.
+   `acquirePackAdmission` waits on a broadcast notify and takes no queue
+   order, so every parked flow of the source wakes on each freed slot and
+   one wins. A slot frees when the client acknowledges one item, at most
+   `providerReturnBatchMaxBytes`, 24 KiB. With N flows parked and a client
+   acknowledging R bytes per second, the mean wait per flow is
+   N × 24 KiB / R, and with no ordering the tail is longer. At N = 40 the
+   mean alone passes 120 s below R ≈ 8 KB/s, about 65 kb/s: a phone on a
+   poor link with a busy page. Main releases every flow of that client and
+   resets its connections, and repeats each time it reconnects and parks.
+2. A freed slot restarts the clock for the flow that won it. That is H7,
+   which the report measured as release trailing the kill by 120 to 210 s;
+   under the same random admission it is not bounded at 210.
+3. The provider's own carrier being down, or the exchange leg stalled:
+   every source stalls, every source is released at 120 s, and every
+   client's connections reset when the carrier returns.
+
+And the case the plan named: a live client that acknowledges nothing for
+longer than the timeout.
+
+### 10.2 What facts exist, checked in the source
+
+I looked for something the provider can ask that answers "is this client
+gone" with a fact. Three candidates, two falsified.
+
+The platform's Reliability verdict. §2 of this document treats it as the
+platform's answer to "is the destination active". In `connect_controller.go`
+`contractDestinationActive` tests `model.NetworkClientLifecycle` for
+`ActiveTop`, `ActiveDerived` or `control`, and `subscription_model.go`
+reads that from `network_client.active`. That column is the identity's
+lifecycle, whether the client has been removed or its derived identity
+retired; a phone that lost signal keeps it. So a contract request for a
+dropped client is granted, not refused, and a probe on it cannot detect
+death. **The "ask the platform" design is falsified before it cost a
+campaign**, and it would also have been wrong on success: the provider's
+`contractStatus` path makes a Reliability source terminal for the provider
+generation, which is right for a retired identity and wrong for a client
+that comes back.
+
+Network-peer disconnect markers. `NetworkPeersUpdate.disconnect_time` is
+platform presence, carried on the control path, and the provider already
+handles it in `retireDisconnectedSenders`, but it exists only for same-
+network peers, it says "recently disconnected" rather than "gone", and the
+provider only purges policy state on it. It is the shape the follow-up in
+10.8 generalises, not a signal available today.
+
+Acknowledgements. Every socket-owned return item the provider admits
+carries an ack record, and `sendAckRecord.invoke(nil)` fires when the
+destination acknowledges it. The receive side re-acknowledges a resent item
+it already holds, cumulatively for one below its head
+(`ReceiveSequence`: "this item is a resend of a previous item", `sendAck`)
+and selectively for one it can queue, so a reachable client acknowledges
+every resend of an item it can accept, and the provider resends its oldest
+outstanding item at least every `MaxResendInterval`, 8 s. A client that is
+gone acknowledges nothing. This is the provider's own evidence that its
+return data to that client is deliverable, which is the only question the
+release answers, and it is already produced per item on the sequence
+goroutine at no cost.
+
+The provider's carrier. `RouteManager.HasActiveTransport()` reports whether
+any transport is registered with routes, and the multi-client already uses
+it to rule its own silence inadmissible as evidence against a provider
+(`detectBlackhole`, `sendStalled`). The provider has the same fact about
+itself and does not use it.
+
+So: no fact the provider can obtain distinguishes a dead client from a live
+one that has been unreachable for exactly the timeout, and the release
+stays a decision on an estimate. The estimate can be taken over the right
+quantity, at the right scope, and only when admissible.
+
+### 10.3 The evidence for the bound, and the trade stated
+
+What the shipped tree has been measured to do without acknowledging: the
+storm cells' relay stalls of 2.75 to 2.9 s and the relay cell's per-run
+maximum cumulative-ack gaps of 10 to 36 s (FLIGHTGATEFIX §33.4, corrected
+in §36.11). The 209, 264 and 723 s wedges in §4 of this document are real
+and are ours, and they were produced by `ReliableLaneProvenRecovery`, which
+shipped off after that measurement: 0 of 120 runs wedged with it off
+against 8 of 120 with it on (§36.10). Nothing measured on the shipped
+configuration is silent for 120 s. **This corrects §4's framing**: the
+wedge evidence argues against a 120 s bound on the tree that wedged, not
+on main.
+
+Transfer already decides on acknowledgement silence at 60 s.
+`SendBufferSettings.AckTimeout` closes a send sequence when a non-retained
+item goes unacknowledged that long (`SendSequence.Run`: "message took too
+long to ack, close the sequence"). The provider's bound at twice that is
+consistent with the layer it sits on, once it is taken over the same
+quantity.
+
+The trade, stated as the test asserts it: a client that acknowledges
+nothing the provider sends it for 120 s, while the provider had a carrier,
+has its flows released and is readmitted at once; when it returns, its
+inner TCP connections meet a NAT that no longer holds them and are reset
+(`EnableOrphanRst`), so its applications reconnect. A client that
+acknowledges anything, however slowly and however many flows it has
+parked, is never released. That is defensible where the reporter's was
+not, because the harm now falls only on a client that was unreachable for
+longer than anything the shipped tree has been measured to do, and the
+benefit, which the report measured at 72 per cent of a provider's
+throughput at 40 zombies, stays.
+
+### 10.4 What is built
+
+`providerSourceLifecycle` gains three fields and one method:
+
+- `createdNanos int64`, the monotonic time the lifecycle was created. A
+  lifecycle exists only while the source has admitted producers
+  (`releaseSourceLifecycle` reclaims an idle one), so this is the moment
+  the provider started having something to deliver to the client in this
+  generation, and the floor for a source that has never acknowledged.
+- `lastAckNanos atomic.Int64`, the monotonic time the destination last
+  acknowledged one of this source's socket-owned return items.
+- `carrierAbsentNanos atomic.Int64`, the last time a parked producer of
+  this source observed the provider without a transport.
+- `sendAckResult(value ByteCount, err error)`, which makes the lifecycle a
+  `sendAckTarget`: on `err == nil` it stores the monotonic time into
+  `lastAckNanos`. Nothing else. It runs on the send-sequence goroutine, one
+  clock read and one atomic store per acknowledged item.
+
+The lifecycle is the ack target of every socket-owned return item of its
+source. The raw path already takes a `sendAckTarget` argument
+(`sendRawWithTimeoutDetailed`'s fourth parameter, today
+`returnAckTargetForTest`); the group path takes only an `AckFunction`, so a
+`sendAckTargetOption` is added to `resolveSendOptions` and
+`sendGroupToWithTimeoutDetailed` sets `SendPack.ackTarget` from it, which
+`SendPack.ackRecord()` already honours. No closure and no allocation per
+item or per batch: the item already carries its lifecycle.
+
+`monotonicNanos()` is added, `time.Since` of a package epoch, so the
+stamps are immune to wall-clock steps; a forward step of two minutes on a
+provider host must not release its clients.
+
+`retryReturnSend` loses `startTime`. Before an attempt and after a failed
+one it evaluates, for socket-owned items with a lifecycle:
+
+1. If `!self.client.RouteManager().HasActiveTransport()`: store the time
+   into `carrierAbsentNanos` and decide nothing. The provider cannot have
+   delivered anything, so the silence is its own.
+2. Else, silence = now − max(`lastAckNanos`, `createdNanos`,
+   `carrierAbsentNanos`). If `0 < ReturnSendAbandonTimeout` and silence is
+   at least it and `!self.backendDegraded()`, call
+   `releaseUnreachableSource` and return false, exactly as today.
+
+The release path, the readmission, the terminal-during-release handling,
+the backend-degraded guard and the Close join are the reporter's and are
+kept unchanged; they are right. The backend guard stays because a degraded
+backend can leave the return sequence without a contract, in which case
+nothing is sent, nothing is acknowledged, and the silence is not the
+client's. `ReturnSendAbandonTimeout` keeps its default of 120 s and its
+documentation is rewritten to say what it measures. An item with no
+lifecycle (direct unit fixtures) is never released, which is what
+`releaseUnreachableSource` already does with a nil lifecycle.
+
+Cost: none on the return hot path, the stamp is on the acknowledgement
+path at one monotonic read and one store per acknowledged item, and the
+evaluation runs only on a parked producer's failed attempts, at most once
+per `ReturnSendRetryTimeout` or per `WriteTimeout` when admission waits.
+No retained bytes beyond three words per source lifecycle.
+
+Where the release lands, for a dead client: `lastAckNanos` plus 120 s,
+plus at most one attempt's wait (`WriteTimeout`, 30 s) and one retry
+pacing floor, so between 120 and 150 s after the last acknowledgement,
+independent of how many items were admitted in between. That is H7.
+
+### 10.5 Rejected, and why
+
+- A per-destination "last acknowledgement" stamp kept in the transfer
+  layer. The evidence would be tied to sequence lifetime: when every
+  sequence to a destination closes, which a non-retained item's
+  `AckTimeout` does, the evidence goes with it and the next parked flow
+  measures silence from a floor that has nothing to do with the client.
+  Keeping a cell per destination past sequence lifetime needs eviction and
+  a per-ack map lookup or a pointer threaded through sequence
+  construction. The lifecycle already exists, already lives exactly as long
+  as the provider has producers for the source, and is already on the
+  item.
+- Packets received from the source as evidence. They measure that the
+  client is alive, not that the provider's return data can reach it; a
+  live client whose return lane is broken would hold its zombies for as
+  long as it kept sending SYNs, and the stamp would sit on the per-packet
+  receive callback. The question the release answers is deliverability,
+  and acknowledgements are its evidence.
+- Asking the platform with a contract request: falsified, 10.2.
+- Releasing on a network-peer disconnect marker: peers only, transient by
+  definition, and a peer that flaps would have its flows reset on each
+  flap. A follow-up with that caveat, 10.8.
+- Clearing the clock on a successful admission: that is the per-item
+  restart, H7, in a per-source coat; a dead client's sequence admits an
+  item whenever a non-retained item times out and frees budget, so the
+  clock would restart on the client's death as easily as on its life.
+- Removing the release. The report measured its benefit; the zombies are
+  real and the reporter's mechanism for retiring them is sound.
+
+### 10.6 H7
+
+Dissolved rather than fixed: the clock is on the source and is advanced
+only by the destination's acknowledgements, the provider's own carrier
+absence, and the lifecycle's creation. Admission of an item does not touch
+it. Row A3 below pins that.
+
+### 10.7 An adjacent hazard, found and not fixed here
+
+`SendSequence.Run` exits, and drains its resend queue with "Send sequence
+closed", when the oldest due item is past `AckTimeout` and is not retained
+past it. Socket-owned TCP return items are retained (`retainAfterAckTimeout`
+in `returnSendRecoveryOption`), but a synthesized control on the same
+sequence, a SYN-ACK or RST under `receiveRecoveryModeRegenerableControl`,
+is not, and a NoAck datagram promoted to Ack while a contract opens or
+rotates is not either. A live client that is unreachable for 60 s with one
+such item on its sequence loses the retained TCP bytes queued behind it,
+and the NAT toward the client does not retransmit, so those inner
+connections carry a hole until reset. This is main's behaviour today, it is
+independent of the provider's abandon timeout and older than it, and it
+bounds what any provider-side liveness signal can protect. The fix is in
+the transfer layer, an ack timeout on a non-retained item dropping that
+item rather than closing a sequence that holds retained ones, and it is
+out of this program's scope; row A6 pins the current behaviour so that
+change is made deliberately.
+
+### 10.8 The follow-up that would let the estimate pace instead of decide
+
+A presence fact for every source, not only network peers: the exchange
+knows when a client's resident connection closes, and the platform knows
+which providers hold open contracts to that client. A disconnect marker
+delivered to those providers, in the shape `NetworkPeersUpdate` already
+has, would let `ReturnSendAbandonTimeout` pace a wait for that marker
+rather than decide, with the marker's own "recently" qualified by a
+reconnect grace. The cost is a fan-out per disconnect to the providers with
+open contracts, which the contracts table names. Server work, its own
+round.
+
+### 10.9 Tests, in the contract shape
+
+The fixture is the reporter's (`newUnreachableSourceTestProvider` with
+`WriteTimeout` 0 and a millisecond retry floor). A test acknowledges an
+admitted item by taking the pack from the installed sequence's `packs`
+channel and invoking `pack.ackRecord().invoke(nil)`, which is the exact
+path a real acknowledgement takes to the lifecycle. T is
+`ReturnSendAbandonTimeout` at test scale, 50 to 200 ms.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| A1 | `TestLiveClientStalledPastAbandonTimeoutIsNotRetired` | one source, an installed sequence with a one-pack buffer; the fixture takes and acknowledges each admitted pack at intervals below T while the next item stays unadmitted for 5 T; no release fires (`afterUnreachableSourceReleaseForTest` never called, no NAT retirement observed); when the fixture resumes draining, the parked producer returns with sent = true | main, which releases at T | in-process |
+| A2 | `TestSlowLiveClientWithManyFlowsIsNotRetired` | eight parked flows of one source; the fixture admits and acknowledges one item per 0.5 T so individual waits exceed 3 T; no release within 6 T; every item is eventually admitted, all with sent = true | main, by 10.1 case 1 | in-process |
+| A3 | `TestReleaseTracksClientDeathNotItemProgress` | a source that is never acknowledged; the fixture admits exactly one item 0.6 T after the lifecycle is created and acknowledges nothing; the release barrier closes within [T, 1.3 T] of creation | main, which releases at 1.6 T | in-process, T = 200 ms |
+| A4 | `TestSilenceIsInadmissibleWithoutACarrier` | a source never acknowledged while the client's route manager holds no transport: no release for 5 T; after `UpdateTransport` registers a stub transport with one route, the release closes within [T, 1.3 T] of registration | main, which releases at T regardless | in-process; needs a stub `Transport` |
+| A5 | `TestRemoteUserNatProviderReleasesUnreachableTcpReturnSource` | the reporter's row, adopted: never acknowledged, released after T, readmitted | holds on both | as before |
+| A6 | `TestNonRetainedAckTimeoutClosesTheSequenceWithRetainedItems` | characterisation of 10.7: a sequence holding one retained item and one non-retained item past `AckTimeout` closes and the retained item's ack record is invoked with the closed error | holds on both; documents | transfer layer, in-process |
+| A7–A10 | the reporter's `ReliabilityDuringUnreachableReleaseStaysTerminal`, `CloseJoinsUnreachableRelease`, `DoesNotReleaseSourceWhileBackendDegraded`, `UnboundedTcpReturnRetryWhenAbandonDisabled` | adopted as written | as before | as before |
+
+The measurement that calls this fixed, beside the reporter's dead-client
+cell, which must show release between 120 and 150 s after the kill on this
+tree against 120 to 210 on main: a slow-client cell, one client shaped to
+50 kb/s with 40 concurrent downloads. Prediction: main releases and resets
+that client at least once inside five minutes; this tree completes all 40
+downloads with no release, and the reporter's 40-zombie throughput figure
+on the other clients is unchanged.
