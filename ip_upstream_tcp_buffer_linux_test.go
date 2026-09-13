@@ -28,7 +28,7 @@ func TestUpstreamTcpConnLeavesReceiveBufferToAutotuning(t *testing.T) {
 	tcpConn := dialUpstreamTestTcpConn(t)
 
 	before := tcpSocketReceiveBufferSize(t, tcpConn)
-	configureUpstreamTcpConn(tcpConn)
+	configureUpstreamTcpConn(tcpConn, int(DefaultTcpBufferSettings().MaxWindowSize), socketBufferPolicy{}, false)
 	after := tcpSocketReceiveBufferSize(t, tcpConn)
 
 	if after != before {
@@ -133,7 +133,7 @@ func TestUpstreamTcpSendBufferIsNotPinned(t *testing.T) {
 	tcpConn := dialUpstreamTestTcpConn(t)
 
 	before := tcpSocketSendBufferSize(t, tcpConn)
-	configureUpstreamTcpConn(tcpConn)
+	configureUpstreamTcpConn(tcpConn, int(DefaultTcpBufferSettings().MaxWindowSize), socketBufferPolicy{}, false)
 	after := tcpSocketSendBufferSize(t, tcpConn)
 
 	if after != before {
@@ -237,7 +237,7 @@ func TestUpstreamTcpReceiveBufferGrowsUnderLoad(t *testing.T) {
 			receiveAutotuneMax,
 		)
 	}
-	configureUpstreamTcpConn(tcpConn)
+	configureUpstreamTcpConn(tcpConn, int(DefaultTcpBufferSettings().MaxWindowSize), socketBufferPolicy{}, false)
 	configured := tcpSocketReceiveBufferSize(t, tcpConn)
 
 	go func() {
@@ -297,7 +297,7 @@ func TestUpstreamTcpSendBufferGrowsUnderLoad(t *testing.T) {
 			sendAutotuneMax,
 		)
 	}
-	configureUpstreamTcpConn(tcpConn)
+	configureUpstreamTcpConn(tcpConn, int(DefaultTcpBufferSettings().MaxWindowSize), socketBufferPolicy{}, false)
 
 	// enough writes to take the congestion window past the point where the
 	// kernel's own sizing exceeds the maximum; it stops there, so the loop

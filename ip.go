@@ -475,6 +475,13 @@ func DefaultTcpBufferSettingsWithBufferSize(bufferSize int) *TcpBufferSettings {
 		EnableSyntheticSpeed: true,
 		ConnectSettings:      *DefaultConnectSettings(),
 	}
+	// the upstream socket buffers are the kernel's unless an explicit request
+	// beats its autotuning ceiling on this host (THROUGHPUTFIX §15); nil when
+	// nothing is to be pinned
+	tcpBufferSettings.ConnectSettings.DialControl = upstreamSocketBufferControl(
+		int(tcpBufferSettings.MaxWindowSize),
+		defaultSocketBufferPolicy(),
+	)
 	return tcpBufferSettings
 }
 
@@ -489,29 +496,6 @@ func scaledPow2WindowSize(maxWindowSize uint32, minWindowSize uint32, floorWindo
 		windowSize *= 2
 	}
 	return windowSize
-}
-
-// Prepares the established upstream socket the provider proxies through. It
-// takes no buffer settings because neither socket buffer may be sized here.
-//
-// The socket is already connected, and on Linux an explicit SO_RCVBUF or
-// SO_SNDBUF on a connected socket locks that direction's autotuning
-// (SOCK_RCVBUF_LOCK / SOCK_SNDBUF_LOCK in the kernel) after clamping the
-// request to net.core.{r,w}mem_max, which on a stock host is 208 KiB against
-// tcp_{r,w}mem maxima in megabytes. The lock therefore pins the buffer below
-// where the kernel would have taken it on its own.
-//
-// Receive is a freeze: the window clamp was fixed at SYN time from the default
-// buffer (about 64 KB) and only autotuning raises it, so a locked receive
-// buffer caps a download near 64 KB per round trip for the life of the flow.
-// Send is a ceiling, the upload mirror: the lock caps the unacknowledged bytes
-// the flow may hold at twice the clamped request, 425,984 on a stock host,
-// instead of letting the buffer track the origin path's bandwidth-delay
-// product up to tcp_wmem's maximum (THROUGHPUTFIX §9). The tunnel window
-// (MaxWindowSize) is a different window and says nothing about that path.
-func configureUpstreamTcpConn(tcpConn *net.TCPConn) {
-	tcpConn.SetKeepAlive(true)
-	tcpConn.SetNoDelay(true)
 }
 
 func DefaultLocalUserNatSettings() *LocalUserNatSettings {
@@ -4854,7 +4838,14 @@ func (self *TcpSequence) Run() {
 
 	defer socket.Close()
 	if tcpConn, ok := socket.(*net.TCPConn); ok {
-		configureUpstreamTcpConn(tcpConn)
+		// the default dialer ran the buffer control hook before connecting;
+		// a host-supplied dial is opaque and gets the post-connect subset
+		configureUpstreamTcpConn(
+			tcpConn,
+			int(self.tcpBufferSettings.MaxWindowSize),
+			defaultSocketBufferPolicy(),
+			self.tcpBufferSettings.DialContextSettings == nil,
+		)
 	}
 
 	self.log.V(2).Infof("[init]receive SYN+ACK\n")

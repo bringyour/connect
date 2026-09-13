@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+	"syscall"
 )
 
 type DialContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
@@ -105,6 +106,10 @@ type ConnectSettings struct {
 	// `DefaultLogger()`. `NewClientStrategy` propagates the strategy log
 	// here when nil.
 	Log Logger
+	// DialControl, when set, runs on every socket the default dialer creates,
+	// before it connects; the egress binding control runs after it. Not
+	// applied to a host-supplied DialContextSettings dial.
+	DialControl func(network string, address string, c syscall.RawConn) error
 
 	RequestTimeout   time.Duration
 	ConnectTimeout   time.Duration
@@ -274,6 +279,7 @@ func (self *ConnectSettings) NetDialer() *net.Dialer {
 		KeepAliveConfig: self.KeepAliveConfig,
 		FallbackDelay:   DefaultDialFallbackDelay,
 		Resolver:        egressAwareResolver(self.Resolver),
+		Control:         self.DialControl,
 	})
 }
 
