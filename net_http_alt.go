@@ -228,7 +228,7 @@ func altDnsTld(settings *ClientStrategySettings) []byte {
 	return []byte(DefaultExtenderDnsTld)
 }
 
-// dialAltQuicAttempt opens the socket for one candidate address, wraps it for
+// dialAltQuicAttempt opens the endpoint for one candidate address, wraps it for
 // the carrier and completes the quic dial on it. The returned attempt owns its
 // socket, translation, transport and connection, so one close releases all of
 // them. Dial rather than DialEarly: a race must not be won by cached 0-RTT
@@ -241,14 +241,24 @@ func dialAltQuicAttempt(
 	tlsConfig *tls.Config,
 	quicConfig *quic.Config,
 ) (*h3DialAttempt, error) {
-	udpNetwork, wildcard := udpWildcardForFamily(udpAddrFamily(udpAddr))
-	udpConn, err := net.ListenUDP(udpNetwork, wildcard)
+	// the same endpoint policy the extender carriers use: an injected factory
+	// wins, so a headless host keeps one source identity, and otherwise the
+	// wildcard of the destination's family
+	packetConn, err := openExtenderPacketConn(ctx, connectSettings, udpAddr)
 	if err != nil {
+		// ownership transfers for every non-nil result, including a rejected
+		// one
+		if packetConn != nil {
+			packetConn.Close()
+		}
 		return nil, err
+	}
+	if packetConn == nil {
+		return nil, fmt.Errorf("alt packet connection factory returned nil")
 	}
 	attempt := &h3DialAttempt{
 		udpAddr:    udpAddr,
-		packetConn: udpConn,
+		packetConn: packetConn,
 	}
 	success := false
 	defer func() {
@@ -259,12 +269,17 @@ func dialAltQuicAttempt(
 	// bind to the physical egress interface so an api dial never loops into
 	// the tunnel this process provides (R1); a no-op off windows and when no
 	// egress index is set. a bind failure is not fatal, and the log line is
-	// where an unpinned socket becomes visible
-	if bindErr := applyEgress(udpConn); bindErr != nil {
-		loggerOrDefault(connectSettings.Log).Infof(
-			"[net]alt egress bind failed, the api connection may loop into the tunnel: %s\n",
-			bindErr,
-		)
+	// where an unpinned socket becomes visible. an injected endpoint is the
+	// embedder's, with its own binding, so it is left alone
+	injectedPacketConn := connectSettings.DialContextSettings != nil &&
+		connectSettings.DialContextSettings.PacketConnFactory != nil
+	if udpConn, ok := packetConn.(*net.UDPConn); ok && !injectedPacketConn {
+		if bindErr := applyEgress(udpConn); bindErr != nil {
+			loggerOrDefault(connectSettings.Log).Infof(
+				"[net]alt egress bind failed, the api connection may loop into the tunnel: %s\n",
+				bindErr,
+			)
+		}
 	}
 	wrapped, err := wrap(ctx, attempt.packetConn)
 	if err != nil {
