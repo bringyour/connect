@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -43,6 +44,19 @@ const testSpoofName = "spoof.example"
 
 // Secret of the private extender under test.
 const testSecret = "fixture-secret"
+
+// The value the fixture site sets on every hop-by-hop response header of
+// /headers, which the reverse proxy must never relay (A5).
+const testHopByHopValue = "hop"
+
+// An ordinary response header of /headers, which the reverse proxy relays
+// verbatim (A5).
+const testOrdinaryResponseHeader = "X-Extender-Ordinary"
+const testOrdinaryResponseValue = "ordinary"
+
+// The location /redirect answers with, which the reverse proxy relays rather
+// than following (A5).
+const testRedirectLocation = "https://moved.example/elsewhere"
 
 // destination is one in-process https server reachable on both loopback
 // families, each on its own listener, so a test can offer a name only one
@@ -168,6 +182,27 @@ func newDestination(t *testing.T) *destination {
 						return
 					}
 				}
+			case "/headers":
+				// the request headers the site saw, so a test can prove what
+				// the reverse proxy relayed upstream, and one hop-by-hop value
+				// per name beside an ordinary header, so a test can prove what
+				// it strips on the way back (A5)
+				for _, hopHeader := range proxyHopByHopHeaders {
+					w.Header().Set(hopHeader, testHopByHopValue)
+				}
+				w.Header().Set(testOrdinaryResponseHeader, testOrdinaryResponseValue)
+				w.Header().Set("Content-Type", "application/json")
+				seenHeaders, err := json.Marshal(req.Header)
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Write(seenHeaders)
+			case "/redirect":
+				// the reverse proxy relays one exchange and never follows a
+				// redirect of its own (A5)
+				w.Header().Set("Location", testRedirectLocation)
+				w.WriteHeader(http.StatusFound)
 			case "/hold":
 				// headers and a first byte arrive at once; the rest never does
 				w.Header().Set("Content-Type", "application/octet-stream")
