@@ -1348,17 +1348,25 @@ type ClientReceiveStatsSnapshot struct {
 	PackHandoffDeepenedFlows        uint64
 	PackHandoffAdaptiveMaxDepth     uint64
 	PackHandoffAdaptiveMaxByteCount uint64
-	AckHandoffDropCount             uint64
-	AckHandoffQueueFullCount        uint64
-	AckHandoffMissCount             uint64
-	AckHandoffWaitCount             uint64
-	AckHandoffWaitSuccess           uint64
-	AckRouteWriteCount              uint64
-	AckRoutePriorityWriteCount      uint64
-	AckRouteWriteBlockedCount       uint64
-	AckRouteWriteErrorCount         uint64
-	AckRouteWriteWaitDuration       time.Duration
-	AckRouteWriteMaxWait            time.Duration
+	// ReceiveQueueDropCount and ReceiveQueueDropByteCount are arrivals the
+	// receive queue could not admit: it held ReceiveQueueMaxByteCount and
+	// the arrival sat above everything in it, so nothing could be evicted to
+	// fit. That is the drop FLIGHTGATEFIX §34.2 identifies as what destroys
+	// the acknowledgements a lane proof depends on, and until now it was
+	// visible only as a log line. Observation only.
+	ReceiveQueueDropCount      uint64
+	ReceiveQueueDropByteCount  uint64
+	AckHandoffDropCount        uint64
+	AckHandoffQueueFullCount   uint64
+	AckHandoffMissCount        uint64
+	AckHandoffWaitCount        uint64
+	AckHandoffWaitSuccess      uint64
+	AckRouteWriteCount         uint64
+	AckRoutePriorityWriteCount uint64
+	AckRouteWriteBlockedCount  uint64
+	AckRouteWriteErrorCount    uint64
+	AckRouteWriteWaitDuration  time.Duration
+	AckRouteWriteMaxWait       time.Duration
 	// FLIGHTGATEFIX §8: the ack path per carrier the answered Pack arrived on
 	// (M2). Only carriers with at least one write appear.
 	AckRouteWriteCountByTransport   map[TransportType]uint64
@@ -1547,6 +1555,8 @@ type Client struct {
 	receivePackHandoffDeepenedFlowCount    atomic.Uint64
 	receivePackHandoffAdaptiveMaxDepth     atomic.Uint64
 	receivePackHandoffAdaptiveMaxByteCount atomic.Uint64
+	receiveQueueDropCount                  atomic.Uint64
+	receiveQueueDropByteCount              atomic.Uint64
 	receiveAckHandoffDropCount             atomic.Uint64
 	receiveAckHandoffQueueFullCount        atomic.Uint64
 	receiveAckHandoffMissCount             atomic.Uint64
@@ -1898,6 +1908,8 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		PackHandoffDeepenedFlows:        self.receivePackHandoffDeepenedFlowCount.Load(),
 		PackHandoffAdaptiveMaxDepth:     self.receivePackHandoffAdaptiveMaxDepth.Load(),
 		PackHandoffAdaptiveMaxByteCount: self.receivePackHandoffAdaptiveMaxByteCount.Load(),
+		ReceiveQueueDropCount:           self.receiveQueueDropCount.Load(),
+		ReceiveQueueDropByteCount:       self.receiveQueueDropByteCount.Load(),
 		AckHandoffDropCount:             self.receiveAckHandoffDropCount.Load(),
 		AckHandoffQueueFullCount:        self.receiveAckHandoffQueueFullCount.Load(),
 		AckHandoffMissCount:             self.receiveAckHandoffMissCount.Load(),
@@ -11378,6 +11390,8 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			)
 			return true, nil
 		} else {
+			self.client.receiveQueueDropCount.Add(1)
+			self.client.receiveQueueDropByteCount.Add(uint64(max(item.MessageByteCount(), 0)))
 			if self.log.V(1).Enabled() {
 				self.log.Infof("[r]drop ack cannot queue %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
 			}

@@ -111,6 +111,36 @@ type mixedLaneRoute struct {
 	route Route
 }
 
+// decodeFlightGatePackIsData reports whether this frame carries an
+// application Pack, so a test can drop a numbered data frame without
+// counting control traffic. It never consumes the buffer.
+func decodeFlightGatePackIsData(transferFrameBytes []byte) bool {
+	if transferFrameBytes == nil {
+		return false
+	}
+	var transferFrame protocol.TransferFrame
+	if err := ProtoUnmarshal(transferFrameBytes, &transferFrame); err != nil {
+		return false
+	}
+	pack := transferFrame.Pack
+	if pack == nil {
+		frame := transferFrame.GetFrame()
+		if frame == nil || frame.GetMessageType() != protocol.MessageType_TransferPack {
+			return false
+		}
+		pack = &protocol.Pack{}
+		if err := ProtoUnmarshal(frame.MessageBytes, pack); err != nil {
+			return false
+		}
+	}
+	for _, frame := range pack.Frames {
+		if frame.GetMessageType() == protocol.MessageType_TransferClientKey {
+			return false
+		}
+	}
+	return 0 < len(pack.Frames)
+}
+
 // mixedLaneOptions describes the two lanes. A lane has a latency and,
 // optionally, a bandwidth: one frame per serialization interval. A lane
 // with a bandwidth genuinely backs up when it is offered more than it
@@ -168,6 +198,15 @@ type mixedLaneOptions struct {
 	// admits, so a test can vary the healing rate the flight allows
 	// (FLIGHTGATEFIX §29.4). Zero keeps the carrier's own limit.
 	fastFlightMessageLimit int
+	// receiveQueueMaxByteCount bounds the receiver's own queue, so a receiver
+	// blocked at a hole fills it and then drops what arrives, which is what
+	// destroys the acknowledgements the lane rule's proof depends on
+	// (FLIGHTGATEFIX §34.2). Zero keeps the default.
+	receiveQueueMaxByteCount ByteCount
+	// fastDropOnce drops one direct-lane data frame, the nth, exactly once,
+	// so a hole is created at a known point rather than by a seeded
+	// fraction. Zero drops nothing.
+	fastDropOnce int
 	// slowDropFraction drops that share of the relay's frames, from a seeded
 	// source. A reliable carrier retransmits below Transfer, so this models
 	// a drop at an endpoint rather than on the wire: the only reliable-lane
@@ -231,6 +270,10 @@ func newMixedLaneHarnessWithOptions(
 			options.reliableTimerUsesDeviation
 		settings.SendBufferSettings.ReliableLaneProvenRecovery =
 			options.reliableLaneProvenRecovery
+		if 0 < options.receiveQueueMaxByteCount {
+			settings.ReceiveBufferSettings.ReceiveQueueMaxByteCount =
+				options.receiveQueueMaxByteCount
+		}
 		if 0 < options.resendBudget {
 			settings.SendBufferSettings.ResendQueueMaxByteCount = options.resendBudget
 		}
@@ -336,6 +379,18 @@ func newMixedLaneHarnessWithOptions(
 	if 0 < options.slowDropFraction {
 		slowLoss = newLaneLossProcess(20260913, options.slowDropFraction, nil)
 	}
+	// one direct-lane frame is dropped at a known point, so the hole is
+	// deterministic rather than seeded
+	var fastDataSeen atomic.Int64
+	dropOnce := func(frameBytes []byte) bool {
+		if options.fastDropOnce <= 0 {
+			return false
+		}
+		if !decodeFlightGatePackIsData(frameBytes) {
+			return false
+		}
+		return fastDataSeen.Add(1) == int64(options.fastDropOnce)
+	}
 	var fastLoss, fastReplyLoss *laneLossProcess
 	if options.fastBurstLoss != nil {
 		fastLoss = newLaneLossProcess(20260911, 0, options.fastBurstLoss)
@@ -363,6 +418,11 @@ func newMixedLaneHarnessWithOptions(
 		carried *atomic.Uint64,
 	) {
 		deliver := func(b []byte) {
+			if to == receiverInFast && dropOnce(b) {
+				harness.fastDropped.Add(1)
+				MessagePoolReturn(b)
+				return
+			}
 			if loss != nil {
 				dropLock.Lock()
 				dropIt := loss.lost()
