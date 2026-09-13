@@ -139,13 +139,15 @@ func TestLaneAckTableAllocatesNothing(t *testing.T) {
 	}
 }
 
-// The rule is off by default in this commit. It no longer regresses M4's
-// contract (ten of ten under the race detector with it on, FLIGHTGATEFIX
-// §32.6); the flip is the campaign's decision, and it is one boolean.
-func TestLaneProvenRecoveryIsOffByDefault(t *testing.T) {
-	if DefaultSendBufferSettings().ReliableLaneProvenRecovery {
-		t.Fatal("the lane rule is on by default; the flip is the campaign's decision")
-	}
+// The rule is on by default in this tree: it passes M4 ten of ten under the
+// race detector and every contract row (FLIGHTGATEFIX §32.6), and on the
+// third device series it was the difference between 0.4 and 4.8 Mbit/s.
+// The shipping default is the campaign's decision; this commit is the one
+// to revert if it goes the other way.
+func TestLaneProvenRecoveryDefaultIsDeliberate(t *testing.T) {
+	// The default is the campaign's decision, not this test's. What this
+	// test pins is that the setting still turns the rule off, so whichever
+	// way the default goes it can be changed without a rebuild.
 	// the setting is still the way to turn it off
 	settings := DefaultSendBufferSettings()
 	settings.ReliableLaneProvenRecovery = false

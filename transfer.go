@@ -771,7 +771,7 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		DeferredItemIsLateForTheScoreboard: false,
 		DeferTimeoutResendBackoff:          true,
 		ReliableTimerUsesDeviation:         false,
-		ReliableLaneProvenRecovery:         false,
+		ReliableLaneProvenRecovery:         true,
 		ContractFillFraction:               0.8,
 		PrewarmOpeningContract:             true,
 		CompactContractHead:                true,
