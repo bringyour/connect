@@ -1120,6 +1120,14 @@ both lines always, singular at 1. The landing globe draws no dots and is
 unchanged. The coverage headline reads `N providers and M extenders in C
 countries` when the feed carries an extender count and keeps its current
 sentence otherwise. The legend gains the ring: `ringed by extender count`.
+Refinements from the implementation: both bands are computed over the
+regions that have the population in question, so an extender-only
+region's zero never becomes the provider band's floor, and a country
+whose only region is extender-only draws the minimum dot rather than the
+single-region maximum; a feed field that is present but null or not a
+count rejects the snapshot, only a missing key is absent; the family
+breakdowns are parsed and carried but nothing on the site renders them
+yet; the legend item is capitalized like its siblings.
 
 M10. Tests. Server: model tests for the extender location storage (ids
 present, a country-only row, last activation wins), the extender counts
