@@ -284,7 +284,9 @@ host.
 B3. Extender certificates. The identity key signs a self-signed ed25519 CA
 cert (IsCA, ten years), regenerated when the key changes. One ECDSA P-256
 leaf key is generated per process; a leaf per SNI is issued under the CA
-on first sight with 30 days validity and cached (1024 entries). This
+on first sight, valid 30 days ahead and back-dated by the clock-skew
+window like every certificate here, and cached (1024 entries, least
+recently used evicted). This
 replaces the per-connection RSA-2048 `selfSign`. QUIC uses the same
 callback. A client that knows the extender's key from a record sets
 `VerifyPeerCertificate` to require that the leaf's signature verifies
@@ -768,9 +770,16 @@ one ring per extender, in the extender's color (K3): stroke 2 px, a 2 px
 gap between the dot and the first ring and between successive rings, and
 the outermost ring's outer edge at the cell edge, so the dot's footprint
 never grows into a neighbor: the filled dot shrinks inward by 4 px per
-ring. At most three rings are drawn; four or more collapse into a dashed
-third ring. The drawer's ip family histogram draws the same dots and the
-same rings at its dot size.
+ring. At most three rings are
+drawn; four or more collapse into a dashed third ring, in the third
+extender's color. The connect grid's default cell is 16 pt, which holds
+one full-size ring; apple drops rings that cannot fit and dashes the last
+drawn one, android scales stroke and gap down together once the fill would
+fall below a quarter of the dot radius so the count is preserved, both
+pinned by tests. The drawer's ip family histogram draws the same dots and
+the same rings at its dot size, and the grid signature includes the
+extender ips and the ip family so a change in either republishes the grid.
+The panel is hidden while there are no extenders at all.
 
 K3. Extender color. One color per extender ip, computed once in the sdk
 by `GetExtenderColorHex(ip)` in the untagged color file so the iOS
@@ -825,8 +834,11 @@ upgrades when a record arrives over the feed. "Include extender settings"
 adds the settings block, off by default. The QR renders at error level H
 with the black and white connector glyph centered and a 4 px outline of
 the connector shape around it; the share screen also shows the payload as
-copyable text. Import accepts a scanned code, a chosen photo, or pasted
-text. An import whose network host differs from the space's is refused
+copyable text with a copied confirmation. Import accepts a scanned code, a
+chosen photo, or pasted text. A share of 48 addresses with settings can
+exceed what a version 40 code at level H holds; the screen then hides the
+code, keeps the text, and says so. Rendering snaps the module size to
+whole pixels, since a fractionally scaled code does not decode. An import whose network host differs from the space's is refused
 unless "use extender settings" is chosen, which shows the operator host
 and asks to confirm before replacing the dns name, gossip url and root
 keys; the first hello over the platform's pinned TLS replaces the root
@@ -844,7 +856,20 @@ only. Windows and linux: the code renders through a vendored single-file
 encoder, import reads an image file through zxing-cpp plus pasted text,
 no camera. Web app: out of scope, its device is hosted and never dials an
 extender. Every string goes through the localizations repo with the
-platform list of each key.
+platform list of each key; the keys were added once by the coordinator and
+each app regenerates only its own catalog. On linux the account section is
+a group inside the always-visible account pane rather than a fourth pane,
+and the legacy private extender written there steers the gui's own api
+dials but not the daemon's tunnel, which keeps its own network space; the
+other settings reach the daemon through the device's view controller. On android the settings form needs a signed-in device and the private
+extender goes through the space manager. On windows the section is a
+fourth account pane taking the third fold slot, which needs 1500 dip, and
+the settings edit the app process's space that the service imports at its
+next session start, so the "next time it connects" note applies there as
+well as on iOS; the connector path is shared by the canvas, the login
+carousel and the share code. The linux release container adds
+`libzxing-cpp-dev`; the windows build fetches zxing-cpp and vendors the
+Nayuki encoder.
 
 ### L. The alt service
 
