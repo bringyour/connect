@@ -116,6 +116,27 @@ func newTransferQueue[T transferQueueItem](cmp TransferQueueCmpFunction[T]) *tra
 // Budget is the shared budget this queue borrows above its floor from, or nil
 // when it is bounded only by its own maximum. Read to bound a window by what
 // the budget will lend rather than by a per-queue constant.
+// ObtainableByteCount is the most this queue could hold as the shared pool
+// stands: its guaranteed floor, plus what it has already borrowed, plus what
+// is left unreserved. Zero means there is no shared budget and the caller's
+// own maximum is the only bound.
+//
+// A per-sequence rule that reports the pool's total instead is claiming
+// permission it cannot obtain, which is what a campaign reads when it asks why
+// a provider serving many clients did not reach the number its windows said it
+// would (THROUGHPUTFIX §37.22).
+func (self *transferQueue[T]) ObtainableByteCount() ByteCount {
+	self.stateLock.Lock()
+	budget := self.budget
+	minByteCount := self.minByteCount
+	borrowedByteCount := self.borrowedByteCount
+	self.stateLock.Unlock()
+	if budget == nil {
+		return 0
+	}
+	return minByteCount + borrowedByteCount + budget.Available()
+}
+
 func (self *transferQueue[T]) Budget() *TransferMemoryBudget {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()

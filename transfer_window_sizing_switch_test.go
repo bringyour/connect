@@ -180,3 +180,93 @@ func TestTheWindowRuleIsInertOnAShortPath(t *testing.T) {
 		)
 	}
 }
+
+// THROUGHPUTFIX §37.22: the share must be a draw on the budget, proportional
+// to it, and must never be a memory-scaled constant.
+//
+// The finding this guards. Every window and hold in the enumeration is a
+// memory-scaled constant, and the scale returns one at or above the 64 MiB
+// reference and a fraction below. So all of them were sized for the reference
+// host and can only shrink from it: a provider with eight gigabytes runs a
+// 64 MiB device's window, which is why no amount of memory has ever made this
+// system faster. It is also the root of both configuration asymmetries — an
+// unbudgeted provider sits exactly at the reference and a budgeted client
+// below it, and the download-only inversion is the two ends differing rather
+// than the rule differing.
+//
+// A share computed by scaling a constant would carry that defect forward under
+// a new name. This row exists because the wrong pattern is the local idiom:
+// every adjacent line in the settings file scales a constant, and copying one
+// is the natural way to write this. An assertion is the only thing that holds.
+//
+// Prediction, recorded before the run: the share doubles when the budget
+// doubles, at budgets above the reference as well as below. A memory-scaled
+// constant is flat above the reference and fails here.
+func TestTheTransferShareIsADrawOnTheBudget(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+
+	type sample struct {
+		budget ByteCount
+		share  ByteCount
+	}
+	samples := []sample{}
+	for _, budget := range []ByteCount{mib(16), mib(64), mib(256), mib(1024)} {
+		SetMemoryBudget(budget)
+		samples = append(samples, sample{budget: budget, share: transferBudgetShareByteCount()})
+	}
+	for _, s := range samples {
+		t.Logf("budget %d: share %d (%.3f of it)", s.budget, s.share,
+			float64(s.share)/float64(s.budget))
+	}
+
+	for i := 1; i < len(samples); i += 1 {
+		previous, current := samples[i-1], samples[i]
+		wantRatio := float64(current.budget) / float64(previous.budget)
+		gotRatio := float64(current.share) / float64(max(previous.share, 1))
+		if gotRatio < 0.99*wantRatio || 1.01*wantRatio < gotRatio {
+			t.Errorf(
+				"the budget went from %d to %d, %.1f times, and the share went %d to %d, %.2f times; a share has to be a fraction of the budget, and one that stops growing above the reference is a memory-scaled constant wearing a new name",
+				previous.budget, current.budget, wantRatio,
+				previous.share, current.share, gotRatio,
+			)
+		}
+	}
+
+	// and the absence of a budget is the absence of the surface, not a small
+	// share: an unbudgeted process keeps today's constant
+	SetMemoryBudget(0)
+	if share := transferBudgetShareByteCount(); share != 0 {
+		t.Errorf("an unbudgeted process computed a share of %d; it has no budget to draw on", share)
+	}
+	settings := DefaultSendBufferSettingsWithBufferSize(defaultTransferBufferSize)
+	settings.WindowSizing = WindowSizingFromDelivery
+	settings.ApplyWindowSizing()
+	if settings.ResendQueueBudget != nil {
+		t.Errorf(
+			"an unbudgeted process was given a %d byte transfer budget out of nothing",
+			settings.ResendQueueBudget.TotalByteCount(),
+		)
+	}
+	if settings.ResendQueueMaxByteCount != MemoryScaledByteCount(mib(2), kib(256)) {
+		t.Errorf(
+			"an unbudgeted process's constant window is %d rather than today's %d; falling to a floor here would make every unbudgeted provider slower the moment the rule is turned on, which is the opposite of the point",
+			settings.ResendQueueMaxByteCount,
+			MemoryScaledByteCount(mib(2), kib(256)),
+		)
+	}
+
+	// the hold moves with the window, or it is the binder the moment windows
+	// can grow: 2.5 MiB is 90 Mb/s at a 200 ms round trip
+	SetMemoryBudget(mib(256))
+	receive := DefaultReceiveBufferSettingsWithBufferSize(defaultTransferBufferSize)
+	receive.WindowSizing = WindowSizingFromDelivery
+	receive.ApplyWindowSizing()
+	if receive.ReceiveQueueMaxByteCount != transferBudgetShareByteCount() {
+		t.Errorf(
+			"the hold is %d against a %d byte share; if windows can grow and holds cannot, the hold binds and the whole raise is inert above it",
+			receive.ReceiveQueueMaxByteCount,
+			transferBudgetShareByteCount(),
+		)
+	}
+}

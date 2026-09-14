@@ -702,16 +702,36 @@ const goodputFactor = 0.845
 // longer window-limited (§36.7).
 const deliverySizedWindowScale = 2
 
-// The shared byte budget the send queues draw on when the rule is on.
+// The fraction of the process memory budget each transfer direction draws.
 //
-// Derived from the process memory budget the hosts already set rather than
-// being a new number. The fraction is the one quantity chosen here rather than
-// derived: a quarter of the reference budget, which is the share the platform
-// carriers already take (`newDefaultPlatformTransportBudget`), and it bounds
-// the aggregate the way §37.7 asks — permissions may sum above it, occupancy
-// may not.
-func defaultResendQueueBudgetByteCount() ByteCount {
-	return MemoryScaledByteCount(mib(16), mib(1))
+// One eighth, which is 8 MiB at the 64 MiB reference: above today's 2 MiB
+// window and 2.5 MiB hold, which is the point, and small enough that the two
+// directions plus the carriers' quarter leave the process most of its budget.
+// The fraction is the one quantity chosen here rather than derived.
+const transferBudgetShareDivisor = 8
+
+// The shared byte budget the transfer queues draw on when the rule is on.
+//
+// A draw on the total budget, proportional to it. It must never be a
+// memory-scaled constant, and the distinction is the whole finding: the memory
+// scale returns one at or above the 64 MiB reference and a fraction below, so
+// every constant in this system was sized for a reference host and can only
+// shrink from there. A provider with eight gigabytes runs a 64 MiB device's
+// window, which is why no amount of memory has ever made this system faster.
+// A share computed by scaling a constant would carry that defect forward under
+// a new name, and the adjacent lines in this file all do exactly that, so
+// `TestTheTransferShareIsADrawOnTheBudget` fails if this is ever rewritten in
+// the local idiom.
+//
+// Zero means the process has no budget. That is not a small share, it is the
+// absence of the surface, and the caller must then keep today's constant
+// rather than fall to a floor.
+func transferBudgetShareByteCount() ByteCount {
+	budget := MemoryBudget()
+	if budget <= 0 {
+		return 0
+	}
+	return budget / transferBudgetShareDivisor
 }
 
 // The initial bet: what a sender may have outstanding before it has heard
@@ -751,14 +771,21 @@ func (self *SendBufferSettings) ApplyWindowSizing() {
 	case WindowSizingFromDelivery:
 		self.DeliverySizedWindowScale = deliverySizedWindowScale
 		self.TargetGoodputByteRate = targetGoodputByteRate
-		if self.ResendQueueBudget == nil {
-			self.ResendQueueBudget = NewTransferMemoryBudget(
-				defaultResendQueueBudgetByteCount(),
-			)
-		}
-		if self.DeliverySizedWindowCeilingByteCount <= 0 {
-			self.DeliverySizedWindowCeilingByteCount =
-				self.ResendQueueBudget.TotalByteCount()
+		// An unbudgeted process cannot participate in the surface at all, and
+		// the right answer for it is today's behaviour rather than a floor: a
+		// share of nothing is nothing, and falling to the floor would make
+		// every unbudgeted provider slower the moment the rule is turned on,
+		// which is the opposite of the point. The absence is legible rather
+		// than silent — the estimate says "no memory budget" and reports the
+		// constant it is holding.
+		if share := transferBudgetShareByteCount(); 0 < share {
+			if self.ResendQueueBudget == nil {
+				self.ResendQueueBudget = NewTransferMemoryBudget(share)
+			}
+			if self.DeliverySizedWindowCeilingByteCount <= 0 {
+				self.DeliverySizedWindowCeilingByteCount =
+					self.ResendQueueBudget.TotalByteCount()
+			}
 		}
 	default:
 		self.DeliverySizedWindowScale = 0
@@ -895,12 +922,45 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 	return settings
 }
 
+// ApplyWindowSizing derives the hold from the surface.
+//
+// The hold has to move with the window or it becomes the binder the moment
+// windows can grow: 2.5 MiB is 90 Mb/s at a 200 ms round trip, and the whole
+// raise is inert above it. Deriving both from the same share also makes the
+// window-under-hold relationship hold at every pair of budgets by
+// construction, between peers that advertise; against a legacy sender,
+// committed-prefix acknowledgement makes an overrun cost bandwidth rather than
+// correctness, so no floor raise is needed anywhere.
+//
+// An honest limit, stated here rather than only in the design. A phone cannot
+// reach the target on a long path within its budget, by arithmetic: one window
+// at one gigabit per second on a 200 ms path is 29 MB framed against 25 MB for
+// the whole process. At an 8 MiB receive share the plateau is 290 Mb/s at
+// 200 ms, which is the target at 58 ms and below. That is acceptable because it
+// fails visibly — the window equals the advertised capacity and the estimate
+// names the term that bound it — rather than silently at a constant, which is
+// the whole difference between this and what it replaces.
+func (self *ReceiveBufferSettings) ApplyWindowSizing() {
+	switch self.WindowSizing {
+	case WindowSizingFromDelivery:
+		if share := transferBudgetShareByteCount(); 0 < share {
+			self.ReceiveQueueMaxByteCount = max(share, self.ReceiveQueueMinByteCount)
+			if self.ReceiveQueueBudget == nil {
+				self.ReceiveQueueBudget = NewTransferMemoryBudget(share)
+			}
+		}
+		self.AdvertiseReceiveWindow = true
+	default:
+		self.AdvertiseReceiveWindow = false
+	}
+}
+
 func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 	return DefaultReceiveBufferSettingsWithBufferSize(defaultReceiveSequenceBufferSize)
 }
 
 func DefaultReceiveBufferSettingsWithBufferSize(bufferSize int) *ReceiveBufferSettings {
-	return &ReceiveBufferSettings{
+	settings := &ReceiveBufferSettings{
 		GapTimeout: 60 * time.Second,
 		// the receive idle timeout should be a bit longer than the send idle timeout
 		IdleTimeout:          120 * time.Second,
@@ -940,6 +1000,9 @@ func DefaultReceiveBufferSettingsWithBufferSize(bufferSize int) *ReceiveBufferSe
 		MaxOpenReceiveContract:   4,
 		ProtocolVersion:          DefaultProtocolVersion,
 	}
+	settings.WindowSizing = DefaultWindowSizing()
+	settings.ApplyWindowSizing()
+	return settings
 }
 
 func DefaultForwardBufferSettings() *ForwardBufferSettings {
@@ -9388,7 +9451,11 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	// forty downloaders would multiply.
 	budget := self.resendQueue.Budget()
 	if budget == nil {
-		estimate.Reason = "no memory budget"
+		// Not a small share: the absence of the surface. An unbudgeted process
+		// keeps today's constant rather than falling to a floor, which would
+		// make every unbudgeted provider slower the moment the rule is on
+		// (THROUGHPUTFIX §37.22). Named so it is legible rather than silent.
+		estimate.Reason = "no memory budget: holding today's constant"
 		return estimate
 	}
 	ceiling := self.sendBufferSettings.DeliverySizedWindowCeilingByteCount
@@ -9396,7 +9463,23 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 		ceiling = initial
 	}
 	ceiling = max(ceiling, floor)
-	ceiling = min(ceiling, budget.TotalByteCount())
+	// What this sequence can obtain rather than what the pool holds. With many
+	// sequences drawing on one budget — a provider serving many downloaders is
+	// the case, and the only one where a per-sequence window multiplies
+	// against a fixed total — every sequence reporting the pool's total is
+	// every sequence claiming permission none of them has. Measured with eight
+	// sequences on a 2 MiB pool before this: all eight reported a 2 MiB
+	// ceiling while none could have held more than a fraction of it.
+	//
+	// The floor is unconditional, so nothing here can starve a sequence: a
+	// queue below its floor is admitted whatever the pool says, which is also
+	// why the aggregate bound is the floors plus the budget rather than the
+	// budget alone.
+	if obtainable := self.resendQueue.ObtainableByteCount(); 0 < obtainable {
+		ceiling = min(ceiling, max(obtainable, floor))
+	} else {
+		ceiling = min(ceiling, budget.TotalByteCount())
+	}
 
 	// The receiver it can see, and the three cases are different facts
 	// (THROUGHPUTFIX §37.21).
@@ -9510,12 +9593,40 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 		return estimate
 	}
 	estimate.Sized = true
-	estimate.Reason = "sized"
 	perRoundTrip := ByteCount(int64(delivered) * roundTrip.Min.Nanoseconds() / span.Nanoseconds())
 	if capped := ByteCount(scale) * perRoundTrip; capped < estimate.Window {
 		estimate.Window = max(capped, floor)
+		estimate.Reason = "delivery"
+	} else {
+		estimate.Reason = estimate.bindingTerm(self)
 	}
 	return estimate
+}
+
+// Names the bound the window landed on, so a flow that cannot reach the target
+// says why in its own fields rather than sitting silently at a number. That
+// visibility is the difference between this rule and the constants it
+// replaces: a phone on a long path is bound by its advertised capacity and
+// says so, where before it was bound by a constant and said nothing.
+func (self SendWindowEstimate) bindingTerm(sequence *SendSequence) string {
+	if self.Window <= self.Floor {
+		return "floor"
+	}
+	if self.Window < self.Ceiling {
+		return "the initial bet"
+	}
+	if advertised, ok := sequence.receivedWindowAdvertisement(); ok &&
+		advertised <= self.Ceiling {
+		return "the peer's advertised capacity"
+	}
+	if budget := sequence.resendQueue.Budget(); budget != nil &&
+		budget.TotalByteCount() <= self.Ceiling {
+		return "the memory budget's share"
+	}
+	if 0 < sequence.sendBufferSettings.TargetGoodputByteRate {
+		return "the target"
+	}
+	return "sized"
 }
 
 // reliableAdmissionByteLimit is what this sequence may hold unacknowledged
@@ -10523,6 +10634,9 @@ type ReceiveBufferSettings struct {
 	// ReceiveQueueBudget, when set, is a byte budget shared across sequences
 	// (see `ResendQueueBudget`)
 	ReceiveQueueBudget *TransferMemoryBudget
+	// WindowSizing derives the hold from the surface, the same one switch the
+	// send side takes (THROUGHPUTFIX §37.4). Constant is today's hold exactly.
+	WindowSizing WindowSizingPolicyKind
 	// AdvertiseReceiveWindow puts what this receiver can still hold out of
 	// order on the acknowledgement, so the sender may clamp its window to it
 	// (THROUGHPUTFIX §37.3). Off by default and held out of the landing until
