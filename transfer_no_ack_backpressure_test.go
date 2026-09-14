@@ -32,7 +32,11 @@ import (
 //   - the ordered sequence goroutine, where a stalled reliable pack at the head
 //     delays everything behind it whatever its semantics;
 //   - the memory budget admission, if a no-acknowledgement pack draws on the
-//     same pool.
+//     same pool;
+//   - and, after admission, a route write that fails or times out, where the
+//     pack is discarded with no retry and the error reaches only an
+//     acknowledgement callback that is a no-op for IP callers and an observer
+//     that is nil by default. SendNoAckDiscardCount covers that one.
 //
 // The shape: fill the sequence's resend queue to its bound with reliable
 // traffic whose acknowledgements are withheld, so it stays full, then send
@@ -160,6 +164,12 @@ func TestANoAckPackIsNotHeldOrDroppedByAFullResendQueue(t *testing.T) {
 		// let anything still in flight land before the counters are read
 		time.Sleep(200 * time.Millisecond)
 		stats := harness.sender.ReceiveStats()
+		if 0 < stats.SendNoAckDiscardCount {
+			t.Logf(
+				"%d no-acknowledgement packs were discarded after admission, on a failed write or a contract that could not be created",
+				stats.SendNoAckDiscardCount,
+			)
+		}
 		return len(latencies), latencies,
 			stats.SendNoAckOfferedCount, stats.SendNoAckWriteCount, stats.SendNoAckRefusedCount
 	}

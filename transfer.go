@@ -1590,6 +1590,9 @@ type ClientReceiveStatsSnapshot struct {
 	SendNoAckOfferedCount uint64
 	SendNoAckWriteCount   uint64
 	SendNoAckRefusedCount uint64
+	// no-acknowledgement packs discarded after admission, on a failed route
+	// write or a contract that could not be created
+	SendNoAckDiscardCount uint64
 	// evictions the notice could not carry, which are the ones that still cost
 	// a sixty second lease
 	ReceiveQueueEvictionNoticeOverflow uint64
@@ -1825,6 +1828,7 @@ type Client struct {
 	sendNoAckOfferedCount               atomic.Uint64
 	sendNoAckWriteCount                 atomic.Uint64
 	sendNoAckRefusedCount               atomic.Uint64
+	sendNoAckDiscardCount               atomic.Uint64
 	receiveQueueEvictionNoticeOverflow  atomic.Uint64
 	sendEvictionResendCount             atomic.Uint64
 	receiveAckHandoffDropCount          atomic.Uint64
@@ -2189,6 +2193,7 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		SendNoAckOfferedCount:                  self.sendNoAckOfferedCount.Load(),
 		SendNoAckWriteCount:                    self.sendNoAckWriteCount.Load(),
 		SendNoAckRefusedCount:                  self.sendNoAckRefusedCount.Load(),
+		SendNoAckDiscardCount:                  self.sendNoAckDiscardCount.Load(),
 		ReceiveQueueEvictionByteCount:          self.receiveQueueEvictionByteCount.Load(),
 		ReceiveQueueEvictionNoticeOverflow:     self.receiveQueueEvictionNoticeOverflow.Load(),
 		AckHandoffDropCount:                    self.receiveAckHandoffDropCount.Load(),
@@ -7988,6 +7993,11 @@ sendSequenceLoop:
 
 				err := self.classifyContractCreationFailure(contractErr)
 				for packIndex := range sendPackCount {
+					// same silent discard as a failed write, by a different
+					// route: no retry, and the error reaches nothing that counts
+					if !sendPacks[packIndex].Ack && self.client != nil {
+						self.client.sendNoAckDiscardCount.Add(1)
+					}
 					sendPacks[packIndex].completeLifecycleFirstRouteWrite(err)
 					sendPacks[packIndex].completeNoAck(err)
 					sendPacks[packIndex].invokeAck(err)
@@ -8865,6 +8875,15 @@ func (self *SendSequence) sendWithSetContractRecords(
 	// Requested NoAck completion is an initial route-write disposition, not a
 	// wire-ack disposition. Invoke it once here even when an unacknowledged
 	// opening contract temporarily forced this Pack onto the Ack lane.
+	//
+	// A failure here is the end of the road for these packs: there is no retry
+	// by construction, and the error goes only to an acknowledgement callback
+	// that is a no-op for IP callers and to an observer that is nil by
+	// default. Count it, or it is a silent discard that looks like ordinary
+	// loss (THROUGHPUTFIX §37.23).
+	if err != nil && 0 < noAckSends.count {
+		self.client.sendNoAckDiscardCount.Add(uint64(noAckSends.count))
+	}
 	noAckSends.complete(err)
 
 	if ack {
