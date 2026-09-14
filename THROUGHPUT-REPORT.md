@@ -331,7 +331,35 @@ further on a small-memory host.
 **This is why the send rule ships default-off.** Enabling it without the
 receive side would trade throughput for a loss-recovery regression.
 
-### 3.9 The next ceiling, at ~4 MiB
+### 3.8a The window is an admission limit, not an allocation
+
+A prediction of mine, falsified. With the interval defect, a SHORT path is the
+worst case -- at a 5 ms delay the rule used 300 ms as its interval, a 27x
+overshoot, computing a 16 MiB window against a 2 MiB fixed arm, with zero
+variance. So I predicted the low-latency guard would fail on memory.
+
+The window figures confirmed exactly that. The memory did not follow:
+
+  peak pool   1.043 vs 1.051 MiB   (the LARGER window higher in 5 of 10)
+  peak heap   +0.080 MiB against a 0.656 MiB A/A band
+  at 64 MiB   both deltas negative
+
+Peak pool is **0.066 of the 16 MiB window** and 0.52 of the 2 MiB one. The
+window bounds what may be admitted, not what is held, and a short path cannot
+fill it. An oversized window on a short path is harmless *because* the path is
+short.
+
+That loosens the compounding argument in the design, which summed the target
+times each loop's round trip across three retransmission copies and treated
+that as held memory. It is a bound on admission; occupancy is lower wherever
+the path is short.
+
+WHAT THIS DOES NOT CLEAR, and it is now the sharpest open risk: the cell has no
+bottleneck below the sender's rate, so the queue drains as fast as it fills. On
+a real path with a slow last mile the sender can outrun the drain and the queue
+fills toward the window. Untested. A slow-drain cell is being built for it.
+
+### 3.9 The next ceiling, at ~4 MiB, identified
 
 Both sweeps plateau from 8 MiB upward. It is a *window*, not a rate: 129.5
 against 65.1 is a factor of 1.99 across a doubled delay, with bytes in flight
@@ -343,8 +371,28 @@ we withdrew. Two reasons: 3.24 MB of goodput in flight cannot come from a
 cell's carrier is in-process, so no QUIC stream and no carrier socket exist in
 the measured path at all.
 
-OPEN: which inner window sets it. Two candidates at 4 MiB, being separated by
-halving each in turn.
+**IDENTIFIED: the tun's own send buffer at its 4 MiB cap.** Both opposite
+predictions hit, 32/32 runs valid, disjoint distributions:
+
+  tun default, origin default   154.5 Mb/s   ratio 1.000
+  tun default, origin reduced   154.0        ratio 0.997  (predicted 1.00)
+  tun halved,  origin default    79.6        ratio 0.515  (predicted 0.50)
+
+Effective window is 0.92 of the cap at 4 MiB, 0.95 at 2 MiB.
+
+The origin's kernel socket is excluded twice over: it sits on the
+provider-to-origin loopback loop, not the delayed loop, so it cannot be a
+200 ms window; and its default had already autotuned ABOVE the reduced request
+while the plateau still tracked the tun. (An explicit SO_SNDBUF disables
+autotuning and Linux doubles the request, so the origin arm was a 20% cut
+rather than a halving. The exclusion survives it: a 50% tun cut moved
+throughput 48.5%, one-for-one, so a 20% cut to a binding origin socket should
+have moved ~20%. It moved 0.3%.)
+
+The 0.845 framing factor is confirmed by measurement at 0.8605 against a
+derived 0.865, agreeing to 0.5%. The stated frame arithmetic gives 0.901
+rather than 0.865, so the conclusion is confirmed and the frame size in the
+derivation is not.
 
 A related finding stands on its own: `H3MaxStreamReceiveWindowByteCount` is a
 fixed 3 MiB that memory scaling can only lower, and quic-go grows toward it
@@ -364,7 +412,12 @@ count not derived from the path. On a real H3 carrier it would bind at 3 MiB.
 | Does the receive side need path sizing, or receiver-advertised flow control? | In design. The second is a wire change |
 | What does the rule cost in memory while doing nothing? | Queued with the above |
 | Which inner window sets the 4 MiB plateau? | Queued |
+| Does occupancy approach the window when the drain is slower than the sender? | Being built. **The one untested memory risk** |
 | Why do 8 flows give 1.84x one flow, identically with and without the Transfer layer? | Unexplained |
+
+RETIRED: an "unattributed ceiling near 190 Mb/s" appears in earlier notes and
+does not survive. The same cell runs 651-671 Mb/s at 5.4 ms. It came from older
+campaigns under different configuration and was never a property of the cell.
 
 The rule ships **default-off** until the no-op guard answers.
 
