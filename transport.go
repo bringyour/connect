@@ -970,6 +970,10 @@ type PlatformTransport struct {
 	familyHold    atomic.Int32
 	held          *MonitorValue[bool]
 	pinnedBackoff *pinnedDialBackoff
+	// unresolvable is a pinned transport's mark that its most recent dial
+	// attempt failed because the hostname does not resolve; the group reads
+	// it to release the standby early. See noteDialError.
+	unresolvable atomic.Bool
 }
 
 // newPlatformQuicConfig keeps H3's memory and path-MTU behavior explicit and
@@ -2095,6 +2099,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			if self.ctx.Err() == nil {
 				self.noteDialFailure()
 			}
+			// err here is the strategy's flattened "Timeout."; a pinned
+			// transport classified each dialer attempt's typed error through
+			// the observer in dialContext (noteDialError)
 			if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
 					self.log.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
@@ -2922,6 +2929,9 @@ func (self *PlatformTransport) runH3(
 			if ctx.Err() == nil {
 				if !attemptCanceled {
 					self.noteDialFailure()
+					// the h3 resolve error reaches here typed, unlike the
+					// h1 strategy's flattened "Timeout."
+					self.noteDialError(err)
 				}
 			}
 			if ok, suppressed := shouldLogAuthErr(); ok {

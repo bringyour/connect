@@ -27,7 +27,10 @@ package connect
 // dials only after StandbyDelay has elapsed with neither pinned transport
 // connected, and it stands down again when one connects. That covers
 // unprovisioned family names, blocked DNS and censored networks, where the
-// provider is then tagged legacy v4 by the platform.
+// provider is then tagged legacy v4 by the platform. The delay is skipped
+// when no pinned transport can connect soon: every configured pin is held
+// (sleeping or idle by policy) or its last dial failed because its hostname
+// does not resolve. Any other failure keeps the delay.
 //
 // Concurrency: transport state added here follows the transport's own rules
 // (atomics and MonitorValues, nothing held across a dial). The group's mutable
@@ -72,6 +75,33 @@ func pinnedIpFamilyFromContext(ctx context.Context) int {
 		return normalizeIpFamily(ipFamily)
 	}
 	return 0
+}
+
+// dialAttemptObserverContextKey carries a pinned transport's observer of each
+// dialer attempt through the client strategy. The strategy keeps trying its
+// dialers until the request timeout and reports a failed dial only as
+// "Timeout.", so the reason a dial failed is only visible where the strategy
+// sees each attempt's typed error.
+type dialAttemptObserverContextKey struct{}
+
+// withDialAttemptObserver tags ctx with the observer the strategy calls with
+// the result of every dialer attempt, nil for a success.
+func withDialAttemptObserver(ctx context.Context, observer func(error)) context.Context {
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, dialAttemptObserverContextKey{}, observer)
+}
+
+// observeDialAttempt reports one dialer attempt's outcome to the observer in
+// ctx, if any.
+func observeDialAttempt(ctx context.Context, err error) {
+	if ctx == nil {
+		return
+	}
+	if observer, ok := ctx.Value(dialAttemptObserverContextKey{}).(func(error)); ok {
+		observer(err)
+	}
 }
 
 // normalizeIpFamily is 4 or 6, else 0.
@@ -444,9 +474,13 @@ func (self *PlatformTransport) runFamilyHoldWatcher() {
 }
 
 // dialContext tags a dial with the pinned family so the strategy's tls dial
-// helper narrows the network before resolution.
+// helper narrows the network before resolution, and with the attempt observer
+// that classifies each dialer attempt's typed error (see noteDialError).
 func (self *PlatformTransport) dialContext(ctx context.Context) context.Context {
-	return withPinnedIpFamily(ctx, self.ipFamily)
+	if !self.pinned() {
+		return ctx
+	}
+	return withDialAttemptObserver(withPinnedIpFamily(ctx, self.ipFamily), self.noteDialError)
 }
 
 // applyIntentHeader declares the pinned family on the h1 v2 auth headers. A
@@ -498,9 +532,43 @@ func (self *PlatformTransport) noteDialFailure() {
 func (self *PlatformTransport) noteDialSuccess() {
 	if self.pinned() {
 		self.pinnedBackoff.reset()
+		self.setUnresolvable(false)
 		return
 	}
 	noteBackendSuccess()
+}
+
+// noteDialError classifies one dial attempt of a pinned transport. A hostname
+// the resolver reports as not found (NXDOMAIN, or an answer with no record of
+// the pinned family) marks the transport unresolvable, which lets the group
+// release its standby at once; a success or any other failure clears the
+// mark, because a name that resolves may connect on the next attempt.
+func (self *PlatformTransport) noteDialError(err error) {
+	if !self.pinned() {
+		return
+	}
+	self.setUnresolvable(err != nil && authoritativeDnsMiss(err))
+}
+
+// setUnresolvable stores the mark and wakes the group through the connected
+// monitor when it changed, so the standby decision is re-evaluated promptly.
+func (self *PlatformTransport) setUnresolvable(unresolvable bool) {
+	if self.unresolvable.Swap(unresolvable) == unresolvable {
+		return
+	}
+	// one line per transition, never per attempt
+	if unresolvable {
+		self.log.Infof("[t]ipv%d transport hostname does not resolve\n", self.ipFamily)
+	} else {
+		self.log.Infof("[t]ipv%d transport hostname resolves\n", self.ipFamily)
+	}
+	self.connectedMonitor.NotifyAll()
+}
+
+// unresolvableHost reports whether the most recent dial attempt failed
+// because the hostname does not resolve.
+func (self *PlatformTransport) unresolvableHost() bool {
+	return self.unresolvable.Load()
 }
 
 // noteKick resets a pinned transport's backoff: a network change is a fresh
@@ -803,7 +871,10 @@ func raceH3Dial(
 type FamilyPlatformTransportGroupSettings struct {
 	// StandbyDelay is how long neither pinned transport may be connected
 	// (since the group started, or since the last pinned disconnect) before
-	// the family-agnostic standby dials.
+	// the family-agnostic standby dials. The delay is skipped while no pinned
+	// transport can connect soon: every configured pinned transport is held
+	// (sleeping or idle by policy) or its last dial failed because its
+	// hostname does not resolve. Any other failure waits out the delay.
 	StandbyDelay time.Duration
 }
 
@@ -994,6 +1065,10 @@ func (self *FamilyPlatformTransportGroup) run() {
 						self.log.Infof("[t]standby transport dials: no pinned transport connected for %s\n", self.settings.StandbyDelay)
 						self.standbyTransport.SetEnabled(true)
 						self.standbyActive = true
+					} else if self.pinnedCannotConnectWithLock() {
+						self.log.Infof("[t]standby transport dials: no pinned transport can connect (hostname does not resolve, or held)\n")
+						self.standbyTransport.SetEnabled(true)
+						self.standbyActive = true
 					} else {
 						t := time.NewTimer(self.standbyDueTime.Sub(now))
 						timer = t.C
@@ -1041,6 +1116,29 @@ func (self *FamilyPlatformTransportGroup) run() {
 func (self *FamilyPlatformTransportGroup) pinnedConnectedWithLock() bool {
 	return (self.ipv4Transport != nil && self.ipv4Transport.IsConnected()) ||
 		(self.ipv6Transport != nil && self.ipv6Transport.IsConnected())
+}
+
+// pinnedCannotConnectWithLock reports whether no pinned transport can connect
+// soon, which releases the standby before StandbyDelay: every configured
+// pinned transport is held (sleeping without a path of its family, or idle
+// under a contradicting Force) or its last dial failed because its hostname
+// does not resolve. A pinned transport that is plain connecting, whatever
+// its last error, keeps the delay.
+func (self *FamilyPlatformTransportGroup) pinnedCannotConnectWithLock() bool {
+	cannotConnect := func(transport *PlatformTransport) bool {
+		if transport == nil {
+			return true
+		}
+		switch transport.State() {
+		case PlatformTransportStateSleeping, PlatformTransportStateIdlePolicy:
+			return true
+		case PlatformTransportStateConnecting:
+			return transport.unresolvableHost()
+		default:
+			return false
+		}
+	}
+	return cannotConnect(self.ipv4Transport) && cannotConnect(self.ipv6Transport)
 }
 
 func (self *FamilyPlatformTransportGroup) connectedWithLock() bool {

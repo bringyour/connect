@@ -22,6 +22,14 @@ import (
 // resolver order, external DNS, and whether the test host has IPv6 configured.
 func newFamilyTestResolver(t *testing.T, addrs ...netip.Addr) *net.Resolver {
 	t.Helper()
+	return newFamilyTestResolverOwning(t, "", addrs...)
+}
+
+// newFamilyTestResolverOwning answers addrs for ownedHost only and NXDOMAIN
+// for every other name, the shape of an unprovisioned family hostname. An
+// empty ownedHost answers every name.
+func newFamilyTestResolverOwning(t *testing.T, ownedHost string, addrs ...netip.Addr) *net.Resolver {
+	t.Helper()
 	packetConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +52,11 @@ func newFamilyTestResolver(t *testing.T, addrs ...netip.Addr) *net.Resolver {
 				RecursionAvailable: true,
 			},
 			Questions: query.Questions,
+		}
+		if ownedHost != "" && !strings.EqualFold(strings.TrimSuffix(question.Name.String(), "."), ownedHost) {
+			response.Header.RCode = dnsmessage.RCodeNameError
+			payload, err := response.Pack()
+			return payload, err == nil
 		}
 		for _, addr := range addrs {
 			addr = addr.Unmap()

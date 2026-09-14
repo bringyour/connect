@@ -33,9 +33,37 @@ const familyTransportTestHost = "platform.family.test"
 // fail to exercise selection when both address families are offered.
 func newTestingFamilyStrategySettings(t *testing.T) *ClientStrategySettings {
 	t.Helper()
+	return newTestingFamilyStrategySettingsWithResolver(t, newFamilyTestResolver(t,
+		netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1")))
+}
+
+// familyTransportMissingUrl is a family platform url whose hostname the
+// owning fixture (newTestingFamilyStrategySettingsOwningHost) answers
+// NXDOMAIN, the shape of an unprovisioned connect-v4/-v6 name.
+func familyTransportMissingUrl(ipFamily int) string {
+	return fmt.Sprintf("ws://connect-v%d.missing.family.test:1", ipFamily)
+}
+
+// newTestingFamilyStrategySettingsOwningHost is newTestingFamilyStrategySettings
+// with a fixture that owns only the family hostname: every other name is not
+// found, and the fixture is checked to report the missing name that way.
+func newTestingFamilyStrategySettingsOwningHost(t *testing.T) *ClientStrategySettings {
+	t.Helper()
+	settings := newTestingFamilyStrategySettingsWithResolver(t, newFamilyTestResolverOwning(t, familyTransportTestHost,
+		netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1")))
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := settings.ConnectSettings.Resolver.LookupIPAddr(ctx, "connect-v4.missing.family.test")
+	if !authoritativeDnsMiss(err) {
+		t.Fatalf("unowned hostname must be reported not found by the fixture, got %v", err)
+	}
+	return settings
+}
+
+func newTestingFamilyStrategySettingsWithResolver(t *testing.T, resolver *net.Resolver) *ClientStrategySettings {
+	t.Helper()
 	settings := DefaultClientStrategySettings()
-	settings.ConnectSettings.Resolver = newFamilyTestResolver(t,
-		netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1"))
+	settings.ConnectSettings.Resolver = resolver
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	addrs, err := settings.ConnectSettings.Resolver.LookupIPAddr(ctx, familyTransportTestHost)
@@ -484,17 +512,8 @@ func TestFamilyPlatformTransportGroupStandby(t *testing.T) {
 
 	// reserve a v4 port for the pinned platform to appear on later, and a
 	// dead port for the v6 pin
-	reserve := func(network string, host string) int {
-		listener, err := net.Listen(network, net.JoinHostPort(host, "0"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := listener.Addr().(*net.TCPAddr).Port
-		listener.Close()
-		return port
-	}
-	v4Port := reserve("tcp4", "127.0.0.1")
-	v6Port := reserve("tcp6", "::1")
+	v4Port := reserveTestPort(t, "tcp4", "127.0.0.1")
+	v6Port := reserveTestPort(t, "tcp6", "::1")
 	standbyPlatform := newTestingFamilyPlatformServer(t, 4, false)
 
 	settings := testingFamilyTransportSettings()
@@ -565,6 +584,148 @@ func TestFamilyPlatformTransportGroupStandby(t *testing.T) {
 	}
 	if len(group.Transports()) != 3 {
 		t.Fatalf("transports = %d, want 3", len(group.Transports()))
+	}
+}
+
+// reserveTestPort is a port nothing listens on: bound once and released.
+func reserveTestPort(t *testing.T, network string, host string) int {
+	t.Helper()
+	listener, err := net.Listen(network, net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	return port
+}
+
+// newTestingFamilyGroupWithLongDelay is a group whose standby may dial only
+// through the cannot-connect release: the delay is far beyond the test.
+func newTestingFamilyGroupWithLongDelay(t *testing.T, ctx context.Context, clientSettings *ClientStrategySettings, standbyUrl string, platformUrlV4 string, platformUrlV6 string) *FamilyPlatformTransportGroup {
+	t.Helper()
+	settings := testingFamilyTransportSettings()
+	settings.ReconnectTimeout = 20 * time.Millisecond
+	settings.PinnedReconnectMaxTimeout = 100 * time.Millisecond
+	strategy := NewClientStrategy(ctx, clientSettings)
+	t.Cleanup(strategy.Close)
+	group := NewFamilyPlatformTransportGroup(
+		ctx,
+		clientSettings,
+		strategy,
+		NewRouteManager(ctx, "group"),
+		standbyUrl,
+		platformUrlV4,
+		platformUrlV6,
+		testingFamilyAuth(),
+		TransportModeH1,
+		settings,
+		&FamilyPlatformTransportGroupSettings{StandbyDelay: 30 * time.Second},
+	)
+	t.Cleanup(group.Close)
+	return group
+}
+
+// The standby is released at once, well before StandbyDelay, when every
+// pinned hostname does not resolve: the pins cannot connect soon, so waiting
+// out the delay only keeps the provider unreachable.
+func TestFamilyPlatformTransportGroupReleasesStandbyWhenPinsDoNotResolve(t *testing.T) {
+	clientSettings := newTestingFamilyStrategySettingsOwningHost(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	standbyPlatform := newTestingFamilyPlatformServer(t, 4, false)
+	start := time.Now()
+	group := newTestingFamilyGroupWithLongDelay(t, ctx, clientSettings,
+		standbyPlatform.dualStackURL(), familyTransportMissingUrl(4), familyTransportMissingUrl(6))
+
+	if !waitForCondition(5*time.Second, group.Ipv4Transport().unresolvableHost) {
+		t.Fatalf("v4 pin never marked its hostname unresolvable: %+v", group.Status())
+	}
+	receiveFamilyConnection(t, standbyPlatform, 5*time.Second)
+	if !waitForCondition(5*time.Second, group.IsConnected) {
+		t.Fatal("standby never connected")
+	}
+	if elapsed := time.Since(start); 5*time.Second <= elapsed {
+		t.Fatalf("standby took %s, want well before the %s delay", elapsed, 30*time.Second)
+	}
+	status := group.Status()
+	if !status.StandbyActive || status.Standby != PlatformTransportStateConnected {
+		t.Fatalf("standby status = %+v", status)
+	}
+	// the pins keep dialing, so a name provisioned later still wins
+	for _, state := range []PlatformTransportState{status.Ipv4, status.Ipv6} {
+		if state != PlatformTransportStateConnecting && state != PlatformTransportStateSleeping {
+			t.Fatalf("pinned status with unresolvable names = %+v", status)
+		}
+	}
+}
+
+// Names that resolve but do not answer keep the delay: a dead port is not
+// evidence that the pin cannot connect soon.
+func TestFamilyPlatformTransportGroupStandbyWaitsWhenPinsResolve(t *testing.T) {
+	clientSettings := newTestingFamilyStrategySettingsOwningHost(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v4Port := reserveTestPort(t, "tcp4", "127.0.0.1")
+	v6Port := reserveTestPort(t, "tcp6", "::1")
+	standbyPlatform := newTestingFamilyPlatformServer(t, 4, false)
+	group := newTestingFamilyGroupWithLongDelay(t, ctx, clientSettings,
+		standbyPlatform.dualStackURL(),
+		fmt.Sprintf("ws://%s:%d", familyTransportTestHost, v4Port),
+		fmt.Sprintf("ws://%s:%d", familyTransportTestHost, v6Port),
+	)
+
+	// long enough for many refused dials
+	time.Sleep(1500 * time.Millisecond)
+	if n := standbyPlatform.connectCount.Load(); n != 0 {
+		t.Fatalf("standby connected %d times before the delay", n)
+	}
+	status := group.Status()
+	if status.StandbyActive || status.Standby != PlatformTransportStateDisabled {
+		t.Fatalf("standby released with resolvable pins: %+v", status)
+	}
+	if status.Ipv4 != PlatformTransportStateConnecting {
+		t.Fatalf("v4 pin status with a dead port = %+v", status)
+	}
+	if group.Ipv4Transport().unresolvableHost() {
+		t.Fatal("a refused dial marked the v4 hostname unresolvable")
+	}
+}
+
+// One unresolvable pin beside one that resolves keeps the delay: the
+// resolvable pin may still connect.
+func TestFamilyPlatformTransportGroupStandbyWaitsWithOneResolvablePin(t *testing.T) {
+	clientSettings := newTestingFamilyStrategySettingsOwningHost(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v4Port := reserveTestPort(t, "tcp4", "127.0.0.1")
+	standbyPlatform := newTestingFamilyPlatformServer(t, 4, false)
+	group := newTestingFamilyGroupWithLongDelay(t, ctx, clientSettings,
+		standbyPlatform.dualStackURL(),
+		fmt.Sprintf("ws://%s:%d", familyTransportTestHost, v4Port),
+		familyTransportMissingUrl(6),
+	)
+
+	// the v6 pin cannot connect soon (unresolvable, or sleeping on a host
+	// without ipv6), the v4 pin is plain connecting
+	if !waitForCondition(5*time.Second, func() bool {
+		ipv6 := group.Ipv6Transport()
+		return ipv6.unresolvableHost() || ipv6.State() == PlatformTransportStateSleeping
+	}) {
+		t.Fatalf("v6 pin never marked its hostname unresolvable: %+v", group.Status())
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if n := standbyPlatform.connectCount.Load(); n != 0 {
+		t.Fatalf("standby connected %d times with a resolvable pin", n)
+	}
+	status := group.Status()
+	if status.StandbyActive || status.Standby != PlatformTransportStateDisabled {
+		t.Fatalf("standby released with a resolvable pin: %+v", status)
+	}
+	if status.Ipv4 != PlatformTransportStateConnecting || group.Ipv4Transport().unresolvableHost() {
+		t.Fatalf("v4 pin status with a dead port = %+v", status)
 	}
 }
 
