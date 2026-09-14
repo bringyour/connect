@@ -1,10 +1,13 @@
 package connect
 
 import (
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect/protocol"
 )
 
 // THROUGHPUTFIX §10.9. The provider releases a source whose socket-owned TCP
@@ -306,5 +309,94 @@ func TestSilenceIsInadmissibleWithoutACarrier(t *testing.T) {
 			elapsed,
 			abandonTimeout,
 		)
+	}
+}
+
+// starts one datagram return toward peerId, the UDP mirror of the socket-owned
+// TCP return above; the channel closes when the producer returns
+func startDatagramProviderReturn(
+	t *testing.T,
+	provider *RemoteUserNatProvider,
+	peerId Id,
+) <-chan struct{} {
+	t.Helper()
+	packet := MessagePoolCopy(craftSecurityPacket(
+		IpProtocolUdp,
+		net.ParseIP("203.0.113.7"),
+		53,
+		net.ParseIP("10.0.0.9"),
+		42001,
+		false,
+		[]byte("unreachable destination"),
+	))
+	ipPath, err := ParseIpPath(packet)
+	if err != nil {
+		MessagePoolReturn(packet)
+		t.Fatalf("parse provider UDP return packet: %v", err)
+	}
+	producerReturned := make(chan struct{})
+	go func() {
+		defer close(producerReturned)
+		provider.receiveTransferWithRecovery(
+			SourceId(peerId),
+			TransferKey{
+				ForceStream:         true,
+				EncryptionRole:      protocol.SequenceRole_SequenceRoleServer,
+				EncryptionCompanion: false,
+			},
+			protocol.ProvideMode_Public,
+			receiveRecoveryModeNonblocking,
+			ipPath,
+			packet,
+		)
+	}()
+	return producerReturned
+}
+
+// THROUGHPUTFIX H9, the bounding fact stated positively rather than read off
+// the source. The unbounded retry that the abandon timeout exists to bound is
+// entered only by a socket-owned TCP return: the provider already consumed
+// those upstream bytes and no layer below can reproduce them. A datagram
+// return makes no such promise, so it is refused once and its producer returns,
+// and UDP has no zombie flows to retire and nothing for the release to decide.
+// A refactor that widened the retry to every return would make every UDP flow
+// of a gone client hold a producer for the abandon timeout; this row is what
+// would catch it.
+func TestDatagramReturnDoesNotEnterTheAbandonRetry(t *testing.T) {
+	abandonTimeout := 2 * time.Second
+	provider, localUserNat, client := newUnreachableSourceTestProvider(t, abandonTimeout)
+	peerId := NewId()
+	installUnreachableProviderReturnSequence(t, provider, client, peerId)
+	nat := observeUnreachableSourceNat(t, localUserNat, peerId)
+	nat.finishFlow()
+	released := make(chan struct{})
+	var releasedOnce sync.Once
+	provider.afterUnreachableSourceReleaseForTest = func(Id) {
+		releasedOnce.Do(func() { close(released) })
+	}
+	var attemptCount atomic.Int32
+	provider.afterReturnSendAttemptForTest = func(providerReturnSendResult) {
+		attemptCount.Add(1)
+	}
+
+	started := time.Now()
+	producerReturned := startDatagramProviderReturn(t, provider, peerId)
+	select {
+	case <-producerReturned:
+	case <-time.After(abandonTimeout / 4):
+		t.Fatalf("the datagram return had not returned %s after it was refused; it must not wait on the socket-owned retry", time.Since(started))
+	}
+
+	// at most one: a datagram return either never reaches the socket-owned
+	// retry loop, which is where it is today, or is refused by it once
+	if attempts := attemptCount.Load(); 1 < attempts {
+		t.Errorf("the refused datagram return made %d admission attempts, so it entered the retry loop that only a socket-owned return may enter", attempts)
+	}
+	t.Logf("the refused datagram return returned in %s with %d retry-loop attempts", time.Since(started), attemptCount.Load())
+	if closedProviderTestChannel(released) {
+		t.Error("a refused datagram return released its source; only a socket-owned return may decide that")
+	}
+	if closedProviderTestChannel(nat.retired) {
+		t.Error("a refused datagram return retired its source's NAT flows")
 	}
 }

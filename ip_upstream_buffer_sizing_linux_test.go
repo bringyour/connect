@@ -278,3 +278,111 @@ func upstreamSysctlValues(t *testing.T, name string) []int {
 	}
 	return values
 }
+
+// The deletion in this program is a trade, not a win, and this is the
+// condition that decides its sign. An explicit request is clamped to
+// net.core.{r,w}mem_max and doubled; autotuning is clamped to
+// net.ipv4.tcp_{r,w}mem's maximum and nothing else. So the pin beats
+// autotuning exactly where the doubled clamped request exceeds that ceiling,
+// and loses everywhere else. The campaign measured both signs from one tree:
+// +363 to +403 per cent for the deletion at a 1 MiB budget, where the pin sat
+// below the ceiling, null at 8 MiB and unbudgeted, and -20.8 per cent at
+// 32 MiB with zero of five repetitions better, where it sat above.
+//
+// Two things are asserted rather than logged. On the fleet's stock host every
+// shipping budget pins at the same 425,984 bytes, below both ceilings, so the
+// deletion is a gain at every budget there and the memory policy does not
+// enter into it. And the classification is monotone in the budget on any host:
+// a larger budget can only move a flow toward the pin being the better of the
+// two, never back.
+func TestUpstreamBufferPinBeatsAutotuningOnlyAboveItsCeiling(t *testing.T) {
+	defer SetMemoryBudget(0)
+
+	// Debian, Ubuntu, Fedora and Amazon Linux as shipped
+	const stockCoreMax = 212992
+	const stockSendCeiling = 4 * 1024 * 1024
+	const stockReceiveCeiling = 6 * 1024 * 1024
+
+	// ascending by the window they produce, so the classification may only
+	// move from below the ceiling to above it; 0 is unscaled, the largest
+	budgetByteCounts := []ByteCount{mib(1), mib(8), mib(24), mib(32), mib(48), 0}
+	sendCoreMax := upstreamSysctlValues(t, "net/core/wmem_max")[0]
+	receiveCoreMax := upstreamSysctlValues(t, "net/core/rmem_max")[0]
+	sendCeiling := upstreamSysctlValues(t, "net/ipv4/tcp_wmem")[2]
+	receiveCeiling := upstreamSysctlValues(t, "net/ipv4/tcp_rmem")[2]
+
+	// the kernel's own arithmetic, as the sizing rows above measured it
+	pinnedByteCount := func(windowSize int, coreMax int) int {
+		return 2 * min(windowSize, coreMax)
+	}
+	sign := func(pin int, ceiling int) string {
+		switch {
+		case ceiling < pin:
+			return "the pin is the larger buffer, so deleting it loses"
+		case pin < ceiling:
+			return "autotuning reaches further, so deleting the pin gains"
+		default:
+			return "the two are equal, so deleting the pin is null"
+		}
+	}
+
+	previousAbove := false
+	for _, budgetByteCount := range budgetByteCounts {
+		SetMemoryBudget(budgetByteCount)
+		windowSize := int(DefaultTcpBufferSettings().MaxWindowSize)
+
+		// the fleet's case: the core maximum is an order of magnitude below
+		// either ceiling, so it, not the window, decides the pin
+		if stockPin := pinnedByteCount(windowSize, stockCoreMax); stockPin != 2*stockCoreMax {
+			t.Errorf(
+				"a %d byte budget asks for a %d byte window, which on a stock host pins %d rather than twice the %d byte core maximum; a shipping budget below the core maximum would make the memory policy decide the pin",
+				budgetByteCount,
+				windowSize,
+				stockPin,
+				stockCoreMax,
+			)
+		} else {
+			if stockSendCeiling <= stockPin {
+				t.Errorf(
+					"a %d byte budget pins %d on a stock host, at or above the %d byte tcp_wmem ceiling; the send deletion would be a loss on the fleet's own hosts",
+					budgetByteCount,
+					stockPin,
+					stockSendCeiling,
+				)
+			}
+			if stockReceiveCeiling <= stockPin {
+				t.Errorf(
+					"a %d byte budget pins %d on a stock host, at or above the %d byte tcp_rmem ceiling; the receive deletion would be a loss on the fleet's own hosts",
+					budgetByteCount,
+					stockPin,
+					stockReceiveCeiling,
+				)
+			}
+		}
+
+		sendPin := pinnedByteCount(windowSize, sendCoreMax)
+		receivePin := pinnedByteCount(windowSize, receiveCoreMax)
+		above := sendCeiling < sendPin
+		if previousAbove && !above {
+			t.Errorf(
+				"a %d byte budget puts the send pin at %d, back below the %d byte ceiling a smaller budget had passed; the classification must be monotone in the budget",
+				budgetByteCount,
+				sendPin,
+				sendCeiling,
+			)
+		}
+		previousAbove = previousAbove || above
+
+		t.Logf(
+			"budget %d: window %d, send pin %d against ceiling %d (%s), receive pin %d against ceiling %d (%s)",
+			budgetByteCount,
+			windowSize,
+			sendPin,
+			sendCeiling,
+			sign(sendPin, sendCeiling),
+			receivePin,
+			receiveCeiling,
+			sign(receivePin, receiveCeiling),
+		)
+	}
+}
