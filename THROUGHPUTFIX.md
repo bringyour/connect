@@ -7909,3 +7909,185 @@ window" is 3 at fifty. The prediction, so it can be wrong: download
 reads connected with the transfer unit lifting 665 to about 1.3 Gb/s at
 the tun's ceiling over a 25 ms inner loop; upload reads 3 at fifty and
 the transfer unit alone near 1.0.
+
+## 40. Predictions for the namespace cell, the occupancy invariant, the order of the ceilings, and the upload cell's contract
+
+Numbers and mechanisms are stated apart throughout, so that a wrong
+number with a right mechanism can be told from both wrong.
+
+### 40.1 What the namespace cell should show, before it reports
+
+The cell: one flow, download, 200 ms, two kernel stacks, a real tunnel
+device, a real client and provider, a real carrier. The in-process
+fixture gives about 50 Mb/s there, flat across every window from 1.5
+to 2.8 MiB, with mean occupancy near 1.43 MiB in both regimes.
+
+A precondition first, because it decides the reading before any
+mechanism does. The sender on download is the provider, and a provider
+runs unbudgeted (`ip.go:416–420`); under §38.9's rule a sequence with no
+budget attached holds today's constant and reports it (`Reason` "no
+memory budget: holding today's constant"). If the cell's provider has
+no `SetMemoryBudget`, both arms read the constant arm's figure and the
+estimate says why. The predictions below assume the provider is
+budgeted.
+
+The constant arm. Number: 71 Mb/s. Mechanism: the 2 MiB transfer window,
+1.81 MB of goodput at 0.865, over the transfer loop's round trip of
+205 ms (the path plus §36.3's acknowledgement delay). The carrier does
+not enter, because 2 MiB is under every carrier window.
+
+The sized arm, on H3 with the delay on the client's hop. Number: 109
+Mb/s. Mechanism: the transfer window climbs past 2 MiB and the next
+binder on download is the client's own H3 stream receive window, 3 MiB
+framed (`transport.go:685`), 2.6 MiB of goodput over the hop's 200 ms;
+the server's 6 MiB default sits on the other hop, which carries no
+delay, and the tun's 4 MiB over 210 ms is 160, above it. On H1
+instead: number 145, mechanism the client's kernel receive socket
+autotuned to 4 MiB, 0.865 of it over 200 ms, just under the tun's 160.
+With the delay on the provider's hop instead: number 160, mechanism the
+tun, since the server's 6 MiB gives 218 and the client's H3 window
+sees no delay.
+
+The in-process fixture's flatness, which is the quantity that decides
+whether the sized arm reaches those numbers at all. Two mechanisms are
+open and the same reading separates them. If the flatness is the
+fixture's, the per-frame goroutine pump or the sampler's lock on the
+loop, it is absent in the namespace cell and the sized arm reaches the
+ceiling above: occupancy at the ceiling, `Reason` naming it. If it is
+the tree's, the send loop's fill dynamics under acknowledgement
+clocking with the window unclamped (§38.15), it is present in the
+namespace cell too: the sized arm reads within the null band of the
+constant arm, occupancy at about half the computed window, `Reason`
+"delivery", and the loop's wait on ingress. My prediction: the first,
+number 109 on H3, because the fixture's own stages are the ones the
+namespace cell removes and nothing in the loop's arithmetic limits
+growth (§38.13); if the reading is the second, the mechanism in §38.15
+is confirmed as the tree's and the number was wrong for a reason the
+record already names.
+
+### 40.2 The occupancy invariant: 1.43 MiB at every window
+
+Mean occupancy is about 1.43 MiB at every ceiling from 1.5 to 2.8 MiB:
+95 per cent of the ceiling where the clamp binds in every run, half the
+window where it binds in none. The same number in both, so occupancy is
+not following the window in either regime.
+
+The relation that holds it is Little's: bytes in flight equal the
+throughput times the effective round trip, and both factors are set
+below the window. Throughput is flat at 47 to 52 Mb/s across the same
+rows; 50 Mb/s over an effective round trip of about 230 ms, the 206 ms
+loop plus a queueing term, is 1.43 MiB. So the thing that holds
+occupancy constant across a twofold change in window is the thing that
+holds throughput flat, a rate stage below the sender, and the window
+adapts around it: at the low end the clamp happens to sit just above
+rate times round trip, which is why 95 per cent of 1.5 MiB and half of
+2.8 MiB are the same 1.43, and at the high end the window is the
+fixed point of §38.13, twice the delivery per minimum round trip. Both
+regimes are rate-bound; neither is window-bound; the identity of
+§38.15 and the coincidence at 1.5 MiB are the two faces of one number.
+
+What the stage is, from source, with the number that would identify
+each:
+
+- The sampler's lock contention on the loop's per-Pack cost
+  (§38.15), declared at 31.5 against 50.1 Mb/s. Number: throughput
+  rises with the sampler's rate cut, roughly in proportion to the
+  declared perturbation. Mechanism: the loop's fill rate under a
+  contended lock.
+- The loop's ready supply per acknowledgement wake. The loop is woken
+  per acknowledgement batch and sends what is admitted and ready; the
+  admitted set is at most `SequenceBufferSize`, 32
+  (`transfer.go:62`), refilled by the offerers one slot per release.
+  At 200 ms the acknowledgement writes are 136 a second, and 32
+  Packs per wake at 1,420 B is 4,350 Packs a second, 49 Mb/s: inside
+  the band. At 25 ms the same arithmetic gives 894 Mb/s against the
+  measured 210, so another stage binds there. Number: doubling
+  `SequenceBufferSize` doubles throughput at 200 ms if this is it.
+  Mechanism: an item-count window on the offer pipeline meeting an
+  acknowledgement-clocked loop.
+- The fixture's per-frame goroutine and sleep pump, a service rate
+  that varies with load. Number: absent in the namespace cell.
+
+The first two are in the tree and would survive into the namespace
+cell; the third is not. The namespace cell's sized arm therefore
+separates them as §40.1 says, and the `SequenceBufferSize` doubling is
+the one-knob test that names the second on the fixture without waiting
+for it.
+
+### 40.3 The order of the ceilings by value per unit of work
+
+The user's goal is a shipped throughput gain on the common path. From
+§37.23's table on download at 200 ms with the delay on the client's
+hop, the binders above the transfer unit and the work each costs:
+
+1. The client's H3 stream receive window ceiling,
+   `H3MaxStreamReceiveWindowByteCount` (`transport.go:685`), 3 MiB to a
+   share of the budget: one constant in this tree and one share
+   function. It is the binder immediately above the transfer unit at
+   every path length from 22 ms up on a desktop download, and it moves
+   the plateau from 109 to the tun's 160. The single change that moves
+   the common path most after the transfer unit, and the cheapest.
+2. The tun's receive and send maxima (`tun.go:93–106`), 4 MiB to a
+   share: two constants in this tree; moves 160 to the server's 218 on
+   the other hop, and for upload it is the binder with the ladder's
+   clock (§37.23), so it carries §26 with it there.
+3. The server's quic windows (`server/connect/transport.go:562`), the
+   6 MiB default to a per-connection share: the server tree, a few
+   lines; needed to go past 218 wherever the provider's hop carries
+   delay, and for upload's client-to-platform direction.
+4. The carrier sockets at both ends through the dial control
+   (`net_http.go:1949–1954`, `net.go:282`) and the server's accept: the
+   kernel's 4 MiB at 29 ms of a hop; the least value at the common
+   path, since the H3 carrier's windows sit below it and H1 is the
+   fallback.
+
+At 400 ms every one of these constants is small, 35 to 109 Mb/s, and
+the value at the common path comes from the size of the shares rather
+than from any single ceiling: a desktop with a 256 MiB budget and 32 MiB
+shares reaches about 550 Mb/s per framed layer at 400 ms. So the order
+above is the order in which the constants stop binding; the gain the
+user ships is the budget the surface lets a desktop draw on, and the
+first two items are the two lines that let it.
+
+### 40.4 What the upload cell must measure for `TcpUploadNoAck` to turn on
+
+The cell: a client uploading one TCP flow through a provider with the
+transfer unit on, at 200 and 400 ms, two arms, the setting off and on,
+under two route configurations, a single route and two live routes
+striped, with the active route killed at the transfer's midpoint in the
+single case and one of the two in the other; fifteen runs per cell as
+the failover cell had.
+
+Readings per run: the throughput dip's depth and the time from the
+kill to recovery of 90 per cent of the pre-kill rate; the inner
+connection's retransmits and timeouts from the tun's `TcpInfo()`;
+`carrierChangeWriteCount` on the client, which reads above zero in the
+acknowledged arm and zero in the no-acknowledgement arm; completion,
+all bytes delivered; steady-state throughput away from the kill; and
+the client's resend queue occupancy, which in the no-acknowledgement
+arm should hold none of the TCP data.
+
+Predictions, numbers and mechanisms apart. Single route, no
+acknowledgement: recovery in about 2.4 s at 200 ms and 4.8 at 400;
+mechanism, a retransmission timeout of at least 200 ms backing off
+across the reconnect and then slow start from one segment, about
+twelve round trips to 4 MiB. Single route, acknowledged: recovery
+within a round trip of the new carrier being up; mechanism, Transfer
+delivers the held window. Two routes, either arm: recovery within
+about one round trip with the congestion window halved; mechanism,
+scattered loss and SACK. Steady state: no difference between arms.
+Occupancy: the no-acknowledgement arm's client queue smaller by the
+TCP data's share, one copy of three.
+
+The rule for turning it on: the no-acknowledgement arm completes every
+run; its steady-state throughput is within the null band of the
+acknowledged arm's; its two-route recovery is within one round trip
+of the acknowledged arm's; its single-route recovery is within the
+predicted 2.4 and 4.8 s, or if longer, within a bound the user accepts
+against the rate of single-route deaths in production, which is a
+field reading of `carrierChangeWriteCount` on live providers; and its
+occupancy shows the copy removed. If the single-route recovery is
+much longer than predicted, the mechanism held and the number did not,
+and the reason will be in the inner connection's timeout count: a
+timeout backing off across a multi-second reconnect rather than the
+one round trip assumed.
