@@ -12,6 +12,12 @@ import (
 // THROUGHPUTFIX §37.16, the eviction notice: a receiver that removes an item it
 // has already acknowledged tells the sender, and the sender resends it.
 //
+// Where this stands after §37.17's guard one. An updated receiver refuses
+// rather than evicting, so it never sends a notice at all; this row turns
+// eviction back on to exercise the field. What it still covers is a receiver
+// whose budget shrank under a hold it had already filled, and any deployment
+// carrying the old behaviour.
+//
 // The defect, from source, which exists without any window change. A selective
 // acknowledgement does not release the item at the sender: receiveAck removes
 // it from the resend queue, marks it selectiveAcked, sets its resend time to
@@ -93,6 +99,12 @@ func TestAnEvictionIsCountedAndToldToTheSender(t *testing.T) {
 			})
 		harness.receiver.settings.ReceiveBufferSettings.ReceiveQueueMaxByteCount = hold
 		harness.receiver.settings.ReceiveBufferSettings.EvictionNotice = notice
+		// §37.17's guard one means an updated receiver never evicts, so this
+		// row turns eviction back on: what it measures is the notice, which
+		// covers the cases the guard and the advertisement cannot — a receiver
+		// whose budget shrank under it, or a deployment that has the old
+		// behaviour.
+		harness.receiver.settings.ReceiveBufferSettings.EvictHeldItemsToFit = true
 		delivered := &atomic.Int64{}
 		harness.receiver.AddReceiveCallback(
 			func(_ TransferPath, frames []*protocol.Frame, _ Peer) {

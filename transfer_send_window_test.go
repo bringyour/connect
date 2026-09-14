@@ -63,6 +63,12 @@ type sendWindowHarness struct {
 	// when set, the data half drops the next frame it carries, once
 	dropNext *atomic.Bool
 	drops    *atomic.Int64
+	// When set to a positive number of nanoseconds, the data half holds the
+	// next frame it carries for that long, once. A deterministic reordering:
+	// everything behind it arrives first, so a cell that needs a full hold and
+	// then an earlier arrival gets exactly that, rather than depending on a
+	// retransmit racing the hold filling.
+	delayNextNanos *atomic.Int64
 	// the carrier's drain in bytes per second, settable mid-flight so one
 	// cell can measure a path that changes
 	bytesPerSecond *atomic.Int64
@@ -164,6 +170,7 @@ func newPacedSendWindowHarness(
 	pumpsDone := []chan struct{}{}
 	dropNext := &atomic.Bool{}
 	drops := &atomic.Int64{}
+	delayNextNanos := &atomic.Int64{}
 	rate := &atomic.Int64{}
 	rate.Store(int64(bytesPerSecond))
 	ratePump := func(from Route, to Route) {
@@ -217,11 +224,17 @@ func newPacedSendWindowHarness(
 						MessagePoolReturn(transferFrameBytes)
 						continue
 					}
+					frameDelay := delay
+					if delay == 0 {
+						if held := delayNextNanos.Swap(0); 0 < held {
+							frameDelay = time.Duration(held)
+						}
+					}
 					framesInFlight.Add(1)
 					go func(transferFrameBytes []byte) {
 						defer framesInFlight.Done()
-						if 0 < delay {
-							time.Sleep(delay)
+						if 0 < frameDelay {
+							time.Sleep(frameDelay)
 						}
 						select {
 						case to <- transferFrameBytes:
@@ -272,6 +285,7 @@ func newPacedSendWindowHarness(
 		receiverId:        receiverId,
 		dropNext:          dropNext,
 		drops:             drops,
+		delayNextNanos:    delayNextNanos,
 		bytesPerSecond:    rate,
 		wireFrameCapacity: cap(senderOut),
 	}

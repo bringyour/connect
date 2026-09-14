@@ -10291,6 +10291,13 @@ type ReceiveBufferSettings struct {
 	// cell has yet run, and the shipping window is under the hold by an
 	// accident of ordering rather than by design.
 	AdvertiseReceiveWindow bool
+	// EvictHeldItemsToFit lets a full hold remove an item it has already
+	// acknowledged to admit an earlier arrival (THROUGHPUTFIX §37.17 guard
+	// one). Off by default: eviction reneges on a selective acknowledgement
+	// the sender holds for a minute, while a refusal acknowledges nothing and
+	// recovers on paths that already exist. On is the pre-guard behaviour and
+	// exists so a cell can measure the difference in one binary.
+	EvictHeldItemsToFit bool
 	// EvictionNotice puts the sequence numbers of items this receiver removed
 	// from its hold after acknowledging them onto the next acknowledgement, so
 	// the sender resends them instead of holding a sixty second lease on bytes
@@ -12280,20 +12287,56 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			)
 		}
 
-		// remove later items to fit
-		for !canQueue(item) {
-			lastItem := self.receiveQueue.PeekLast()
-			if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
-				self.receiveQueue.RemoveByMessageId(lastItem.messageId)
-				self.client.receiveQueueEvictionCount.Add(1)
-				self.client.receiveQueueEvictionByteCount.Add(
-					uint64(max(lastItem.MessageByteCount(), 0)))
-				// the sender was told this item arrived; tell it that it did
-				// not survive (THROUGHPUTFIX §37.16)
-				self.noteEviction(lastItem.sequenceNumber)
-				lastItem.messagePoolReturn()
-			} else {
-				break
+		// THROUGHPUTFIX §37.17 guard one: a full hold refuses the arrival
+		// rather than removing an item it has already acknowledged.
+		//
+		// Why evicting was the wrong choice and refusing is safe. Eviction
+		// reneges silently: a selective acknowledgement does not release the
+		// item at the sender, it leases it for SelectiveAckTimeout, and every
+		// resend path skips a marked item, so a removal the sender is not told
+		// about costs a minute. A refusal acknowledges nothing, so the
+		// sender's selective acknowledgements stay truthful and the item comes
+		// back on a path that already exists: a dead route's frames on the
+		// carrier-change path, which is prompt and not bounded by the gap
+		// burst; a gap with held items beyond it on gap recovery, where those
+		// held items are its proving acknowledgements; the refused tail on the
+		// paced resend at its interval floor.
+		//
+		// The head-of-line objection, and why it does not arise. A full hold
+		// cannot block the item that would drain it, because that item never
+		// reaches here: an arrival at the delivery point takes the branch above
+		// that registers its contract, delivers and returns. Only an arrival
+		// beyond the delivery point is queued. So the filler of a hole needs no
+		// hold space, and a gap behind a full hold always fills.
+		//
+		// The cost is redundant resends, bounded by a window per round and by
+		// the paced resend's interval floor on the tail. Measured against
+		// eviction on the failover cell: the arm whose arrivals were refused
+		// rather than evicted completed, and the arms that evicted did not.
+		// The receive advertisement removes the cost entirely by removing the
+		// refusals, which is why the two fields remain the fix proper.
+		//
+		// One caveat. The hold keeps what arrived first rather than what is
+		// earliest in sequence, so under sustained reordering recovery
+		// lengthens by rounds. It never lengthens by a lease, which is the
+		// point.
+		if self.receiveBufferSettings.EvictHeldItemsToFit {
+			// remove later items to fit: the behaviour before the guard, kept
+			// so a cell can measure the difference in one binary
+			for !canQueue(item) {
+				lastItem := self.receiveQueue.PeekLast()
+				if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
+					self.receiveQueue.RemoveByMessageId(lastItem.messageId)
+					self.client.receiveQueueEvictionCount.Add(1)
+					self.client.receiveQueueEvictionByteCount.Add(
+						uint64(max(lastItem.MessageByteCount(), 0)))
+					// the sender was told this item arrived; tell it that it
+					// did not survive (THROUGHPUTFIX §37.16)
+					self.noteEviction(lastItem.sequenceNumber)
+					lastItem.messagePoolReturn()
+				} else {
+					break
+				}
 			}
 		}
 
