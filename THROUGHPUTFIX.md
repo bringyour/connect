@@ -6954,3 +6954,133 @@ What to carry: the calibration is the work. The defect here was a
 trimmer acting on a number nobody measured, and the two ways to
 reproduce it are to feed the wrong number into the old threshold, or to
 replace the old threshold with a new one nobody has measured either.
+
+### 38.11 Admission is the boundary, the TCP guard is sound on download and not on upload, and a correction to the copies
+
+The deterministic test: with an empty queue, twenty no-acknowledgement
+Packs offered, twenty written, none refused, all delivered, worst case
+740 µs; behind a full resend queue, twenty offered, none written,
+twenty refused, none delivered. The drop is total, and it is one layer
+earlier than §38.7 placed it: admission into the sequence refuses
+before the Pack reaches the scheduler whose bypass §38.7 described. The
+bypass is correct and never reached.
+
+Where the boundary belongs. Admission (`packAdmission.tryAcquire`,
+32 slots, §38.7 item 3) bounds the pre-write population: Packs the
+sequence holds that it has not yet written. Every Pack in that
+population occupies a pooled buffer and a place ahead of the write,
+acknowledged or not, so admission protects three things a
+no-acknowledgement Pack still needs: bounded memory for unwritten
+frames, bounded latency ahead of the write, and the per-flow fairness
+of the reserved slot. The reasoning that a Pack never retained is never
+tracked is right for the population after the write, which is what the
+capacity gate bounds and why its bypass is correct, and wrong for the
+population before it, which is what admission bounds. The boundary is
+the write. A no-acknowledgement Pack is subject to admission and exempt
+from capacity; exempting it from admission would let an offered rate
+above the carrier's written rate grow the scheduler without bound,
+which is the UDP source of §37.14 with the drop moved from a counter
+to the heap.
+
+The defect is therefore not that admission applies but what admission
+is full of. When the resend queue is full the loop stops taking
+reliable Packs, which sit in the scheduler holding their slots while
+they wait for capacity, and admission refuses everything behind them,
+including the no-acknowledgement Packs that would be taken at once.
+Slots are consumed by Packs that cannot progress and denied to Packs
+that could. The fix that keeps one bound with one meaning: a reliable
+Pack acquires its slot only when it could also be admitted to the
+resend queue, so the capacity wait moves in front of admission, to the
+caller and its timeout, where a refusal is already counted on the
+provider and where TCP socket items already wait; the slots then hold
+only Packs that can be written now, and a no-acknowledgement Pack
+behind a full resend queue finds them free whenever the write keeps
+up. Its own overload, offered above written, is what admission is for,
+refused and counted, which is UDP's semantics. A separate byte or delay
+bound for the no-acknowledgement class is a refinement the campaign
+can measure and not a correctness need. Test: behind a full resend
+queue, twenty offered, twenty written, with the reliable Packs waiting
+at the caller; and with the carrier write stalled, no-acknowledgement
+Packs refused at the bound and every refusal counted, none silent.
+
+The guard that forces acknowledgement for TCP at the final boundary,
+with the reason that carrier reliability cannot commit an item across
+a disconnect. Whether that reason still holds depends on who the inner
+sender is on each direction, and the source answers it.
+
+On upload the inner sender is the client's gVisor stack, a complete TCP
+with SACK (`endpoint.go:3271`), retransmission and a minimum RTO of
+gVisor's own 200 ms unless the tun sets `TcpMinRto`, which nothing does
+by default. A disconnect there is a loss the inner protocol recovers,
+and the guard protects against what the inner layer already handles.
+What the guard sees that the inner protocol does not is the size of the
+loss: a single-route disconnect loses a whole carrier window at once,
+contiguous, so no later segment arrives to produce duplicate
+acknowledgements, and recovery is a retransmission timeout, at least
+200 ms and backing off across the reconnect, followed by slow start
+from one segment, about twelve round trips to refill a 4 MiB window,
+2.4 s at 200 ms and 4.8 at 400; whereas Transfer's reliability delivers
+the held window the moment the new carrier is up. With two live routes,
+the default steady state (§37.17), the loss is scattered, SACK
+recovers it in about one round trip with the congestion window halved,
+and the difference between the two architectures is small. So the
+guard is deletable on upload, at a measured price: seconds per
+single-route disconnect, paid rarely, against the design-point costs
+of §38 paid continuously. The cell that prices it is §38.5's, with a
+single-route disconnect at 200 ms as its worst row.
+
+On download the inner sender is the provider's NAT, and the NAT does
+not retransmit data. Its `TcpSequence` holds pending items in a channel
+and no buffer of sent segments; its acknowledgement handler
+(`applySendAckWithLock`) advances the acknowledged sequence and the
+window edge and re-queues nothing; and only the handshake is
+retransmitted. The client-to-NAT leg's reliability is entirely
+Transfer's today. Delete the guard on download and a disconnect's
+window is lost with nothing to recover it from, and so is any ordinary
+loss. So the guard is sound on download, for a reason the framing did
+not include: the inner protocol on that leg is ours, and it does not
+recover loss. One reliable layer per hop on download is not a deletion
+but a relocation, the retransmission copy moving from Transfer to the
+NAT's TCP, where it is sized by the client's advertised window rather
+than by the transfer window and carries TCP's own semantics, and it is
+the implementation work §38.5 named as the audit: retransmission from a
+retained buffer, SACK, and an RTO estimate the NAT does not have. Until
+then the guard stays on download and goes on upload, per direction and
+not per protocol.
+
+That read corrects two earlier sections. §37.7 and §38.4 counted three
+copies on the provider for download, the NAT's held segment among
+them; the NAT holds no segment after handing it to Transfer, so the
+provider holds two, the Transfer frame and the carrier's, and copy
+elimination has nothing to merge on download. The three copies are on
+upload, in the client: gVisor's send buffer, the Transfer frame and the
+carrier's, and that is where the merge of §38.4 applies and where
+no-acknowledgement mode removes one outright. The provider's memory
+per client at the design point is two copies as things stand and stays
+two under the relocation.
+
+Carried from the same report. The contract promotion of §38.8 measures
+23 per cent at 200 ms and 47 at 400 in steady state, inside the twenty
+to forty stated, and understates the transient: the first contracts
+are interpolated up from 1 MiB, so the promoted fraction runs 100, 91,
+46 and 31 per cent before settling and weighs about 45 over the first
+200 MiB; short flows are worse than steady state, and it scales with
+rate, 1.6 per cent at today's 71 Mb/s, a design-point cost that appears
+only if the throughput work succeeds. The prefetch half of pipelining
+exists, the destination contract queue retaining the prefetched
+successor of every live send contract, so the platform round trip is
+already off the data path; the acknowledged-ahead half is what
+remains, and it must apply from the first contract, since the
+interpolation from 1 MiB makes the early renewals the frequent ones.
+
+Predictions. With capacity moved in front of admission: the
+deterministic test's second row reads twenty written; the reliable
+Packs' wait appears at the caller as it does for TCP socket items
+today; nothing else changes on the empty-queue row. With the guard
+removed on upload only: throughput unchanged on a steady path, one
+round trip's dip on a two-route disconnect, and a stall of 2 to 3 s on
+a single-route disconnect at 200 ms, which the cell records as the
+price. With the guard removed on download before the NAT retransmits:
+any loss on the client-to-NAT leg is permanent for that flow, which is
+the row that must never be run in production and is the reason the
+guard is kept.
