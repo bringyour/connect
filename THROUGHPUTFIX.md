@@ -6132,3 +6132,140 @@ directions; on the 24 MiB client the download plateau sits at its
 receive share over the round trip and the upload plateau at its send
 share, each named in the estimate; and no arm on any budget shows the
 hold below its peer's window between advertising peers.
+
+### 37.23 Gigabit reach for a desktop, layer by layer: the transfer window is the first of four
+
+The question is whether a desktop can reach one gigabit, answered as a
+path length rather than a yes. Two corrections to the arithmetic before
+the table. The framed layers carry the 0.865 goodput factor of §36.3,
+so 2 MiB is 14.5 ms of round trip at the target and not 16.8. And each
+layer's reach is in its own loop's round trip, which is not the path.
+Let P be the carrier round trip from client to provider through the
+platform, the number a user would see as a ping to the provider. Then,
+from §37.1 and the measured delays:
+
+    loop D, a carrier hop        rtt_D = the hop's share of P: P/2
+                                 if the hops are even, P if one
+                                 hop carries it all
+    loop C, the transfer sequence rtt_C = P + δ_C, δ_C about 5 ms
+                                 (the acknowledgement delay of §36.3)
+    loop B, the inner TCP        rtt_B = P + 2δ_C + ack clock: the
+                                 data crosses once, the inner
+                                 acknowledgement crosses back once
+                                 on the reverse sequence, plus the
+                                 inner acknowledgement clock, which
+                                 is near zero on download (gVisor's
+                                 delayed acknowledgement is off by
+                                 default, `tcp/protocol.go`) and up
+                                 to the ladder's 50 ms
+                                 `AckCompressTimeout` on upload (§25)
+
+So the loops stand near P/2 : P + 5 : P + 10 on download, not the
+1 : 2 : 4 §37.11 assumed, which overstated the inner loop; the phone's
+knee in §37.11 moves out accordingly, to about 74 ms of P at 24 MiB on
+download, and the memory ratio of §37.7 to about 1 : 2 : 2.
+
+Today, at or above the reference budget, which is where a desktop sits,
+download, in binding order by P:
+
+    layer                  ceiling      goodput/rt   reach in P
+    C1 transfer window     2 MiB fr     1.81 MB      9.5 ms
+    C3 hold (via advert.)  2.5 MiB fr   2.27 MB      13.1 ms
+    D1 H3 stream window    3 MiB fr     2.72 MB      21.8 ms one-hop,
+                                                     43.6 even split
+    B2 tun receive buffer  4 MiB pl     4.19 MB      23.5 ms
+    D2 H3 connection       4 MiB fr     3.63 MB      29 to 58, inert
+                                                     behind D1
+    D5 H1 kernel socket    4 MiB fr     3.63 MB      29 to 58 per hop
+    B4 ladder (upload)     16 MiB pl                 134 ms; the 1 MiB
+                                                     is the budgeted
+                                                     profile's, not a
+                                                     provider's
+    A  upstream socket     4 MiB pl     4.19 MB      33.5 ms of the
+                                                     origin round trip,
+                                                     a separate axis
+    D6 unreliable flight   256 KiB fr                not a bulk ceiling:
+                                                     the stream lane
+                                                     takes the excess
+
+Upload differs in one term that changes the answer: the inner
+acknowledgement clock. With the provider's ladder at 16 MiB the
+half-window signal fires every 8 MiB, 67 ms at the target, so the 50 ms
+timer clocks the acknowledgements and rtt_B is P + 60 ms. The tun's
+4 MiB send buffer then reaches at most 4.19 MB over P + 60 ms, 559 Mb/s
+at P = 0, and gigabit upload is unreachable at any path length until
+either the tun's send buffer or the ladder's acknowledgement clock
+(§26) moves; with the clock at a few milliseconds the tun's reach is
+23.5 ms as on download. That is the structural reading of the pin-pair
+cell's 665 upload, and it says the upload direction has a fifth layer
+the download direction does not.
+
+The narrow claim, plainly. Below 9.5 ms of P a desktop reaches gigabit
+today with nothing changed. The transfer window fix, which lands as one
+unit with the hold, the advertisement and committed-prefix
+acknowledgement, moves the reach to 21.8 ms where the H3 stream window
+binds, or to 23.5 where the tun does if the hops are even. Above that
+it buys a bounded multiple and never gigabit: at P = 50 ms the ceiling
+moves from 264 Mb/s (C1 at 55 ms) to 435 (D1 at 50 ms), 1.65 times; at
+P = 100 ms from 138 to 218, 1.6 times. So the transfer window alone is
+sufficient in a band from 9.5 to about 22 ms and is a 1.6 multiple
+beyond it, capped by two ceilings that sit within two milliseconds of
+each other, one of which is in the server tree. A desktop on a 50 ms
+path sees 1.65 times from the transfer fix and nothing like gigabit,
+and the honest framing for shipping is that the transfer window is the
+first of four rather than the fix. The in-process cell measured this
+shape already: at 200 ms with no carrier the multiple stopped at the
+tun, 164 Mb/s, which is 4.19 MB over 205 ms exactly.
+
+Under the surface, download, the window each layer must hold to
+reach gigabit at P = 25, 50 and 100 ms, framed layers divided by 0.865:
+
+    layer                  loop rt            25 ms    50 ms    100 ms
+    C1 and C3 (transfer)   P + 5              4.3 MB   7.9 MB   15.2 MB
+    D1 H3 stream, one-hop  P                  3.6      7.2      14.5
+    D2 H3 connection       keep 4:3 to D1     4.8      9.6      19.3
+    D5 H1 kernel socket    P per hop          3.6      7.2      14.5
+    B2 tun receive         P + 10             4.4      7.5      13.8
+    B1 tun send (upload)   P + 60, timer      10.6     13.8     20.0
+                           P + 15 with §26    5.0      8.1      14.4
+
+Which must be raised together: at 25 ms, the transfer unit and the H3
+stream window if one hop carries the path, and the tun receive buffer
+sits at 4.19 MB against 4.4 needed, so all three; the stock kernel
+socket at 4.19 MB just covers 3.6. At 50 ms, all of transfer, H3 stream
+and connection, tun, and the carrier kernel socket, which stock
+autotuning caps at 4 MiB. At 100 ms, the same set at the sizes shown,
+about 15 MB per framed layer, and the provider's memory per client on
+the send side is roughly the sum of C1, D1 and the NAT's hold, 12 MB at
+25 ms, 23 at 50, 44 at 100, which a provider with a budget affords and
+the surface's share arbitrates. Two of the four H3 hop-directions and
+the H1 sockets on the platform are the server tree's, and no reach
+beyond 22 ms of a one-hop-heavy path exists without it.
+
+Landing order for reach rather than for cost. The measured-first order
+of §37.15 stands for what is proven; for a desktop reaching gigabit the
+order is by binding position in P, because raising a layer whose
+successor binds two milliseconds later buys two milliseconds:
+
+1. The transfer unit: window, hold, advertisement, committed-prefix.
+   9.5 to 22 ms. This tree.
+2. The H3 stream and connection windows, client side in this tree and
+   the server's mirror in its tree, together, because for download the
+   provider-to-platform hop's receiver is the server. 22 to 23.5 ms
+   alone; with 3, to the kernel's 29.
+3. The tun's receive buffer maximum from the surface, a setting in
+   `tun.go`; and for upload the send buffer with the ladder's
+   acknowledgement clock of §26, without which upload does not reach
+   gigabit at any P.
+4. The carrier sockets' request through the dialer, this tree for the
+   client and provider, the server tree for the platform; 29 ms and
+   beyond, to wherever the shares stop.
+
+Predictions for a desktop cell at a budget above the reference, on a
+real carrier: with the transfer unit alone, gigabit to 22 ms of P and
+1.65 times at 50; with the transfer unit and H3 on both ends, gigabit
+to 23.5 ms and the tun named as the binder beyond; with the tun added,
+gigabit to 29 ms and the kernel socket named; with all four, gigabit at
+50 and at 100 ms with the shares above. If the transfer unit alone
+reaches gigabit at 50 ms, a layer in this table is not binding where
+it says, and the estimate's named binding term is the field to read.
