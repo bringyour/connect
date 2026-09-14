@@ -4994,3 +4994,82 @@ provider bets at the wide-area row, because its client sequences are
 long-lived and the harm of the bet on a short path is a queue that
 lasts one estimate. The assumed round trip per role is the setting, it
 is written beside the target, and the campaign picks it.
+
+### 37.12 Three findings from the implementation stream, and the one policy they share
+
+The implementation stream measured the interval defect of §36.5 on our
+cell: `ScaledRtt` reads 300 ms at every delay, against measured round
+trips of 6.7, 27 and 102 ms, so the rule accumulated between 2.9 and
+44.8 times the bandwidth-delay product, overshot to its ceiling, and
+the ceiling was the operative bound. The 1.7 measured in §36 was a
+large fixed window against a small one, with a ramp; the mechanism,
+sizing from the path, was not demonstrated by that cell. That is
+recorded as what it is. The three findings and the decisions:
+
+The interval. The proposed one-line fix substitutes the sampled mean
+for `ScaledRtt`. Two things stand between that and the design, and
+both bite hardest at short round trips, which is where the defect was
+worst. The mean contains the queue the window creates (§36.5,
+tag stamped ahead of the writer), so on a path bound below the sequence
+it feeds back; the multiplier is `RttEstimate.Min`. And the sum over a
+horizon cannot read a short interval at all: the ring advances a sample
+every 75 ms (`transfer.go:8774`), so `deliveredBytesOver(6.7 ms)`
+returns whatever was delivered since the newest sample older than
+6.7 ms, between 7 and 82 ms of delivery, which is 1 to 12 times the
+bandwidth-delay product chosen by where the ring happened to be. The
+form is a rate, bytes between two samples over their spacing, times the
+minimum round trip (§36.6, §36.7), with the ring's cadence reduced to
+match. Two predictions, stated before either change is made. At 200 ms
+the corrected rule converges to twice the path's delivery per round
+trip, about 9 MiB framed, and its transfer-average throughput sits
+within the null band of the 8 MiB constant arm's 129.5 Mb/s, above the
+overshooting rule's 117.6, because the gain is one fewer doubling in
+the ramp and the steady state was already equal (§36.6); this holds for
+the mean form as well as the rate form. At a 5 ms delay the two forms
+separate: the sum-form window scatters between 2 and 24 times the
+bandwidth-delay product from one estimate to the next, visible in the
+estimate's `Window` field, and the rate form holds at 2. If the rate
+form scatters too, the ring's cadence was not the cause and the
+estimator has a defect this section did not find.
+
+The receiver. The `Ack` carries nothing about remaining capacity
+(§37.3), and the coordinator asks whether sizing the receive hold from
+the path is sufficient or the layer needs flow control it has never
+had. It needs the flow control, and the argument is not the size of
+the mismatch but who can know it. A receiver has no round trip to size
+from; it could mirror a sender's window only if the sender told it,
+and the sender's ceiling is a deployment setting the receiver cannot
+see, unscaled where the hold is memory-scaled, so on a small host the
+two diverge further with every budget step. The only party that knows
+what a receiver can hold is the receiver, and the only mechanism that
+makes a sender respect it by construction is an advertisement, which is
+what every other reliable layer on this path already has. The wire
+change is one optional field, `receive_window_byte_count` on the
+`Ack`, computed as the hold's share less what it holds, backward
+compatible because absent means legacy. It is a smaller piece of work
+than it looks, and the alternative is not smaller: sizing the hold to
+"whatever a sender might send" is the sender's ceiling, which a 32 MiB
+host cannot hold and a receiver cannot learn. Sizing the hold from the
+path is not sufficient because there is no path at the receiver to
+size from.
+
+The budget. It is optional and defaults to nil, and without one the
+ceiling is a fixed per-sequence maximum, so the property that protects
+a provider holds only where a deployment attaches a budget. The
+implementer's suggestion is that the rule decline to size above its
+floor when no budget is attached. Adopted, and generalised, because it
+is the same shape as the other two:
+
+    the sender sizes only against a bound it can see, and holds the
+    floor where it cannot: a budget for memory, an advertisement for
+    the receiver, an estimate with samples for the round trip.
+
+Absent a budget, the window is the floor. Absent an advertisement, a
+legacy peer, the ceiling is the receive hold's shipping constant, 2.5
+MiB unscaled and less at a budget, which is the most a legacy receiver
+is known to hold; the rule is then inert against old peers and safe
+against them, and it engages fully only between peers that both carry
+the field. Absent samples, the window is the initial size of §37.5.
+One policy makes the safe configuration the default and the unsafe one
+impossible rather than discouraged, which is the property a comment
+cannot provide.
