@@ -2789,3 +2789,123 @@ campaign may prefer it.
 |---|---|---|---|---|
 | Q9 | `TestCountingRuleCountsSegmentsNotBytes` | in the phase, segments of one quarter of `peerMss` are acknowledged every `QuickackEverySegments` segments, the same spacing as full segments | a byte-based rule | in-process |
 | Q10 | `TestBurstEndWakesPerIntervalNotPerArrival` (mechanism (b)) | across a burst of N arrivals spaced under the bound, the acknowledgement goroutine wakes at most once per bound plus one, not N times | mechanism (a), by construction; a characterisation if (a) is chosen | in-process, wake counted through a test hook |
+
+## 28. Design review of the §26 and §27 implementations
+
+Read against §26 through §26.10 and §27: `d19b861` (the counting rule),
+`0cd8f05` (the immediate first segments and the burst-end trigger),
+`ac3f117` (the lane floor), and the rows in `ip_tcp_ack_starvation_test.go`
+and `transfer_lane_floor_test.go`. Both §26 commits predate §26.10, so
+its two rulings are listed first as known; the rest was found by reading.
+
+### 28.1 What matches
+
+The entry predicate is the three evidence conditions and nothing else:
+E1 at both loss dispositions (a gap at `0 < start`, a retransmission at
+`end <= 0`), E2 on `sendSeq − initialSynSeq − 1 < StartQuickackByteCount`,
+E3 on an arrival with nothing outstanding after a quiet longer than
+`AckCompressTimeout`, measured from `quiescentNanos`, which the
+acknowledgement goroutine stamps whenever it covers everything. No byte
+count enters the phase, the half-window branch clears it, and the byte
+bound is applied where the acknowledged bytes are counted. The shipping
+default of zero for `QuickackEverySegments` disables the phase so trees
+stay comparable. The four state fields live under `self.mutex` beside
+`ackedSendSeq`, as specified. The immediate-first-segments rule consumes
+its counter per in-order arrival and signals `ackSignal`, coalescing
+under the one-slot channel as intended. The burst-end trigger disarms
+when an acknowledgement covers everything (`lastArrivalNanos = 0`). The
+measured rows agree with the design's predictions: 107 segments drawing
+53 acknowledgements is two per acknowledgement as configured; the first
+segment after a timeout acknowledged with the spacing wide and the
+trigger off is the fourth rule carrying its round; and the steady-state
+guard at 21 against 29 allowed, where an ungated rule gives 52, is the
+disjointness of §26.7 holding in the code. The lane floor is the one
+assignment §27.1 named, applied for every nonzero lane whether it borrows
+from the lane pool or a device budget, as an exemption rather than a
+reservation, with the pool unchanged.
+
+### 28.2 Deviations no row would catch
+
+1. Entry is not idempotent, and E2 re-enters on every arrival. `enterRecoveryWithLock`
+   sets `recovering`, zeroes `recoveryAckedByteCount` and refills
+   `recoveryImmediateSegmentCount` every time it is called, and E2 calls
+   it on every in-order payload arrival while the connection is under
+   `StartQuickackByteCount`. Two consequences the design did not intend:
+   during the start window every segment is acknowledged at once, not the
+   first N and then every k, because the immediate counter is refilled
+   before each arrival consumes it; and the byte bound can never end the
+   start phase, because its counter is zeroed on each arrival. E1 has the
+   same shape on a run of stale arrivals, a go-back-N retransmission after
+   a spurious timeout: every stale segment refills the immediate counter
+   and zeroes the bound. The design intends: a fresh entry, from not
+   recovering, sets all three; E2 and E3 while already recovering do
+   nothing; E1 while recovering refills only the immediate counter, since
+   a new loss is a new collapse, and leaves the bound's counter alone so
+   a peer that keeps losing pays the bound and re-enters afresh, as §26.3
+   says. The row that catches it is Q4 as specified, asserted exactly:
+   over the start window, N immediate acknowledgements plus one per k
+   segments of the rest, and not one per segment; the current file has
+   no start-window row and no byte-bound row (Q2), which is why this
+   passed.
+2. An overdue burst end at wait start waits the full compression timeout.
+   `quiescenceRemaining` is computed at the top of the wait and applied
+   only when positive; when the acknowledgement goroutine returns from a
+   slow emission (the pure ACK's `receivePacket` is a synchronous
+   admission and can block) after a burst has already been silent for the
+   bound, the remaining is negative, the cut is skipped, and the burst-end
+   acknowledgement waits `AckCompressTimeout`. That is the starvation
+   reappearing on exactly the slow acknowledgement path. The design
+   intends: with the trigger armed and bytes outstanding, a non-positive
+   remaining means acknowledge now. Row: `TestOverdueBurstEndIsAckedAtOnce`,
+   in process, a burst ending while the acknowledgement path is held by a
+   test hook, the acknowledgement leaving on release without a timer
+   wait.
+3. The burst-end mechanism is the hybrid of (a) and (b): a second wake
+   channel per arrival and a timestamp with a re-check on firing. §26.10
+   intends (b), and the code already has all of (b): a firing that finds
+   the deadline moved falls through `continue` and recomputes from
+   `lastArrivalNanos`. Deleting `arrivalSignal` and its per-arrival send
+   yields (b) exactly, with the wake count proportional to elapsed bounds
+   rather than to segments; row Q10 pins it.
+4. The counting rule counts bytes against `peerMss` (with an MTU
+   fallback). §26.10 rules segments: a per-phase counter of in-order
+   payload arrivals since the last acknowledgement, compared against
+   `QuickackEverySegments`, with `peerMss` not an input. Row Q9.
+5. The third exit, quiet for `AckCompressTimeout`, is not present as an
+   exit; its observable effect is supplied by E3's fresh entry on the
+   next arrival after such a quiet, which resets the counters. That is
+   equivalent for behaviour and I accept it, provided the comment says
+   so, because `recovering` reads true through a quiet period and anyone
+   exporting the phase state would otherwise be misled.
+6. E3 fires on a connection's first data whenever it arrives more than
+   `AckCompressTimeout` after the sequence started, since `quiescentNanos`
+   is stamped at start; so the start phase is entered by E3 as well as by
+   E2 for most connections. Harmless, because connection start is a
+   small-window state either way, but it means `StartQuickackByteCount`
+   is not the only gate on start behaviour and the campaign that sets it
+   should know that.
+
+### 28.3 The lane floor, and one deployment rule
+
+`ac3f117` matches §27.1 and the test takes the starved lane from one
+write to four with the floor set and back to one with it zero. The
+default of zero preserves every earlier tree, as intended, with one
+consequence to record: with the default, enabling lanes ships the
+starvation §20.5 found. Lanes and the floor are one decision, and the
+campaign that sets `LogicalDataLaneCount` sets `LaneFloorByteCount` in
+the same change; a nonzero lane count with a zero floor is not a
+configuration this program endorses. Row F3 (floors are exemptions) and
+F2 (a one-lane client pays nothing) are still owed; F1 is what the
+landed test is.
+
+### 28.4 Verdict
+
+The implementation is the design in structure and in the measured rows,
+and it is not yet the design in four places that no row would catch:
+the non-idempotent entry (28.2.1), the overdue burst end (28.2.2), the
+hybrid wake (28.2.3) and the byte-based count (28.2.4). Items 1 and 2
+change behaviour a campaign would measure, and item 1 would flatter the
+start-window number by acknowledging every segment; both should land
+before the §26 cells run. Items 3 and 4 are §26.10's rulings and are
+already with the implementer. Rows to add: Q2, Q4 exact, Q9, Q10, and
+`TestOverdueBurstEndIsAckedAtOnce`.
