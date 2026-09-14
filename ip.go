@@ -478,10 +478,6 @@ func DefaultTcpBufferSettingsWithBufferSize(bufferSize int) *TcpBufferSettings {
 	return tcpBufferSettings
 }
 
-// scaledPow2WindowSize scales `maxWindowSize` by the memory budget with a
-// floor of `floorWindowSize`, rounded down to a power of 2 multiple of
-// `minWindowSize` to preserve the `MaxWindowSize` contract (the window
-// doubling ladder must land exactly on the max)
 // configureUpstreamTcpConn prepares a connected upstream socket for proxying.
 //
 // The receive buffer is deliberately left to the kernel. The socket is already
@@ -497,6 +493,10 @@ func configureUpstreamTcpConn(tcpConn *net.TCPConn, tcpBufferSettings *TcpBuffer
 	tcpConn.SetWriteBuffer(int(tcpBufferSettings.MaxWindowSize))
 }
 
+// scaledPow2WindowSize scales `maxWindowSize` by the memory budget with a
+// floor of `floorWindowSize`, rounded down to a power of 2 multiple of
+// `minWindowSize` to preserve the `MaxWindowSize` contract (the window
+// doubling ladder must land exactly on the max)
 func scaledPow2WindowSize(maxWindowSize uint32, minWindowSize uint32, floorWindowSize uint32) uint32 {
 	scaledWindowSize := uint32(MemoryScaledByteCount(ByteCount(maxWindowSize), ByteCount(floorWindowSize)))
 	windowSize := minWindowSize
