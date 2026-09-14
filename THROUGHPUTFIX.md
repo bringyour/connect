@@ -2249,3 +2249,52 @@ to `MinWindowSize` within that drain) and
 `TestCollapsedWindowClimbsInLogRoundTrips` (after the drain, the window
 regains its equilibrium within eight evaluations), all in process with
 the socket writer stubbed.
+
+## 25. Compression becomes the sole clock exactly when the peer is recovering
+
+From `handleSendItem`: the early acknowledgement fires on
+`windowSize/2 <= sendSeq − ackedSendSeq`, where `windowSize` is the
+window the NAT advertises (the ladder's rung, six megabytes at the
+measured equilibrium, one megabyte at connection start unbudgeted) and
+`sendSeq − ackedSendSeq` is what the peer has sent since the NAT last
+acknowledged. The peer can have at most its congestion window
+outstanding. So the signal fires only while the peer's congestion window
+exceeds half the advertised window, and it cannot fire in slow start
+after a timeout (one segment), at connection start (ten segments against
+512 KiB), or for any flow whose window is small relative to the rung. In
+those states the compression timer is the only acknowledgement clock,
+and a peer whose window grows per acknowledgement received grows it once
+per timeout. The measurement stream's 200 ms run, 246 samples at one per
+198 ms and 136 KB per acknowledgement, is that regime made visible; the
+structure is the same at 50 ms and only the ratio changes: a recovering
+peer on a 50 ms path takes `(RTT + T)/RTT`, twice as long per growth
+step, and on a 1 ms path fifty-one times as long. Confirmed as
+structural, not a constant, and worst on the fastest paths, which is
+where the previous program's lossy cells sit.
+
+Whether the NAT can tell a recovering peer from an idle one without new
+signalling: yes, from state it already holds. An idle peer has nothing
+outstanding, `sendSeq == ackedSendSeq`. A recovering or slow-starting
+peer sends its whole window as a burst and then stops, with bytes
+outstanding and nothing arriving, because it is waiting for the
+acknowledgement the NAT is withholding. The send loop sees every arrival
+and the acknowledgement loop already owns `ackSignal`; "bytes
+outstanding and no arrival for a short quiescence" is a third trigger
+computable from those two facts, and it fires exactly once per burst,
+which is the acknowledgement the peer needs and no more. Linux
+receivers do the same thing in two forms this NAT lacks: an immediate
+acknowledgement for the first segments of a connection (quickack) and
+one per two full segments (RFC 1122), both of which keep a slow-starting
+sender clocked. The shape of a remedy is therefore a third trigger on
+arrival quiescence with bytes outstanding, plus a bounded quickack count
+at connection start and after a gap, leaving the timer as the idle bound
+it is now; not a smaller constant, which would leave the structure and
+only move the ratio. Cost: one extra acknowledgement per burst, on a
+path that is by definition sending less than half a window. No constant
+is chosen here; the quiescence bound is the campaign's.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| K1 | `TestHalfWindowSignalCannotFireBelowHalfTheAdvertisedWindow` | a peer sending bursts smaller than `windowSize/2` receives acknowledgements only at `AckCompressTimeout` intervals | none; characterises the structure | in-process |
+| K2 | `TestAckIsNotWithheldFromABurstThatStopped` (after the remedy) | with bytes outstanding and no arrival for the quiescence bound, the acknowledgement leaves within that bound rather than at the timer | the tree as shipped | in-process |
+| K3 | `TestRecoveryAfterATimeoutIsNotClockedByCompression` | a peer stack (the tun's gVisor) that takes one retransmission timeout on a 50 ms path recovers its window within a bound set by round trips, not by `AckCompressTimeout` multiples | the tree as shipped | in-process, tun and NAT |
