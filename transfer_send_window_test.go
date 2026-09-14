@@ -49,6 +49,11 @@ type sendWindowHarness struct {
 	// when set, the data half drops the next frame it carries, once
 	dropNext *atomic.Bool
 	drops    *atomic.Int64
+	// How many frames the carrier route holds. A fixture's own wire capacity
+	// can absorb the backpressure a cell is measuring, which is one of the
+	// three instrument faults §37.14 found, so every cell that reads a queue
+	// records it and checks the wire is not the binding constraint.
+	wireFrameCapacity int
 }
 
 // sets the receiver's hold, which is what it advertises less what it holds
@@ -217,11 +222,12 @@ func newRateLimitedSendWindowHarness(
 		}
 	})
 	return &sendWindowHarness{
-		sender:     sender,
-		receiver:   receiver,
-		receiverId: receiverId,
-		dropNext:   dropNext,
-		drops:      drops,
+		sender:            sender,
+		receiver:          receiver,
+		receiverId:        receiverId,
+		dropNext:          dropNext,
+		drops:             drops,
+		wireFrameCapacity: cap(senderOut),
 	}
 }
 
@@ -710,6 +716,7 @@ func TestSizedWindowBoundsTheQueueADatagramSourceImposesOnASharedSequence(t *tes
 	const payloadByteCount = 4 * 1024
 	const offerWindow = 3 * time.Second
 
+	wireFrameCapacity := 0
 	standingQueue := func(sized bool) (time.Duration, RttEstimate, SendWindowEstimate) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -723,6 +730,7 @@ func TestSizedWindowBoundsTheQueueADatagramSourceImposesOnASharedSequence(t *tes
 				}
 			})
 		harness.receiveHold(ceiling)
+		wireFrameCapacity = harness.wireFrameCapacity
 		// the source that cannot be backed off: offers as fast as it is
 		// admitted and discards refusals
 		harness.offer(t, payloadByteCount, offerWindow)
@@ -735,13 +743,22 @@ func TestSizedWindowBoundsTheQueueADatagramSourceImposesOnASharedSequence(t *tes
 	constantQueue, constantRtt, constantEstimate := standingQueue(false)
 	sizedQueue, sizedRtt, sizedEstimate := standingQueue(true)
 
+	wireByteCapacity := ByteCount(wireFrameCapacity * payloadByteCount)
 	t.Logf(
-		"constant %d: standing queue %s (min %s, mean %s); sized %d: standing queue %s (min %s, mean %s), from %d bytes over %s",
+		"constant %d: standing queue %s (min %s, mean %s); sized %d: standing queue %s (min %s, mean %s), from %d bytes over %s; wire holds %d frames, at least %d bytes",
 		constantEstimate.Window, constantQueue, constantRtt.Min, constantRtt.Mean,
 		sizedEstimate.Window, sizedQueue, sizedRtt.Min, sizedRtt.Mean,
 		sizedEstimate.DeliveredByteCount, sizedEstimate.Interval,
+		wireFrameCapacity, wireByteCapacity,
 	)
 
+	if wireByteCapacity <= constantWindow {
+		t.Fatalf(
+			"the carrier holds at least %d bytes against a %d byte window, so the wire rather than the window would be the binding queue and this cell would measure the fixture",
+			wireByteCapacity,
+			constantWindow,
+		)
+	}
 	if !sizedEstimate.Sized {
 		t.Fatalf("the window rule did not engage, so this cell does not test it: %+v", sizedEstimate)
 	}
