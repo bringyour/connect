@@ -66,9 +66,8 @@ type sendWindowHarness struct {
 	// cell can measure a path that changes
 	bytesPerSecond *atomic.Int64
 	// How many frames the carrier route holds. A fixture's own wire capacity
-	// can absorb the backpressure a cell is measuring, which is one of the
-	// three instrument faults §37.14 found, so every cell that reads a queue
-	// records it and checks the wire is not the binding constraint.
+	// decides whether a window's permission can become occupancy at all
+	// (THROUGHPUTFIX §37.15), so a cell that reads a queue records it.
 	wireFrameCapacity int
 }
 
