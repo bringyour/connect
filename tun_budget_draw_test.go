@@ -235,25 +235,39 @@ func TestTheBudgetFloorsFitTheSmallestSupportedHost(t *testing.T) {
 	restore := MemoryBudget()
 	t.Cleanup(func() { SetMemoryBudget(restore) })
 
-	// the smallest supported host target, named by `memory_budget.go` as the
-	// legacy 8 MiB target that the transport total's 3 MiB floor exists for
-	smallestSupportedBudget := mib(8)
-
-	SetMemoryBudget(smallestSupportedBudget)
-	settings := DefaultTunSettings()
-	transportTotal := DefaultPlatformTransportBudget().Stats().TotalByteCount
-	receive := ByteCount(settings.TcpReceiveBuffer.Max)
-	send := ByteCount(settings.TcpSendBuffer.Max)
-	committed := transportTotal + receive + send
-	t.Logf(
-		"at the %d byte minimum: transport total %d, tun receive %d, tun send %d, committed %d",
-		smallestSupportedBudget, transportTotal, receive, send, committed,
-	)
-
-	if smallestSupportedBudget < committed {
-		t.Errorf(
-			"the heap-backed rows commit %d at the %d byte minimum (transport total %d + tun receive %d + tun send %d), which is more than the host has. A floor is the one quantity a budget change cannot move, so this is a finding to act on in the table rather than an assertion to loosen",
-			committed, smallestSupportedBudget, transportTotal, receive, send,
+	// every supported minimum, not only the smallest. `memory_budget.go` names
+	// the 8 MiB legacy target as the one the transport total's 3 MiB floor
+	// exists for, and the rows have to fit at each step above it too.
+	for _, budget := range []ByteCount{mib(8), mib(16), mib(32), mib(64)} {
+		SetMemoryBudget(budget)
+		settings := DefaultTunSettings()
+		transportTotal := DefaultPlatformTransportBudget().Stats().TotalByteCount
+		receive := ByteCount(settings.TcpReceiveBuffer.Max)
+		send := ByteCount(settings.TcpSendBuffer.Max)
+		committed := transportTotal + receive + send
+		t.Logf(
+			"at a %d byte budget: transport total %d, tun receive %d, tun send %d, committed %d",
+			budget, transportTotal, receive, send, committed,
 		)
+
+		if budget < committed {
+			t.Errorf(
+				"the heap-backed rows commit %d at a %d byte budget (transport total %d + tun receive %d + tun send %d), which is more than the host has. A floor is the one quantity a budget change cannot move, so this is a finding to act on in the table rather than an assertion to loosen",
+				committed, budget, transportTotal, receive, send,
+			)
+		}
+
+		// the special case `memory_budget.go` documents in prose and nothing
+		// asserted: the aggregate transport total has to clear the H3
+		// reservation's own floor, or an explicitly selected H3 carrier waits
+		// forever on an aggregate that can never admit it. Raising the H3 floor
+		// without raising the total is the way that breaks.
+		h3Reservation := DefaultPlatformTransportSettings().H3BudgetByteCount
+		if transportTotal < h3Reservation {
+			t.Errorf(
+				"at a %d byte budget the aggregate transport total is %d against an H3 reservation of %d; a carrier whose reservation exceeds the aggregate it draws from can never be admitted, and an explicit H3 selection waits forever rather than failing",
+				budget, transportTotal, h3Reservation,
+			)
+		}
 	}
 }
