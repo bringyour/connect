@@ -1170,6 +1170,80 @@ providers, ring presence and area, the inner radius, the sort order), the
 map parser (extender-only regions kept, a missing field read as zero) and
 the feed parser (optional fields, rejection of an invalid present field).
 
+### N. Provider extender status and toggle in the apps
+
+N1. Surface. A row named Extender directly under the provide mode row in
+settings on the macOS, Linux and Windows apps: a toggle bound to the
+provider extender setting, a status indicator in the provide mode
+indicator's style, and one line of secondary text beneath the setting
+stating the case (N3). The same row without the toggle wherever the
+provide mode row is repeated, on the provider stats and earnings screens.
+Hidden on iOS and Android, and on any app whose device reports the role
+unsupported, so an app talking to an older daemon shows nothing rather
+than a dead toggle. Extenders stay out of the phone builds; G1 stands.
+
+N2. Status source. `ExtenderProvideStatus` gains `Supported`, true only in
+a process built with the role, and `State` and `Reason` (N3).
+`GetExtenderProvideStatus`, `AddExtenderProvideStatusChangeListener`,
+`GetProvideExtender` and `SetProvideExtender` join the `Device` interface
+and `DeviceRemote`: the status reads through the rpc with the last value
+cached, a service without the method or no connection answering an
+unsupported status, and the listener relayed through the rpc listener
+registry, exactly as the client-side extender status of K5; the setting
+reads and writes through the rpc. A mobile or js build answers the
+unsupported status locally, as it does today. Bindings regenerate. F3's
+"on `DeviceLocal` only" is superseded by this item.
+
+N3. States. Derived once in the sdk so every app renders one rule, tested
+in this order, the first match winning:
+
+- `off`: the setting is off. Grey; `Off`.
+- `not_providing`: the setting is on but the device is not providing (no
+  provider: provide mode none, the embedder switch off, a hosted device).
+  Grey; `Not providing`.
+- `error`, revoked: the role runs and the operator revoked the key.
+  Red; `Revoked by the operator`.
+- `active`: at least one family is activated. Green; `Active · IPv4 and
+  IPv6`, or the one family; when the other family's last activation
+  failed, its reason follows on the same line.
+- `error`, listen: no carrier bound. Red; `Could not listen: ` and the
+  carrier errors.
+- `error`, activation: the last activation failed or was refused and no
+  family is active. Red; `Activation refused: ` and the operator's reason,
+  or `Activation failed: ` and the error.
+- `setting_up`: the role runs and there is no outcome yet, the carriers
+  binding or the first activation in flight. Yellow; `Setting up`.
+
+During the activator's backoff after a refusal the state stays `error`
+with the reason, since an outcome exists; yellow is only ever the time
+before the first outcome. `Reason` carries the raw error text, and the
+apps prefix the localized case label.
+
+N4. Toggle. The existing per-space setting `.provide_extender`, default on
+for desktop and the miner as today, stored independently of the provide
+mode; the role runs only when both allow, and the miner swarm's embedder
+switch still wins. Toggling applies at once, the toggle stays enabled
+while providing is off, and the indicator is then grey with `Not
+providing`. The command line miner keeps printing the status on change.
+
+N5. Strings. Keys for the apple, linux and windows platforms: `extender`
+(the row title), `extender_setting_description` (what turning it on does
+and the ports it uses), `extender_not_providing`, `extender_setting_up`,
+`extender_active` with a `{families}` placeholder filled from the existing
+`ipv4`, `ipv6` and `ipv4_and_ipv6` keys, `extender_revoked`,
+`extender_listen_failed` and `extender_activation_failed` with an
+`{error}` placeholder, `extender_activation_refused` with `{error}`; `Off`
+reuses the existing `off` key. Generated per platform as every other key.
+
+N6. Tests. Sdk: a table test of the state rule over every case of N3 and
+their order; the rpc mirror (the status through the rpc and the cached
+last value, a service without the method answering unsupported, the
+setting round trip, the listener firing on a change); the mobile stub
+answering unsupported; bindings. Each desktop app, in its existing view
+test style: the row hidden when unsupported, every state's color and
+text, the toggle writing the setting through the device, the read-only
+row on the stats screens.
+
 ### I. Tests
 
 Every phase ships tests with it. In-process fixtures only: the extender
@@ -1216,6 +1290,9 @@ with the database.
 | `stats.json` | extender and family fields of M7, optional to consumers |
 | `/stats/providers-map` | `extender_count` per region; regions with extenders only |
 | `grafana/dashboards/providers.json` | new internal dashboard |
+| `sdk.ExtenderProvideStatus` | `Supported`, `State`, `Reason` added |
+| `sdk.Device` | `GetExtenderProvideStatus`, `AddExtenderProvideStatusChangeListener`, `GetProvideExtender`, `SetProvideExtender` added; mirrored on `DeviceRemote` |
+| localization keys | the extender row strings of N5 |
 
 Old clients keep working: the header's new fields are optional, the hello
 field is additive, the tables are new, and a v1 extender client still
@@ -1332,6 +1409,16 @@ Phase 5b follows 4 because both touch the server.
    serves every new field and omits an unset one; the dashboards pass the
    allowlist and coverage tests; the helper's areas are linear in the
    counts and a ringed dot renders with the ring under it.
+11. Provider extender status and toggle: N1 to N6. 11a (sdk): the status
+   fields and the state rule, the `Device` interface and `DeviceRemote`
+   mirror, the mobile stub, bindings; concurrently (localizations): the
+   keys of N5 generated into the apple, linux and windows trees. 11b (one
+   agent per desktop app: apple for macOS with the row hidden on iOS,
+   linux, windows): the row, the read-only row, the tests. Acceptance:
+   the state rule is pinned case by case; a remote device reports the
+   local status and setting and an old service reports unsupported; each
+   desktop app renders every state with its color and text, hides the row
+   when unsupported, and writes the setting through the device.
 
 ## 6. Known limitations
 
