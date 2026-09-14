@@ -172,6 +172,18 @@ message Ack {
     // retires every nonzero lane when that sequence closes or a later delivery
     // Ack omits the capability.
     uint32 logical_lane_version = 7;
+
+    // What this receiver can still hold out of order: its receive hold's share
+    // less what it currently holds. A sender may not let its window exceed the
+    // latest advertised value, because a Pack that arrives above the hold is
+    // dropped and must be sent again, so a window larger than the hold turns
+    // one loss into one window of retransmission.
+    //
+    // Absent is a legacy peer, which the sender treats as the shipping hold
+    // rather than as zero. Zero is a real value and means a receiver that is
+    // currently full, which is why this is optional rather than a plain
+    // varint with a sentinel.
+    optional uint64 receive_window_byte_count = 8;
 }
 
 

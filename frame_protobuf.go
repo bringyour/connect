@@ -341,6 +341,8 @@ type sendAckFrame struct {
 	missingContractId       *Id
 	compactContractRecovery bool
 	logicalLaneVersion      uint32
+	receiveWindowByteCount  uint64
+	receiveWindowSet        bool
 }
 
 func (m *sendAckFrame) sizeAck() int {
@@ -363,6 +365,9 @@ func (m *sendAckFrame) sizeAck() int {
 	}
 	if m.logicalLaneVersion != 0 {
 		n += protoSizeTag(7) + protoSizeVarint(uint64(m.logicalLaneVersion))
+	}
+	if m.receiveWindowSet {
+		n += protoSizeTag(8) + protoSizeVarint(m.receiveWindowByteCount)
 	}
 	return n
 }
@@ -389,6 +394,12 @@ func (m *sendAckFrame) appendAck(b []byte) []byte {
 	if m.logicalLaneVersion != 0 {
 		b = protoAppendTag(b, 7, protoWireVarint)
 		b = protoAppendVarint(b, uint64(m.logicalLaneVersion))
+	}
+	// optional: zero is a receiver that is currently full, so presence is
+	// carried by the tag rather than by the value
+	if m.receiveWindowSet {
+		b = protoAppendTag(b, 8, protoWireVarint)
+		b = protoAppendVarint(b, m.receiveWindowByteCount)
 	}
 	return b
 }
@@ -1359,6 +1370,17 @@ func decodeAck(b []byte) (*protocol.Ack, bool) {
 			}
 			b = b[vn:]
 			ack.LogicalLaneVersion = uint32(v)
+		case 8: // receive_window_byte_count
+			if typ != protowire.VarintType {
+				return nil, false
+			}
+			v, vn := protowire.ConsumeVarint(b)
+			if vn < 0 {
+				return nil, false
+			}
+			b = b[vn:]
+			receiveWindowByteCount := v
+			ack.ReceiveWindowByteCount = &receiveWindowByteCount
 		default:
 			fn := protowire.ConsumeFieldValue(num, typ, b)
 			if fn < 0 {
@@ -1452,6 +1474,17 @@ func decodeAckOwned(b []byte, decoded *decodedTransferFrame) bool {
 			}
 			b = b[vn:]
 			ack.LogicalLaneVersion = uint32(v)
+		case 8: // receive_window_byte_count
+			if typ != protowire.VarintType {
+				return false
+			}
+			v, vn := protowire.ConsumeVarint(b)
+			if vn < 0 {
+				return false
+			}
+			b = b[vn:]
+			receiveWindowByteCount := v
+			ack.ReceiveWindowByteCount = &receiveWindowByteCount
 		default:
 			fn := protowire.ConsumeFieldValue(num, typ, b)
 			if fn < 0 {

@@ -5783,6 +5783,9 @@ type SendSequence struct {
 	deliveredBytesHead  int
 	deliveredBytesCount int
 	deliveredByteTotal  ByteCount
+	// the receiver's latest advertised hold (THROUGHPUTFIX §37.3)
+	receiveWindowByteCount atomic.Uint64
+	receiveWindowSet       atomic.Bool
 	// laneAcks is the highest acknowledged sequence number per carrier route,
 	// a fixed array scanned linearly since a snapshot has a handful of
 	// routes, reset on a route generation change. It is what lets the
@@ -6278,6 +6281,10 @@ type receiveAckMessage struct {
 	selective                        bool
 	contractMissing                  bool
 	compactContractRecoverySupported bool
+	// what the receiver said it can still hold out of order; unset is a
+	// legacy peer, and zero is a receiver that is currently full
+	receiveWindowByteCount uint64
+	receiveWindowSet       bool
 }
 
 type receiveAckHandoffResult uint8
@@ -6310,6 +6317,10 @@ func receiveAckMessageFromProtocol(ack *protocol.Ack) (receiveAckMessage, error)
 		logicalLaneVersion:               ack.LogicalLaneVersion,
 		selective:                        ack.Selective,
 		compactContractRecoverySupported: ack.CompactContractRecovery,
+	}
+	if ack.ReceiveWindowByteCount != nil {
+		receiveAck.receiveWindowByteCount = *ack.ReceiveWindowByteCount
+		receiveAck.receiveWindowSet = true
 	}
 	if 0 < len(ack.MissingContractId) {
 		receiveAck.missingContractId, err = IdFromBytes(ack.MissingContractId)
@@ -6422,6 +6433,7 @@ func (self *SendSequence) coalesceReceivedAck(
 			ack.logicalLaneVersion,
 		)
 	}
+	self.observeReceiveWindowAdvertisement(ack)
 	if ack.compactContractRecoverySupported && self.client != nil {
 		self.client.compactRecoveryAckCount.Add(1)
 	}
@@ -8749,11 +8761,31 @@ func (self *SendSequence) releaseUnreliableFlight(item *sendItem) {
 	self.client.observeUnreliableFlight(self.flightController)
 }
 
-// deliveredBytesRingSize is how many delivery samples a sequence keeps. At
-// one sample per quarter of the retransmit pacing floor, sixteen cover four
-// pacing floors, which is longer than any scaled round trip the bound reads
-// (FLIGHTGATEFIX §22).
-const deliveredBytesRingSize = 16
+// deliveredBytesRingSize is how many delivery samples a sequence keeps.
+//
+// Sixty-four at the window rule's ten millisecond cadence is 640 ms of
+// history, which spans two round trips at the slowest delay the cell imposes
+// and many at the fastest. The rate the window rule reads must cover several
+// acknowledgement bursts or it projects the burst ratio rather than the path
+// (THROUGHPUTFIX §36.6), and a ring that holds less than a round trip cannot.
+// The ring is allocated only for a sequence whose settings turn one of the
+// delivery-sized rules on, so an unconfigured client keeps none of it.
+const deliveredBytesRingSize = 64
+
+// The window rule's sampling cadence. Fine enough that a rate can be read
+// across a short round trip, against the pacing-floor quarter that serves the
+// reliable-admission bound, which reads a sum over a horizon and does not care
+// (THROUGHPUTFIX §36.6: the 75 ms cadence is coarser than a 25 ms round trip,
+// which is why the sum form cannot serve a short path).
+const deliverySizedWindowSampleInterval = 10 * time.Millisecond
+
+// The receive hold a legacy peer is known to hold, which is the ceiling until
+// that peer advertises its own (THROUGHPUTFIX §37.12). It is the shipping
+// `ReceiveQueueMaxByteCount`, memory-scaled exactly as the hold is, so a small
+// host advertises less rather than more.
+func receiveHoldShippingByteCount() ByteCount {
+	return MemoryScaledByteCount(mib(2)+kib(512), kib(320))
+}
 
 // deliveredBytesSample is one running total of acknowledged bytes and when
 // it was taken.
@@ -8771,7 +8803,7 @@ func (self *SendSequence) observeDeliveredBytes(byteCount ByteCount, at time.Tim
 	}
 	self.deliveredByteTotal += byteCount
 	atNanos := at.UnixNano()
-	interval := (self.sendBufferSettings.RttMinResendInterval / 4).Nanoseconds()
+	interval := self.deliveredBytesSampleInterval().Nanoseconds()
 	if 0 < self.deliveredBytesCount {
 		newest := self.deliveredBytes[self.deliveredBytesHead]
 		if atNanos-newest.atNanos < interval {
@@ -8788,6 +8820,83 @@ func (self *SendSequence) observeDeliveredBytes(byteCount ByteCount, at time.Tim
 	if self.deliveredBytesCount < len(self.deliveredBytes) {
 		self.deliveredBytesCount += 1
 	}
+}
+
+// The cadence the ring advances at. The window rule needs samples fine enough
+// to read a rate across a short round trip; the reliable-admission bound reads
+// a sum over a horizon and keeps the pacing-floor quarter it was built with.
+func (self *SendSequence) deliveredBytesSampleInterval() time.Duration {
+	if 0 < self.sendBufferSettings.DeliverySizedWindowScale {
+		return deliverySizedWindowSampleInterval
+	}
+	return self.sendBufferSettings.RttMinResendInterval / 4
+}
+
+// deliveredRate reports the bytes acknowledged between the newest sample and
+// the newest sample at least minSpan older than it, with the span it actually
+// measured over. A rate rather than a sum over a horizon: the ring advances on
+// its own cadence, so a sum returns whatever happened since the newest sample
+// older than the horizon, between one and twelve times a short round trip's
+// worth depending on where the ring happened to sit (THROUGHPUTFIX §36.6).
+// Dividing by the span it measured removes that dependence.
+func (self *SendSequence) deliveredRate(minSpan time.Duration) (ByteCount, time.Duration, bool) {
+	if self.deliveredBytes == nil || self.deliveredBytesCount < 2 {
+		return 0, 0, false
+	}
+	newest := self.deliveredBytes[self.deliveredBytesHead]
+	horizon := newest.atNanos - max(0, minSpan).Nanoseconds()
+	older := newest
+	for offset := 1; offset < self.deliveredBytesCount; offset += 1 {
+		index := (self.deliveredBytesHead - offset + len(self.deliveredBytes)) %
+			len(self.deliveredBytes)
+		older = self.deliveredBytes[index]
+		if older.atNanos <= horizon {
+			break
+		}
+	}
+	span := time.Duration(newest.atNanos - older.atNanos)
+	if span <= 0 {
+		return 0, 0, false
+	}
+	return max(0, newest.total-older.total), span, true
+}
+
+// Records the receiver's latest advertised hold. Stored atomically because it
+// is written from the acknowledgement worker and read by the send loop when it
+// sizes its window.
+func (self *SendSequence) observeReceiveWindowAdvertisement(ack receiveAckMessage) {
+	if !ack.receiveWindowSet {
+		return
+	}
+	self.receiveWindowByteCount.Store(ack.receiveWindowByteCount)
+	self.receiveWindowSet.Store(true)
+}
+
+// The latest hold the receiver advertised, and whether it has advertised one.
+// A peer that never has is legacy, and the window rule holds at the shipping
+// receive hold against it rather than growing to a size it could not take.
+func (self *SendSequence) receivedWindowAdvertisement() (ByteCount, bool) {
+	if !self.receiveWindowSet.Load() {
+		return 0, false
+	}
+	return ByteCount(self.receiveWindowByteCount.Load()), true
+}
+
+// The hold's share less what it currently holds: what this receiver can still
+// take out of order. A sender clamps its window to it, because a Pack above
+// the hold is dropped and must be sent again, so a window larger than the hold
+// turns one loss into one window of retransmission (THROUGHPUTFIX §37.3).
+//
+// The share is this sequence's own bound, further bounded by what a shared
+// receive budget will lend, so a receiver never advertises memory it would
+// have to borrow from its other sequences.
+func (self *ReceiveSequence) receiveWindowAdvertisement() uint64 {
+	share := self.receiveBufferSettings.ReceiveQueueMaxByteCount
+	if budget := self.receiveQueue.Budget(); budget != nil {
+		share = min(share, budget.TotalByteCount())
+	}
+	_, held := self.receiveQueue.QueueSize()
+	return uint64(max(0, share-held))
 }
 
 // deliveredBytesOver reports what this lane acknowledged in the last d: the
@@ -8825,16 +8934,20 @@ func (self *SendSequence) deliveredBytesOver(d time.Duration, now time.Time) Byt
 // confirm the rule engaged, and this program has twice run campaigns against
 // settings that silently did nothing.
 type SendWindowEstimate struct {
-	// what the sequence may hold unacknowledged, which is the floor when the
-	// rule is off
+	// what the sequence may hold unacknowledged, which is the initial size
+	// when the rule is off or holding
 	Window ByteCount
-	// Sized is whether the rule is on and had evidence. False means Window is
-	// the constant floor, which is a different fact from a measured window
-	// that happens to equal it.
-	Sized bool
-	// what the lane delivered over Interval, and how many samples back it
+	// Sized is whether the rule is on and had every bound it needs. False
+	// means Window is the initial size, which is a different fact from a
+	// measured window that happens to equal it, and Reason says which bound
+	// was missing.
+	Sized  bool
+	Reason string
+	// the rate the window was computed from: bytes acknowledged over the span
+	// they were acknowledged in, times the minimum round trip, times the scale
 	DeliveredByteCount ByteCount
 	Interval           time.Duration
+	RoundTrip          time.Duration
 	SampleCount        int
 	// the bounds the rule clamped between
 	Floor   ByteCount
@@ -8842,33 +8955,96 @@ type SendWindowEstimate struct {
 }
 
 // sendWindowEstimate is the window this sequence may hold unacknowledged, and
-// the evidence behind it. With the scale off it is the configured constant.
+// the evidence behind it.
+//
+// The form is `scale × rate × minimum round trip`, clamped. Three parts of
+// that are deliberate and each replaced something that did not work.
+//
+// The multiplier is the minimum round trip and not the mean. The sender stamps
+// its tag ahead of the writer, so the mean contains the queue the window
+// itself creates: on a path bound below this sequence a window sized from the
+// mean feeds back on its own output and converges to its ceiling rather than
+// to the path. The minimum is the sample that queued least, which is the only
+// one that describes the path (THROUGHPUTFIX §36.7).
+//
+// The delivery term is a rate and not a sum over a horizon, for the reason
+// `deliveredRate` gives.
+//
+// A consequence worth stating because it removes a feature rather than adding
+// one: the plateau is this rule's fixed point without any detector. A window
+// larger than the path can carry produces no more delivery, so the rate stops
+// rising and the window stops with it, at the scale times the path's delivery
+// per round trip. The ceiling is then the backstop it was designed as, and a
+// well-behaved path never reaches it.
+//
+// The policy for what happens when a bound is missing is one sentence: the
+// sender sizes only against a bound it can see, and holds the initial size
+// where it cannot. A budget for memory, an advertisement for the receiver, an
+// estimate with samples for the round trip. That makes the safe configuration
+// the default and the unsafe one unreachable, rather than documented.
 func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
-	floor := self.sendBufferSettings.ResendQueueMaxByteCount
-	estimate := SendWindowEstimate{Window: floor, Floor: floor}
+	// until §37.4's surface lands, the initial size is the shipping constant
+	initial := self.sendBufferSettings.ResendQueueMaxByteCount
+	estimate := SendWindowEstimate{Window: initial, Floor: initial}
 	scale := self.sendBufferSettings.DeliverySizedWindowScale
 	if scale <= 0 || self.deliveredBytes == nil {
+		estimate.Reason = "the rule is off"
+		return estimate
+	}
+
+	// Memory it can see: absent a shared budget there is nothing bounding what
+	// every sequence of a provider holds together, so the window holds at the
+	// initial size rather than growing against a per-sequence maximum that
+	// forty downloaders would multiply.
+	budget := self.resendQueue.Budget()
+	if budget == nil {
+		estimate.Reason = "no memory budget"
 		return estimate
 	}
 	ceiling := self.sendBufferSettings.DeliverySizedWindowCeilingByteCount
 	if ceiling <= 0 {
-		ceiling = floor
+		ceiling = initial
 	}
-	// a share of a budget rather than a constant: what the shared budget will
-	// lend bounds the ceiling, and the queue's floor-and-borrow admission
-	// shares it among the sequences that want it
-	if budget := self.resendQueue.Budget(); budget != nil {
-		ceiling = min(ceiling, budget.TotalByteCount())
+	ceiling = min(ceiling, budget.TotalByteCount())
+
+	// The receiver it can see: absent an advertisement this is a legacy peer,
+	// and the most one is known to hold is the shipping receive hold. The rule
+	// is then inert against old peers and engages fully only between peers that
+	// both carry the field.
+	if advertised, ok := self.receivedWindowAdvertisement(); ok {
+		ceiling = min(ceiling, advertised)
+	} else {
+		ceiling = min(ceiling, receiveHoldShippingByteCount())
 	}
 	estimate.Ceiling = ceiling
-	estimate.Interval = self.rttWindow.ScaledRtt()
-	estimate.DeliveredByteCount = self.deliveredBytesOver(estimate.Interval, now)
-	estimate.SampleCount = self.deliveredBytesCount
-	if estimate.SampleCount == 0 {
+
+	// The round trip it can see.
+	roundTrip := self.rttWindow.Estimate()
+	if !roundTrip.Sampled() {
+		estimate.Reason = "no round trip samples"
 		return estimate
 	}
+	estimate.RoundTrip = roundTrip.Min
+	estimate.SampleCount = self.deliveredBytesCount
+
+	// the rate must span several acknowledgement bursts, and at least a couple
+	// of round trips where those are long
+	minSpan := max(
+		2*roundTrip.Min,
+		4*self.deliveredBytesSampleInterval(),
+	)
+	delivered, span, ok := self.deliveredRate(minSpan)
+	if !ok {
+		estimate.Reason = "no delivery rate samples"
+		return estimate
+	}
+	estimate.DeliveredByteCount = delivered
+	estimate.Interval = span
+
 	estimate.Sized = true
-	estimate.Window = min(max(ByteCount(scale)*estimate.DeliveredByteCount, floor), ceiling)
+	estimate.Reason = "sized"
+	perRoundTrip := ByteCount(int64(delivered) * roundTrip.Min.Nanoseconds() / span.Nanoseconds())
+	estimate.Window = min(max(ByteCount(scale)*perRoundTrip, initial), ceiling)
 	return estimate
 }
 
@@ -11169,6 +11345,10 @@ func (self *ReceiveSequence) Run() {
 		writeAck := func(sendAck sequenceAck) {
 			path := sendTransferPath(self.client.ClientId(), ackDestination)
 
+			// what this receiver can still hold out of order, so the sender may
+			// clamp its window to it (THROUGHPUTFIX §37.3)
+			receiveWindowByteCount := self.receiveWindowAdvertisement()
+
 			var transferFrameBytes []byte
 			if 2 <= self.receiveBufferSettings.ProtocolVersion {
 				// hand-rolled marshal of the hot Ack TransferFrame; wire-identical
@@ -11182,6 +11362,8 @@ func (self *ReceiveSequence) Run() {
 					tagSet:                  sendAck.tag.set,
 					compactContractRecovery: sendAck.compactContractRecoverySupported,
 					logicalLaneVersion:      transferLogicalLaneVersion,
+					receiveWindowByteCount:  receiveWindowByteCount,
+					receiveWindowSet:        true,
 				}
 				if sendAck.contractMissing {
 					saf.missingContractId = &sendAck.missingContractId
@@ -11195,6 +11377,7 @@ func (self *ReceiveSequence) Run() {
 					Tag:                     sendAck.tag.protocol(),
 					CompactContractRecovery: sendAck.compactContractRecoverySupported,
 					LogicalLaneVersion:      transferLogicalLaneVersion,
+					ReceiveWindowByteCount:  &receiveWindowByteCount,
 				}
 				if sendAck.contractMissing {
 					ack.MissingContractId = sendAck.missingContractId.Bytes()
