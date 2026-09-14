@@ -2555,3 +2555,56 @@ per-client memory at 4 and 8 lanes; the candidate scale is the existing
 | F3 | `TestLaneFloorsAreExemptionsNotReservations` | with seven lanes idle and one active, the active lane borrows up to the full cap | a reservation implementation | in-process |
 | F4 | `TestGrantOrderRotatesAmongWaitingLanes` (option B, if built) | with the pool full and three lanes waiting, releases are granted in waiting order and a re-registering heavy lane goes behind the others | the broadcast wait | in-process |
 | F5 | `TestLightLaneDeliveryBesideASaturatingLane` (the campaign's in-process mirror) | with F1's shape and acknowledgements flowing, the light lane's delivered bytes per acknowledgement round trip stay above its floor and above one Pack | the tree as built | in-process |
+
+### 26.7 Refinement: the counting rule is the remedy, the burst-end trigger is its tail
+
+26.3 carried both rules but led with the wrong one. Worked through with
+per-acknowledgement window growth, which is what the measured peer does:
+a peer with W segments in its window sends W and stops. Acknowledged
+once per burst, its window becomes W + 1: linear growth, and reaching
+93 segments from one takes 93 round trips, 4.7 s at 50 ms, against the
+timer's 18 s. Acknowledged every second segment, the window becomes
+1.5 W per round; every segment, 2 W. The counting rule restores
+exponential growth and the burst-end trigger alone would replace a
+dependence on the timer with a dependence on burst count, one level
+down. So the phase's every-`QuickackEverySegments` rule is the remedy,
+and the burst-end acknowledgement is what catches a burst that ends
+short of the spacing, so the round does not hang until the timer.
+
+Why it is affordable, stated precisely, because the obvious condition
+is wrong. "Bytes since the last acknowledgement are under half the
+rung" is true at the start of every acknowledgement interval in steady
+state, so a counting rule conditioned on it would fire every two
+segments of a saturated upload, twenty thousand times a second. The
+condition must be evidence that the peer's window is small, and that is
+what the phase's entries are: E1, loss evidence, after which the window
+is collapsed or halved; E2, connection start; and a third the campaign
+should include, E3, resumption after an idle longer than
+`AckCompressTimeout` with nothing outstanding, since a peer's stack
+returns to slow start after idle without any loss. The phase exits when
+a burst reaches `windowSize/2`, which is the peer's window having grown
+out of the small regime, so the state in which the rule fires and the
+state in which acknowledgements are expensive are disjoint by
+construction: inside the phase the peer sends little, doubling from one
+segment toward the half-window; outside it the half-window rule and the
+timer are untouched. The bound per event is therefore the half-window
+itself, about `(windowSize/2)/(QuickackEverySegments × peerMss)`
+acknowledgements over the doublings, a thousand at a six megabyte rung
+with two-segment spacing, and `RecoveryQuickackByteBound` exists only
+for a peer that never grows, an application-limited sender that would
+otherwise keep the rule alive.
+
+A constraint derivable now: the burst-end wait plus the path's round
+trip must stay well under the peer's retransmission floor, 200 ms in
+gVisor and Linux, or the held acknowledgement fires the same spurious
+timeout that produced the cliff; that bounds `QuiescenceBound` from
+above before the campaign searches, and it is the same relationship row
+C1 pins for the timer.
+
+Row Q5 (K3) must assert the shape, not only a bound: recovery of a
+window of N segments completes in a number of round trips logarithmic in
+N, within a constant factor, so a linear recovery, which the burst-end
+trigger alone would give, fails the row rather than passing as an
+improvement. Row Q1 is restated the same way: ten doublings in a bound
+of round trips, with the acknowledgement count per round rising with the
+burst.
