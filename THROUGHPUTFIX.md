@@ -6492,3 +6492,141 @@ phone reaches about 750 at 200 ms with the provider at 39 MB per client.
 If a phone reaches more than its share over its loop allows, a credit is
 being advertised that is not backed, and the pool's refusal counter is
 the field to read.
+
+### 38.7 The no-acknowledgement path, traced: where it waits, where it drops, and what is counted
+
+The user's condition: a no-acknowledgement Pack must never be queued
+or dropped behind a full retransmit buffer. Traced from source, send
+side then receive side, each point classified as it behaves today:
+blocks, drops silently, or drops with a counter.
+
+Send side, in path order for an IP packet sent with `Ack: false`:
+
+1. Lane selection, `SendBuffer.selectLogicalLane`: a computation.
+   Nothing waits.
+2. The encryption gate, `SendSequence.Pack` (`transfer.go:6140–6175`):
+   only while the per-peer cipher is not yet established; at timeout
+   zero it refuses with a typed error and notifies, at a positive
+   timeout it waits within the budget. Establishment only; not a
+   steady-state point.
+3. The slot admission, `packAdmission.tryAcquire`
+   (`transfer_send_scheduler.go:52–80`), capacity `SequenceBufferSize`,
+   32, constructed at `transfer.go:6213`, at most 31 for one keyed flow.
+   Full: timeout zero refuses, positive waits then refuses, negative
+   blocks. The sequence counts none of it; the caller may. The
+   provider's return path counts non-TCP refusals
+   (`congestionDrops.addReturnSend`) and blocks TCP socket items up to
+   `WriteTimeout` with retry; the client's `SendPacket` returns false
+   and nothing in this tree counts it (`ip.go:9225–9236`). So: refuse,
+   counted by some callers and silent for the client.
+4. The `packs` channel, 32 items: the same three timeout semantics,
+   uncounted in the sequence. It is bounded by the admission at the
+   same 32, so it rarely refuses on its own.
+5. The scheduler. The loop drains the channel into per-flow queues
+   unconditionally (`transfer.go:7315–7320`) and takes the first flow
+   whose head is eligible (`TakeEligible`,
+   `transfer_send_scheduler.go:229`), then the oldest flight-eligible
+   head (`TakeFifoEligible`). A no-acknowledgement Pack is eligible
+   through `noAckPackCanBypassRecoveryAdmission` regardless of resend
+   capacity and the flight gate (`transfer.go:7719–7760`), so the
+   capacity gate is already bypassed for it, and
+   `UnreliableNoAckAdmissionBypassCount` counts the bypasses. What
+   remains is head-of-line within its own flow: a flow is taken only
+   at its head, so a no-acknowledgement Pack behind an ineligible
+   reliable head in the same flow waits. On the provider a flow is one
+   inner IP flow (`scheduleIpFlow`, `ip.go:8093,8124,8214`); on the
+   client nothing keys IP traffic, so every packet and every unkeyed
+   control Pack share one flow, and a control Pack at the head waiting
+   for resend capacity holds all client data behind it. Blocks; bounded
+   by the 32 and by the head's own progress; counted only as the
+   admission wait.
+6. The contract bypass predicate itself: `sendContract` present and
+   acknowledged, metadata generation current, and `canUpdate` for the
+   Pack's bytes. Without those the Pack is not eligible and waits for
+   the contract; and at build time, if the contract is not yet
+   acknowledged, the Pack is converted to an acknowledged one
+   (`transfer.go:8596–8604`, the race note at `:54–59`), retained,
+   sequence-numbered and resend-gated for the one round trip until the
+   contract's head is acknowledged, at every contract renewal. Blocks,
+   then briefly travels the reliable path. Not counted as such.
+7. The build: a pool buffer (`MessagePoolGet`, non-blocking), sequence
+   number zero and `head` false (`:8604–8612`), no retention and no
+   budget charge (`:8765`), the offered counters
+   `initialSendWriteCount`, `FrameCount`, `MessageByteCount`
+   incremented before the write.
+8. The carrier write, `writeMaybeWrappedBytes` →
+   `MultiRouteSelector.Write` with `WriteTimeout`, 15 s
+   (`transfer.go:882,992`): a non-blocking try on each route in
+   shuffled order, then a wait up to 15 s across them. The goroutine
+   blocks for the duration and everything behind it waits; legitimate,
+   since the wire is shared, but long. On timeout or error a
+   no-acknowledgement item is released: `item.acks.invoke(err)` and
+   `messagePoolReturn()` (`:8815–8830`), the error reaching only the
+   pack's `AckCallback`, which IP callers pass as a no-op, and the
+   `NoAckSendObserver`, which is nil unless a deployment sets it
+   (`:3595–3606`). No counter: `AckRouteWriteErrorCount` and
+   `RecoveryWriteErrorCount` cover other paths. This is the silent
+   drop, after a fifteen-second block, and it is a defect in either
+   architecture. On success `ackItem` does the contract accounting.
+
+Receive side:
+
+9. The reader-to-sequence handoff, 256 items with adaptive depth:
+   refusals counted, `PackHandoffDropCount` (`:1523`). A
+   no-acknowledgement Pack waits behind reliable ones here, in order,
+   and behind whatever the sequence goroutine is delivering.
+10. The receive goroutine tests `Pack.Nack` before the ordered path
+    (`:12363`) and hands the Pack to `receiveNack` (`:12830–12910`): it
+    requires a contract id unless `AllowLegacyNack`, on by default,
+    registers contracts, and delivers at once through `updateContract`
+    exactly as a head item is delivered, never touching the hold or
+    `nextSequenceNumber`. Its drops, no contract or a mismatch, are
+    counted in the receive accounting (`a.discard`, `a.badMessage`).
+    Usable and correctly handled; the distinction between accepted and
+    handled that this program has met twice does not bite here.
+
+Mixing on one sequence is coherent, from the same lines: a
+no-acknowledgement Pack takes sequence number zero, is never retained,
+draws no acknowledgement, and so leaves the reliable stream's
+numbering, hold, gap recovery, probes and `AckTimeout` untouched; its
+tag is stateless (`OpenTag`, `transfer_rtt.go:124–134`), so an
+unanswered tag leaks nothing. The two couplings that remain are the
+contract, item 6, and the flow scheduler, item 5.
+
+What the sequence provides that a no-acknowledgement Pack still needs,
+and whether it needs the ordered queue for it: the contract binding,
+its id, its acknowledged state and its byte accounting through
+`ackItem`, which is sequence state readable under its lock; the
+per-peer session cipher, which is per peer and not per queue; lane
+assignment, already made in `SendBuffer` before the queue; the
+multi-route writer, per contract stream, callable directly; and the
+per-flow scheduler on the provider, which is fairness across inner
+flows and is worth keeping. None of them requires the ordered queue.
+So the bypass is available: a no-acknowledgement Pack can be sealed,
+bound to the current acknowledged contract, accounted, and written
+through the contract's writer from the caller's side without entering
+the goroutine, at the cost of one lock around the contract state and a
+second entry to the writer, and at the loss of nothing it uses. It
+would remove items 3 to 6 in one step and leave item 8, which is the
+one wait the user allows.
+
+Which it is, then, by the coordinator's rule. The path does not drop a
+no-acknowledgement Pack behind a full retransmit buffer: the capacity
+gate is already bypassed and refusals at admission are the caller's,
+counted on the provider. It blocks behind a reliable head in its flow
+and behind the goroutine's write, so on the provider the bypass is a
+throughput decision and on the client, where all data is one flow with
+control, it is closer to the fix. And item 8 drops silently, after a
+fifteen-second block, in both architectures. The order that follows:
+count the write-failure drop of item 8 first, since a defect that
+counts nothing is the shape this program has met most often; key
+client-side IP traffic per flow as the provider already does, which
+removes the control Pack from the data's head; then measure the
+deterministic test's offered-against-written and the H3 hop before
+deciding whether the goroutine bypass is worth its second entry point.
+Predictions: with the counter in place and no other change, the test
+shows every refused no-acknowledgement Pack at admission or at the
+write and none elsewhere; with client-side keying, a control Pack
+waiting on capacity no longer delays data; and if offered still
+exceeds written with both, the loss is at item 8's wait and the bypass
+is the fix.
