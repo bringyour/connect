@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -872,6 +873,61 @@ func TestSizedWindowShrinksWhenThePathShrinks(t *testing.T) {
 		t.Errorf(
 			"the window fell to its %d byte floor, so this cell cannot tell a rule that tracks the path from one that collapsed",
 			slow.Floor,
+		)
+	}
+}
+
+// The window rule reads sequence-local state — the delivered-bytes ring — and
+// `DestinationSendStats` reaches it from whatever goroutine asks for a
+// snapshot, while the acknowledgement worker is advancing it. Step one put that
+// read on the stats path and the ring had no lock, which the race detector
+// caught once in four runs of an unrelated row: often enough to be real, rarely
+// enough to be dismissed as a flake. This row makes it deterministic by giving
+// the detector a reader on every core for the whole of a transfer.
+//
+// It guards a root cause rather than a fix: any future field the rule reads
+// from the sequence without a lock fails here, not only the ring.
+func TestSendWindowStatsAreSafeToReadWhileTheSequenceRuns(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	harness := newSendWindowHarness(t, ctx, 5*time.Millisecond, func(settings *SendBufferSettings) {
+		settings.DeliverySizedWindowScale = 2
+		settings.DeliverySizedWindowCeilingByteCount = ByteCount(16 * 1024 * 1024)
+		settings.ResendQueueBudget = NewTransferMemoryBudget(ByteCount(16 * 1024 * 1024))
+	})
+
+	readers := max(4, runtime.GOMAXPROCS(0))
+	stop := make(chan struct{})
+	reads := &atomic.Int64{}
+	var running sync.WaitGroup
+	for range readers {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				stats := harness.sender.DestinationSendStats(harness.receiverId)
+				// touch the evidence too, so a racing read of any of it counts
+				_ = stats.SendWindow.Window + stats.SendWindow.DeliveredByteCount
+				reads.Add(1)
+			}
+		}()
+	}
+	harness.offer(t, 4*1024, 2*time.Second)
+	close(stop)
+	running.Wait()
+
+	t.Logf("%d readers took %d snapshots while the sequence ran", readers, reads.Load())
+	if reads.Load() < 1000 {
+		t.Errorf(
+			"only %d snapshots, which is too few to give the detector its chance; this row is only a guard while it reads hard",
+			reads.Load(),
 		)
 	}
 }
