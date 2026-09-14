@@ -8285,13 +8285,13 @@ reference (§37.22), so the window is 3 MiB on every host with more than
 64 MiB and cannot be larger. Corrected in place (§48.2): that is true
 of this fallback block and of no shipped device. Every sdk-created
 device builds its carrier through the owner-target constructor at
-`:700–745`, which scales the same constants by the carriers' quarter
-of the device target against the process reference, and at the
-shipped targets of 20 and 24 MiB the stream window resolves to its
-384 KiB floor and the connection window to its 512 KiB floor. The
-derivation below is kept as the form to build; its "today" value is
-384 KiB and not 3 MiB, and every figure that follows from 3 MiB is
-restated in §48.
+`:700–745`, which scales the same constants by the device target
+against the process reference, and at the shipped targets of 20 and
+24 MiB the stream window resolves to 960 KiB and 1.125 MiB and the
+connection window to 1.25 and 1.5 MiB. The derivation below is the
+form built on the branch; its "today" value is 960 KiB to 1.125 MiB
+and not 3 MiB, and every figure that follows from 3 MiB is restated in
+§48.
 
 What it becomes. Not a larger constant. The transport budget already
 exists as a draw on the process budget: `newDefaultPlatformTransportBudget`
@@ -9127,9 +9127,9 @@ Download, delay on the client's hop, H3 carrier, a desktop with a
 
 0. The budget and the surfaces (§48). In this tree first: the
    carriers' constructor form and the device target's derivation from
-   M (§48.4), because at the shipped targets of 20 and 24 MiB the H3
-   windows sit at their floors and steps 2 to 4 below are inert on
-   every client. Then the raise, which is not one step: §48.6's 0a to
+   M (§48.4), because the shipped targets of 20 and 24 MiB are below
+   the reference, where the draw equals the scaled constant, so steps 2
+   to 4 below are inert on every client. Then the raise, which is not one step: §48.6's 0a to
    0e, none on iOS, by choice on Android after §39.3, the desktop
    figure on macOS, Windows and Linux, the provider setting a budget at
    all, and the hosted proxy at 64 MiB behind §48.5. The figures below
@@ -9276,8 +9276,8 @@ all ratios, not absolutes to be compared with other hardware.
 
 Derived: every reach figure; the 109, 160, 415 and 830 for the
 download landings (restated in §48 against the shipped values: the H3
-lane's shipped window is 384 KiB, and 415 and 830 presume a carriers'
-fraction the table has not set); the 129, 156 and 218 for upload; the 218 the
+lane's shipped window is 960 KiB to 1.125 MiB, and 415 and 830 hold at
+a device target equal to a 256 MiB process budget); the 129, 156 and 218 for upload; the 218 the
 platform's default imposes; the 51.2 MiB inversion point, which the
 cell then confirmed between 24 and 52. Each is arithmetic from a
 constant read at a line and a factor measured once, and each is stated
@@ -9294,15 +9294,40 @@ Each is written down with the value that would refute it.
 
 ## 48. What each layer reads: two budget surfaces, the shipped values, and what the chain is worth at them
 
+Corrected in place, the way §37.16 corrects §37.3. This section first
+said that the carriers receive a quarter of the device target and that
+the H3 windows therefore sit at their 384 KiB and 512 KiB floors on
+every shipped client. The code contradicts the premise, verified by the
+coordinator and again here at the lines: `deviceMemoryShares` computes
+the carriers' fifth and the caller discards it (`sdk/device_local.go:1296`,
+the share into `_`); the aggregate carrier budget is built from the
+whole target (`:1298`); and `newDeviceLocalPlatformTransportSettings`
+receives the whole `MemoryTargetByteCount` (`:4242`,
+`device_local_provider.go:206`) and passes it unchanged to the connect
+constructor, which divides nothing. The quarter policy exists only
+inside `NewPlatformTransportBudgetForMemoryTarget`, on the aggregate.
+So the shipped stream window is max(384 KiB, 3 MiB × T/64): 960 KiB at
+Apple's 20 MiB target, 34 Mb/s at 200 ms, and 1.125 MiB at 24, which the
+H3 build measured with the shipping functions; the connection window is
+1.25 MiB at 20 and does grow from its 512 KiB initial. Every figure
+below that rested on 384 KiB is restated at its line; the surface
+finding stands, that no shipped device reaches the reference and the
+draw equals the scaled constant below it, and the one-chain answer of
+§48.4 is narrowed to the one fix that remains, deriving the device
+target from the process budget. The constructor form this section
+proposed, `max(3 MiB, C/2)`, was derived for a quarter slice and is
+withdrawn; the builder's form on the branch (223485c) is the carrier's
+whole change.
+
 Three findings arrived together from the coordinator and the two ceiling
 builds, and this section answers them from source in one place because
 they are one subject: which number each layer's window is a fraction of.
 First, no shipped configuration sets a process budget above the 64 MiB
 reference, and the provider and the hosted proxy set none. Second, the
 tree has two budget surfaces, not one, and the carriers read the second:
-the H3 receive windows on every shipped client resolve to their floors,
-384 KiB and 512 KiB, not to the 3 and 4 MiB the record assumed from
-`transport.go:685`. Third, the hosted proxy multiplies every per-device
+the H3 receive windows on every shipped client resolve to 960 KiB and
+1.25 MiB at a 20 MiB target and 1.125 and 1.5 MiB at 24, not to the 3
+and 4 MiB the record assumed from `transport.go:685`. Third, the hosted proxy multiplies every per-device
 row by an unbounded client count with no aggregate behind it. Every
 figure below is read at a line; the rates are derived from those lines
 by the arithmetic of §37.23 and are marked as such.
@@ -9379,37 +9404,45 @@ surface today and not the first:
   budget attached, which no shipped process creates; the hold
   `ReceiveQueueMaxByteCount` reads M (`transfer.go:975–980`) while the
   budget behind it reads T.
-- The carriers: the carriers' fifth, C = T/4, is what
-  `newDeviceLocalPlatformTransportSettings` (`:167–176`) hands to
-  `DefaultPlatformTransportSettingsWithMemoryTarget`
-  (`transport.go:700–745`), for the client's carrier and for the
-  provider's (`device_local_provider.go:206`). That constructor sizes
-  every carrier value through `MemoryTargetScaledByteCount(C, constant,
-  floor)`, which is `max(floor, constant × min(1, C / 64 MiB))`
+- The carriers: the whole device target T is what
+  `newDeviceLocalPlatformTransportSettings` (`:167–176`) receives
+  (`:4242`, and `device_local_provider.go:206` for the provider's
+  carrier) and hands to `DefaultPlatformTransportSettingsWithMemoryTarget`
+  (`transport.go:700–745`); the carriers' fifth of `deviceMemoryShares`
+  is discarded at `:1296`, and the quarter policy lives only in the
+  aggregate budget (`:1298`). On main that constructor sizes every
+  carrier value through `MemoryTargetScaledByteCount(T, constant,
+  floor)`, which is `max(floor, constant × min(1, T / 64 MiB))`
   (`memory_budget.go:78–96`): the process reference applied to a
-  quarter of a device. The 685 block that §42.1 named as the constant is
+  device's target. On the branch (223485c) the H3 rows are draws,
+  reservation `max(3 MiB, T/8)`, stream 3/8 and connection 4/8 of T/8
+  with each window's own floor (`transport.go:762–850`), which is
+  bit-identical to the scaled form at and below the reference, since
+  3/8 of T/8 is 3 MiB × T/64, and grows above it. The 685 block that §42.1 named as the constant is
   the no-target fallback, reached by `ip_remote_multi_client_api.go:918`,
   `platform_transport_status.go:17`, `connectctl` and `sim_device.go`,
   and by nothing a shipped client dials with.
 
 The arithmetic, which holds:
 
-    T (MiB)   C = T/4   stream max(384 KiB, 3 MiB × C/64)   connection max(512 KiB, 4 MiB × C/64)
-    20        5         240 KiB → 384 KiB (floor)           320 KiB → 512 KiB (floor)
-    24        6         288 KiB → 384 KiB (floor)           384 KiB → 512 KiB (floor)
-    64        16        768 KiB                             1 MiB
-    128       32        1.5 MiB                             2 MiB
-    256       64        3 MiB (the unscaled constant)       4 MiB
+    T (MiB)   stream max(384 KiB, 3 MiB × T/64)   connection max(512 KiB, 4 MiB × T/64)
+    20        960 KiB                             1.25 MiB
+    24        1.125 MiB                           1.5 MiB
+    64        3 MiB (the unscaled constant)       4 MiB; above this main holds and
+                                                  the branch's draw grows
+    128       3 MiB on main, 6 on the branch      4 on main, 8 on the branch
+    256       3 MiB on main, 12 on the branch     4 on main, 16 on the branch
 
-So on every shipped client, Apple at 20, Android and the hosted proxy at
-24, Windows and Linux at the 20 MiB default, the H3 stream receive window
-is 384 KiB and the connection window is 512 KiB, which is its own initial
-value (`transport.go:686`): the connection window never grows at all. The
-H3 reservation reads its 3 MiB floor, the socket buffers their 256 KiB
-floors. A provider reaches the unscaled 3 MiB only with `--max-memory` at
-256 MiB or more per provider device. The record's "3 MiB on every host
-with more than 64 MiB" (§42.1) was true of the fallback and of no shipped
-device; §42.1 is amended in place to say so.
+So on every shipped client, Apple, Windows and Linux at 20 MiB, Android
+and the hosted proxy at 24, the H3 stream receive window is 960 KiB or
+1.125 MiB and the connection window 1.25 or 1.5 MiB, growing from the
+256 and 512 KiB initials (`transport.go:684–686`); the H3 reservation
+reads its 3 MiB floor and the socket buffers 320 and 384 KiB. A provider
+reaches the unscaled 3 MiB with `--max-memory` at 64 MiB or more per
+provider device, and on the branch grows past it. The record's "3 MiB
+on every host with more than 64 MiB" (§42.1) was true of the fallback
+and of no shipped device, whose targets are all below the reference;
+§42.1 is amended in place to say so.
 
 What binds the H3 lane on a shipped client, then. Download frames carry
 packets of at most `DefaultMtu` = 1,100 bytes (`ip.go:43`, `:403`,
@@ -9417,10 +9450,11 @@ packets of at most `DefaultMtu` = 1,100 bytes (`ip.go:43`, `:403`,
 or the stream is decided per path by `UseDatagramForPath`
 (`transport_h3_datagram.go:247–262`): at QUIC's minimum datagram payload
 it does not fit and uses the stream; at the 1,360-byte target it fits.
-On the stream the client's 384 KiB window binds: 384 KiB × 0.865 over
-the round trip, 13.6 Mb/s of goodput at 200 ms, 27 at 100, 54 at 50, 136
-at 20 and 272 at 10, with the 512 KiB connection window bounding every
-stream together at 18 Mb/s at 200 ms. On the DATAGRAM lane there is no
+On the stream the client's window binds: 960 KiB × 0.865 over the
+round trip at a 20 MiB target, 34 Mb/s of goodput at 200 ms, 68 at 100,
+136 at 50, 340 at 20 and 680 at 10, and 40 Mb/s at 200 ms at Android's
+24; the 1.25 MiB connection window bounds every stream together at
+44 Mb/s at 200 ms. On the DATAGRAM lane there is no
 flow control, and the sequence's own unreliable flight controller caps
 the lane at `UnreliableMaximumFlightByteCount` = 256 KiB
 (`transfer.go:890`), 9.1 Mb/s of goodput at 200 ms, with the overflow
@@ -9443,9 +9477,10 @@ transfer unit's 109 also survives on H1, because its 2.76 MiB fixed point
 fits the device resend budgets of §48.2, 3.9 to 5.6 MiB at a 20 MiB
 target and 4.6 to 6.7 at 24.
 
-On H3 alone, 71 does not exist and never did: the lane is bound at 13.6
-Mb/s on the stream, or at 9.1 on the DATAGRAM lane plus what the stream
-takes as overflow, about 23 together, at 200 ms. The transfer unit is
+On H3 alone, 71 does not exist and never did: the lane is bound at 34
+Mb/s on the stream at a 20 MiB target, 40 at 24, or at 9.1 on the
+DATAGRAM lane plus what the stream takes as overflow, about 43
+together, at 200 ms. The transfer unit is
 worth nothing on H3-only until the carriers' rows move, and the landing
 order for that carrier inverts: the H3 windows first, then the unit.
 
@@ -9455,18 +9490,19 @@ striped across both by the non-blocking select of
 the H3 lane takes frames until its route channel, 32 deep
 (`TransportBufferSize`, `transport.go:659`), is full behind a stream
 blocked on its window, and everything after that goes to H1. So the H3
-lane carries its 13.6 and H1 carries the rest, and 71 survives on Auto
+lane carries its 34 and H1 carries the rest, and 71 survives on Auto
 in rate. What it costs is order: a frame on the H3 lane waits behind
-about 384 KiB of window plus 38 KB of channel at 1.97 MB/s framed, about
-220 ms beyond the round trip, and every later frame that H1 delivered in
-those 220 ms sits in the receiver's hold, 1.9 MB at 71 Mb/s against a
+about 960 KiB of window plus 38 KB of channel at 4.9 MB/s framed, about
+210 ms beyond the round trip, a lag that is one round trip of the lane's
+own whatever its window, and every later frame that H1 delivered in
+those 210 ms sits in the receiver's hold, 1.9 MB at 71 Mb/s against a
 hold of 2.5 MiB today (`ReceiveQueueMaxByteCount`, `transfer.go:1026`).
-At 109 it is 3.0 MB, over today's hold and under the unit's 8 MiB. That
+At 109 it is 2.9 MB, over today's hold and under the unit's 8 MiB. That
 is §37.16's eviction regime reached from the other side, by a slow lane
 rather than a dead one. Prediction, numbers first: the namespace cell at
-200 ms reads H1-only at 71 today and 109 with the unit; H3-only at 13.6
-if `H3QuicPacketStats` shows the stream carrying the bulk and about 23 if
-it shows the DATAGRAM lane; Auto within ten per cent of H1-only with the
+200 ms reads H1-only at 71 today and 109 with the unit; H3-only at 34 at
+a 20 MiB target and 40 at 24 if `H3QuicPacketStats` shows the stream
+carrying the bulk and about 43 if it shows the DATAGRAM lane; Auto within ten per cent of H1-only with the
 eviction counter at zero when the hold is the unit's, and below H1-only
 with the counter above zero if the unit's window lands with the hold
 left at 2.5 MiB. Refuted by: Auto reading near H3-only, which would mean
@@ -9484,24 +9520,19 @@ provider, which `applyProviderMemoryTarget` already does but from
 `--max-memory` rather than from an M the provider never sets. Today T is
 a constant beside M, 20 or 24 MiB whatever M is, and Apple passes 20
 into a 32 MiB process by hand; that is the first break. Within a device
-the sdk's twentieths are the owner's rows and are already fractions;
-within the carriers' fifth, the rows are reference-scaled constants that
-compare a slice against the whole-process reference, so a device that
-gets a quarter of 20 MiB is sized as if it were a 5 MiB process; that is
-the second break, §37.22's scale-down-only defect with a fourfold slice
-on top. The fix for the second is the same as for every row in §44.2's
-first constraint: no window row passes through either scaling helper.
-In the carriers' constructor, with C the carriers' slice:
-
-    h3Reservation                         = max(3 MiB, C / 2)
-    H3MaxStreamReceiveWindowByteCount     = h3Reservation × 3/8
-    H3MaxConnectionReceiveWindowByteCount = h3Reservation × 4/8
-    initial windows, socket buffers, H1   as today
-
-which reproduces today's 8, 3 and 4 MiB at C = 16 MiB, the carriers'
-quarter of a 64 MiB device, and gives 3 MiB and 1.125 MiB at Apple's
-5 MiB slice against 384 KiB today. The fix for the first is the sdk's
-default target: T defaults to a fraction of `connect.MemoryBudget()`
+the sdk's twentieths are the owner's rows and are already fractions,
+and the carriers read the whole target beside them, with the aggregate
+carrier budget at a quarter of it; the second break is only §37.22's,
+that on main the H3 rows are reference-scaled constants that cannot
+grow above the reference, and the builder's form on the branch already
+closes it: reservation `max(3 MiB, T/8)`, stream 3/8 and connection
+4/8 of it with their floors, bit-identical below the reference and a
+draw above (corrected in place; the `max(3 MiB, C/2)` form first
+proposed here was derived for a quarter slice, would be a 10 MiB
+reservation at Apple's 20 MiB, and is withdrawn). So once the device
+target is derived from M, the carrier needs no further change: deriving
+the target is the whole remaining fix, and the share table resumes on
+it. That fix is the sdk's default target: T defaults to a fraction of `connect.MemoryBudget()`
 when M is set, M less the pools' 14/34 for a single-device process,
 and to the 20 and 24 MiB constants only when M is not; an explicit T
 stays legal for a host that knows its container, and the miner sets M
@@ -9512,20 +9543,19 @@ So §44's M denotes the process budget, its rows acquire an owner column,
 process rows (pools, and the hold as a permission), device rows (the
 twentieths, the transfer budgets, the tun on hosted devices), carrier
 rows (the H3 reservation and its windows, H1), and its constraints apply
-per level: the device rows sum to T, the carrier rows to C, and the
-device targets plus the pools to M. At today's fractions the H3 stream
-window a desktop gets after both fixes is 1.78 MiB at M = 64 (T about
-38, C 9.5, reservation 4.75), 65 Mb/s at 200 ms, below the transfer
-unit's 109; a reservation at C rather than C/2 gives 3.56 MiB and 130;
-and at M = 256 the same rows give 7 MiB and 254, or 14 MiB and 509 at C.
-The 415 and 830 of §42.1 and §43.2 assumed a carriers' draw of M/8 of
-the process, which under the chain is reachable only by raising the
-carriers' fifth or taking the reservation at C; that is a fraction, the
-table's to set and the campaign's to confirm, and it is why the share
-table is the landing that decides what a desktop's H3 lane is worth.
-The build the coordinator is holding should land the constructor form
-above and the default-target derivation first; the fractions come after
-and are one table.
+per level: the device rows sum to T, the H3 reservation fits the
+carriers' aggregate quarter of T, and the device targets plus the pools
+to M. What a desktop's H3 lane is then worth turns on one decision, what
+fraction of M the single device's target is. At T = M the branch's form
+gives 3 MiB and 109 Mb/s at 200 ms at M = 64 and 12 MiB and 415 at 256,
+which are exactly §42.1's figures, recovered: they presumed a carriers'
+draw of M/8 of the process, and T = M makes it so. At T = M less the
+pools' 14/34 the same form gives 1.76 MiB and 64 Mb/s at M = 64, below
+the transfer unit's 109, and 7 MiB and 254 at 256. Which it is is the
+table's to set, since the pools back the transfer rows and not the
+carriers' heap, and the campaign's to confirm. The default-target
+derivation is the one remaining change in front of the share table;
+the fractions come after and are one table.
 
 ### 48.5 The hosted proxy: multiplicity without an aggregate
 
@@ -9579,9 +9609,13 @@ many devices one M covers:
     the 32 MiB budget is already most of it, and the record's design
     point is not reachable on a phone by memory. What iOS gains from the
     chain is the fractions: the carriers' constructor form alone takes
-    its H3 stream window from 384 KiB to 1.125 MiB, 13.6 to 40 Mb/s at
-    200 ms; the transfer unit takes H1 from 36 (the 1 MiB window M scales
-    to at 32 MiB) to 109 where the OS's socket buffers allow it.
+    are what move it, and the carrier form moves nothing at a 20 MiB
+    target, 960 KiB and 34 Mb/s at 200 ms either way; what iOS can move
+    is its device target, Apple's explicit 20 inside a 32 MiB process,
+    toward the process budget's remainder, each MiB of target being
+    3/64 MiB of stream window; the transfer unit takes H1 from 36 (the
+    1 MiB window M scales to at 32 MiB) to 109 where the OS's socket
+    buffers allow it.
 0b. Android: 32 MiB by choice, mirroring iOS, and not a platform limit:
     the VPN service runs in the app process, whose native memory is
     bounded by the device and the low-memory killer rather than by
@@ -9617,8 +9651,8 @@ receive window over the inner round trip is the term the record does
 not name, by the rule that the user's machine is never an input, and
 the whole-chain figure is the smaller of the H3 layer's and that term.
 The record supports no native-desktop number above what the transfer
-unit gives on H1, 109 at 200 ms, and it now cannot support even 415 for
-the H3 layer on any shipped budget (§48.4). The reading that names the
+unit gives on H1, 109 at 200 ms, and 415 for the H3 layer needs the
+device target at a 256 MiB process budget (§48.4). The reading that names the
 OS term on a given machine without making the machine an input: the
 advertised window in the inner acknowledgements crossing the client's
 tun, which `DeviceLocal.SendPacket` sees on every native device, times
@@ -9627,13 +9661,15 @@ defaults is a support document, not this record's.
 
 ### 48.8 The tests
 
-- The shipped floor, failing today: the transport settings built through
-  the sdk's device path at its default target resolve
-  `H3MaxStreamReceiveWindowByteCount` above 384 KiB. On the tree as it
-  stands they resolve to exactly 384 KiB at 20 and at 24 MiB.
-- The reference identity, failing today: the owner-target constructor at
-  C = 16 MiB reproduces 8, 3 and 4 MiB. Today it gives 768 KiB and
-  1 MiB.
+- The shipped value, an identity that pins the reading: the transport
+  settings built through the sdk's device path resolve
+  `H3MaxStreamReceiveWindowByteCount` to 960 KiB at a 20 MiB target and
+  1.125 MiB at 24, on main and on the branch alike, which the H3 build
+  measured with the shipping functions.
+- The draw above the reference, failing on main: the owner-target
+  constructor at T = 128 MiB gives a 6 MiB stream window and 8 MiB
+  connection window; main gives 3 and 4. At T = 64 both give 3 and 4,
+  which is the bit-identity the branch keeps.
 - The one chain: with `SetMemoryBudget(256 MiB)` and no explicit target,
   `NewDeviceLocal` reads a target above 20 MiB, and the sum of the device
   targets plus the pools' draw is at most M.
