@@ -8091,3 +8091,138 @@ much longer than predicted, the mechanism held and the number did not,
 and the reason will be in the inner connection's timeout count: a
 timeout backing off across a multi-second reconnect rather than the
 one round trip assumed.
+
+## 41. The reporter's question decided in advance, the target as a clamp, and the sequence buffer at both paths
+
+The socket-carrier substitute the harness had built for the namespace
+cell hangs; it is abandoned and is not to be rebuilt. The namespace
+cell is being built properly, and the reporter-regime question now
+rests on it alone.
+
+### 41.1 The target clamps the window at zero delay, which changes the specification
+
+Across 98 measured arms the binding reason reads the target in 25. The
+target enters the estimate as `ceiling = min(ceiling, max(T × rtt_min /
+goodputFactor, floor))`, and the reason names it when twice the
+delivery is at or above it, that is when the flow delivers at least
+half the target. At 200 ms that window is 28.9 MB and never binds. At
+the loop round trip our own path adds with no network delay, about
+21 ms (§37.23), it is 125 MB/s × 0.021 / 0.865 = 3.0 MB, about 1.45
+times the 2 MiB constant. So in the reporter's regime the sized window
+is target-clamped at about 3 MB by construction, and a sized-against-
+constant comparison there can show at most about 1.45, whatever the
+path could carry. At 5 ms the target window is 1.4 MB, below the
+constant: the sized arm there was clamped under the constant and any
+comparison favoured the constant by construction.
+
+What that changes. §38.2's statement that the target never binds at 200
+to 400 ms stands. §40.1's predictions at 200 ms stand, since the target
+window there is far above every carrier window. The rate-stage
+readings at 25 ms (§38.13, §38.15) stand, because at 210 Mb/s the
+delivery term sits below the 3.6 MB target window and the reason there
+reads "delivery". What does change: every sized-against-constant
+comparison at zero or near-zero imposed delay compared a
+target-clamped window against a constant of nearly the same size, and
+the window difference could not have mattered; the harness can list
+them from the reason column, and any pair in which both arms read
+"target" compared equal windows. And the specification below is
+changed by it: the reporter's question is tested with constant arms
+and no target, or with the target raised above what the path can
+carry, never with the single switch at its shipped target.
+
+### 41.2 The reporter's question, decided before the cell runs
+
+Their figure: about 640 Mb/s with eight flows and the same with one, on
+hardware we do not have, with the shipping 2 MiB queue and a network
+round trip under a millisecond. The question is whether what this
+program found is what bounds them. The cell: the namespace cell with a
+real carrier, zero imposed delay, the pin-pair buffers of their setup,
+upload and download, one flow and eight, constant-queue arms at 2, 4,
+8 and 16 MiB with the rule off, and the instruments in the tree. Four
+readings, each with its number, its mechanism, and the value that
+refutes it rather than merely failing to confirm it:
+
+1. `Rtt.Min` and `Rtt.Mean` of the data sequence at the 2 MiB arm.
+   Number: both between 15 and 25 ms, the mean within 1.3 times the
+   minimum. Mechanism: the loop's round trip with no network delay is
+   our fixed delays, the receiver's acknowledgement compression at a
+   mean of 5 ms, the writer's service and the handoffs, and a 2 MiB
+   window over about 21 ms is their 640. Refuted by: a minimum at or
+   under 3 ms with a mean at or above 15 ms, which is a serial stage
+   with a queue standing behind it (§35), or both at or under 5 ms,
+   which means 2 MiB over that round trip permits several gigabits and
+   the queue cannot be what bounds them.
+2. The constant sweep at zero delay, 2, 4, 8 and 16 MiB, both
+   directions. Number: throughput rising with the queue from about
+   640 at 2 MiB to the next binder, about 1.3 Gb/s on download, the
+   tun's 4 MiB over the inner loop's 25 ms. Mechanism: a window over a
+   fixed delay. Refuted by: the four arms within one null band of each
+   other, which is a rate stage that no window moves.
+3. On upload, the inner connection's round trip from
+   `TunTcpConn.TcpInfo()`. Number: 50 to 60 ms. Mechanism: the ladder's
+   50 ms `AckCompressTimeout` is the inner acknowledgement clock, since
+   the half-window signal at 8 MiB fires every 67 ms at the target and
+   never first; their upload figure is then the tun's 4 MiB over that
+   clock, 559 to 671 (§37.23). Refuted by: an inner round trip at or
+   under 25 ms, which means the clock is not the ceiling and reading 2
+   decides upload as it does download.
+4. Eight flows against one at the largest constant arm. Number: the
+   same aggregate within the null band. Mechanism: eight flows share
+   one per-destination sequence and its window. Refuted by: an
+   aggregate rising with the flow count, which is a per-flow stage and
+   not the sequence.
+
+The decision, stated so it cannot be read either way afterwards. The
+answer is yes, what we found is what bounds them, when reading 1 shows
+the fixed-delay signature and reading 2 scales; the connection is then
+the window, and the transfer unit with the ceilings of §39.2 is the fix
+for their path. The answer is no when reading 1 shows the serial
+signature or reading 2 is flat; their ceiling is then a service rate
+this program's window work does not touch, and §31 and §35 are where
+it lives. The answer is "the clock, not the window" on upload when
+reading 3 sits at fifty while reading 2 scales on download and is flat
+on upload; their upload figure is then §25 and §26's, and the fix is the
+acknowledgement rule and the tun's send buffer. If the 2 MiB arm does
+not reproduce their absolute within about 20 per cent, the absolute is
+their hardware's and the decision still rests on readings 1 and 2,
+because the claim is a ratio. My prediction, so it can be wrong:
+download yes, upload the clock.
+
+### 41.3 The sequence buffer at both path lengths
+
+The first attempt spread sixfold with near-total overlap; the sampler's
+lock on the loop (§38.15) is the likely cause and the re-run should
+sample at a hundredth of the rate. Predictions for both paths, numbers
+and mechanisms apart.
+
+At 200 ms. Number: throughput proportional to `SequenceBufferSize`,
+about 49 Mb/s at 32 and about 98 at 64, until the second stage below
+binds at about 210. Mechanism: the loop is woken per acknowledgement
+batch, about 136 a second there, and sends what is admitted and ready,
+at most `SequenceBufferSize` Packs refilled one slot per release; 32
+Packs per wake at 1,420 B is 4,350 a second. Refuted by: no movement at
+64, which means the loop is not bounded by its ready supply per wake
+and the flatness is the sampler's or the fixture's.
+
+At 25 ms. Number: about 210 Mb/s at 32 and at 64 alike. Mechanism, from
+source: the sequence's per-item service. Every item costs one send-loop
+iteration, a `Snapshot(true)`, a `sendWindowEstimate` under three locks,
+the build and the write, and one acknowledgement worker pass, a
+`receiveAck` with `RemoveByMessageId`, `observeAckRtt` and the ack
+window's `Update`, the two serialised on the sequence's locks; at about
+50 µs per item combined that is 20,000 items a second, 227 Mb/s at
+1,420 B, and the acknowledgement rate there, 2,460 writes a second at
+7.5 items each, is 18,500 a second, the same number from the other
+side. The wake-supply bound at 25 ms is 894 Mb/s and does not bind.
+Refuted by: throughput at 25 ms moving with `SequenceBufferSize`, which
+means the per-item stage is not it; and separately by a frame-size
+test that cannot pass by accident, since a per-item stage holds items
+a second constant, so 4 KiB messages should give about three times the
+Mb/s of 1,420 B ones at 25 ms, and if they do not the stage is per
+byte and lives in the write or the carrier, not the loop.
+
+The crossover between the two regimes is where `SequenceBufferSize`
+times the wake rate reaches the per-item rate: at 200 ms, 20,000 over
+136 is about 150, so a buffer of 150 or more at 200 ms should read the
+same 210 as 25 ms, and a run at 32, 64 and 160 at 200 ms pins both
+mechanisms in one sweep.
