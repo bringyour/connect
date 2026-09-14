@@ -1530,10 +1530,76 @@ func udpDialAddr(addrs []netip.Addr) netip.Addr {
 	return addrs[0]
 }
 
+// A stream connection through the stack that keeps its endpoint, so a test
+// or a measurement can read the stack's view of the connection (congestion
+// window, slow start threshold, smoothed round trip, retransmission timeout)
+// without an accessor the gonet adapter does not provide.
+type TunTcpConn struct {
+	*gonet.TCPConn
+	endpoint tcpip.Endpoint
+}
+
+// TcpInfo reads the stack's TCP info for this connection.
+func (self *TunTcpConn) TcpInfo() (tcpip.TCPInfoOption, error) {
+	var info tcpip.TCPInfoOption
+	if tcpipErr := self.endpoint.GetSockOpt(&info); tcpipErr != nil {
+		return tcpip.TCPInfoOption{}, fmt.Errorf("Could not read tcp info err=%s", tcpipErr)
+	}
+	return info, nil
+}
+
+// creates a tcp endpoint and connects it. This mirrors
+// `gonet.DialContextTCP`, which does not expose the endpoint it creates.
+func (self *Tun) dialTcp(
+	ctx context.Context,
+	remoteAddr tcpip.FullAddress,
+	protoNumber tcpip.NetworkProtocolNumber,
+) (*TunTcpConn, error) {
+	wq := &waiter.Queue{}
+	ep, tcpipErr := self.stack.NewEndpoint(tcp.ProtocolNumber, protoNumber, wq)
+	if tcpipErr != nil {
+		return nil, fmt.Errorf("Could not create tcp endpoint err=%s", tcpipErr)
+	}
+	// registered before connect, which always returns before completing
+	waitEntry, notify := waiter.NewChannelEntry(waiter.WritableEvents)
+	wq.EventRegister(&waitEntry)
+	defer wq.EventUnregister(&waitEntry)
+
+	select {
+	case <-ctx.Done():
+		ep.Close()
+		return nil, ctx.Err()
+	default:
+	}
+	tcpipErr = ep.Connect(remoteAddr)
+	if _, started := tcpipErr.(*tcpip.ErrConnectStarted); started {
+		select {
+		case <-ctx.Done():
+			ep.Close()
+			return nil, ctx.Err()
+		case <-notify:
+		}
+		tcpipErr = ep.LastError()
+	}
+	if tcpipErr != nil {
+		ep.Close()
+		return nil, &net.OpError{
+			Op:   "connect",
+			Net:  "tcp",
+			Addr: &net.TCPAddr{IP: net.IP(remoteAddr.Addr.AsSlice()), Port: int(remoteAddr.Port)},
+			Err:  fmt.Errorf("%s", tcpipErr),
+		}
+	}
+	return &TunTcpConn{
+		TCPConn:  gonet.NewTCPConn(wq, ep),
+		endpoint: ep,
+	}, nil
+}
+
 // dialTcpAddr is one stream connect through the stack to a resolved address.
 func (self *Tun) dialTcpAddr(ctx context.Context, host string, addrPort netip.AddrPort) (net.Conn, error) {
 	fa, pn := self.convertToFullAddr(addrPort)
-	conn, err := gonet.DialContextTCP(ctx, self.stack, fa, pn)
+	conn, err := self.dialTcp(ctx, fa, pn)
 	if err == nil {
 		if self.log.V(1).Enabled() {
 			self.log.Infof("[tun]tcp connect (%s)->%s success\n", host, addrPort)
