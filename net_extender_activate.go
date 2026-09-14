@@ -217,6 +217,12 @@ type ExtenderFamilyActivationStatus struct {
 	// The last completed activation attempt, successful or not.
 	LastActivationTime time.Time
 	LastError          string
+	// Whether `LastError` is the operator's refusal: the answer arrived with
+	// `activated` false. Every other failure leaves it false -- the request
+	// failed, the answer was unreadable or named no family, no carrier was
+	// listening -- and a success clears it with `LastError`. It is what tells
+	// the refused label of N3 from the failed one (N7).
+	LastRefused bool
 	// When a revocation of this extender's key was last observed in the
 	// directory (G3).
 	RevokedTime  time.Time
@@ -631,7 +637,7 @@ func (self *ExtenderActivator) activate(now time.Time) bool {
 		}
 		attempted = true
 		if len(carriers) == 0 {
-			self.recordFailure(ipVersion, now, "no carrier is listening")
+			self.recordFailure(ipVersion, now, "no carrier is listening", false)
 			succeeded = false
 			continue
 		}
@@ -660,7 +666,7 @@ func (self *ExtenderActivator) activateFallback(carriers []string, now time.Time
 		return false
 	}
 	if len(carriers) == 0 {
-		self.recordFailure(0, now, "no carrier is listening")
+		self.recordFailure(0, now, "no carrier is listening", false)
 		return false
 	}
 	return self.activateUrl(0, self.fallbackApiUrl(), carriers, now)
@@ -695,11 +701,11 @@ func (self *ExtenderActivator) activateUrl(
 	)
 	if err != nil {
 		self.log.Infof("[extender]activate v%d err = %s\n", ipVersion, err)
-		self.recordFailure(ipVersion, now, err.Error())
+		self.recordFailure(ipVersion, now, err.Error(), false)
 		return false
 	}
 	if result == nil {
-		self.recordFailure(ipVersion, now, "the operator sent no activation result")
+		self.recordFailure(ipVersion, now, "the operator sent no activation result", false)
 		return false
 	}
 	if ipVersion == 0 {
@@ -711,7 +717,7 @@ func (self *ExtenderActivator) activateUrl(
 			message = "the operator refused the activation"
 		}
 		self.log.Infof("[extender]activate v%d refused = %s\n", ipVersion, message)
-		self.recordFailure(ipVersion, now, message)
+		self.recordFailure(ipVersion, now, message, true)
 		return false
 	}
 
@@ -722,7 +728,7 @@ func (self *ExtenderActivator) activateUrl(
 	if ipVersion == 0 {
 		// an activation with no family cannot be attributed to one, and the
 		// mesh address of D2 has no family to be published under
-		self.recordFailure(ipVersion, now, "the operator named no address family")
+		self.recordFailure(ipVersion, now, "the operator named no address family", false)
 		return false
 	}
 	self.recordSuccess(ipVersion, now, result)
@@ -818,6 +824,7 @@ func (self *ExtenderActivator) recordSuccess(
 	family.Ip = ip.Unmap()
 	family.LastActivationTime = now
 	family.LastError = ""
+	family.LastRefused = false
 	family.RevokedTime = time.Time{}
 	family.AllowedHosts = slices.Clone(result.AllowedHosts)
 	family.ExpireTime = time.Time{}
@@ -827,7 +834,15 @@ func (self *ExtenderActivator) recordSuccess(
 	self.changedWithLock()
 }
 
-func (self *ExtenderActivator) recordFailure(ipVersion int, now time.Time, message string) {
+// Records a failed attempt. `refused` is true only for the operator's refusal,
+// an answer with `activated` false; every other failure passes false, so the
+// status tells the two apart (N7).
+func (self *ExtenderActivator) recordFailure(
+	ipVersion int,
+	now time.Time,
+	message string,
+	refused bool,
+) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
@@ -848,6 +863,7 @@ func (self *ExtenderActivator) recordFailure(ipVersion int, now time.Time, messa
 		family.Activated = false
 		family.LastActivationTime = now
 		family.LastError = message
+		family.LastRefused = refused
 	}
 	self.changedWithLock()
 }
