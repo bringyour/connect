@@ -432,6 +432,56 @@ only cell that can confirm the initial-size clamping defect of 3.7b, since in
 the TCP cell nothing fills the queue and a rule that can shrink is
 indistinguishable from one that cannot.
 
+### 3.8d UDP, traced from source: nothing backs it off
+
+The UDP return path admits non-blocking at every stage and drops immediately
+beyond: per-shard return channels bounded at 256 items, a zero write timeout
+for non-TCP items, `Pack` refusing at timeout zero, and `retryReturnSend`
+covering only TCP socket items.
+
+So for UDP: memory is bounded by the window, and **latency IS the window** --
+window over drain rate -- for every admitted datagram, and for every TCP packet
+of the same client, since both share the per-destination FIFO sequence.
+
+That last clause is the sharpest consequence in this section. **A UDP source
+can inflate latency for an unrelated TCP flow to the same destination**, and
+the delivery term is what stops it.
+
+Stated plainly: the budget, the advertisement and the delivery term are
+load-bearing for UDP and inert for TCP on a slow drain. A test asserting the
+window bounds TCP memory would pass for the wrong reason -- TCP bounds itself
+-- and would keep passing with the rule removed entirely.
+
+The advertisement does reach UDP (same sequence, lane zero), but it bounds the
+receiver's MEMORY, not latency. The only latency bound is the delivery term,
+which drops the excess at admission.
+
+### 3.8e One direction still owed a reading
+
+The mechanism that closed the TCP concern is the RECEIVE side's, on download:
+the client tun's receive moderation sizes its window from bytes copied per
+round trip, so a slow carrier closes it and the origin backs off.
+
+Upload is not obviously the same. There the inner flow control is the NAT's
+advertised window -- sized from upstream backpressure, not the carrier --
+beside a congestion window that grows without loss on a reliable carrier. So
+either something bounds it that source reading has not found, or upload at a
+slow drain fills the client's queue to min(window, the 4 MiB tun send buffer).
+
+Being checked. Until then the falsification stands for download and is
+unproven for upload.
+
+### 3.8f A sixth layer the enumeration missed
+
+The unreliable carrier has its own flight controller: slow start and additive
+increase between 8 KiB and 256 KiB. At 25 ms that is **84 Mb/s -- the tightest
+ceiling in the whole chain** -- and it is the same defect shape as every other
+constant, a fixed pair with no term from the path.
+
+It also bounds any UDP cell run above 84 Mb/s, so a cell that hits that figure
+when it expected more would read as the window failing to matter when an
+unenumerated ceiling was binding.
+
 ### 3.8c Three instrument faults, two of which would have inverted the result
 
 1. **The pacer paced to timer granularity, not rate.** A frame at 20 Mb/s is
