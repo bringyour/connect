@@ -1392,3 +1392,29 @@ Operations before the network works end to end:
   reviewed ceiling of 76 MiB.
 - The linux gui release container gained `libzxing-cpp-dev`; the windows
   build fetches zxing-cpp.
+
+Phase 10 (section M) is implemented on branch `extender-stats` in
+connect (this document), server, warp and mmm as of 2026-09-13, one
+agent per repository against the field names of M4, M7 and M8 as the
+contract, pushed and not merged. Server: the four location ids on
+`network_extender`, `create_time` on `contract_extender` copied from the
+contract, the extender, family and contract counts with the redis hour
+bucket cache, `extender_count` in the map export, the ten gauges, the
+public `extender network` row, the `urnetwork / providers` dashboard,
+PUBLICSTATS.md; the model suite, the root migration audit, the grafana
+suite and the extender and stats controller selections are green on the
+branch merged with main, the controller suite otherwise showing only its
+pre-existing mmdb failures, and the build needs the sdk at the commit
+main's proxy package expects. Warp: the seven feed fields, suite green.
+Site: the feed and map parsers, the geometry helper with its own node
+tests, the rings and hover on the globe, the headline and legend; the
+scripts suite is green but for one pre-existing test that asserts
+against the sdk source, and the vite build passes.
+
+Operations for phase 10: run the migrations before deploying the api
+(which writes the location ids at activation) and the taskworker (whose
+collector and map export read them); deploy the taskworker, the api and
+the warp grafana front; publish the dashboards with
+`bringyourctl grafana load-defaults`, which adds the providers dashboard
+and the public row under the unchanged public uid; the site picks up the
+extender headline on its next build once the feed carries the count.
