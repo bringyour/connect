@@ -3074,3 +3074,80 @@ live example to check under that reconciliation before it is trusted:
 `startUnreachableProviderReturn` in the reporter's tests calls the
 provider's borrowing entry with a copied packet and never returns it,
 which is the under-return the handler cannot see.
+
+### 27.5 Retained bytes, the provider-side asymmetry, and the one line that makes it inert today
+
+The retention factor goes into the cost, explicitly. §27.1's figures are
+queue accounting, and the measurement stream found the process holding
+about 1.94 times the accounted bytes in pooled roots at one, four and
+eight lanes, because a queued item retains its whole pool class: about
+2.1 KB of content in a 4 KiB root at the measured payload. The ratio is
+payload-dependent, near two at that fit and lower where payloads fill
+their class, so it is a factor to measure per payload profile rather
+than a constant; and one small term joins the derivation, since a queue
+with no budget headroom still admits one item, so every sequence may sit
+one item above its allowance, three to four kilobytes at the measured
+payload and sixteen to twenty-nine at 8 KiB. A memory ceiling is sized
+against retained bytes, so §27.1's worst case reads: accounted
+`2 MiB + 2 MiB + 7 × floor`, 5.75 MiB at a 256 KiB floor; retained, about
+1.94 times that plus the one-item term, near 11 MiB per client on a bare
+provider.
+
+Where that lands decides the rollout. On a provider it is affordable and
+on the side with room. On a phone with one destination, a sending lane
+count would cost its upload side, at the 32 MiB budget, lane zero's
+1 MiB plus a 1 MiB pool plus the floors, roughly 3.75 MiB accounted and
+7 MiB retained, most of a ceiling this program deferred rather than
+dismissed, for an upload path that has one client's flows and does not
+need lanes. So the asymmetry is the right rollout: lanes are a
+provider-side setting, the phone keeps `LogicalDataLaneCount` at zero
+and pays only its receive side, where the data lanes share one pool of
+`ReceiveQueueMaxByteCount` (1.25 MiB at 32 MiB, about 2.4 MiB retained)
+holding only out-of-order items, plus fixed per-sequence state. That
+receive-side figure is the device cell's to confirm.
+
+The negotiation supports it. Receivers stamp `transferLogicalLaneVersion`
+on their acknowledgements independently of their own sending count, a
+sender creates a nonzero-lane sequence only after the destination's
+lane-zero class has acknowledged support, and an old client that never
+does keeps every sender at lane zero. So a provider may hash its returns
+onto lanes toward any client that advertises, with no client-side setting.
+
+Except that it does not, as the code stands, and this is the finding.
+`selectLogicalLane` gives an explicit `TransferKey` precedence: a Pack
+sent with a key reproduces that key's lane, and only a Pack without one
+hashes by the sender's count. The provider's return path sends every
+return with `providerReplyTransferKey`, which copies the client's whole
+key, `LogicalLane` included, and flips only `CompanionContract`. A client
+with its count at zero sends on lane zero, so its key says lane zero, and
+every provider return to it is pinned to lane zero by that key whatever
+the provider's own count is. A provider-only lane count is inert on the
+one direction lanes were built for. The comment on `LogicalLane` says
+lanes "are reproduced on replies", which is the routing-keys rule for
+protocol replies, and the provider's IP returns are not replies in that
+sense: they are the provider's own ordinary traffic whose ordering domain
+is the sender's choice, negotiated only by the receiver's capability.
+Nothing at the client keys anything on the return's lane; each lane is an
+independent receive sequence delivered in its own order, and a flow's
+outbound segments on lane zero and inbound on a hashed lane have no
+ordering relation TCP requires. So the change is one field: the reply
+key reproduces the session identity, `ForceStream`, `EncryptionRole`,
+`EncryptionCompanion` and the contract policy, and not the lane, and the
+resolution treats a reply key without a lane as not explicit so the
+provider hashes by its count under the existing capability gate, using
+the same flow key H3 flow isolation already computes
+(`ipSendSchedulingKey`). Provider-side only; no client changes; old
+clients unaffected by the gate.
+
+Rollout, then: enable the count and the floor together on providers
+only, with that change landed first, and the campaign's number is a
+provider setting. Enabling lanes on clients to get provider returns onto
+lanes would be paying the phone's upload memory for the provider's
+benefit, and it is ruled out.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| L5 | `TestProviderReturnsHashToItsOwnLanesRegardlessOfTheClientsLane` | a client sending on lane zero with its count at zero, a provider with count eight and a floor: the client's receive side sees the returns of distinct flows on distinct lanes one to eight by flow hash | the tree as it stands, where every return arrives on lane zero | in-process |
+| L6 | `TestProviderReturnsFallBackToLaneZeroForAClientWithoutLaneSupport` | the same provider toward a client whose acknowledgements carry no lane version: every return on lane zero, no nonzero sequence created | a change that hashes past the gate | in-process |
+| L7 | `TestClientWithLanesOffPaysOnlyTheReceivePool` | a client at count zero receiving on eight lanes: its send buffer holds one sequence and no lane pool; its receive buffer holds one shared lane pool at `ReceiveQueueMaxByteCount` and its retained roots read within the measured factor of that | a client that opens send lanes to receive | in-process, with the pool reconciliation |
+| L8 | `TestLaneCostIsReadInRetainedBytes` | the §27.1 accounting plus the one-item term against `MessagePoolOutstandingByteCount`, reporting the ratio; asserted only that retained is at least accounted, since the ratio is the payload's | none; the instrument for the device cell | in-process |
