@@ -8754,3 +8754,154 @@ terminate at that same listener with that same config. Raising
 per-connection share of the server's budget is one change that
 unblocks both, which is the reason to open it in that repository now
 rather than after either measurement.
+
+## 46. The server-tree change, specified for its owners
+
+This is the one item of the program that lives outside this tree. It
+is written so that a reviewer of the server repository can read it
+without the rest of this record.
+
+### 46.1 The site
+
+`newConnectQuicConfig(settings *ConnectHandlerSettings) *quic.Config` in
+`server/connect/transport.go`, lines 551 to 575. It builds the listener's
+`quic.Config` with `HandshakeIdleTimeout`, `MaxIdleTimeout`,
+`KeepAlivePeriod`, `EnableDatagrams` and an optional `Tracer`, and sets
+no flow-control windows, so every accepted H3 connection runs quic-go's
+library defaults: an initial stream window of 512 KiB growing to a
+maximum of 6 MiB, and a connection window one and a half times that
+(quic-go `internal/protocol/params.go`, `DefaultInitialMaxStreamData`,
+`DefaultMaxReceiveStreamFlowControlWindow`). The settings struct is
+`ConnectHandlerSettings` at line 468, constructed by
+`DefaultConnectHandlerSettings()` at line 424 and used unchanged by
+`resident.go:466` and `transport.go:688`; it carries timeouts, ports and
+datagram settings, and no window, no memory budget, and no connection
+count. Every client and every provider connecting over H3 terminates
+at this one config.
+
+### 46.2 Why the default is wrong rather than merely small
+
+A QUIC stream's receive window is credit the receiver grants: the
+sender may have that many bytes in flight before it must wait for an
+acknowledgement, so a stream's throughput is bounded by the window over
+the round trip whatever the link can carry. The library's default is
+sized for an HTTP/3 request stream over ordinary web round trips of
+tens of milliseconds. This server is a relay: it does not consume the
+bytes, it forwards them between a client and a provider whose round
+trips to it are commonly 200 to 400 milliseconds, and it grants the
+same 6 MiB to a phone thirty milliseconds away and a desktop four
+hundred away. A fixed window is therefore wrong in kind, not in size:
+it makes the platform the ceiling for every long-path connection for a
+reason unrelated to the platform's own memory or to what the endpoint
+could carry, and no single number is right for both ends of that range.
+quic-go already grows each stream's window from its initial value
+toward the maximum as the receiver consumes, driven by that
+connection's own round trip; what is missing is a maximum that derives
+from what the server can afford per connection rather than from a
+constant that never met either.
+
+### 46.3 What it is worth, in the server's terms
+
+One stream's ceiling is its window over the round trip. At the
+library's 6 MiB and a 200 ms round trip that is 31 MB/s, about 250
+Mb/s of stream bytes and about 218 Mb/s of tunnel goodput after
+framing; at 400 ms, half that. Every upload from a client 200 ms away
+stops there, because its first hop's receiver is this listener, and so
+does every download whose provider is 200 ms away, for the same reason
+on the other hop. Raising the per-connection maximum to 32 MiB moves
+that ceiling to about 1.3 Gb/s at 200 ms, and the endpoints' own buffers
+become the limit again, which is where the limit belongs.
+
+### 46.4 What the windows become, and the budget the server does not have
+
+The server process has no memory budget concept for the connect
+handler; the only memory target in the tree is the proxy device's
+(`proxy/proxy_device.go:25–42`), which is a different component. So the
+change must introduce the one quantity it needs, and it can do so
+without a process-wide budget, because quic-go provides the mechanism:
+`Config.AllowConnectionWindowIncrease func(conn *Conn, delta uint64)
+bool` (quic-go `interface.go:145–151`), called every time a connection's
+flow controller wants to grow, and a refusal holds that connection's
+window where it is.
+
+Two settings on `ConnectHandlerSettings`, beside `EnableH3Datagrams`:
+
+    H3StreamReceiveWindowByteCount    the per-connection stream maximum
+    H3ReceiveWindowBudgetByteCount    the aggregate the listener may grant
+                                      across all live connections
+
+and in `newConnectQuicConfig`:
+
+    config.InitialStreamReceiveWindow     = 512 KiB       unchanged
+    config.MaxStreamReceiveWindow         = settings.H3StreamReceiveWindowByteCount
+    config.MaxConnectionReceiveWindow     = 4/3 of it
+    config.AllowConnectionWindowIncrease  = func(conn, delta) bool {
+        return granted.Add(delta) <= settings.H3ReceiveWindowBudgetByteCount
+        // released on connection close by the ConnState-style hook the
+        // listener already runs per connection
+    }
+
+The per-connection maximum is what a connection may reach; the
+aggregate is what the listener may have granted in total, so that a
+thousand long-path connections cannot each hold the maximum at once.
+Both are byte counts a deployment sets from the machine it runs on, the
+aggregate as a fraction of the container's memory and the maximum as
+that fraction over the connections the machine is meant to serve at
+full rate; the defaults are the library's today, 6 MiB and an aggregate
+of the library's default times the expected connection count, so that
+the change is inert until a deployment sets it. That is the honest
+size of the work: two settings, one callback, one counter, about fifty
+lines, and no new subsystem.
+
+### 46.5 The server's own memory consequence
+
+A receive window is credit. The memory it commits at once is the
+sender's: quic-go's send side retains sent data until it is
+acknowledged, up to the window it has been granted, so raising this
+listener's windows means the clients and providers sending to it hold
+more, on machines this program has already budgeted. The server's own
+exposure is the credit it grants that is not yet consumed, which is
+small while the relay keeps up and can reach the window per connection
+only when the relay applies backpressure; that exposure exists today at
+6 MiB times the connection count with no cap, and the aggregate setting
+above is what bounds it for the first time. So the change is cheap for
+the server in the steady state and strictly safer than today under
+backpressure, and the cost of the raise lands on the endpoints.
+
+### 46.6 The test, in the server's terms
+
+Unit, failing on the current tree: `newConnectQuicConfig` with
+`H3StreamReceiveWindowByteCount` set returns a `quic.Config` whose
+`MaxStreamReceiveWindow` equals it and whose `MaxConnectionReceiveWindow`
+is four thirds of it; today the config carries zero for both, which
+quic-go reads as its defaults. Aggregate: with `AllowConnectionWindowIncrease`
+installed and a budget of B, a fake connection set requesting
+increases past B is refused at the boundary and the sum of grants
+never exceeds B, and closing a connection releases its grant. In their
+own numbers, an integration test that needs nothing from this program:
+two quic-go endpoints over an in-memory packet connection with 200 ms of
+added delay, one stream, the sender writing as fast as the receiver
+consumes; at the default the stream delivers about 31 MB/s and at a
+32 MiB maximum about 160 MB/s, the window over the round trip in both
+cases, and the second figure does not appear on the tree as it stands.
+
+### 46.7 The accept-side socket request: separate, and second
+
+The other server-tree item is the H1 listener's socket buffers. That
+listener is built in `http.go:395–460` from `net.ListenConfig{}` (lines
+399 and 439) into an `http.Server` with a per-connection `ConnState`
+hook, and it sets no socket buffers, so accepted TCP connections
+autotune to the host's `tcp_rmem` and `tcp_wmem`. The change there is a
+`Control` function on that `ListenConfig` setting `SO_RCVBUF` and
+`SO_SNDBUF` on the listening socket, which accepted sockets inherit,
+from the same per-connection share; or the hosts' sysctls. It is a
+different code path from the quic config, touches the H1 carrier only,
+and can land separately. Which of the two binds first depends on which
+carrier a client is using: H3 at the library's 6 MiB is 218 Mb/s of
+goodput at 200 ms, and H1 at a stock 6 MiB kernel receive buffer with
+the kernel's window accounting is about 175. Under the production Auto
+policy both carriers are live and an ordered stream is striped across
+them, so both bind their share, and the two items together are one
+opening in the server repository with two parts; the quic windows are
+the part to do first only because they are the smaller change with the
+clearer test, not because H1 matters less.
