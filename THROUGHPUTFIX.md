@@ -7287,3 +7287,117 @@ rate stage, the rule is right and the gain is not there to be had; on
 one without, the rule climbs. And they make the harness's next
 question precise, which is not why the window stops but what, below the
 sender's queue on the unpaced fixture, delivers at 55 to 107 Mb/s.
+
+### 38.14 The half: not a units error, and not the scale; acknowledgements dropped at the sender's own handoff
+
+Established by readings chosen in advance: growth factor 2.000, the
+divisor the measured minimum round trip exactly, the formula
+reproducing the window to three figures, reason "delivery", ceiling and
+obtainable an order of magnitude above, the sender honouring its
+window, nothing queued (mean 1.02 to 1.03 times the minimum), supply
+eliminated. Delivery 56.2 Mb/s against 112 permitted, ratio 0.502,
+strongly path-dependent (53.7 to 209.7 as the path shortens eight
+times). The user's hypothesis: a one-way time used where a round trip
+belongs, or the reverse, with the scale of two silently compensating.
+Checked against the expression, each place named:
+
+- `perRoundTrip = delivered × rtt_min / span`: `delivered` is the byte
+  delta between two ring samples and `span` the wall time between them
+  (`deliveredRate`), so `delivered / span` is a rate; `rtt_min` is
+  `RttWindow.Estimate().Min`, whose samples are `receiveTime −
+  tag.SendTime` (`transfer_rtt.go:136–150`) with the tag stamped at
+  build (`OpenTag`, `SendTime: now`) and closed at acknowledgement
+  receipt on the same clock: a full round trip. Rate times round trip
+  is the bandwidth-delay product. No hop appears in it.
+- The measurement is a round trip. The in-tree fixture delays the
+  acknowledgement direction only (`pump(receiverOut, senderIn,
+  ackDelay)`, data pumped with zero), so its configured delay is the
+  round trip and the sequence measures it, 201 for 200. A harness that
+  imposes its delay in each direction has a configured value of half
+  the round trip and a measured value of the whole; the estimate uses
+  the measured one either way.
+- The scale does not compensate for anything, because there is
+  nothing to compensate; and the 0.502 is not a symptom. At the fixed
+  point the window is defined as twice the delivery per round trip, so
+  delivery over the window over the round trip is one half by
+  construction, for every mechanism that makes delivery fall short of
+  what is held. The factor of two is k. The number that carries the
+  information is a different one.
+
+That number: the sender holds 2.190 MiB and delivers 1.348 per 201 ms,
+so a held byte's mean residence is 2.190 / 6.7 MiB/s = 327 ms, 1.63
+round trips, against a sampled mean of 1.025. Bytes are held longer
+than the samples say. That is possible only if some releases carry no
+sample, and the source has exactly that: the receiver, on a duplicate,
+"drop past sequence number", re-acknowledges with an empty tag,
+`sequenceTag{}` (the branch above `CanAddWithQueueByteCount` in the
+receive path), and the sender's `observeAckRtt` skips `!tag.set`. So
+any item that is resent and released by the duplicate's
+acknowledgement is invisible to the mean. With f the fraction of items
+that go that way and a resend at twice the mean, 402 ms, the residence
+is (1 − f) × 206 + f × 603 = 327 ms at f = 0.30: about thirty per cent
+of items are being resent, and their acknowledgements are not arriving
+the first time.
+
+Where they are lost, from source. The transfer acknowledgement is per
+item with no cumulative release: `receiveAck` resolves
+`GetByMessageId(messageId)` and releases that item, so every
+acknowledgement is load-bearing and a lost one can be recovered only by
+resending the item at its timer. The receiver compresses
+acknowledgements on a 10 ms timer, so they arrive at the sender in
+bursts, fifty per burst at five thousand a second. The sender hands
+each one to its sequence through `Ack(ack, timeout)` into
+`self.acks`, a channel of `AckBufferSize` = `defaultTransferBufferSize`
+= 32 (`transfer.go:62,889,6207`). The handoff tries a non-blocking send
+and, at a zero timeout, refuses (`transfer.go:6796–6850`), counted as
+`receiveAckHandoffQueueFull` (`:3820–3838`); and the timeout is zero
+for every transport but H1 (`ackHandoffTimeout`, which returns
+`H1AckHandoffTimeout` for H1 and zero otherwise). So on any transport
+other than H1, an acknowledgement arriving while the 32-slot channel
+is full is dropped. The item stays in the window, already delivered,
+until its resend timer at twice the mean round trip fires; the resend
+is a duplicate the receiver discards and re-acknowledges without a
+tag; the sender releases it a round trip later with no sample. The
+fraction dropped rises with the burst size, which rises with the rate,
+so the shortfall is larger on shorter paths, which is why eight times
+the path gave 3.9 times the rate rather than eight; the penalty itself
+scales with the round trip, which is why it is path-dependent; and it
+varies with load from run to run.
+
+The readings that confirm or refute it, all counters that exist:
+`AckHandoffQueueFullCount` plus `AckHandoffDropCount` at about thirty
+per cent of acknowledgements received; `timeoutResendWriteCount` at
+about thirty per cent of `initialSendWriteCount`, with
+`selectiveGapWriteCount` and `ackTailProbeWriteCount` small; the
+receiver's past-sequence duplicates at the same count; and the
+round-trip `SampleCount` at about seventy per cent of the items
+acknowledged, which is the exclusion itself. If those read zero the
+mechanism is not this one, and the alternative that fits the same
+three constraints is an occupancy sawtooth, the queue filling to 2.19
+and draining before the loop refills, whose mean occupancy would be the
+1.35 delivered; it is separated by the occupancy over time, which the
+harness can now read, and by the same counters reading zero.
+
+The fixes, in the order they should land. The handoff: acknowledgements
+are the cheapest thing on the path to wait for and the most expensive
+to drop, so the general path takes the wait H1 already has, and the
+channel is sized to the compressed burst rather than to the pack
+buffer. The structural one: a cumulative acknowledgement, everything
+at or below a sequence number released by one message, so that a lost
+acknowledgement costs at most one later acknowledgement and never a
+resend cycle; the reliable path has none today, which is why every
+acknowledgement is load-bearing. Both are counted already; nothing
+read the counter.
+
+The test contract. The user's, as stated: a flow with no loss and no
+queueing delivers the rate its window permits rather than a fixed
+fraction of it. It fails today, by the dropped fraction and not by
+exactly two, since the two is the fixed point's own identity; it passes
+when no acknowledgement is dropped. Beside it, the root cause as an
+assertion: a compressed burst of more than `AckBufferSize`
+acknowledgements on a non-H1 transport is delivered to the sequence
+without a drop, `AckHandoffQueueFullCount` zero; and the residence
+test, held bytes over the delivered rate within a few per cent of the
+sampled mean round trip, which is the reading that would have named
+this in the first place and cannot pass while any release goes
+unsampled.
