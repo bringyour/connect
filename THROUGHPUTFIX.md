@@ -7520,3 +7520,96 @@ frame, which separates units and bounds from dynamics; and the
 oscillation's period times the loop's iteration rate equals the
 window, which pins the period to the fill and fails if the period
 belongs to anything else.
+
+### 38.16 The clamped case fills: the scale multiplies delivery and never the ceiling
+
+The requirement: when the window is clamped by the budget it should
+fill to the ceiling rather than settle at half, since at the design
+point every platform is budget-limited and reserving half of a scarce
+budget for growth that cannot happen wastes the binding resource. The
+identity of §38.15 says the sender's mean occupancy is half its window
+at the delivery-sized fixed point; the question is whether that
+identity holds when the ceiling binds.
+
+It does not, and the reason is where the scale is applied. In the
+estimate (`sendWindowEstimate`, the clamp sequence read for §38.9 and
+§38.13) the ceiling is formed from the share, the advertisement and the
+target, `Window` is set to it, and only then is the delivery term
+compared: `if capped := scale × perRoundTrip; capped < Window { Window =
+max(capped, floor) }`. The scale multiplies delivery and nothing else.
+When twice the delivery is at or above the ceiling the window is the
+ceiling outright, not the ceiling times anything, and the reason reads
+the binding term rather than "delivery". So the effective window in the
+clamped case is already the ceiling, which is what the coordinator's
+reading supposed and what the requirement asks.
+
+Whether the sender then fills it. The fixed point in the clamped case
+is stable in the direction the requirement needs: at occupancy C the
+delivery per minimum round trip is C × rtt_min / RTT_eff, about 0.975 C,
+twice that is 1.95 C, above C, so the delivery term does not bind and
+the window stays at C. It is reached from the start, because before
+any delivery sample the window is `max(ceiling, floor)`: on a path
+where the share is the smallest term the pre-sample window is the
+share, the sender fills it on the first round trip, and delivery is
+then what a full window delivers. And a fixed window fills: the
+harness measured the constant arm at 1.895 MiB framed against 2 MiB,
+95 per cent, which is one frame and the acknowledgement batch lag. The
+half of §38.15 belongs to the regime where the ceiling sits above twice
+the delivery and the window is delivery-bound; the design point is the
+other regime.
+
+The two ways it could still fail, checked. Downstream limits derived
+from delivery rather than from the clamped window: there is one,
+`reliableAdmissionByteLimit`, `max(ResendQueueMinByteCount,
+deliveredBytesOver(ScaledRtt))`, applied through
+`reliableAdmissionAvailable` only when `ReliableAdmissionBoundedByDelivery`
+is set, which is off by default (`transfer.go:917`). With it on, the
+sender is bounded by delivery over the resend timer whatever the
+ceiling says, which is exactly the failure named; it must stay off
+where the rule is on, or be reconciled to read the window, and a test
+below pins that. A consumer reading the unclamped computation: none.
+The loop reads `estimate.Window`, the stats read `estimate.Window`, and
+`2 × perRoundTrip` is not exposed; `DeliveredByteCount` and `Interval`
+are reported, not consumed.
+
+What replaces the scale when clamped: nothing needs to, and removing
+it would lose something. Its purpose in the clamped case is not
+headroom for growth but stability under dips: with the window at C
+and delivery at 0.975 C, the delivery term sits at 1.95 C, so a
+transient fall in delivery of up to about half, a delayed
+acknowledgement batch, a ring sample straddling a lull, leaves the
+window at C; with a scale of one the window would drop to the dip and
+the sender would under-fill its own share until delivery recovered,
+which it cannot do fully at a smaller window. The scale is doing work
+there that the growth argument does not show, and it stays.
+
+Two dynamic cases the divided budget of §37.11 produces, from the same
+lines. A share that shrinks below the current occupancy, another client
+arriving: `CanAdd` refuses until acknowledgements drain the queue to
+the new ceiling, nothing is evicted, and the sender holds the new C. A
+share that grows, a client leaving: the sender is full at C_old with
+delivery C_old, the delivery term is 2 C_old, so the window rises to
+`min(C_new, 2 C_old)` and doubles per round trip to the new ceiling.
+Growth works from a full window; it is the half-filled unclamped case
+whose growth stalls, which is consistent with §38.15's reading that
+the stall is the fill's dynamics and not the rule's arithmetic.
+
+The consequence for the figures. The budget converts to throughput at
+the full rate. The numbers in §38.3 were computed as the share over the
+round trip, which is a full window, so they stand as stated and are
+not a factor of two pessimistic; what was a factor of two below its
+window was the unclamped measurement, and no figure given for a budget
+rested on it.
+
+Tests, asserting the property. With the ceiling set below twice the
+path's delivery, occupancy reaches the ceiling within one frame and
+holds, `Reason` naming the ceiling's term and never "delivery". With
+the ceiling then lowered below occupancy, occupancy drains to the new
+ceiling with no eviction and holds. With the ceiling then raised,
+occupancy doubles per round trip to the new ceiling. And with
+`ReliableAdmissionBoundedByDelivery` on and the same ceiling, occupancy
+sits below the ceiling, which is the row that documents why the setting
+and the rule do not coexist as they stand. The first fails today only
+if the clamp is not where the source says it is, and it is; it is kept
+because it cannot pass by accident and because the design point is the
+regime it covers.
