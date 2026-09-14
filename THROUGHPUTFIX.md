@@ -2720,3 +2720,72 @@ and 84 at the ceiling, against a measured loss of about 460. The
 remainder, 124 to 376 Mb/s, is now a quantified gap rather than an
 unexplained one, and it is what §13.3's other candidates and §13.4's
 matrix are for.
+
+### 26.10 Designer's answers: where the burst-end deadline lives, and what the counting rule counts
+
+The measured rows first, because they change the weight of the choices:
+53 acknowledgements at one per 11.3 ms against 12 at one per 50.2 on
+the starvation row; the first segment after a timeout acknowledged at
+once with the counting spacing wide and the burst-end trigger off, so
+the fourth rule of 26.9 carries the round the counting rule cannot; no
+mid-burst acknowledgement across six bounds of arrivals; and row Q6 at
+21 acknowledgements against 29 allowed where the ungated counting rule
+would give 52. The guard holds, and the recovery rows are passing for
+the right reason.
+
+Where the deadline lives. The compression wait computes its deadline
+once, and a burst-end deadline moves with every arrival, so it cannot be
+a shortened compression timeout; the implementer's silent first build
+is the proof. Of the two mechanisms: (a) the send loop wakes the
+acknowledgement goroutine on each in-order arrival inside the phase
+through a second single-slot channel, and the wake recomputes the
+deadline; (b) the acknowledgement goroutine arms its timer at the
+deadline computed from a last-arrival timestamp the send loop stores
+under the connection mutex, and a firing that finds the timestamp has
+moved re-arms at the new deadline instead of acknowledging.
+
+I intend (b). Its wakes are proportional to elapsed quiescence
+intervals, not to segments: over a recovery from one segment to a six
+megabyte half-window at 50 ms, (a) wakes about two thousand times and
+(b) about a hundred, and at 1 ms (b) wakes a handful of times while (a)
+still wakes per segment. Compression's purpose was fewer wakeups, and
+the remedy should not reintroduce a wake per segment on the very flows
+it is fixing, even bounded. The shared state is not new coupling: the
+send loop and the acknowledgement goroutine already share `sendSeq` and
+`ackedSendSeq` under `self.mutex`, the send loop already takes that
+mutex per item, and a timestamp store there costs nothing. The
+invariant (b) must keep: every wait start computes its deadline from
+the shared state under the mutex, phase active and `outstanding > 0`
+and `lastArrival + QuiescenceBound`, and a firing re-checks the same
+state and either acknowledges or re-arms; the latency after the last
+arrival is then the bound plus timer granularity, the same as (a). Phase
+entry during a wait is covered without a dedicated wake, because the
+immediate first-segment rule signals `ackSignal` on the next arrival and
+the goroutine recomputes on re-entering its wait. (a) is acceptable if
+the re-arm logic proves error-prone in review; rows Q3 and Q8 pin the
+observable behaviour, not the mechanism, and pass either.
+
+What the counting rule counts. Segments, not bytes: in-order arrivals
+that carry payload, one count each, and an acknowledgement every
+`QuickackEverySegments` of them. The quantity the rule clocks is the
+peer's acknowledgement-counted growth, one step per acknowledgement
+received (26.7, and the 200 ms fit), so the count that matters is
+acknowledgements per segment received, and a byte rule against
+`peerMss` under-acknowledges a peer whose segments are small, which is
+exactly what the row with segments below the fallback showed. RFC 1122's
+"full-sized" qualifier exists to keep a receiver from acknowledging
+runs of tiny segments; here the phase's own exits already bound that
+cost, since a small-segment flow is application-limited and leaves the
+phase by the quiet exit, and the immediate-first-segments rule already
+acknowledges tiny segments at entry. So `peerMss` is not an input to
+the rule, and the harness's missing segment-size option is then
+irrelevant to it; keeping the explicit value in the fixture is fine for
+whatever else reads it. `RecoveryQuickackByteBound` stays in bytes
+because it also relates to the half-window exit, with the note that a
+bound in acknowledgements would express the cost more directly and the
+campaign may prefer it.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| Q9 | `TestCountingRuleCountsSegmentsNotBytes` | in the phase, segments of one quarter of `peerMss` are acknowledged every `QuickackEverySegments` segments, the same spacing as full segments | a byte-based rule | in-process |
+| Q10 | `TestBurstEndWakesPerIntervalNotPerArrival` (mechanism (b)) | across a burst of N arrivals spaced under the bound, the acknowledgement goroutine wakes at most once per bound plus one, not N times | mechanism (a), by construction; a characterisation if (a) is chosen | in-process, wake counted through a test hook |
