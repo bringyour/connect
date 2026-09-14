@@ -386,3 +386,130 @@ func TestUpstreamBufferPinBeatsAutotuningOnlyAboveItsCeiling(t *testing.T) {
 		)
 	}
 }
+
+// THROUGHPUTFIX §15: the tree no longer deletes the explicit request or keeps
+// it, it decides. The four rows in the sibling file pass an unknown policy and
+// so only pin that an undecided policy never pins; this pins the decision
+// itself, on synthetic policies so it does not move with the host's sysctls.
+//
+// The rule is the one the sizing rows above measured out of the kernel: an
+// explicit request obtains `min(request, coreMax)`, doubled on Linux, and it is
+// worth making exactly when that exceeds what autotuning would reach on its
+// own. Both signs were measured from one tree, +363 to +403 per cent for the
+// deletion below the ceiling and -20.8 per cent above it.
+func TestUpstreamSocketBufferPolicyPinsOnlyAboveTheAutotuningCeiling(t *testing.T) {
+	// Debian, Ubuntu, Fedora and Amazon Linux as shipped: the core maximum is
+	// an order of magnitude below either ceiling, so nothing is ever pinned
+	stock := socketBufferPolicy{
+		known:                   true,
+		doubled:                 true,
+		sendCoreMaxByteCount:    212992,
+		receiveCoreMaxByteCount: 212992,
+		sendCeilingByteCount:    4 * 1024 * 1024,
+		receiveCeilingByteCount: 6 * 1024 * 1024,
+	}
+	// the runner, and a rig tuned the way tuning guides raise both together
+	tuned := socketBufferPolicy{
+		known:                   true,
+		doubled:                 true,
+		sendCoreMaxByteCount:    4 * 1024 * 1024,
+		receiveCoreMaxByteCount: 4 * 1024 * 1024,
+		sendCeilingByteCount:    4 * 1024 * 1024,
+		receiveCeilingByteCount: 33 * 1024 * 1024,
+	}
+	// XNU stores the request as it is, against a lower autoscaling maximum
+	darwin := socketBufferPolicy{
+		known:                   true,
+		doubled:                 false,
+		sendCoreMaxByteCount:    8 * 1024 * 1024,
+		receiveCoreMaxByteCount: 8 * 1024 * 1024,
+		sendCeilingByteCount:    4 * 1024 * 1024,
+		receiveCeilingByteCount: 4 * 1024 * 1024,
+	}
+
+	decisions := []struct {
+		name             string
+		policy           socketBufferPolicy
+		requestByteCount int
+		explicitSend     bool
+		explicitReceive  bool
+	}{
+		{name: "unknown policy, unbudgeted window", policy: socketBufferPolicy{}, requestByteCount: int(mib(16))},
+		{name: "known policy, no request", policy: tuned, requestByteCount: 0},
+		{name: "stock host, unbudgeted window", policy: stock, requestByteCount: int(mib(16))},
+		{name: "stock host, 32 MiB budget window", policy: stock, requestByteCount: int(mib(8))},
+		{name: "stock host, floor window", policy: stock, requestByteCount: int(kib(256))},
+		{name: "tuned host, unbudgeted window", policy: tuned, requestByteCount: int(mib(16)), explicitSend: true},
+		{name: "tuned host, 32 MiB budget window", policy: tuned, requestByteCount: int(mib(8)), explicitSend: true},
+		{name: "tuned host, 8 MiB budget window", policy: tuned, requestByteCount: int(mib(2))},
+		{name: "tuned host, floor window", policy: tuned, requestByteCount: int(kib(256))},
+		{name: "darwin, 32 MiB budget window", policy: darwin, requestByteCount: int(mib(8)), explicitSend: true, explicitReceive: true},
+		{name: "darwin, 8 MiB budget window", policy: darwin, requestByteCount: int(mib(2))},
+	}
+	for _, decision := range decisions {
+		if explicitSend := decision.policy.explicitSend(decision.requestByteCount); explicitSend != decision.explicitSend {
+			t.Errorf(
+				"%s: a %d byte send request obtains %d against a %d byte ceiling, pinned = %t, want %t",
+				decision.name,
+				decision.requestByteCount,
+				decision.policy.obtained(decision.requestByteCount, decision.policy.sendCoreMaxByteCount),
+				decision.policy.sendCeilingByteCount,
+				explicitSend,
+				decision.explicitSend,
+			)
+		}
+		if explicitReceive := decision.policy.explicitReceive(decision.requestByteCount); explicitReceive != decision.explicitReceive {
+			t.Errorf(
+				"%s: a %d byte receive request obtains %d against a %d byte ceiling, pinned = %t, want %t",
+				decision.name,
+				decision.requestByteCount,
+				decision.policy.obtained(decision.requestByteCount, decision.policy.receiveCoreMaxByteCount),
+				decision.policy.receiveCeilingByteCount,
+				explicitReceive,
+				decision.explicitReceive,
+			)
+		}
+	}
+
+	// and the established socket follows the decision: a policy that calls for
+	// a send pin gets one, a policy that does not is left to the kernel, and a
+	// dial that already applied the pin is not pinned twice
+	requestByteCount := int(mib(16))
+	pinned := dialUpstreamTestTcpConn(t)
+	pinnedBefore := tcpSocketSendBufferSize(t, pinned)
+	configureUpstreamTcpConn(pinned, requestByteCount, tuned, false)
+	if pinnedAfter := tcpSocketSendBufferSize(t, pinned); pinnedAfter == pinnedBefore {
+		t.Errorf(
+			"a policy whose %d byte request obtains %d against a %d byte ceiling left the send buffer at %d; the request is the larger buffer and is the point of keeping it",
+			requestByteCount,
+			tuned.obtained(requestByteCount, tuned.sendCoreMaxByteCount),
+			tuned.sendCeilingByteCount,
+			pinnedAfter,
+		)
+	}
+
+	unpinned := dialUpstreamTestTcpConn(t)
+	unpinnedBefore := tcpSocketSendBufferSize(t, unpinned)
+	configureUpstreamTcpConn(unpinned, requestByteCount, stock, false)
+	if unpinnedAfter := tcpSocketSendBufferSize(t, unpinned); unpinnedAfter != unpinnedBefore {
+		t.Errorf(
+			"a stock policy pinned the send buffer from %d to %d; its %d byte request obtains only %d against a %d byte ceiling, so autotuning reaches further",
+			unpinnedBefore,
+			unpinnedAfter,
+			requestByteCount,
+			stock.obtained(requestByteCount, stock.sendCoreMaxByteCount),
+			stock.sendCeilingByteCount,
+		)
+	}
+
+	preConnect := dialUpstreamTestTcpConn(t)
+	preConnectBefore := tcpSocketSendBufferSize(t, preConnect)
+	configureUpstreamTcpConn(preConnect, requestByteCount, tuned, true)
+	if preConnectAfter := tcpSocketSendBufferSize(t, preConnect); preConnectAfter != preConnectBefore {
+		t.Errorf(
+			"a dial that already applied the buffers before connect was pinned again after it, from %d to %d",
+			preConnectBefore,
+			preConnectAfter,
+		)
+	}
+}
