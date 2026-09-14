@@ -3870,3 +3870,109 @@ approve the round-trip mean now as an interim reader, and make the next
 mechanism change, the recovery phase or the delivery-sized window, the
 first to decide on a snapshot struct that is also its surface, so the
 shape is established where the next question will be asked.
+
+## 34. Eighty-five milliseconds on a twenty-millisecond line: what the estimator measures, what could inflate it, and the one reading that decides
+
+### 34.1 The estimator, from `transfer_rtt.go`: staleness is not the explanation
+
+A sample is `receiveTime − time.UnixMilli(tag.SendTime)`. The sender
+stamps `SendTime` from its own clock in milliseconds when it builds the
+Pack's frame (`OpenTag` inside the frame build, both the v2 and the
+legacy path), the receiver echoes that tag on the acknowledgement, and
+the sender closes it with its own clock on receipt (`CloseSendTime`), so
+there is no cross-clock skew and at most one millisecond of truncation.
+The receiver's coalesced cumulative acknowledgement carries the tag of
+the newest item that advanced the head (`sequenceAckWindow.Update`
+replaces the head ack, tag included, on a higher sequence number), so a
+compressed acknowledgement measures its newest item's round trip plus
+the compression it waited, not the oldest item's. `Estimate()` is the
+plain arithmetic mean of the last 128 samples younger than 60 s, with no
+decay and no weighting; `NewestSampleAge` says only how long ago the
+last acknowledgement arrived. A mean of ten samples reading 85 to 99 ms
+is ten acknowledgements that each measured 85 to 99 ms on average. So
+the cheapest explanation is dead: the mean measures round trips, not
+how rarely it is updated, and the reading's staleness is the reading
+having been taken after the transfer ended.
+
+Where the stamp sits relative to the wire matters and is right: the
+Pack is taken from the scheduler only while `resendCapacity` holds, the
+frame is built and tagged then, and the write follows in the same
+iteration. No capacity wait and no contract wait sits between the stamp
+and the write. What can sit there is the write itself blocking, when
+the multi-route writer's transport cannot accept the bytes; in the
+fixture that is the synthetic wire's data half, on a real path the
+kernel send buffer, and in both it is counted into the sample.
+
+### 34.2 What is between a byte's write and its acknowledgement's application
+
+Named, with what each is, on the sender's own clock:
+
+1. The blocking part of the write, if any: the transport refusing the
+   bytes until it drains. A choice of ours only in that the window may
+   exceed what the transport holds; zero in a fixture with an unbounded
+   data half.
+2. The data half of the path: inherent; in the fixture, nothing.
+3. The receiver's transport reader, session decrypt, ordering, and
+   ordered delivery to the callback on the receive sequence goroutine;
+   the acknowledgement is published only after delivery returns
+   (deliver-before-ack), so a slow or queued callback holds every later
+   acknowledgement behind it. Microseconds with a sink; the NAT or tun
+   on a real client.
+4. The receiver's acknowledgement compression: an idle sequence
+   acknowledges its first Pack at once, a streaming one at most once per
+   `AckCompressTimeout`, 10 ms. A batching choice of ours, average five
+   milliseconds, ten at worst; it buys about a thirty-fold reduction in
+   acknowledgement frames on a stream.
+5. The acknowledgement half of the path, plus the receiver's transport
+   writer, where the ack frame queues behind the receiver's own sends;
+   in the fixture, the 20 ms delay element, and whatever that element
+   does when a second acknowledgement arrives before the first has left.
+6. The sender's acknowledgement handoff and the loop's wake on
+   `ackNotify`: scheduling, microseconds.
+
+Summing the terms we know for the fixture: 20 ms of imposed delay, five
+to ten of compression, about one of truncation and scheduling. Twenty-six
+to thirty-one against a measured 85 to 99. The missing 55 to 70 is not in
+any term the source names on an unbounded in-process wire, so it is
+either in term 1, a data half that blocks the sender after the stamp, or
+in term 5, a delay element that does not delay acknowledgements
+independently.
+
+### 34.3 The fixture artefact that fits the number
+
+A delay element written as one goroutine that sleeps 20 ms per
+acknowledgement is a serial line, not a delay: it forwards at most fifty
+acknowledgements a second, and under 10 ms compression the receiver
+offers a hundred a second, so the line backs up by ten milliseconds per
+acknowledgement. The k-th acknowledgement then measures 20 + 10(k − 1)
+milliseconds plus compression, the samples rise linearly across the run,
+and the mean over the first ten is about 65 plus compression, near 75;
+with the immediate first acknowledgement and any selective ones adding
+to the offered rate, the backlog grows faster and the mean lands where
+the measurement did. A delay element that arms a timer per
+acknowledgement, or a per-message departure time, does not do this. The
+harness should read its delay element before reading anything else.
+
+The reading that decides it needs one line: the window already keeps a
+monotonic-minimum deque of the live samples (`minimums`), and an
+`RttEstimate` carrying `Min` beside `Mean` separates the cases in one
+reading. A backlog reads a minimum near the imposed delay and a mean far
+above it; a genuine added latency reads a minimum as high as the mean;
+and the sample series, if the reader exposes it, rises across a backlog
+and is flat under latency. Row: `TestRttEstimateCarriesItsMinimum`.
+
+### 34.4 If it survives on a real path
+
+The same two readings on the reporter's rig or the namespace cell,
+beside a ping between the hosts: `Min` says the path plus fixed
+processing; `Mean − Min` says queueing, ours or the window's own
+bufferbloat; a mean that rises through a run says a backlog somewhere in
+the acknowledgement path, which on a real path would be the receiver's
+transport writer behind its inner acknowledgement stream (§31.8) or a
+delay element of the rig's. If `Min` sits at the ping and `Mean` does
+not, §32's second lever is real and worth what the window is worth at
+no memory; if both sit at the ping, the divisor is the network's and
+the window is the whole decision. The arithmetic the coordinator worked
+holds either way: 2 MiB over 90 ms is 186 Mb/s and over 20 is 838, so a
+factor of four and a half is on the table if the excess is ours, and
+nothing in source yet says it is; one reading says.
