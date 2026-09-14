@@ -3785,3 +3785,88 @@ which rather than reconcile.
 | W2 | `TestThroughputScalesWithTheResendQueueAtFixedDelay` | at 20 ms acknowledgement delay, throughput at 4 MiB is about twice that at 2 MiB and at 8 MiB about four times, within the null band | a tree with another cap under 8 MiB | in-process, H1-shaped link |
 | W3 | `TestReceiverAckCompressionIsInTheRoundTrip` | the sequence's `RttWindow` mean rises by the receiver's `AckCompressTimeout` when it is raised from 0 to 10 ms on a zero-delay link | none; characterises the divisor | in-process |
 | W4 | `TestDeliverySizedWindowConvergesInLogRoundTrips` (after the fix) | from a 2 MiB floor at 25 ms delay the window reaches its 16 MiB ceiling within four round trips and holds at twice the delivered rate when the link is slower than the ceiling | the tree as shipped | in-process |
+
+## 33. A diagnostic surface: decisions are made on snapshots, and the snapshot is the surface
+
+A view on the class rather than on the fifth accessor. Four
+investigations in this program stalled on the same shape: the quantity
+that decides a mechanism question (the lane version a sender has
+learned, the peer's congestion window, a Pack's scheduling-key validity,
+a sequence's acknowledgement round trip) was unexported and unreachable,
+while every volume, counts, bytes, outstanding totals, was public. The
+public surface describes what happened; nothing describes what a
+decision saw.
+
+### 33.1 The rule
+
+Separate the two surfaces by a criterion rather than by taste. A
+quantity that a predicate in the code reads when it decides something
+belongs on a mechanism surface; a quantity that only accumulates belongs
+on the operational one. A round-trip mean is read by the resend timer
+(§26's timing, §32's divisor), so it is mechanism state; that it is also
+a useful operational summary does not change where it lives, and it can
+be summarised onto the operational struct as well. The lane version is
+read by `selectLogicalLane`; the scheduling key's validity is read by
+the same predicate; the outstanding count and the last acknowledgement
+are read by `abandonSilentSource`; the recovery phase and its counters
+are read by the acknowledgement rules; the window rung and its blocking
+counters are read by the ladder. Every one of them is an input to a
+decision, and the principled surface is: the decision's inputs.
+
+The way to make that hold by construction, rather than by remembering
+to add a reader: a mechanism decides on an explicit snapshot struct,
+built once at the decision point from the state it reads, and the
+diagnostic surface returns that same struct. `selectLogicalLane` would
+build `laneDecision{count, version, keyValid, legacy, lane}` and both
+choose on it and expose it; the abandon rule would build
+`silenceDecision{outstanding, sinceLastAck, carrierAbsent, silence,
+bound}`; the resend timer's inputs are the `RttWindow` estimate. Adding
+an input to a predicate then adds it to the surface, because they are
+the same value, and a reader cannot lag a decision.
+
+### 33.2 Unsampled is a fact, not a zero
+
+Every estimate on the surface carries its own evidence: the value, the
+sample count, and the age of the newest sample, so a zero with zero
+samples reads as unsampled rather than as fast. This program was misled
+by that ambiguity twice, in the deviation timer that could not cover an
+unsampled stall (FLIGHTGATEFIX §36.10) and in the receive-side round-trip
+precondition of §16.2, and the harness stream names it exactly. The
+type should make the mistake unwritable: an estimate is a small struct
+or a value-and-measured pair, never a bare duration, and a consumer that
+wants "the round trip" must say what it wants when there is none.
+
+### 33.3 Where it lives, and for whom
+
+Not a build tag: the audience includes a support engineer with a
+customer's slow connection, who needs it in the shipped binary. Not a
+test seam: seams change control flow and exist in process; the harness
+runs real binaries and cannot reach a seam, which is precisely why it
+kept needing readers. A named, read-only, unstable surface in the
+package, per component and keyed the way support asks: per source at
+the provider (`RemoteUserNatProvider` already keeps
+`providerSourceDiagnostics` and publishes them to the source through
+`publishProviderDiagnostics`, which is the delivery path to the client
+app a support engineer would read), per destination and per sequence at
+the client (`DestinationSendStats` is the interim home, and the
+round-trip estimate the implementation stream is adding there is right
+to add now), and per flow at the NAT for the ladder, the recovery phase
+and the client's advertised window. Reading allocates only when read,
+snapshots under the lock the decision already holds, and promises
+nothing about stability from release to release; the operational
+structs keep their promises and their counters. The peer's congestion
+window is the one exception, because it is the other stack's state and
+lives behind the tun accessor of §25.1 rather than on ours.
+
+### 33.4 The cost, and what not to do
+
+Each reader so far has been a pure read with no behaviour change, and
+the snapshot rule keeps it that way; what it adds is a small struct per
+decision point that already had those values in locals. What not to do
+is the fourth framing: telling a measurement stream to read through
+test seams. It cannot, and the accretion of one-off readers is the
+symptom of that answer having been given implicitly. The view recorded:
+approve the round-trip mean now as an interim reader, and make the next
+mechanism change, the recovery phase or the delivery-sized window, the
+first to decide on a snapshot struct that is also its surface, so the
+shape is established where the next question will be asked.
