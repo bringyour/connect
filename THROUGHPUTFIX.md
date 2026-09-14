@@ -9623,3 +9623,125 @@ defaults is a support document, not this record's.
   that failure is the finding.
 - Auto's cost: the eviction counter at zero with the unit's hold and the
   H3 lane at its floor, the reading of §48.3.
+
+## 49. The equilibrium at two thirds: none of the three, and the term the identity left out
+
+The coordinator's measurement: occupancy over window, paired at each
+tick and averaged over the ticks, 0.68 to 0.74 across seven runs, with
+the two earlier readings of the same row set aside for the reasons
+given, the peak approaching the window by construction and the run mean
+over an end-of-run window mixing populations. The design says half, from
+the fixed point where the window is twice the delivery per round trip.
+The question put: which of the fixed point's location, the occupancy the
+identity assumes, or the effective k is wrong. Checked from source, none
+of the three; what is wrong is the identity's own residence term, and
+the statistic then adds to it.
+
+### 49.1 The three, checked
+
+The fixed point is where the design places it. `sendWindowEstimate`
+computes `perRoundTrip = delivered × rtt_min / span` and the window as
+the scale times it, clamped below the ceiling (`transfer.go:9661–9770`,
+§38.9); §38.14 verified the growth factor at 2.000 and the formula
+reproducing the reported window to three figures. Occupancy is the
+quantity the identity assumes: the queue's `byteCount` accumulates
+`item.MessageByteCount()`, `sendItem.QueueByteCount` returns the same
+number (`transfer.go:10821–10832`), `CanAdd(0, Window)` compares that
+count against the window, and the delivery ring is handed the same
+framed byte count on release; one unit throughout, so a units account
+of two thirds is refuted at the line. And k is 2 in effect:
+`DeliverySizedWindowScale` is the multiplier and nothing between it and
+the window rescales.
+
+### 49.2 The residence term, and the number it predicts on each path
+
+The identity as §38.15 wrote it: mean occupancy is half the window
+because the window is twice the delivery per round trip and occupancy is
+the delivery times the round trip. The second clause is Little's law
+with the residence set equal to the minimum round trip, and that is the
+step that does not hold. A byte's residence in the queue runs from
+`addResendItem` at build (`transfer.go:8986–8990`) to its release by the
+cumulative acknowledgement in the loop, and it contains the minimum
+round trip plus the receiver's compression: the receive worker writes a
+head acknowledgement only when the previous write is one
+`AckCompressTimeout` old, 10 ms (`transfer.go:1016`, `:12603–12620`),
+so every item waits between zero and 10 ms for the write that releases
+it, 5 ms in the mean. The `rtt_min` the rule multiplies is the minimum
+over samples, and each sample is the head item of one write, the newest
+item that write covers; the minimum is therefore the item that arrived
+just before its write, with no compression in it, while the mean sample
+carries the 5 ms, which is the 1.025 the record read at 200 ms
+(§38.14). So
+
+    mean occupancy / window = (rtt_min + c) / (2 × rtt_min),   c ≈ 5 ms
+
+0.51 at 200 ms and 0.60 at 25 ms, and the paths differ by that much
+because c is a constant of the receiver and not of the path. The seven
+runs' windows, 262 KB to 1.07 MB, are the fixed point of a short path,
+about 25 ms at the fixture's frame rate, where the identity itself
+predicts 0.60 before any statistic.
+
+The statistic adds the rest. The identity is a ratio of time averages,
+and the paired method averages the ratio. Those agree when the window is
+constant and diverge when it moves, because the window follows the
+delivery ring over a span of at least the scaled round trip while the
+occupancy follows the rate over one residence; a run whose window swings
+fourfold is a run whose rate wanders on a timescale between the two, and
+the mean of Q/W over such a run sits above the ratio of the means by the
+rate's variance, Jensen's term, with a sawtooth rate adding a bias of
+its own because the rising phase is longer than the falling one. The
+frame pump of §40.2's correction is exactly such a rate. The number
+that carries the identity is therefore ΣQ/ΣW over the same ticks, not
+the mean of Q/W, and the coordinator's data already contains it.
+
+Predictions, numbers apart from mechanisms. ΣQ/ΣW over the seven runs'
+ticks reads 0.60 to 0.63 if the runs are at 25 ms, 0.51 to 0.53 if at
+200. The mean of Q/W reads above it by the variance term, which is the
+0.68 to 0.74 measured. With `AckCompressTimeout` set to zero, one
+acknowledgement per item, both statistics read 0.50 to 0.53 on both
+paths, and `Rtt.Mean` over `Rtt.Min`, which the estimate reports, reads
+1.20 at 25 ms and 1.025 at 200 with compression on and about 1.00 with
+it off. Refuted by: ΣQ/ΣW at 0.68 or above with compression off, which
+would mean bytes are held forty per cent longer than the minimum round
+trip for a reason the samples do not see, and the next reading is the
+per-item histogram of build-to-release against the sampled round trips.
+
+### 49.3 What the term means for the rule on short paths
+
+The rule sizes a bandwidth-delay product from the minimum round trip and
+charges the queue for the round trip plus the acknowledgement's own
+delay. At the design point c is two and a half per cent of the round
+trip and the factor of two is intact. On a 10 ms path the headroom is
+2 × 10 / 15, 1.33; at 5 ms it is 1.0, the window equals the ack-clocked
+occupancy, the flow is window-bound at the fixed point, and the next
+step's growth is g = 2 × rtt_min / (rtt_min + c) < 1 whenever c exceeds
+the minimum round trip, so the window walks down to its floor on any
+path shorter than the compression timer. That is §38.13's algebra with
+the standing term named: not a queue in the path but the receiver's
+timer. Two ways to make the factor of two mean two on every path, the
+campaign's to pick: multiply by the mean round trip rather than the
+minimum, since the identity's residence is the mean and the minimum
+belongs to the probe timers; or scale the compression interval with the
+measured round trip so that c is a fixed fraction of it. The test: a
+5 ms path with the 10 ms timer, offered load above the window, the sized
+window reading at its floor and throughput below the constant arm;
+refuted if it climbs. The design point is unaffected, and nothing in
+§47.5's order changes; the entry is recorded so that a short-path cell
+is read as the term and not as a rate stage.
+
+### 49.4 The rate stage, closed
+
+The question that opened this section's predecessor is closed by the
+coordinator's measurement and not by source: the fixture's limit is a
+frame rate, near 7,800 a second at every payload from 1 to 16 KiB, moved
+by the send and sequence buffer depths, which makes it a depth-over-
+latency bound of the fixture's own frame pipeline, the goroutine-per-
+frame delay element and its handoffs, and the eighth instrument defect.
+§38.13, §38.15, §40.2, §41.3, §47.4 and §47.8 are corrected in place.
+The source reading this record had reached before the measurement, for
+the ledger: the loop pays one full iteration per Pack, with
+`observeRouteStall` scanning every outstanding item on each
+(`transfer.go:7906`, `:2598–2616`), which is a cost proportional to the
+round trip and the only such cost on the loop's path; it is real, it is
+small against the pipeline bound, and it is the first thing to look at
+if a native cell ever shows a per-Pack cost that grows with the path.
