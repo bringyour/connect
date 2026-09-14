@@ -6057,12 +6057,20 @@ type SendSequence struct {
 	// spends what the caller has left rather than a fresh write timeout.
 	// Owned by the sequence goroutine, which is the only writer and reader.
 	currentPackDeadline time.Time
-	// Whether a pack entering now could also enter the resend queue, published
-	// by the send loop each pass. A reliable pack takes its admission slot
-	// only when this is true (THROUGHPUTFIX §38.11): admission bounds the
-	// packs held but not yet written, and a slot held by a pack that cannot
-	// progress is a slot denied to one that could.
-	resendCapacityAvailable atomic.Bool
+	// Whether a pack entering now could NOT also enter the resend queue,
+	// published by the send loop each pass. A reliable pack takes its
+	// admission slot only when this is clear (THROUGHPUTFIX §38.11):
+	// admission bounds the packs held but not yet written, and a slot held by
+	// a pack that cannot progress is a slot denied to one that could.
+	//
+	// Stored in the negative deliberately, so the zero value admits. An
+	// atomic.Bool is false on a sequence that was never constructed through
+	// newSendSequenceWithLogicalLane, and a flag whose zero value blocks would
+	// hold every reliable pack of such a sequence forever — which is what it
+	// did: a bare SendSequence built by a cell, driven through its pack
+	// channel with no send loop to publish anything, refused every retry. A
+	// gate that nothing has published must fail open.
+	resendCapacityUnavailable atomic.Bool
 	// Published by Run after each route-policy snapshot so concurrent Pack
 	// callers never read the goroutine-owned multi-route writer directly.
 	flowIsolation atomic.Bool
@@ -6313,10 +6321,6 @@ func newSendSequenceWithLogicalLane(
 			logicalLane,
 		)
 	}
-	// true until the send loop says otherwise, so a sequence that has not run
-	// a pass yet admits rather than waiting on a flag nothing has published
-	seq.resendCapacityAvailable.Store(true)
-
 	return seq
 }
 
@@ -6437,7 +6441,7 @@ func (self *SendSequence) awaitResendCapacity(
 	sendPack *SendPack,
 	timeout time.Duration,
 ) (bool, error, time.Duration) {
-	if self.resendCapacityAvailable.Load() {
+	if !self.resendCapacityUnavailable.Load() {
 		return true, nil, timeout
 	}
 	if timeout == 0 {
@@ -6461,7 +6465,7 @@ func (self *SendSequence) awaitResendCapacity(
 		case <-timeoutChannel:
 			return false, nil, 0
 		case <-poll.C:
-			if self.resendCapacityAvailable.Load() {
+			if !self.resendCapacityUnavailable.Load() {
 				if 0 < timeout {
 					timeout = max(time.Duration(0), timeout-time.Since(startTime))
 				}
@@ -7917,7 +7921,7 @@ sendSequenceLoop:
 			reliableAdmissionWaitStart = time.Time{}
 		}
 		resendCapacity = resendCapacity && reliableAdmission
-		self.resendCapacityAvailable.Store(resendCapacity)
+		self.resendCapacityUnavailable.Store(!resendCapacity)
 		// The unreliable flight only gates admission while no reliable carrier
 		// can take the overflow; otherwise a full flight is written reliable-only
 		// (see writeMaybeWrappedBytes) instead of stalling the sequence.
@@ -9626,6 +9630,12 @@ type SendWindowEstimate struct {
 	// has already borrowed, plus what is unreserved right now. Reported for
 	// diagnosis and never used as a clamp, because it is a transient.
 	Obtainable ByteCount
+	// TargetBound is whether the target's own bandwidth-delay product is what
+	// narrowed the ceiling. It is reported separately because a comparison
+	// between two target-clamped arms cannot show a window effect — both arms
+	// are measuring the target — and a reader has no other way to tell such a
+	// comparison from a meaningful one.
+	TargetBound bool
 }
 
 // sendWindowEstimate is the window this sequence may hold unacknowledged, and
@@ -9817,7 +9827,10 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 			float64(self.sendBufferSettings.TargetGoodputByteRate) *
 				roundTrip.Min.Seconds() / goodputFactor,
 		)
-		ceiling = min(ceiling, max(targetWindow, floor))
+		if bounded := max(targetWindow, floor); bounded < ceiling {
+			ceiling = bounded
+			estimate.TargetBound = true
+		}
 		estimate.Ceiling = ceiling
 		estimate.Window = max(ceiling, floor)
 	}
@@ -9875,6 +9888,18 @@ func (self SendWindowEstimate) bindingTerm(sequence *SendSequence) string {
 	if self.Window < self.Ceiling {
 		return "the initial bet"
 	}
+	// The target first, because a target-clamped window is the one case a
+	// reader must be able to recognise without checking anything else
+	// (THROUGHPUTFIX §40). At short round trips the target is the binding
+	// clamp rather than the window, so a comparison between two
+	// target-clamped arms cannot show a window effect at all — both arms are
+	// measuring the target. That was found by audit, and an audit is the wrong
+	// instrument: anything that reports a window has to report which term
+	// bound it, so a reader can tell a target-clamped comparison from a
+	// meaningful one at a glance.
+	if self.TargetBound {
+		return "the target"
+	}
 	if advertised, ok := sequence.receivedWindowAdvertisement(); ok &&
 		advertised <= self.Ceiling {
 		return "the peer's advertised capacity"
@@ -9882,9 +9907,6 @@ func (self SendWindowEstimate) bindingTerm(sequence *SendSequence) string {
 	if budget := sequence.resendQueue.Budget(); budget != nil &&
 		budget.TotalByteCount() <= self.Ceiling {
 		return "the memory budget's share"
-	}
-	if 0 < sequence.sendBufferSettings.TargetGoodputByteRate {
-		return "the target"
 	}
 	return "sized"
 }
