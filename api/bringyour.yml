@@ -8463,6 +8463,46 @@ components:
             message:
               type: string
 
+    DeviceAssociation:
+      description: |
+        One device association. The same shape backs all three lists of
+        `DeviceAssociationsResult`, and each list fills in the part of it that
+        applies: a field a list does not set is omitted from that list's rows
+        rather than sent empty.
+      type: object
+      properties:
+        pending:
+          description: |
+            The association still needs confirming. Always true on
+            `pending_adoption_devices`; on the two shared lists it is the
+            negation of the stored confirmation.
+          type: boolean
+        code:
+          description: The adopt code or share code the association is keyed by.
+          type: string
+        device_name:
+          description: Name of the device
+          type: string
+        client_id:
+          description: |
+            udid of the shared device. Set on `incoming_shared_devices` and
+            `outgoing_shared_devices`; a pending adoption has no client yet,
+            so it is omitted there.
+          type: string
+        network_name:
+          description: |
+            The other network in the share -- the owner for an incoming share,
+            the guest for an outgoing one. Set on the two shared lists, and
+            omitted there too while the far side is not yet named. Never set
+            on `pending_adoption_devices`.
+          type: string
+        duration_minutes:
+          description: |
+            Minutes until the adopt code expires, counted from the moment the
+            request was served. Set on `pending_adoption_devices` only; a
+            share does not expire, so it is omitted on the two shared lists.
+          type: number
+
     DeviceAssociationsResult:
       type: object
       properties:
@@ -8470,53 +8510,17 @@ components:
           description: devices pending adoption that need to be confirmed by the offerer
           type: array
           items:
-            type: object
-            properties:
-              pending:
-                type: boolean
-              code:
-                type: string
-              device_name:
-                description: Name of the device
-                type: string
-              duration_minutes:
-                type: number
+            $ref: "#/components/schemas/DeviceAssociation"
         incoming_shared_devices:
           description: devices owned by another network shared to the caller network
           type: array
           items:
-            type: object
-            properties:
-              pending:
-                type: boolean
-              code:
-                type: string
-              device_name:
-                description: Name of the device
-                type: string
-              client_id:
-                description: udid
-                type: string
-              network_name:
-                type: string
+            $ref: "#/components/schemas/DeviceAssociation"
         outgoing_shared_devices:
           description: devices owned by the caller network shared to another network
           type: array
           items:
-            type: object
-            properties:
-              pending:
-                type: boolean
-              code:
-                type: string
-              device_name:
-                description: Name of the device
-                type: string
-              client_id:
-                description: udid
-                type: string
-              network_name:
-                type: string
+            $ref: "#/components/schemas/DeviceAssociation"
 
     DeviceRemoveAssociationArgs:
       type: object
