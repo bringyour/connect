@@ -225,7 +225,19 @@ func (self *RttWindow) closeSendTime(sendTimeUnixMilli uint64, receiveTime time.
 // folds the unsampled case into a resend floor, which is right for timing and
 // wrong for measurement.
 type RttEstimate struct {
-	Mean        time.Duration
+	Mean time.Duration
+	// Min is the smallest live sample, from the window's monotonic-minimum
+	// deque, taken under the same lock and the same coalesce as the mean so
+	// the two cannot disagree.
+	//
+	// It is what separates added latency from a backlog in one reading. A
+	// minimum near the path's own delay with a mean far above it means
+	// acknowledgements queued behind something, which is a backlog rather
+	// than time added to each one; a minimum as high as the mean means every
+	// acknowledgement genuinely took that long, and the excess is real. On a
+	// real path Min is the path plus fixed processing and Mean − Min is
+	// queueing, ours or the window's own.
+	Min         time.Duration
 	SampleCount int
 	// Age of the newest sample when the estimate was taken. An estimate whose
 	// newest sample is older than the path's behaviour describes a path that
@@ -254,8 +266,13 @@ func (self *RttWindow) estimate(sampleTime time.Time) RttEstimate {
 	}
 	newestIndex := (self.windowTailIndex + self.windowCount - 1) % len(self.window)
 	newestSampleAge := sampleTime.Sub(time.Unix(0, self.window[newestIndex].receiveUnixNano))
+	minimum := time.Duration(0)
+	if self.minimumCount != 0 {
+		minimum = self.minimums[self.minimumHeadIndex].rtt
+	}
 	return RttEstimate{
 		Mean:            self.netRtt / time.Duration(self.windowCount),
+		Min:             minimum,
 		SampleCount:     self.windowCount,
 		NewestSampleAge: max(0, newestSampleAge),
 	}

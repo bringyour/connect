@@ -168,13 +168,110 @@ func TestDestinationSendStatsCarryTheRoundTripMean(t *testing.T) {
 		)
 	}
 	t.Logf(
-		"%d sequences, %d writes: mean round trip %s over %d samples from %d sequences, newest sample %s old, against a %s acknowledgement delay",
+		"%d sequences, %d writes: mean round trip %s, minimum %s, over %d samples from %d sequences, newest sample %s old, against a %s acknowledgement delay; mean less minimum is %s",
 		after.SequenceCount,
 		after.WriteCount,
 		after.Rtt.Mean,
+		after.Rtt.Min,
 		after.Rtt.SampleCount,
 		after.RttSequenceCount,
 		after.Rtt.NewestSampleAge,
 		ackDelay,
+		after.Rtt.Mean-after.Rtt.Min,
+	)
+}
+
+// THROUGHPUTFIX §34.3 row `TestRttEstimateCarriesItsMinimum`. The mean alone
+// cannot separate latency we add from a backlog somewhere in the
+// acknowledgement path, and the difference decides whether shrinking the
+// divisor is worth a factor of four and a half at no memory or is nothing: two
+// mebibytes over 90 ms is 186 Mb/s and over 20 is 838.
+//
+// The minimum separates them in one reading. Acknowledgements queueing behind
+// a serial element read a minimum near the imposed delay with a mean far above
+// it and samples that rise across the run; latency genuinely added to each
+// acknowledgement reads a minimum as high as the mean.
+//
+// The window keeps a monotonic-minimum deque already, so this pins that the
+// estimate carries it, under the same lock and coalesce as the mean, and that
+// it is unreadable as a real value when nothing has been sampled.
+func TestRttEstimateCarriesItsMinimum(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	settings := DefaultClientSettings()
+	rttWindow := NewRttWindow(
+		DefaultLogger(),
+		settings.SendBufferSettings.RttWindowSize,
+		settings.SendBufferSettings.RttWindowTimeout,
+		settings.SendBufferSettings.RttScale,
+		settings.SendBufferSettings.MinResendInterval,
+		settings.SendBufferSettings.RttMinResendInterval,
+		settings.SendBufferSettings.MaxResendInterval,
+	)
+
+	// unsampled: the minimum must be as unreadable as the mean, since a zero
+	// minimum over no samples and a measured zero are different facts
+	empty := rttWindow.Estimate()
+	if empty.Sampled() {
+		t.Errorf("an untouched window reports %d samples", empty.SampleCount)
+	}
+	if empty.Min != 0 || empty.Mean != 0 {
+		t.Errorf("an untouched window reports mean %s and minimum %s", empty.Mean, empty.Min)
+	}
+
+	// a backlog's shape: one fast sample and a rising series behind it, which
+	// is what a serial delay element produces
+	sampleTime := time.Now()
+	samples := []time.Duration{
+		20 * time.Millisecond,
+		30 * time.Millisecond,
+		40 * time.Millisecond,
+		50 * time.Millisecond,
+		60 * time.Millisecond,
+	}
+	meanTotal := time.Duration(0)
+	for _, sample := range samples {
+		rttWindow.closeSendTime(uint64(sampleTime.Add(-sample).UnixMilli()), sampleTime)
+		meanTotal += sample
+	}
+	estimate := rttWindow.estimate(sampleTime)
+
+	if !estimate.Sampled() {
+		t.Fatal("the window reports no samples after five were closed")
+	}
+	if estimate.SampleCount != len(samples) {
+		t.Errorf("the window reports %d samples, want %d", estimate.SampleCount, len(samples))
+	}
+	// the smallest live sample, not the newest and not the mean. The stamp is
+	// truncated to milliseconds on the wire, so a sample carries up to a
+	// millisecond of that truncation and the comparison allows it.
+	const truncation = 2 * time.Millisecond
+	if estimate.Min < samples[0] || samples[0]+truncation < estimate.Min {
+		t.Errorf(
+			"the estimate's minimum is %s over samples %v, want the smallest of them, %s; without it a mean of %s cannot be told from acknowledgements queueing behind a serial element",
+			estimate.Min,
+			samples,
+			samples[0],
+			estimate.Mean,
+		)
+	}
+	wantMean := meanTotal / time.Duration(len(samples))
+	if estimate.Mean < wantMean || wantMean+truncation < estimate.Mean {
+		t.Errorf("the estimate's mean is %s, want %s", estimate.Mean, wantMean)
+	}
+	if estimate.Mean <= estimate.Min {
+		t.Errorf(
+			"the estimate's mean %s is not above its minimum %s on a rising series; the two are not being read from the same window",
+			estimate.Mean,
+			estimate.Min,
+		)
+	}
+	t.Logf(
+		"samples %v: mean %s, minimum %s, %d samples; mean less minimum is %s of queueing",
+		samples,
+		estimate.Mean,
+		estimate.Min,
+		estimate.SampleCount,
+		estimate.Mean-estimate.Min,
 	)
 }

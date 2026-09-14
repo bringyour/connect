@@ -5431,6 +5431,7 @@ func (self *SendBuffer) DestinationSendStats(destinationId Id) SendDestinationSt
 	stats := SendDestinationStats{SequenceCount: len(sequences)}
 	meanRttTotal := time.Duration(0)
 	newestSampleAge := time.Duration(0)
+	minimumRtt := time.Duration(0)
 	for sequence := range sequences {
 		stats.WriteCount += sequence.writeCount.Load()
 		stats.WriteByteCount += sequence.writeByteCount.Load()
@@ -5444,11 +5445,16 @@ func (self *SendBuffer) DestinationSendStats(destinationId Id) SendDestinationSt
 			if stats.RttSequenceCount == 0 || estimate.NewestSampleAge < newestSampleAge {
 				newestSampleAge = estimate.NewestSampleAge
 			}
+			// the smallest live sample over the destination's sequences
+			if stats.RttSequenceCount == 0 || estimate.Min < minimumRtt {
+				minimumRtt = estimate.Min
+			}
 			stats.RttSequenceCount += 1
 		}
 	}
 	if 0 < stats.RttSequenceCount {
 		stats.Rtt.Mean = meanRttTotal / time.Duration(stats.RttSequenceCount)
+		stats.Rtt.Min = minimumRtt
 		stats.Rtt.NewestSampleAge = newestSampleAge
 	}
 	return stats
