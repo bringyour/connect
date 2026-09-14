@@ -4806,6 +4806,19 @@ type SendBuffer struct {
 	// logicalLaneVersions is keyed by the exact lane-zero sequence class. A
 	// capability is valid only while that lane-zero sequence is alive.
 	logicalLaneVersions map[sendSequenceId]uint32
+	// An immutable copy of `logicalLaneVersions`, published whenever it
+	// changes, so the per-Pack lane gate reads the version with an atomic load
+	// rather than the buffer-wide mutex every sequence of the client shares.
+	//
+	// Enabling a nonzero lane count used to add that acquisition to every
+	// Pack, and a count of zero returned before it, which is why the cost
+	// appeared only when a count was set: a harness arm with the count at
+	// eight and no lane ever engaging ran 13 to 17 per cent below the same
+	// fixture at zero, with nothing else on the packet path differing
+	// (THROUGHPUTFIX §30.3).
+	logicalLaneVersionSnapshot atomic.Pointer[map[sendSequenceId]uint32]
+	// reports what the lane gate saw on each Pack; nil is a production no-op
+	logicalLaneGateObserverForTest func(logicalLaneGateObservation)
 	// When the caller did not provide a device-wide resend budget, every
 	// nonzero lane still shares this one fixed pool instead of receiving one
 	// independent ResendQueueMaxByteCount allocation per lane.
@@ -4870,8 +4883,30 @@ func NewSendBuffer(ctx context.Context,
 // IP traffic hashes only after this exact lane-zero class has acknowledged
 // support.
 func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
+	observe := func(gate string, version uint32, lane uint32) uint32 {
+		if self.logicalLaneGateObserverForTest != nil {
+			self.logicalLaneGateObserverForTest(logicalLaneGateObservation{
+				explicit:        sendPack.logicalLaneExplicit,
+				explicitLane:    sendPack.logicalLane,
+				schedulingValid: sendPack.schedulingKey.valid,
+				version:         version,
+				bindingGate:     gate,
+				lane:            lane,
+			})
+		}
+		return lane
+	}
 	if sendPack.logicalLaneExplicit {
-		return min(sendPack.logicalLane, uint32(maxLogicalDataLaneCount))
+		// The reply key decides. A provider's return carries the client's
+		// whole transfer key with only the companion bit changed, so a client
+		// at lane zero pins every return to lane zero whatever the provider's
+		// own count is, and the scheduling key below is never consulted
+		// (THROUGHPUTFIX §30.2).
+		return observe(
+			"explicit reply key",
+			0,
+			min(sendPack.logicalLane, uint32(maxLogicalDataLaneCount)),
+		)
 	}
 	// A nonzero count is set together with SendBufferSettings.LaneFloorByteCount
 	// and never alone: without the floor every lane above zero borrows all of
@@ -4884,8 +4919,11 @@ func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
 	if self.client.settings.ContractManagerSettings.LegacyCreateContract {
 		count = 0
 	}
-	if count == 0 || !sendPack.schedulingKey.valid {
-		return 0
+	if count == 0 {
+		return observe("zero count", 0, 0)
+	}
+	if !sendPack.schedulingKey.valid {
+		return observe("no scheduling key", 0, 0)
 	}
 	base := sendSequenceId{
 		Destination:         sendPack.Destination,
@@ -4894,13 +4932,35 @@ func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
 		EncryptionRole:      sendPack.EncryptionRole,
 		EncryptionCompanion: sendPack.EncryptionCompanion,
 	}
-	self.mutex.Lock()
-	version := self.logicalLaneVersions[base]
-	self.mutex.Unlock()
-	if version < transferLogicalLaneVersion {
-		return 0
+	// A lock-free read of the published snapshot. Taking the buffer mutex here
+	// would put a client-wide acquisition on every Pack of every sequence.
+	version := uint32(0)
+	if snapshot := self.logicalLaneVersionSnapshot.Load(); snapshot != nil {
+		version = (*snapshot)[base]
 	}
-	return sendPack.schedulingKey.logicalLaneForCount(count)
+	if version < transferLogicalLaneVersion {
+		return observe("unadvertised version", version, 0)
+	}
+	return observe("hashed", version, sendPack.schedulingKey.logicalLaneForCount(count))
+}
+
+// What the lane gate saw and which of its gates decided, for the rows that ask
+// whether a provider's returns can ride a data lane at all. Test only.
+type logicalLaneGateObservation struct {
+	explicit        bool
+	explicitLane    uint32
+	schedulingValid bool
+	version         uint32
+	bindingGate     string
+	lane            uint32
+}
+
+// Publishes an immutable copy of the version map for the lock-free gate.
+// Called with the buffer mutex held, from every site that changes the map.
+func (self *SendBuffer) publishLogicalLaneVersionsWithLock() {
+	snapshot := make(map[sendSequenceId]uint32, len(self.logicalLaneVersions))
+	maps.Copy(snapshot, self.logicalLaneVersions)
+	self.logicalLaneVersionSnapshot.Store(&snapshot)
 }
 
 // observeLogicalLaneVersion accepts capability evidence only from the live
@@ -4924,8 +4984,10 @@ func (self *SendBuffer) observeLogicalLaneVersion(
 	}
 	if transferLogicalLaneVersion <= version {
 		self.logicalLaneVersions[base] = min(version, transferLogicalLaneVersion)
+		self.publishLogicalLaneVersionsWithLock()
 	} else {
 		delete(self.logicalLaneVersions, base)
+		self.publishLogicalLaneVersionsWithLock()
 		for candidateId, candidate := range self.sendSequences {
 			if candidateId.LogicalLane != 0 &&
 				candidateId.logicalLaneBase() == base {
@@ -4993,6 +5055,7 @@ func (self *SendBuffer) createSendSequence(id sendSequenceId, sendPack *SendPack
 		if logicalLaneBaseSequence == nil ||
 			!logicalLaneBaseSequence.idleCondition.UpdateOpen() {
 			delete(self.logicalLaneVersions, id.logicalLaneBase())
+			self.publishLogicalLaneVersionsWithLock()
 			return nil
 		}
 	}
@@ -5073,6 +5136,7 @@ func (self *SendBuffer) closeSendSequence(
 	if wasCurrent && id.LogicalLane == 0 {
 		base := id.logicalLaneBase()
 		delete(self.logicalLaneVersions, base)
+		self.publishLogicalLaneVersionsWithLock()
 		for candidateId, candidate := range self.sendSequences {
 			if candidateId.LogicalLane != 0 &&
 				candidateId.logicalLaneBase() == base {
