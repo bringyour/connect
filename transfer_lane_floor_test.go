@@ -631,3 +631,169 @@ func TestLightLaneDeliveryBesideASaturatingLane(t *testing.T) {
 		laneResendQueueMaxByteCount,
 	)
 }
+
+// THROUGHPUTFIX §27.1's memory claim, measured rather than derived. The
+// derivation bounds one client on a bare provider at lane zero's own queue
+// plus the shared pool plus the floors actually in use:
+// `2 × ResendQueueMaxByteCount + L × LaneFloorByteCount`, which at seven
+// non-empty lanes and a 256 KiB floor is 5.75 MiB, of which the floors are
+// 1.75 MiB.
+//
+// It is measured here two ways, because they answer different questions. The
+// queues' own accounting is what the derivation bounds. The pooled bytes
+// outstanding are what the process actually holds, which is what a memory
+// ceiling cares about; a lane rollout would be the first change to add
+// per-client memory since that ceiling was deferred.
+//
+// The row asserts the bound rather than a figure, so it holds at any floor and
+// lane count a campaign picks, and a measured cost above the derivation is the
+// finding it exists to produce.
+func TestLaneFloorMemoryCostTracksItsDerivation(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const resendQueueMaxByteCount = ByteCount(2 * 1024 * 1024)
+	// the candidate scale of §27.3: what lane zero and every distinct
+	// destination on an sdk-hosted provider already keep
+	const laneFloorByteCount = ByteCount(256 * 1024)
+	// small enough that a framed Pack lands in a pooled size class, so the
+	// pooled-bytes figure below measures something; a larger payload is
+	// allocated outside the pool and would read as zero
+	const payloadByteCount = 2 * 1024
+
+	for _, laneCount := range []int{1, 4, 8} {
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			settings := DefaultClientSettings()
+			settings.EncryptionSettings.Mode = EncryptionModeOff
+			settings.SendBufferSettings.LogicalDataLaneCount = laneCount
+			settings.SendBufferSettings.ResendQueueMaxByteCount = resendQueueMaxByteCount
+			settings.SendBufferSettings.LaneFloorByteCount = laneFloorByteCount
+			settings.SendBufferSettings.AckTimeout = time.Minute
+			settings.SendBufferSettings.IdleTimeout = time.Minute
+			settings.SendBufferSettings.MinResendInterval = time.Minute
+			settings.SendBufferSettings.RttMinResendInterval = time.Minute
+			settings.SendBufferSettings.MaxResendInterval = time.Minute
+
+			destinationId := NewId()
+			client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
+			route := make(chan []byte, 4096)
+			client.ContractManager().AddNoContractPeer(destinationId)
+			client.RouteManager().UpdateTransport(
+				NewSendClientTransport(DestinationId(destinationId)),
+				[]Route{route},
+			)
+			drainCtx, drainCancel := context.WithCancel(ctx)
+			drained := make(chan struct{})
+			go func() {
+				defer close(drained)
+				for {
+					select {
+					case transferFrameBytes := <-route:
+						MessagePoolReturn(transferFrameBytes)
+					case <-drainCtx.Done():
+						return
+					}
+				}
+			}()
+			defer func() {
+				closeCtx, closeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer closeCancel()
+				if err := client.CloseAndWait(closeCtx); err != nil {
+					t.Errorf("%d lanes: close the client: %v", laneCount, err)
+				}
+				drainCancel()
+				<-drained
+				draining := true
+				for draining {
+					select {
+					case transferFrameBytes := <-route:
+						MessagePoolReturn(transferFrameBytes)
+					default:
+						draining = false
+					}
+				}
+			}()
+
+			baselinePooledByteCount := MessagePoolOutstandingByteCount()
+			payload := string(make([]byte, payloadByteCount))
+			// every lane saturated at once, which is the only state the
+			// derivation's worst case describes
+			maxPackCount := 4 * int(resendQueueMaxByteCount) / payloadByteCount
+			for logicalLane := 0; logicalLane <= laneCount; logicalLane += 1 {
+				for range maxPackCount {
+					frame := RequireToFrameWithDefaultProtocolVersion(
+						&protocol.SimpleMessage{Content: payload},
+					)
+					admitted, _ := client.SendWithTimeoutDetailed(
+						frame,
+						destinationId,
+						nil,
+						50*time.Millisecond,
+						TransferKey{LogicalLane: uint32(logicalLane)},
+					)
+					if !admitted {
+						MessagePoolReturn(frame.MessageBytes)
+						break
+					}
+				}
+			}
+			time.Sleep(500 * time.Millisecond)
+
+			queuedByteCount := allSequencesQueuedByteCount(client)
+			pooledByteCount := MessagePoolOutstandingByteCount() - baselinePooledByteCount
+			// Lane zero's own queue, the shared pool, and one floor per
+			// nonzero lane in use, plus a term §27.1 does not carry: a queue
+			// with no budget still admits one item, so every sequence may sit
+			// one item above what the budget allows. Measured, that term is
+			// the whole of the overshoot: 16,005 bytes at four lanes and
+			// 29,189 at eight, against a derivation of 5,242,880 and
+			// 6,291,456, which is a third of a per cent and a half.
+			derivedByteCount := 2*resendQueueMaxByteCount +
+				ByteCount(laneCount)*laneFloorByteCount
+			oneItemPerSequenceByteCount := ByteCount(laneCount+1) * payloadByteCount
+
+			if derivedByteCount+oneItemPerSequenceByteCount < queuedByteCount {
+				t.Errorf(
+					"%d lanes saturated hold %d bytes queued, above the %d the derivation bounds them at (2 x %d plus %d x %d) even allowing %d for one item per sequence; the per-client cost of lanes exceeds what §27.1 states",
+					laneCount,
+					queuedByteCount,
+					derivedByteCount,
+					resendQueueMaxByteCount,
+					laneCount,
+					laneFloorByteCount,
+					oneItemPerSequenceByteCount,
+				)
+			}
+			t.Logf(
+				"%d lanes saturated: %d bytes queued and %d bytes of pooled buffers held, against a %d byte derivation plus %d for one item per sequence (overshoot %d)",
+				laneCount,
+				queuedByteCount,
+				pooledByteCount,
+				derivedByteCount,
+				oneItemPerSequenceByteCount,
+				queuedByteCount-derivedByteCount,
+			)
+		}()
+	}
+}
+
+// every send sequence's queued bytes, lane zero included
+func allSequencesQueuedByteCount(client *Client) ByteCount {
+	sequences := func() []*SendSequence {
+		client.sendBuffer.mutex.Lock()
+		defer client.sendBuffer.mutex.Unlock()
+		sequences := []*SendSequence{}
+		for _, sequence := range client.sendBuffer.sendSequences {
+			sequences = append(sequences, sequence)
+		}
+		return sequences
+	}()
+	queuedByteCount := ByteCount(0)
+	for _, sequence := range sequences {
+		_, sequenceByteCount := sequence.resendQueue.QueueSize()
+		queuedByteCount += sequenceByteCount
+	}
+	return queuedByteCount
+}
