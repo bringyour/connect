@@ -86,12 +86,7 @@ func upstreamSocketBufferControl(
 		return c.Control(func(fd uintptr) {
 			// best effort, as the post-connect setters are: a refused request
 			// leaves autotuning in place
-			if explicitSend {
-				_ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, requestByteCount)
-			}
-			if explicitReceive {
-				_ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, requestByteCount)
-			}
+			setSocketBufferByteCounts(fd, explicitSend, explicitReceive, requestByteCount)
 		})
 	}
 }
