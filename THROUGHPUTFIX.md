@@ -9960,3 +9960,243 @@ two is at fault when the ceiling is not reached: the window trace
 against the protocol's half-round-trip-per-doubling, with a slow trace
 naming the drain at the application, not the maximum. §46.3 and §46.6
 are amended in place to say that the ceiling is a ceiling.
+
+## 51. The share table as built: the rows, their surfaces, and the rows that test them
+
+§44 argues the table in the abstract and §48 answers which number each
+layer reads. This section is what was built on `throughput-shares`: the
+rows with their divisors and floors named to the line, the two surfaces
+they read, the values that result at the targets that matter, and the
+six test rows that hold them. It is written so that a reader changing a
+divisor can check the change here without reading §37 through §50.
+
+### 51.1 The rows, to the line
+
+Every row has the form `max(floor, surface × f)`, with `f` a fraction
+and the floor a working minimum that does not scale. The reservation
+row additionally caps at its surface, since a carrier aggregate may
+never exceed the target it draws on.
+
+    row                    f        floor      surface  site
+    transfer send window   1/8      none       M        transfer.go:711, :729
+    transfer receive hold  1/8      none       M        transfer.go:711, :729
+    tun receive maximum    1/8      512 KiB    M        tun.go:64, :101, :155
+    tun send maximum       1/8      512 KiB    M        tun.go:64, :101, :160
+    carrier aggregate      1/4      3 MiB      T        memory_budget.go:30
+    H3 reservation         1/8      3 MiB      T        transport.go:778, :809
+    H3 stream window       6/64     384 KiB    T        transport.go:781, :838
+    H3 connection window   8/64     512 KiB    T        transport.go:782, :855
+    message pools          14/34    per class  M        sdk/sdk.go:514-517
+
+The H3 window fractions are the change this branch landed (§43.2): six
+eighths of the reservation's draw for the stream and the whole of it for
+the connection, keeping the 3:4 ratio the two have always had. What they
+replace, three eighths and four eighths, left the reservation half idle
+by construction — a QUIC connection may hold at most its connection
+window, so a reservation of twice that was memory claimed against the
+aggregate that no connection could occupy. Each window keeps its own
+floor rather than inheriting the reservation's 3 MiB, which is an
+admission minimum: inheriting it would advertise 2.25 MiB of stream
+credit on a host whose whole budget is 8 MiB.
+
+No row may pass through `MemoryScaledByteCount` or
+`MemoryTargetScaledByteCount`. Both call `memoryTargetScale`
+(`memory_budget.go:78-96`), which returns one at or above the 64 MiB
+reference and a fraction below it, so both can only shrink their
+argument: every constant written in that idiom was sized for a 64 MiB
+device, and a host with eight gigabytes ran a 64 MiB device's buffers.
+The two helpers differ in which budget they read, not in whether they
+can grow, so neither is a way to write a row. This is the trap rather
+than a style note — every adjacent line in `transport.go`, `tun.go` and
+`transfer.go` scales a constant, and copying one is the natural way to
+write a share.
+
+### 51.2 Which surface each row reads, which is the part that surprises
+
+The table's M is two different numbers depending on the row.
+
+The H3 stream and connection windows, the H3 reservation and the carrier
+aggregate read the per-device target T, through
+`DefaultPlatformTransportSettingsWithMemoryTarget` and
+`NewPlatformTransportBudgetForMemoryTarget`, which the sdk hands the
+whole `DeviceLocalSettings.MemoryTargetByteCount` (§48.2). The transfer
+send and receive shares read the process budget M, through
+`transferBudgetShareByteCount` (`transfer.go:729`), and the tun maxima
+read it through `tunBudgetShareByteCount` (`tun.go:101`); both call
+`MemoryBudget()`. The pools read M, through the same
+`sdk.SetMemoryLimit` that sets it.
+
+On a desktop T and M are set by that one `SetMemoryLimit` call and a
+separate explicit target, so they move together only if a host moves
+both. On a provider they are deliberately different, and §48.4's chain —
+T a slice of M — is the remaining fix, in the sdk rather than here.
+
+Three consequences that the table is incoherent without:
+
+The tun row does not exist on a native desktop, phone or extension.
+Those create no gVisor tun at all; the operating system's tun hands
+packets to `DeviceLocal.SendPacket`. The row binds the hosted, simulated
+and probe modes only, and the native equivalent is the operating
+system's own autotuning maximum, which is not ours to set (§43.1,
+§48.7). The hosted proxy, which is the only production gVisor tun, sets
+no process budget, so the row resolves there to the unscaled 4 MiB per
+direction.
+
+The transfer row is consulted only under `WindowSizingFromDelivery`,
+which ships off (`DefaultWindowSizing`, zero being
+`WindowSizingConstant`). With the rule off the transfer window stays at
+`MemoryScaledByteCount(mib(2), kib(256))` (`transfer.go:916`), which
+caps at 2 MiB for any budget at or above the reference. That is a hard
+ceiling below every H3 value in this table: 2 MiB over the transfer
+loop's 205 ms is about 69 Mb/s of goodput, which is the 71 the program
+started from. So with the rule off, raising a device target moves the H3
+row and then stops at the transfer row, and the table promises a rate
+the shipping default cannot deliver. Turning the rule on is the
+precondition for every figure in §51.4.
+
+A positive process budget on a provider is a cost rather than a gain.
+`ip.go:645-655` keeps unlimited flow counts and gives plain-UDP NAT
+bindings the provider-tuned idle while `MemoryBudget()` is zero, and any
+positive budget installs the 512 and 2048 UDP flow caps, the TCP and
+ICMP caps beside them, and the general short reap. At or above the
+reference the scaled constants are identical either way, so the budget
+buys nothing and costs flow capacity. A provider therefore leaves
+`SetMemoryBudget` unset and takes its flow-table sizing from the device
+target instead.
+
+### 51.3 The values, at the targets that matter
+
+The carrier rows against the device target T, the stream window at
+`3T/32` and the connection window at `T/8`:
+
+    T        reservation  connection  stream    stream at 200 ms
+    20 MiB   3 MiB        2.5 MiB     1.875 MiB   66 Mb/s
+    24 MiB   3 MiB        3 MiB       2.25 MiB    80
+    64 MiB   8 MiB        8 MiB       6 MiB      213
+    128 MiB  16 MiB       16 MiB      12 MiB     425
+    256 MiB  32 MiB       32 MiB      24 MiB     851
+
+The reservation reads its 3 MiB floor at 20 MiB and its draw everywhere
+above; the carrier aggregate is 5, 6, 16, 32 and 64 MiB at those
+targets, and H1 256 KiB below the reference and 512 KiB at it. The rates
+are the window times `goodputFactor` over the carrier loop's 200 ms at
+the design point, the arithmetic of §37.23. The 851 is §43.2's 830; the
+difference is the record's rounding of MiB to MB, and the claim the
+landing makes is the doubling rather than the third digit.
+
+The process rows against M, each at `M/8`: transfer send and receive
+hold and the two tun maxima read 2.5 MiB at 20, 3 MiB at 24, 8 MiB at
+64, 16 at 128 and 32 at 256. With `WindowSizingFromDelivery` off the
+transfer window is instead 640 KiB at 20, 768 KiB at 24 and 2 MiB at
+every budget at or above 64.
+
+### 51.4 The three constraints of §44.2, and the row that tests each
+
+Scaling, `TestEveryShareTableRowIsADrawOnItsOwnSurface`. Every row
+doubles when its own surface doubles above its floor's crossing, and is
+exactly the fraction it declares at every rung of a ladder from 8 MiB to
+a gibibyte with the shipped 20, 24, 32 and 48 MiB interleaved. The
+per-layer rows that preceded it each proved one layer's wiring; this one
+is the obligation a new row inherits by being added to the table, so a
+fifth ceiling cannot land as a scaled constant while three tests pass.
+It walks each row's own surface, since walking the other one reads a
+flat line for a row that is perfectly proportional to the surface its
+owner sets. A guard: every row is already a draw.
+
+Backing, `TestTheShareTableIsBackedAtEveryLevel`. What can be occupied
+at once is at most what backs it, at each level. Within a carrier,
+stream under connection under reservation under the aggregate, with the
+connection window equal to the whole reservation above its floor
+crossing — the tight form §43.2 landed, and the assertion that fails on
+the fractions it replaced. Within a device, connect's quarter is the
+sdk's platform-transport fifth of twenty. Within a process, the derived
+target plus the pools fit M, and the two transfer permissions fit the
+device's client share, which holds only once T is a slice of M and is
+the arithmetic reason the chain matters. The pooled rows are backed by
+the device's transfer budgets rather than by the pools' free list, which
+bounds retention and is capped at 768 KiB on mobile.
+
+Floors, `TestTheShareTableFloorsFitEverySurfaceMinimum`, beside
+`TestTheBudgetFloorsFitTheSmallestSupportedHost` which holds the process
+surface at every supported minimum. The floors' sum per backing fits the
+smallest supported value of each surface: 2 MiB of tun floors and 3 MiB
+of carrier aggregate against an 8 MiB minimum. §44.2 predicted this
+fails at 8 MiB for a hosted client, and it did, at §43.1's first form
+with a 4 MiB floor per tun maximum — 4 + 4 beside the transport total's
+3 asked 11 MiB of an 8 MiB host. It was acted on rather than loosened:
+each maximum keeps its own 512 KiB working floor and the draw alone
+grows, so the row is now the guard against reinstating the 4 MiB floor.
+One sum is logged rather than asserted: at an 8 MiB surface the H3
+reservation's 3 MiB floor and H1's 256 KiB exceed the aggregate's 3 MiB,
+so such a host admits one carrier and not both. That is a decision — H1
+registers first and H3 is left unstarted, which `TestMemoryBudgetFloors`
+pins and the Apple extension's budget comment records — and asserting it
+would sit permanently red against a documented choice.
+
+### 51.5 The shape, the binder, and the negative of §44.4
+
+Shape, `TestTheShareTableShapeFollowsItsLoops`. The three windows in
+series on a download stand in the ratio their loops' needs imply, within
+a factor of 1.6. It carries a correction to §44.3: the 1 : 2 : 2 there
+is read off §37.23's `P/2 : P + 5 : P + 10`, whose `P/2` is the even-hop
+case, while every figure in §42, §43 and §48 is computed with the delay
+on the client's hop, where one hop carries the path, the loops are 200,
+205 and 210 ms and the needs are within five per cent of each other.
+Under that placement equal draws are the right shape and not a
+refutation of it, and §44.3's derived default of an H3 reservation at
+M/16 belongs to the other placement. After the landing the worst
+ratio-of-ratios is 1.50, the tun against the H3 stream; before it was
+3.01, so the row fails on the tree as it stood at the start of the
+branch. The remaining half is structural: the stream window cannot
+exceed the connection window, which is now the whole reservation, so
+proportionality to need is unreachable while the reservation is an
+eighth, and closing it is the other half of §43.2's sentence, a larger
+H3 draw. The row also records what the chain does to the shape — with T
+at 20/34 of M the carrier rows shrink by that factor and the gap widens
+to 2.55 — which is the prediction to hold the sdk's default-target
+change against.
+
+Binder, `TestTheShareTableBinderIsTheH3StreamWindow`. For a given budget
+and path the plateau is the smallest row's product over its own loop,
+and the row asserts which row that is, its rate against the record's
+figure within a tenth, and the landing's own claim that the binder
+doubles. The binder is the H3 stream window in every scenario; it reads
+850.6 Mb/s at 256 MiB, 212.7 at the reference, and 500.4 with the device
+target at the process budget less the pools. The last is logged rather
+than asserted, because §48.4 leaves that slice open and the two choices
+give materially different plateaus. This is the acceptance arm made
+deterministic: a campaign that reads a plateau materially different from
+it has found either a layer the table does not list or a constant the
+table does not govern, and either is the finding.
+
+The negative, `TestAShareTableRowWrittenAsAScaledConstantFailsTheScalingRow`.
+A suite that only ever runs correct rows through its predicate proves
+nothing about the predicate, so the exact expression the tree is full of,
+`MemoryTargetScaledByteCount(surface, mib(3), kib(384))`, goes through
+the same predicate the scaling row uses. The assertion is two-sided and
+the result is what §44.4 predicted: the constant passes below the
+reference, where it is proportional and indistinguishable from a draw,
+and fails at the first step above it, going flat at 3 MiB where a draw
+doubles. A row that only walked 8 to 64 MiB could not tell the two
+apart, which is why the ladders in §51.4 all cross the reference.
+
+### 51.6 What did not survive contact with the code
+
+Three items, recorded because §44 predates them.
+
+§44.2's prediction that the floors fail at 8 MiB was true and is now
+spent: §43.1 acted on it, and the row that remains is a guard rather
+than a defect row. §44.3's 1 : 2 : 2 shape belongs to a different delay
+placement than the landings, as §51.5 sets out. And §44.1's "what must
+not exceed its backing is the sum of what can be occupied at once" has
+no mechanism for the tun row on the only host that runs one: gVisor's
+buffers have no aggregate anywhere in the tree, the proxy builds one
+stack per client with `MaxClients` at 65,536, flows per client are
+uncapped, and the service declares no container limit (§48.5). The
+honest row, `TestTheHostedTunPermissionHasNoAggregateBehindIt`, pins the
+one term this tree owns — the per-connection permission at the proxy's
+actual configuration, 8 MiB across both directions at a zero process
+budget — so that it cannot grow while no aggregate exists, including on
+the day the proxy is given a process budget without one. It logs the gap
+rather than asserting it: 8 MiB of unaccounted heap beside a 24 MiB
+device target whose twenty parts are already fully allocated.
