@@ -5092,11 +5092,14 @@ is the same shape as the other two:
     the receiver, an estimate with samples for the round trip.
 
 Absent a budget, the window is the floor. Absent an advertisement, a
-legacy peer, the ceiling is the receive hold's shipping constant, 2.5
-MiB unscaled and less at a budget, which is the most a legacy receiver
-is known to hold; the rule is then inert against old peers and safe
-against them, and it engages fully only between peers that both carry
-the field. Absent samples, the window is the initial size of §37.5.
+legacy peer, the ceiling is today's window, `ResendQueueMaxByteCount`
+at the sender's own scale, and not the receive hold's constant: a
+legacy receiver's hold is its constant at its own budget, which the
+sender cannot see, so 2.5 MiB would be a raise on no evidence, the
+floor would be a regression for every legacy peer, and today's window
+is the status quo whose stall guard 2 mitigates (amended in §37.21).
+The rule is then inert against old peers, and it engages fully only
+between peers that both carry the field. Absent samples, the window is the initial size of §37.5.
 One policy makes the safe configuration the default and the unsafe one
 impossible rather than discouraged, which is the property a comment
 cannot provide.
@@ -5926,3 +5929,97 @@ by probes. At 24 MiB the same, with far fewer tentative events. If a
 run stalls, the boundary is being crossed by an item that is later
 evicted, which means the gap estimate under-counted, and the frame
 size used for it is the field to read.
+
+### 37.21 The third element removed: the initial size is the peer's hold, and before that its floor
+
+The harness measured the assumed round trip and found it is not a
+property of the path: it is bounded by the peer's hold over the target,
+21 ms against an unbudgeted provider, 7.9 against a phone at 24 MiB,
+2.6 against a phone at 8. So the constant can be removed, and what
+replaces it is not a better constant but the mechanism the record
+already has.
+
+Before the first acknowledgement a sender knows nothing about its
+peer, and the only assumption it can make is that a peer holds at
+least the hold's floor, `kib(320)`, the floor argument of
+`ReceiveQueueMaxByteCount` (`transfer.go:831`), which the tree already
+ships on every receiver. That is the 2.6 ms in round-trip units at the
+target, and it is derived from a constant the receiver owns, not
+configured on the sender. After the first acknowledgement the sender
+knows the peer's hold exactly, and the largest window that peer can
+absorb is that hold: the advertised capacity is the most a window can
+be without harm, since permission is not occupancy (§37.15) and the
+one harm of an oversized window is the overrun the advertisement
+bounds by construction. So the initial is the floor until advertised
+and the advertisement thereafter, and the surface is the target and
+the budget, both quantities an operator can reason about.
+
+Whether the rule can move there in one step. As designed, no. The
+delivery cap, k × achieved × rtt, measured over the round trip in which
+the window was the blind bet, caps the next window at k times the bet
+and reimposes the ramp the constant was meant to avoid. Two changes
+make the jump: the initial becomes the advertised capacity the moment
+it is learned, and the delivery cap is one-sided and lagged, allowed to
+lower the window only on delivery measured over a full interval at the
+current window, never on evidence gathered at a smaller one. Then, at
+the advertised H, a path that carries H per round trip reads k × H and
+stays; a path that carries r below H/(k × rtt) reads k × r × rtt and
+comes down, which is §37.13's standing-queue protection intact for the
+one place it is needed. The window moves to the peer's hold in one
+step and only ever comes down on evidence.
+
+The cost of the blind round trip, against the startup curve. One
+round trip at 320 KiB, and it almost never binds. The sequence's first
+packs are its establishment: the encryption handshake rides the same
+sequence (`transfer.go:6140–6160`) and the control pack is sent
+acknowledged (`SendEncryptedControl`, `transfer.go:5362–5432`, with an
+`AckCallback`), so the advertisement returns on the acknowledgement of
+establishment, before the first data pack. Where data is first, a TCP
+flow's inner slow start needs four to five round trips to reach 320 KiB
+of congestion window, so the transfer window is not the binder during
+its blind round trip. Only a UDP source starting at full rate on a
+fresh sequence pays it: one round trip at 320 KiB over the round trip,
+once per sequence lifetime, not per flow. Against the measured curve,
+5.64 s for a 1 ms bet ramping on a 100 ms path against 0.30 for the
+right one, the difference here is that there is no ramp: the cost is at
+most one round trip and is ordinarily nothing.
+
+By role: one bet, the floor, no split. A provider talking to a
+provider pays nothing for the reasons above, and a bet by role would be
+a constant again, which is what this section removes.
+
+The third possibility, a control exchange carrying the hold before the
+first data pack, is ruled in at no cost, because it already exists: the
+acknowledgement of the establishment packs is that exchange, on the
+same sequence, with no new message and no round trip of setup. In the
+return direction the provider's first pack to the client is the inner
+handshake's reply, tiny, and its acknowledgement carries the client's
+hold before the first return data. Nothing needs adding to sequence
+establishment.
+
+Legacy peers, amended in §37.12: a peer that does not advertise gets
+today's window at the sender's own scale, not the receive hold's
+constant and not the floor. The receiver's hold at its own budget is
+what the sender cannot see; 2.5 MiB would be a raise on no evidence,
+the floor a regression for every peer not yet updated, and today's
+window is the status quo whose stall guard 2 mitigates until the field
+turns over.
+
+If a number is wanted regardless: 320 KiB, the floor, 2.6 ms at one
+gigabit, justified as the only assumption a blind sender can make and
+already owned by the receiver's constant. But the design does not need
+it as a setting, and the constant that this section leaves in the tree
+is the receiver's, which the memory design owns and which the
+advertisement carries.
+
+Predictions, stated before the cell. On the 200 ms cell the sized arm's
+startup excess over the constant arm falls to within the null band,
+because the window is at the peer's hold from the first acknowledgement
+rather than climbing from a floor; the estimate's `Window` reads the
+floor for at most one round trip and the advertised capacity after. A
+UDP source on a fresh sequence shows one round trip at the floor's rate
+and then the hold's. Against a legacy peer nothing changes from today.
+If the sized arm still ramps, the delivery cap is being applied on
+evidence gathered at the smaller window, and the interval over which
+`achieved` was measured, against the time the window changed, is the
+field to read.
