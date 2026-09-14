@@ -309,6 +309,38 @@ at 8 MiB against the 117.6 the overshooting rule managed, so the corrected
 rule should be FASTER, converging to a sufficient window instead of ramping
 toward an excessive one.
 
+### 3.7a The interval defect is a LATENCY defect on slow paths
+
+We had treated the floored interval as a throughput matter: the rule overshoots,
+hits its ceiling, the ceiling binds. On a slow path it is worse than that.
+
+The window is 2 x achieved rate x 300 ms regardless of the real round trip, so
+the queue it permits **never adds less than 600 ms of delay at any rate**.
+
+Added delay per arm at a 20 Mb/s drain, as `Rtt.Mean - Rtt.Min`:
+
+  shipping 2 MiB constant    2 MiB / rate          ~840 ms
+  16 MiB constant            16 MiB / rate         ~6.7 s
+  the rule as built          2 x r x 300ms / r     >= 600 ms at ANY rate
+  the corrected rule         one propagation RTT
+
+So the fix is not only worth throughput on long paths; it is worth latency on
+slow ones, which is the mobile case. A slow-drain cell is measuring it.
+
+### 3.7b A defect in the initial size, found by reading
+
+The initial size was specified as the rule's lower CLAMP, so once set the
+window could never go below it. On a 20 Mb/s last mile a 3.6 MB wide-area
+initial bet would stand as ~1.4 s of queue for the life of the sequence,
+because the rule could not shrink below its own starting guess.
+
+Corrected: the initial size is the **pre-sample value only**. Once the estimate
+has samples the rule may shrink to the computed window, floored at a few
+packets by a minimum that already exists.
+
+A rule that can only grow is a different object from one that tracks the path,
+and the difference appears only on the paths that matter most.
+
 ### 3.8 There is no receiver-advertised window
 
 The `Ack` carries a message id, sequence id, selective flag, tag, missing
@@ -344,10 +376,23 @@ The window figures confirmed exactly that. The memory did not follow:
   peak heap   +0.080 MiB against a 0.656 MiB A/A band
   at 64 MiB   both deltas negative
 
-Peak pool is **0.066 of the 16 MiB window** and 0.52 of the 2 MiB one. The
-window bounds what may be admitted, not what is held, and a short path cannot
-fill it. An oversized window on a short path is harmless *because* the path is
-short.
+Peak pool is **0.066 of the 16 MiB window** and 0.52 of the 2 MiB one. Both
+arms held the same ~1.04 MiB because that is the loop's bandwidth-delay product
+at the cell's rate. The window bounds what may be admitted, not what is held,
+and a short path cannot fill it. An oversized window on a short path is
+harmless *because* the path is short.
+
+Occupancy and admission need different mechanisms, and Transfer already has
+both: the per-sequence window bounds admission, and the shared pool -- charged
+by queued bytes, floor-and-borrow -- bounds occupancy. So "stop admitting when
+held bytes approach the share" is not new machinery; it is the pool's own
+admission with a budget attached, made always-present by the
+no-budget-means-floor rule.
+
+The receive advertisement then does two jobs rather than one: loss recovery,
+which was the argument for it, and a receiver at its budget throttling its
+senders instead of dropping -- a window used as an occupancy signal in the
+ordinary way.
 
 That loosens the compounding argument in the design, which summed the target
 times each loop's round trip across three retransmission copies and treated
