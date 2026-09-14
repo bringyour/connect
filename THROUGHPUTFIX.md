@@ -6023,3 +6023,112 @@ If the sized arm still ramps, the delivery cap is being applied on
 evidence gathered at the smaller window, and the interval over which
 `achieved` was measured, against the time the window changed, is the
 field to read.
+
+### 37.22 Symmetry: the mechanism is symmetric, the budget is one-sided, and the surface removes it only if shares are drawn from the budget rather than scaled from the reference
+
+The principle to test: symmetric window resizing in both directions,
+improving any direction while staying inside the memory budget, and a
+solution that works in one direction only has an underlying issue.
+
+The mechanism is symmetric by construction. Every direction is a send
+sequence at one end and a receive sequence at the other, and both ends
+run the same code: the sender sizes from its own measured round trip,
+its own delivery, its own share and its peer's advertisement; the
+receiver holds to its own share and advertises it. Client-to-provider
+and provider-to-client are two such pairs. Nothing in the rule knows
+which end is the phone.
+
+What is asymmetric is what each end was given, and the coordinator's
+reading of the structural asymmetry is right and is the underlying
+issue. `memoryTargetScale` returns one when the budget meets or exceeds
+the 64 MiB reference and a fraction below it (`memory_budget.go:79–84`).
+Every window and hold in the enumeration of §37.2 is
+`MemoryScaledByteCount` of a constant: the transfer window and hold,
+the tun's buffers, the H3 windows, the ladder's maximum, the H3 socket
+buffers. So every one of them was sized for the reference host and can
+only shrink from there; a provider with eight gigabytes runs the window
+chosen for a 64 MiB device, and no amount of memory changes it. The
+existing pools inherit it too: `NewTransferMemoryBudget` is
+constructed from the scaled constant (`transfer.go:10275`), so the
+budget that is meant to share memory is itself capped at the
+reference. The budget is a scale-down mechanism with no scale-up path,
+and that is why the program has been unpicking constants one at a time:
+each was the reference host's number wearing a scale.
+
+The two configuration asymmetries follow from it. A provider is
+unbudgeted (`ip.go:416–420`), so it sits at the reference exactly, 2 MiB
+window and 2.5 MiB hold; a client at 24 MiB sits below it, 768 KiB and
+938 KiB. The inversion on download and its absence on upload is the two
+ends differing, not the rule, and the ends differ because one has a
+budget that can only lower it and the other has none at all.
+
+Whether the surface removes it: yes, on one condition that the record
+must state or the property survives under a new name. The window is the
+target times the measured round trip clamped by the share, and the
+share must be a draw on the budget M, proportional to it, and not
+`MemoryScaledByteCount` of anything. A share derived through the scale
+would be capped at the reference like everything before it. So the
+pools that implement the shares are constructed from M and a fraction,
+not from the scaled constants they are constructed from today, and
+that is the concrete change: on a host with a large budget the share
+exceeds the reference value and the window and hold rise with it, in
+both directions, which is the scale-up path the old scheme never had.
+The second condition is §37.11's: a provider gets a budget. An
+unbudgeted process under §37.12's rule sizes only to its floor, by
+design, so the provider's scale-up runs through its role profile's M
+and not through the absence of one.
+
+The receive hold derives from the surface, for the reason the
+coordinator gives: if windows can now grow and holds cannot, the
+inversion is rebuilt at a higher value, and with the advertisement in
+force the hold would simply become the throughput binder at 2.5 MiB,
+which is 90 Mb/s at 200 ms and would make the ceiling raise inert above
+it. The hold's capacity is its share of the receive budget (§37.9), drawn
+from M as above, and the advertisement carries it, so the relationship
+the no-eviction property depends on, window at or under the peer's
+hold, holds between advertising peers at every pair of budgets by
+construction, whatever the values. Between a legacy sender and an
+updated receiver the relationship is not guaranteed and does not need
+to be: committed-prefix acknowledgement (§37.20) makes an overrun cost
+bandwidth and never correctness, so the hold needs no floor raise to be
+safe against any peer. Between an updated sender and a legacy receiver
+the sender holds today's window (§37.21), the status quo.
+
+Whether a phone reaches the target on a long path within its budget:
+no, by arithmetic, and it fails visibly. One gigabit over 200 ms is 25
+MB of goodput in flight, 29 MB framed, for one window; a 24 MiB budget is
+25.2 MB for the whole process. On download the provider's window is
+clamped to the phone's advertised hold, which is the phone's receive
+share, so the achieved rate is that share over the round trip: at a
+share of 8 MiB, 290 Mb/s at 200 ms, the target at 58 ms and below; at
+4 MiB, 145 Mb/s and 29 ms. On upload the phone's own send share bounds
+it the same way. The failure is in the estimate rather than in a
+constant: the sender's `Window` equals the advertised capacity, the
+binding term is named, and the achieved rate against the target is the
+shortfall. That is the honest answer, and it is the intended failure
+mode of §37.4: the budget wins, the rate falls short of the target, and
+nothing is exceeded.
+
+One option the arithmetic opens, recorded and not chosen. Under
+committed-prefix acknowledgement the hold's capacity bounds occupancy
+physically, and the advertisement could carry a credit above it: on an
+in-order path a phone would then take the full window with an empty
+hold, and under reordering it would degrade to tentative churn rather
+than stall, with occupancy still inside its share. It is not chosen
+because two live routes is the default steady state on this path
+(§37.17), so reordering is routine and the churn would be too; the
+advertisement carries the hold's capacity, and the phone on a long path
+is budget-limited and says so.
+
+So the principle is satisfied in the design and was not in the tree:
+both directions resize by the same rule from the same surface, both
+improve on any host whose budget allows it, the improvement is bounded
+by each end's own share so the budget is never exceeded at either end,
+and the one-way property was the one-sided budget, which the surface
+removes on the condition that no share is ever derived through the
+scale. Predictions: on a host with a budget above the reference the
+sized window exceeds 2 MiB and the plateau moves with the share in both
+directions; on the 24 MiB client the download plateau sits at its
+receive share over the round trip and the upload plateau at its send
+share, each named in the estimate; and no arm on any budget shows the
+hold below its peer's window between advertising peers.
