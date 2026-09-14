@@ -195,34 +195,52 @@ func TestTheTunStackResolvesTheDrawnMaximum(t *testing.T) {
 	restore := MemoryBudget()
 	t.Cleanup(func() { SetMemoryBudget(restore) })
 
-	SetMemoryBudget(mib(256))
-	settings := DefaultTunSettings()
-	s := newTunStack(
-		settings.TcpReceiveBuffer,
-		settings.TcpSendBuffer,
-		settings.TcpMaxRto,
-		settings.TcpMinRto,
-	)
-	defer s.Close()
-
-	var receive tcpip.TCPReceiveBufferSizeRangeOption
-	if err := s.TransportProtocolOption(tcp.ProtocolNumber, &receive); err != nil {
-		t.Fatalf("could not read back the receive range: %s", err)
-	}
-	var send tcpip.TCPSendBufferSizeRangeOption
-	if err := s.TransportProtocolOption(tcp.ProtocolNumber, &send); err != nil {
-		t.Fatalf("could not read back the send range: %s", err)
-	}
-	t.Logf(
-		"resolved receive max %d, send max %d, against gvisor's own %d",
-		receive.Max, send.Max, tcp.MaxBufferSize,
-	)
-
-	if ByteCount(receive.Max) != mib(32) || ByteCount(send.Max) != mib(32) {
-		t.Errorf(
-			"a 256 MiB budget resolved receive %d and send %d in the stack rather than %d; if gvisor clamped the option at its own %d the raise would be inert and the reach arithmetic of §43.1 would be wrong",
-			receive.Max, send.Max, mib(32), tcp.MaxBufferSize,
+	// The tun draws on the PROCESS budget (`SdkSetMemoryLimit`), not the
+	// per-device target, so the shipped rungs are the Apple hosts' process
+	// budgets: 8 MiB legacy, 32 MiB iOS extension, 48 MiB macOS, 64 MiB. 48 and
+	// 64 MiB resolve above gvisor's own 4 MiB and are the shipped rungs where a
+	// clamp would show; 256 MiB is the desktop reach case.
+	for _, c := range []struct {
+		budget ByteCount
+		want   ByteCount
+	}{
+		{mib(8), mib(1)},
+		{mib(32), mib(4)},
+		{mib(48), mib(6)},
+		{mib(64), mib(8)},
+		{mib(256), mib(32)},
+	} {
+		SetMemoryBudget(c.budget)
+		settings := DefaultTunSettings()
+		s := newTunStack(
+			settings.TcpReceiveBuffer,
+			settings.TcpSendBuffer,
+			settings.TcpMaxRto,
+			settings.TcpMinRto,
 		)
+
+		var receive tcpip.TCPReceiveBufferSizeRangeOption
+		if err := s.TransportProtocolOption(tcp.ProtocolNumber, &receive); err != nil {
+			s.Close()
+			t.Fatalf("could not read back the receive range: %s", err)
+		}
+		var send tcpip.TCPSendBufferSizeRangeOption
+		if err := s.TransportProtocolOption(tcp.ProtocolNumber, &send); err != nil {
+			s.Close()
+			t.Fatalf("could not read back the send range: %s", err)
+		}
+		s.Close()
+		t.Logf(
+			"at a %d byte budget: resolved receive max %d, send max %d, against gvisor's own %d",
+			c.budget, receive.Max, send.Max, tcp.MaxBufferSize,
+		)
+
+		if ByteCount(receive.Max) != c.want || ByteCount(send.Max) != c.want {
+			t.Errorf(
+				"a %d byte budget resolved receive %d and send %d in the stack rather than %d; if gvisor clamped the option at its own %d the raise would be inert and the reach arithmetic of §43.1 would be wrong",
+				c.budget, receive.Max, send.Max, c.want, tcp.MaxBufferSize,
+			)
+		}
 	}
 }
 
