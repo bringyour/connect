@@ -769,6 +769,23 @@ func DefaultWindowSizing() WindowSizingPolicyKind {
 func (self *SendBufferSettings) ApplyWindowSizing() {
 	switch self.WindowSizing {
 	case WindowSizingFromDelivery:
+		// The rule and the delivery-bounded reliable admission of
+		// FLIGHTGATEFIX §22 must not coexist, and this refuses rather than
+		// documents it (THROUGHPUTFIX §38.13).
+		//
+		// That admission bound derives its limit from delivery rather than
+		// from the window, so with it on the sender sits below the ceiling
+		// whatever the ceiling says — which is exactly the failure the clamped
+		// regime has to rule out. A comment saying two settings conflict is
+		// the weakest protection there is, and this program has already found
+		// a setting pair recorded only in a comment separated by whoever came
+		// next.
+		if self.ReliableAdmissionBoundedByDelivery {
+			self.DeliverySizedWindowScale = 0
+			self.DeliverySizedWindowCeilingByteCount = 0
+			self.TargetGoodputByteRate = 0
+			return
+		}
 		self.DeliverySizedWindowScale = deliverySizedWindowScale
 		self.TargetGoodputByteRate = targetGoodputByteRate
 		// The budget first: derived from the process share, or the one a
@@ -803,7 +820,9 @@ func (self *SendBufferSettings) ApplyWindowSizing() {
 // share, so the rule holds today's constant. A caller that turns the switch on
 // and gets false here has a process with no memory budget attached.
 func (self *SendBufferSettings) WindowSizingActive() bool {
-	return 0 < self.DeliverySizedWindowScale && self.ResendQueueBudget != nil
+	return 0 < self.DeliverySizedWindowScale &&
+		self.ResendQueueBudget != nil &&
+		!self.ReliableAdmissionBoundedByDelivery
 }
 
 func DefaultSendBufferSettings() *SendBufferSettings {
@@ -9658,6 +9677,15 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	scale := self.sendBufferSettings.DeliverySizedWindowScale
 	if scale <= 0 || self.deliveredBytes == nil {
 		estimate.Reason = "the rule is off"
+		return estimate
+	}
+	// The same refusal at the point of use, so a cell that sets the fields
+	// directly cannot have both either. With delivery-bounded admission on,
+	// the sender's limit comes from delivery over a resend timer rather than
+	// from this window, and it would sit below the ceiling whatever the
+	// ceiling says (THROUGHPUTFIX §38.13).
+	if self.sendBufferSettings.ReliableAdmissionBoundedByDelivery {
+		estimate.Reason = "delivery-bounded admission owns the limit"
 		return estimate
 	}
 
