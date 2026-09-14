@@ -214,3 +214,49 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 		}
 	}
 }
+
+// THROUGHPUTFIX §30.3. Enabling a nonzero lane count used to add an
+// acquisition of the send buffer's mutex to every Pack, a lock every sequence
+// of the client shares, because the gate read the advertised version out of a
+// map the buffer guards. A count of zero returned before it, which is why the
+// cost appeared only when a count was set: a harness arm with the count at
+// eight and no lane ever engaging ran 13 to 17 per cent below the same fixture
+// at zero over six repetitions with overlapping distributions, and the
+// mechanism rather than the statistics is what makes that credible.
+//
+// The observable is the acquisition and not the throughput, because a
+// throughput row at that magnitude would be a timing test and would flake. The
+// buffer mutex is held here while the gate runs: a gate that takes it cannot
+// finish, and a lock-free one is unaffected.
+func TestLaneCountGateDoesNotTakeTheBufferLockPerPack(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	_, _, client := newProviderSourceLifecycleTestFixture(t, nil)
+	client.sendBuffer.sendBufferSettings.LogicalDataLaneCount = 8
+	client.sendBuffer.sendBufferSettings.LaneFloorByteCount = ByteCount(256 * 1024)
+
+	// a Pack shaped like a provider's return: a valid scheduling key and no
+	// explicit lane, so the gate runs its whole path
+	sendPack := &SendPack{
+		Destination:   NewId(),
+		schedulingKey: ipSendSchedulingKey(udpTestPath(4)),
+	}
+	if !sendPack.schedulingKey.valid {
+		t.Fatal("the scheduling key is not valid, so the gate would return before the version is read")
+	}
+
+	gated := make(chan uint32, 1)
+	var unlockOnce sync.Once
+	client.sendBuffer.mutex.Lock()
+	unlock := func() { unlockOnce.Do(client.sendBuffer.mutex.Unlock) }
+	defer unlock()
+	go func() {
+		gated <- client.sendBuffer.selectLogicalLane(sendPack)
+	}()
+	select {
+	case <-gated:
+	case <-time.After(2 * time.Second):
+		t.Error("the lane gate did not complete while the send buffer mutex was held; enabling a count puts a client-wide lock acquisition on every Pack, which is the 13 to 17 per cent the harness measured with no lane ever engaging")
+	}
+	unlock()
+}
