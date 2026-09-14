@@ -3557,3 +3557,231 @@ the per-packet stages and the acknowledgement chain. The merge of the
 runtime pin rule stands as a regression fix: eighteen per cent of upload
 at the shipping compression and twenty-six at 12 ms on this host is what
 an unconditional deletion would cost, twelve of twelve paired.
+
+## 32. The Transfer window as a bandwidth-delay ceiling: which cap binds, what divides it, and the two levers
+
+The user's hypothesis, derived from source rather than from arithmetic.
+It is the hypothesis §18 listed as its second item and §20.2 left live
+for the reporter's path after it was ruled out, correctly, for the cell
+that has no Transfer layer.
+
+### 32.1 Which cap binds, and on which side
+
+A send sequence has two caps in two units, and they gate two different
+populations. `SequenceBufferSize` (`defaultTransferBufferSize`, 32 items)
+sizes the `packs` channel and the pack admission: Packs a caller has
+handed to the sequence that its goroutine has not yet taken, sent and
+enqueued. `ResendQueueMaxByteCount` (2 MiB unscaled, per lane) bounds
+the resend queue: Packs that have been written to the carrier and not
+yet acknowledged. The loop moves a Pack from the first population to the
+second only while `resendQueue.CanAdd` says the byte bound has room, and
+it stops draining the channel when it does not, so the channel fills to
+32 and callers block in admission. The in-flight window that divides
+into the round trip is the second population, in bytes; the first is a
+burst buffer in front of it, in items, and it does not enter the
+bandwidth-delay arithmetic. It bounds only how far a caller may run
+ahead of the goroutine, 32 Packs of up to 24 KiB, and a caller that
+outruns it blocks on the goroutine's service rate, not on the path. So
+on the send side the byte cap binds, at every latency, and the sweep
+should scale with it proportionally until something else does.
+
+Two other caps sit near it. The carrier's own flow control: on H3 the
+stream receive window autotunes from 256 KiB to
+`MemoryScaledByteCount(3 MiB, 384 KiB)`, above the 2 MiB queue unscaled
+and above the 1 MiB scaled queue at the 32 MiB budget, so the Transfer
+queue binds first on both, but a byte-cap sweep past 3 MiB on H3 will
+stop scaling at the carrier's window, and the sweep must say which
+carrier it ran on. And the transport's kernel send buffer, autotuned to
+`tcp_wmem[2]`, 4 MiB stock, above the queue; §15's rule does not apply
+to transport sockets and need not.
+
+The receive side. `ReceiveQueueMaxByteCount` (2.5 MiB unscaled) bounds
+the out-of-order queue: Packs held above a hole until the hole fills; on
+an in-order path it is empty and never binds, and under loss it caps how
+much of the sender's window survives at the receiver while the hole is
+recovered. `SequenceBufferSize` on the receive side, 256 items, sizes the
+handoff channel from the transport reader to the receive sequence: a
+burst buffer again, in items, and it binds only when the sequence
+goroutine falls behind the reader, at which point the pump refuses and
+counts a drop. The asymmetry between 32 and 256 is deliberate and about
+the reliable-carrier handoff rule, not about windows: a reliable lane's
+reader may not drop what it has read, so its handoff is deep; a caller
+into a send sequence may block, so its handoff is shallow. Neither is a
+window. There is no receiver-advertised window in Transfer at all, which
+matters below.
+
+### 32.2 What divides the window: the effective acknowledgement round trip, decomposed
+
+The quantity is the time from a Pack's write at the provider to its
+acknowledgement being applied at the provider's resend queue. From
+source, in order:
+
+1. Carrier and network, provider to exchange to client: the path's
+   one-way delay plus queueing in the transport socket buffers. Inherent
+   as network; the socket queueing is bufferbloat of our own if the
+   window exceeds what the path carries, and it is bounded by the window
+   itself, window over rate.
+2. The client's receive: transport reader, session decrypt, ordering,
+   delivery, then the acknowledgement. Deliver-before-ack, so an ack
+   waits on delivery to the device. Microseconds to a millisecond of
+   processing, and one term we chose: `ReceiveBufferSettings.AckCompressTimeout`,
+   10 ms, which holds the cumulative acknowledgement so that every
+   received message does not emit its own ack frame. Average five
+   milliseconds added to every acknowledgement's round trip, ten at
+   worst, and it is the largest term we own on this path.
+3. The acknowledgement's return, client to exchange to provider: the
+   network again, plus the client's transport writer, where the ack
+   frame queues behind whatever the client is sending, which on a
+   download is its inner TCP acknowledgements at TCP's native rate
+   (§31.8), thousands of small frames a second; a queueing term of our
+   making, bounded by that writer's service rate.
+4. The provider applies it: `ackMessageDetailed` to the ack worker to
+   the window, and the loop wakes on `ackNotify` at once; no timer of
+   ours on this side. Scheduling only.
+
+Two corrections to the refinement. The NAT's 50 ms `AckCompressTimeout`
+is the inner TCP acknowledgement of client uploads (§19.1) and is not in
+this divisor on a download; the term that is, is the receive buffer's
+10 ms. And the tunnel settings' comment about an effective round trip
+orders of magnitude above loopback, fixed by raising a 256 KiB window,
+describes the inner TCP layer under gVisor, whose acknowledgements cross
+the whole tunnel twice; it is the same shape one layer down and the
+precedent is real, but its 300 ms is not this layer's number.
+
+Whether the divisor is mostly inherent or mostly ours is not decidable
+from source, because it depends on the rig, and the reporter's two
+statements point opposite ways: three hosts in one datacenter subnet
+would make the network sub-millisecond, in which case an effective
+25 ms is ours and mostly the 10 ms compression plus queueing; a distant
+provider hosted to get a baseline would make the network the divisor,
+in which case the queue is the only lever. The quantity is already
+measured and only needs reading: the sequence's `RttWindow` samples the
+Transfer acknowledgement round trip per Pack for the resend timer, and
+its mean beside a ping between the hosts says which case the rig is.
+That reading is the first thing the measurement stream should take,
+before the sweep, because it decides which lever is worth anything.
+
+### 32.3 The ceiling, derived
+
+For a download to one client on the reporter's path: throughput is
+bounded by `ResendQueueMaxByteCount` over the effective acknowledgement
+round trip of 32.2, 2 MiB over the round trip, on every flow to that
+client together, since they share the sequence. At 25 ms that is 671
+Mb/s; the reporter measures 665. Eight flows buy nothing because the
+window is per destination. A short path does not show it because the
+window covers a short path's bandwidth-delay product with room to
+spare, which is why a clean environment looks fine and a distant
+provider does not. WireGuard has no reliable per-peer window and no
+such ceiling. Beneath it sits a second, stacked window: the inner TCP's
+receive window at the client over the inner acknowledgement round trip,
+which crosses the tunnel twice and includes the full Transfer path both
+ways; with a kernel client at 6 MiB it sits above, with a gVisor client
+at 4 MiB just above, and on a phone whose `tcp_rmem` maximum is one or
+two mebibytes it binds first. Both windows must be read before either
+is raised.
+
+### 32.4 The two levers, with their costs, unpicked
+
+Raise the window: throughput rises in proportion until the next cap
+(the carrier's window on H3, the inner window, then the per-packet
+service rate of §31.2), and memory rises in proportion, in retained
+bytes near twice the accounted ones (§27.5), on the side that holds the
+sequence. On a download that is the provider, unbudgeted, but not
+unbounded: a provider with forty concurrent bulk downloaders at 16 MiB
+each holds 640 MiB accounted and over a gigabyte retained, so the
+window cannot be a per-sequence constant; it has to be a share of a
+provider budget, which is the floors-and-borrowing machinery §27
+already reasons about. A phone's own uploads use its own window and
+need little, since a phone's upload bandwidth-delay product at 50 Mb/s
+and 50 ms is about 300 KB and its scaled window is already 1 MiB at the
+32 MiB budget; so this is a provider-side change in the same sense
+lanes are. The phone does pay on the receive side, in a way that is
+not memory for throughput but memory for loss: a larger provider window
+means more Packs arrive above any hole, and the phone's out-of-order
+queue (1.25 MiB at 32 MiB) drops what it cannot hold, which the sender
+recovers by retransmission at a cost in bandwidth and in the recovery
+shapes the previous program measured (§34 there). Transfer has no
+receiver-advertised window to make the sender respect that queue, and
+adding one is a protocol change; without it the phone's queue is a
+loss-cost term, not a cap.
+
+Shrink the divisor: the same throughput for no memory, by removing what
+we added to the round trip. The receiver's 10 ms acknowledgement
+compression is the named term; at 665 Mb/s and 24 KiB Packs an
+uncompressed receiver would send about 3,600 ack frames a second
+instead of about a hundred, each a small frame through the session
+cipher and TLS on the client's uplink, which is nothing on a desktop
+and a wakeup question on a phone, the same question §22 asked of the
+other layer and with the same shape of answer (a rate-dependent
+trigger already exists there in the half-window signal; here the
+equivalent would be an ack per N Packs or per fraction of the sender's
+window, so that a large window is acknowledged often enough to keep
+its bandwidth-delay product and a small one is not chattier than
+today). The client's transport-writer queueing behind inner
+acknowledgements is the other term of ours, and it is the same reverse
+stream §31.8 named, which the inner MTU thins. The network term is
+inherent. If the rig's reading in 32.2 says the effective round trip is
+near the ping, this lever is empty and the queue is the whole decision;
+if it says 25 ms on a sub-millisecond ping, this lever is worth what the
+queue is worth and costs nothing.
+
+### 32.5 The shape of the window fix, if the queue is the lever
+
+Size the window from the path with memory as the ceiling rather than
+the sole term, in the form receivers already use for their own windows:
+`window = clamp(k × delivered over the last acknowledgement round trip,
+floor, ceiling)`, with `k` at least two so that a window-limited flow,
+which by definition delivers exactly its window per round trip, doubles
+each round trip until it is no longer window-limited, and then holds.
+The instrument exists: `deliveredBytesOver(ScaledRtt)` and the
+`deliveredBytes` ring, built for `ReliableAdmissionBoundedByDelivery`,
+which applied it in the other direction, to bound admission below the
+queue, and shipped off because it cost transfer time; here it raises the
+bound above today's constant and can only add. The ring is retained
+only when its flag is on, so turning this on costs its 256 bytes per
+sequence.
+
+The estimate's quality: it needs the delivered count and the
+acknowledgement round trip, both already measured; the round trip
+enters only as the measurement interval, so an estimate that is too
+short shrinks the delivered count and the window (the safe direction),
+one too long grows it (the memory direction, bounded by the ceiling).
+Wrong high: memory up to the ceiling, and up to one round trip of extra
+queueing for the client's other flows, since a window above the
+bandwidth-delay product sits in queues; that is the head-of-line cost
+of §20.2 made larger, and the reason `k` should not exceed two. Wrong
+low: today's behaviour. At connection start the window is today's
+constant and doubles per round trip while window-limited, reaching a
+16 MiB ceiling from 2 MiB in three round trips, under a tenth of a
+second at 25 ms, so the converging phase is never worse than now.
+
+The floor is today's bound, the ceiling is the sequence's share of a
+provider budget with floors and borrowing rather than a per-sequence
+constant, the parameters are `k`, the ceiling, and the budget's floors,
+and a campaign sets them by throughput against retained bytes per
+client at 25, 50 and 100 ms. On the receive side the out-of-order
+queue's relation to the sender's window is the open question a
+receiver-advertised window would close; until then the receive queue
+is sized for loss recovery, and the campaign should measure drops at
+the client under one induced loss at each window.
+
+### 32.6 If the derivation and the sweep disagree
+
+The sweep raises the byte cap from half a mebibyte to eight at fixed
+latency and predicts proportional scaling. The derivation predicts the
+same on H1 up to the inner window and the per-packet service rate, and
+on H3 a stop at 3 MiB unscaled where the carrier's stream window takes
+over. If the sweep stops scaling below 3 MiB on H1, one of us has the
+wrong population: either the item cap gates more than the pre-send
+buffer, which the loop's drain says it does not, or the inner window is
+smaller than assumed, which the client's advertised window would show.
+If it scales past 3 MiB on H3, the carrier's window is not what
+`H3MaxStreamReceiveWindowByteCount` says or the run was not on H3. Say
+which rather than reconcile.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| W1 | `TestSendWindowIsTheResendQueueNotTheItemCap` | a sequence with a 4-item channel and a 2 MiB queue over an in-process link with 20 ms of acknowledgement delay reaches 2 MiB in flight; with a 32-item channel and a 256 KiB queue it reaches 256 KiB | a reading in which the item cap is the window | in-process |
+| W2 | `TestThroughputScalesWithTheResendQueueAtFixedDelay` | at 20 ms acknowledgement delay, throughput at 4 MiB is about twice that at 2 MiB and at 8 MiB about four times, within the null band | a tree with another cap under 8 MiB | in-process, H1-shaped link |
+| W3 | `TestReceiverAckCompressionIsInTheRoundTrip` | the sequence's `RttWindow` mean rises by the receiver's `AckCompressTimeout` when it is raised from 0 to 10 ms on a zero-delay link | none; characterises the divisor | in-process |
+| W4 | `TestDeliverySizedWindowConvergesInLogRoundTrips` (after the fix) | from a 2 MiB floor at 25 ms delay the window reaches its 16 MiB ceiling within four round trips and holds at twice the delivered rate when the link is slower than the ceiling | the tree as shipped | in-process |
