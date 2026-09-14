@@ -3151,3 +3151,88 @@ benefit, and it is ruled out.
 | L6 | `TestProviderReturnsFallBackToLaneZeroForAClientWithoutLaneSupport` | the same provider toward a client whose acknowledgements carry no lane version: every return on lane zero, no nonzero sequence created | a change that hashes past the gate | in-process |
 | L7 | `TestClientWithLanesOffPaysOnlyTheReceivePool` | a client at count zero receiving on eight lanes: its send buffer holds one sequence and no lane pool; its receive buffer holds one shared lane pool at `ReceiveQueueMaxByteCount` and its retained roots read within the measured factor of that | a client that opens send lanes to receive | in-process, with the pool reconciliation |
 | L8 | `TestLaneCostIsReadInRetainedBytes` | the §27.1 accounting plus the one-item term against `MessagePoolOutstandingByteCount`, reporting the ratio; asserted only that retained is at least accounted, since the ratio is the payload's | none; the instrument for the device cell | in-process |
+
+## 30. The discriminator adjudicated: the fixture's client binds first, and no verdict about the relay survives it
+
+Data: lane zero, one flow 276.6 Mb/s, eight flows 509.1, ratio 1.84;
+count eight, one flow 241.3, eight flows 420.5; per-flow spread at eight
+flows 2.67 and 3.84. The entry condition (eight flows about equal to one
+at lane zero) failed, and every one of 202,000 packs on the count-eight
+arm rode lane zero.
+
+### 30.1 The reading the evidence supports
+
+The second. Two numbers decide it before any interpretation of what
+Transfer or a relay does. The reporter's signature is one flow reaching
+about 665 Mb/s and eight flows reaching the same; this fixture's one
+flow reaches 277 and its eight reach 509, so the fixture cannot enter
+the regime in which the reporter's serialization shows, because
+something else caps it at less than half the reporter's single-flow
+number. And 1.84 is the ratio the provider-upstream cell produced with
+no Transfer layer at all: adding the entire layer moved the flow scaling
+by nothing, which is what a bound downstream of both cells produces, and
+this program has already located that bound in the harness's gVisor
+client, flat across a sixty-four-fold provider window and a thirty-two-
+fold client window (§19.2). A fixture bounded below the regime cannot
+eliminate anything in the regime. So the first reading's promotion of
+the relay by elimination is not supported: Transfer without a relay did
+not reproduce the signature in a harness that could not have reproduced
+it with or without one. The relay keeps exactly the prior §20 gave it,
+as one hop of the serialized per-client chain, neither promoted nor
+demoted.
+
+### 30.2 Why the lane arm never engaged, from source, and what it says about the fixture
+
+Hashing onto a data lane needs two gates, not one (`selectLogicalLane`):
+the lane-zero class of the destination must have advertised support, and
+the Pack must carry a valid scheduling key
+(`sendPack.schedulingKey.valid`); a Pack without one returns lane zero
+before the version is consulted. The provider's return path sets that
+key from the flow (`ipSendSchedulingKey`, the same key H3 flow isolation
+uses) on every return; a fixture that sends through any other entry, a
+`Send*` without the scheduling key option, never hashes, whatever the
+acknowledgements say. The advertisement itself is unconditional on the
+receiver: every acknowledgement it writes carries
+`transferLogicalLaneVersion`, on both the v2 frame and the protobuf
+path, the parse keeps it, and the sender records it in
+`observeLogicalLaneVersion` only from the live lane-zero sequence and
+only after the acknowledgement matched an item in its resend queue. So
+"the acknowledgement apparently never completes" has two possible
+causes and both are readable in process: `logicalLaneVersions[base]` for
+the destination's base key, and the scheduling key's validity on the
+Packs the fixture sends. If the key is invalid the fixture's send path
+is not the provider's return path, which is the concrete way it differs
+from a real client and a real provider, and it is repaired by driving
+the fixture through `ReceiveBatch` and the return path rather than
+through a bare send. That is the prerequisite for any lane verdict, and
+the harness stream's investigation should read those two values first.
+
+### 30.3 A cost the run did measure without meaning to
+
+With the count at eight and no lane ever engaged, the arm ran 13 to 17
+per cent below the lane-zero arm. Nothing in the packet path differs
+between those arms except the gate itself, and the gate takes the send
+buffer's mutex on every Pack to read `logicalLaneVersions[base]`, a lock
+shared by every sequence of the client, while a count of zero returns
+before the lock. That is a per-Pack acquisition of a buffer-wide lock
+added by enabling a count, and it is the likely cost. It is a finding
+independent of the fixture's fidelity and it must not be shipped inside
+a lane rollout: the version belongs on the sequence, pushed by the
+buffer when it changes, so the per-Pack gate is a lock-free read. Row:
+`TestLaneCountGateDoesNotTakeTheBufferLockPerPack`, asserting under a
+lock-contention hook that the gate acquires no buffer mutex on the Pack
+path.
+
+### 30.4 What would separate the two readings, and what the run leaves standing
+
+A cell whose client can reach the reporter's single-flow number: a
+kernel-stack client behind a real tun in a network namespace, or the
+reporter's own client, so that one flow reads about 665 and the question
+"do eight flows read the same" can be asked at all; then lane zero
+against lanes, and no relay against a relay hop, each as its own arm.
+Until then neither in-process cell measures the reporter's ceiling, and
+the remedy question stays where §20 and §27 left it: designed,
+implemented, pinned in process for its own properties (F1, the floor
+rows), and unmeasured for throughput. The entry-condition rule did its
+job, the harness stream's refusal to soften it was right, and the run's
+two real yields are the second gate and the per-Pack lock.
