@@ -8529,3 +8529,228 @@ The harness's upload measurement has a landing path in this tree to
 that figure, and the reading that shows the ceiling is the server's is
 the plateau at 218 with the inner round trip from `TcpInfo()` reading
 `P + 15` rather than `P + 60` once §26 has landed.
+
+## 44. The share table
+
+### 44.1 What the table is, and the rows that already exist
+
+The table is the set of draws each layer takes on the process budget
+M, each of the form `max(floor, M × f)` with `f` a fraction and the
+floor a working minimum, never a scaled constant. Rows that exist today,
+named to the line:
+
+    row                        draw today                    backing   where
+    message pools              M × 12/34 packet, × 2/34      heap      sdk.go:500–503,
+                               large, mobile caps            (is the   522–540
+                                                             backing)
+    transport total            min(M, max(3 MiB, M/4)),      heap      memory_budget.go:30
+                               16 slots
+      H3 reservation           max(3 MiB, M/8) (§42.1),      heap      transport.go:681,
+                               stream 3/8, connection 4/8    quic-go   1721
+      H1 reservation           512 KiB scaled                heap      transport.go:680
+    transfer send share        M/8                           pool      transfer.go:729
+    transfer receive share     M/8, hold max and budget      pool      transfer.go:975
+    tun reservation (hosted)   max(4 MiB, M/8) (§43.1)       heap      tun.go:93
+                                                             gVisor
+    dns target                 a share of the device target  heap      ip_mux_upgrade.go:440
+
+The backing column is the fact the table turns on. The transfer queues
+hold pooled frames: a byte in the send queue or the receive hold is a
+pool byte, so those two rows are permissions over the pools' backing
+and not memory of their own, while quic-go's and gVisor's buffers are
+heap outside the pools. Permissions may sum past M, because on every
+path shorter than the knee they are not held (§37.13, §37.15); what
+must not exceed its backing is the sum of what can be occupied at once.
+
+### 44.2 The constraints, and what makes the table safe when the budget changes
+
+Three constraints, each a test:
+
+1. Scaling. Every draw doubles when M doubles above its floor's
+   crossing, and none passes through `MemoryScaledByteCount`, whose
+   scale returns one at the reference and can only shrink. This is the
+   test of 687b61c, applied to every row; it fails on any row rewritten
+   in the local idiom, which is the trap.
+2. Backing. For the pool-backed rows, the sum of what can be occupied
+   at once is at most the pool target: on a client, the send queue on
+   upload or the hold on download, not both at full at once in one
+   direction, plus the return and handoff queues; on a provider, the
+   send queues of its clients. For the heap rows, the sum of the
+   reservations plus the pools is at most M. A property test over a
+   range of M, from the smallest supported host to a gigabyte, asserts
+   both sums at every step.
+3. Floors. The floors are the one place the table can lie, because a
+   floor is a byte count that does not scale. Their sum per backing
+   must fit the smallest supported M: at the 8 MiB legacy target the H3
+   floor of 3 MiB already needed a special case in the transport total
+   (`memory_budget.go:32–35`), and a hosted client's tun floor of 4 MiB
+   beside it does not fit. The test asserts the floors' sum per
+   backing against each supported minimum and fails where it does
+   not, which it will at 8 MiB for a hosted client, and that failure is
+   a finding to act on rather than a test to loosen.
+
+What makes it safe when the budget changes: every row is a fraction of
+M, so a change in M moves every row together and the ratios between
+rows are preserved; the only quantities that do not move are the
+floors, and constraint 3 bounds those. What would have to be true for a
+fraction to change: the ratio of needs between layers would have to
+change, and that ratio is set by the loops' round trips, by the copy
+count, and by the goodput factor, none of which depends on the budget
+or the path. So a fraction changes with the architecture, copy
+elimination or one reliable layer per hop, and never with a deployment.
+That is the property that separates the table from a constant with
+more steps: its numbers encode ratios between layers, and the budget
+supplies the scale.
+
+### 44.3 How the fractions are chosen, the defaults, and what a deployment changes
+
+Chosen from need, not asserted. A layer's need is the target times its
+own loop's round trip, divided by the goodput factor where it counts
+framed bytes, so the needs stand in the ratio of the round trips: loop
+D, the carrier hop, to loop C, the transfer sequence, to loop B, the
+inner TCP, about P/2 : P + 5 : P + 10, near 1 : 2 : 2 at the design
+point (§37.23). The equal M/8 draws of the landing so far give the H3
+carrier twice its proportional need and the transfer and tun rows half
+theirs. The derived default, for a client:
+
+    H3 reservation         M/16    stream at 3/4 of it, connection at it
+    transfer send          M/8
+    transfer receive       M/8
+    tun send, tun receive  M/8 each, hosted only
+    pools                  as today, 14/34, the backing for the two
+                           transfer rows
+    H1                     as today
+
+and for a provider the same rows without the tun, with the transfer
+rows divided among clients by the floor-and-borrow admission (§37.11).
+At 256 MiB that is a 16 MiB H3 reservation with a 12 MiB stream window,
+32 MiB transfer rows and 32 MiB tun rows; the H3 stream window is then
+the binder on a desktop download at 415 Mb/s over 200 ms, and moving
+its fraction to 3/4 of an M/8 reservation gives 24 MiB and 830, which is
+the third landing of §43.2 stated as a row. These are the campaign's
+to confirm by sweeping the divisors at the design point with the
+constraints above pinning every arm; the derivation is what they are
+swept around, and the record says which row binds at each setting so
+that a sweep reads as a shape and not as a search.
+
+What a deployment changes: M, through `SetMemoryLimit`, and nothing in
+the table. A role profile, phone or desktop or provider, is a different
+M and the same fractions. A deployment that wants a different balance
+between layers, an upload-heavy provider or a hosted client with no
+tun, changes the fractions once, in the table, and the constraints
+tell it whether the result fits.
+
+### 44.4 The test that makes a wrong table fail
+
+Beyond the three constraints: a shape test that asserts the rows'
+ratios, H3 to transfer to tun at 1 : 2 : 2 within a tolerance, so that
+a change to one row without the others fails; a binder test that, for
+a given M and path, computes the expected plateau as the smallest row's
+product over its loop and asserts the cell reads it, which is the
+acceptance arm; and the negative that cannot pass by accident, a row
+set as a constant in the local idiom, which fails the scaling test at
+the first budget step above the reference.
+
+## 45. Upload's landing path, as one queue
+
+### 45.1 The queue
+
+Upload at 200 ms with the delay on the client's hop binds in this
+order: the transfer window, the client's send buffer over the inner
+acknowledgement clock, the server's stream window over the hop, then
+the send buffer and the clock at their raised values. The queue, in
+that order, with what each is worth and its state:
+
+1. The transfer unit: window, hold, advertisement, committed-prefix,
+   pipelining. Built and in progress on the implementation stream's
+   list. Worth 71 → 129 Mb/s at 200 ms; the binder it hands to is the
+   send buffer over the clock. Reach to a gigabit: none. Under the 50 ms
+   clock a 4 MiB send buffer over `P + 60 ms` is below 125 MB/s at every
+   P, so upload has no gigabit reach until the clock moves, at any
+   budget.
+2. The steady-state acknowledgement cadence at the provider's ladder.
+   Designed here, §45.2; not built; not §26. Worth 129 → 156 at 200 ms
+   at a 4 MiB send buffer. Reach: 4.19 MB over `P + 15 ms` at 125 MB/s
+   is 18.5 ms of path, from none. This is the step that makes upload
+   reach anything, and it multiplies into every later window, since
+   the clock is a term in the inner round trip whatever the buffers
+   are.
+3. §26's recovery quickack, built and shipped off (`QuickackEverySegments`
+   zero disables the phase, `ip.go:3696–3730`; only
+   `ip_tcp_ack_starvation_test.go` sets it). Turning it on is a
+   defaults change with its tests already in the tree. Worth: the
+   first round after a timeout and connection start, where the window
+   is a single segment and the timer is the critical path; not the
+   steady-state rate. It sits beside item 2, not in place of it.
+4. The hosted client's tun send maximum at M/8 (§43.1). Worth 156 → 218
+   at 200 ms, where the server's window binds. Reach: 44 ms, the
+   server's 6 MiB over the hop at the target. Hosted clients only; a
+   native desktop's send buffer is the OS's, 4 MiB on macOS and Linux,
+   which leaves it at 156 and 18.5 ms, and up to 16 MiB on Windows,
+   which reaches the server's 218 and 44 ms without this step.
+5. The server's stream and connection windows (§42.3), server tree.
+   Worth 218 → the shares. Reach: beyond 44 ms to the shares'.
+
+So upload is worth three changes in this tree and stops being worth
+more at 218 Mb/s and 44 ms of path until the server moves: the transfer
+unit for the rate, the cadence for any reach at all, and the hosted send
+maximum for the last step to the server's window. Reach after each:
+none, 18.5 ms, 44 ms, then the shares.
+
+### 45.2 The steady-state acknowledgement cadence, to buildable detail
+
+Why it is not §26. §26's phase is entered only on evidence that the
+peer's window is small, loss, connection start or resumption after
+idle, and its own doc rules out a byte-count predicate because it
+"would acknowledge every k segments of a saturated upload for ever"
+(`ip.go:3696–3706`); row Q6 guards steady state by design. The upload
+clock is the steady state: the NAT acknowledges when the half-window
+signal fires, `windowSize/2 <= sendSeq − ackedSendSeq` (`ip.go:5842–5846`),
+or when the `AckCompressTimeout` timer fires at 50 ms (`:453,5433`).
+With the ladder's window at 16 MiB the half-window is 8 MiB, 67 ms of
+data at the target, and the timer fires first, so the inner
+acknowledgement clock is 50 ms and the client's send buffer sits over
+`P + 60`.
+
+The change. A steady-state cadence beside the half-window signal, in
+the branch at `ip.go:5842–5860` and ahead of the every-k phase rule: a
+new setting `SteadyAckEverySegments` on `TcpBufferSettings` beside
+`AckCompressTimeout` (`:3681`), under which the NAT sends one
+acknowledgement every k in-order segments in steady state, with the
+half-window signal and the 50 ms timer kept as backstops for a sender
+that stops short of k. It is what TCP's delayed acknowledgement does at
+two; k here can be larger because the cost is acknowledgement traffic
+and nothing else: at k = 16 and 1,280 B segments, one acknowledgement
+per 20 KB is about 6,000 a second at the target, under 0.3 per cent of
+the bytes, and the clock is 20 KB over the rate, a fraction of a
+millisecond, so the inner round trip reads `P + 15` rather than `P + 60`.
+The trade the campaign measures is k against acknowledgement traffic;
+sixteen is the candidate and the shape is flat above it. Nothing else
+moves with it: the ladder's growth rule on `writePayloads` blocking is
+untouched, since it reads the upstream socket and not the
+acknowledgement cadence, and §26's phase rule still applies its own
+every-k at entry.
+
+The memory consequence: none. Acknowledgements are not retained.
+
+The test, failing on the current tree: a saturated upload through the
+NAT at a 16 MiB advertised window with a sender that never reaches the
+half-window inside 50 ms, asserting the acknowledgement interval at or
+under k segments' time rather than the timer's 50 ms; and the
+integration reading, the client's inner round trip from
+`TunTcpConn.TcpInfo()` at `P + 15` rather than `P + 60` at 200 ms, with
+throughput at a 4 MiB send buffer moving from 129 to 156. On the tree as
+it stands the interval reads 50 ms and the round trip `P + 60`.
+
+### 45.3 The server change is one change
+
+The server's H3 listener has one `quic.Config`
+(`server/connect/transport.go:562`), applied to every accepted
+connection, providers and clients alike, and it sets no windows. The
+provider-to-platform direction that binds the provider-hop download
+case and the client-to-platform direction that binds every upload
+terminate at that same listener with that same config. Raising
+`MaxStreamReceiveWindow` and `MaxConnectionReceiveWindow` there from a
+per-connection share of the server's budget is one change that
+unblocks both, which is the reason to open it in that repository now
+rather than after either measurement.
