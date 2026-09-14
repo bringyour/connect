@@ -3677,6 +3677,49 @@ type TcpBufferSettings struct {
 	// an ack is sent sooner when the unacked byte count reaches half the window.
 	// zero sends a pure ack on every send seq advance.
 	AckCompressTimeout time.Duration
+	// The recovery phase (THROUGHPUTFIX §26). The half-window signal above
+	// keys on the window rung, so it cannot fire while the peer keeps less
+	// than half a rung in flight, which is every slow start and every
+	// post-loss recovery. In exactly that period the compression timer is the
+	// only clock, and since a peer grows its congestion window per
+	// acknowledgement received rather than per byte acknowledged, its recovery
+	// is throttled to one segment of growth per compression interval: a factor
+	// of (RTT + T)/RTT, two at a 50 ms round trip and fifty-one at 1 ms.
+	//
+	// Inside the phase the NAT acknowledges every `QuickackEverySegments`
+	// in-order segments, which restores exponential window growth. One
+	// acknowledgement per burst would give linear growth and take 93 round
+	// trips where doubling takes seven, so the counting rule is the substance
+	// rather than an optimization.
+	//
+	// The phase is entered only on evidence that the peer's window is
+	// genuinely small — loss evidence, connection start, or resumption after
+	// idle — and never on a byte count. A predicate of the form "bytes since
+	// the last acknowledgement are under half the rung" is true at the start
+	// of every interval of every flow and would acknowledge every k segments
+	// of a saturated upload for ever.
+	//
+	// Zero `QuickackEverySegments`, the shipping default, disables the phase
+	// entirely so the tree behaves as it did before §26 and a campaign's trees
+	// stay comparable.
+	QuickackEverySegments int
+	// How much of a new connection counts as start evidence: while the bytes
+	// received on the connection are under this, the peer's window is the ten
+	// segments its stack opens with, against an advertised half-window of
+	// hundreds of kilobytes.
+	StartQuickackByteCount ByteCount
+	// The most one entry may cost, in bytes acknowledged since it. It exists
+	// for a peer that never grows — an application-limited sender that would
+	// otherwise keep the rule alive — rather than for the ordinary case, which
+	// leaves the phase by reaching the half-window.
+	RecoveryQuickackByteBound ByteCount
+	// How long a burst with bytes outstanding must be silent before one
+	// acknowledgement is sent regardless of the phase, for the odd last
+	// segment of a burst that the every-k rule leaves. It plus the path's
+	// round trip must stay well under the peer's 200 ms retransmission floor,
+	// or the held acknowledgement fires the same spurious timeout it exists to
+	// avoid. Zero disables it.
+	QuiescenceBound time.Duration
 	// ReadPollTimeout time.Duration
 	// WritePollTimeout time.Duration
 	IdleTimeout         time.Duration
@@ -4898,6 +4941,32 @@ func (self *TcpSequence) Run() {
 		ackedSendSeq = self.sendSeq
 	}()
 
+	// THROUGHPUTFIX §26. All four are read and written under self.mutex, by
+	// the send loop and the acknowledgement goroutine, exactly as
+	// ackedSendSeq is.
+	//
+	// `recovering` is the phase; `recoveryAckedByteCount` is what it has cost
+	// since its entry, against RecoveryQuickackByteBound; `quiescentNanos` is
+	// when the flow last had nothing outstanding, which is the only thing that
+	// separates a recovering peer from a quiet one.
+	quickackEverySegments := max(0, self.tcpBufferSettings.QuickackEverySegments)
+	recovering := false
+	recoveryAckedByteCount := uint32(0)
+	quiescentNanos := monotonicNanos()
+
+	// Entry is evidence of a small window and never a byte count: E1 loss
+	// evidence, E2 connection start, E3 resumption after idle. Re-entry after
+	// an exit starts fresh counters, so a peer that loses on every window pays
+	// the bound each time, which is the right outcome for a path that needs
+	// its acknowledgements.
+	enterRecoveryWithLock := func() {
+		if quickackEverySegments <= 0 {
+			return
+		}
+		recovering = true
+		recoveryAckedByteCount = 0
+	}
+
 	// pipelines
 
 	type writePayload struct {
@@ -5260,7 +5329,21 @@ func (self *TcpSequence) Run() {
 				if err != nil {
 					self.log.Infof("[r]ack err = %s\n", err)
 				}
+				acknowledgedByteCount := self.sendSeq - ackedSendSeq
 				ackedSendSeq = self.sendSeq
+				// nothing is outstanding from here, which is what separates a
+				// recovering peer from a quiet one
+				quiescentNanos = monotonicNanos()
+				if recovering {
+					recoveryAckedByteCount += acknowledgedByteCount
+					// the bound on what one entry may cost, for a peer that
+					// never grows out of the phase by itself
+					if 0 < self.tcpBufferSettings.RecoveryQuickackByteBound &&
+						self.tcpBufferSettings.RecoveryQuickackByteBound <=
+							ByteCount(recoveryAckedByteCount) {
+						recovering = false
+					}
+				}
 			}()
 			if packet == nil {
 				return
@@ -5512,6 +5595,14 @@ func (self *TcpSequence) Run() {
 				// Both retained gaps and bounded-buffer rejection need an immediate
 				// duplicate ACK so ordinary TCP retransmission can recover.
 				sendCurrentAck(false)
+				// E1: a peer sending past a hole has taken a loss event, so its
+				// window is collapsed or halved and the in-order data that
+				// follows must not wait on the compression timer.
+				func() {
+					self.mutex.Lock()
+					defer self.mutex.Unlock()
+					enterRecoveryWithLock()
+				}()
 				return true
 			}
 			if end <= 0 {
@@ -5522,6 +5613,12 @@ func (self *TcpSequence) Run() {
 					self.afterReorderDispositionForTest(tcpReorderDispositionStale)
 				}
 				sendCurrentAck(false)
+				// E1: a retransmission is the same loss evidence as a gap.
+				func() {
+					self.mutex.Lock()
+					defer self.mutex.Unlock()
+					enterRecoveryWithLock()
+				}()
 				return true
 			}
 
@@ -5610,6 +5707,7 @@ func (self *TcpSequence) Run() {
 					blockingByteCount = uint32(0)
 				}
 
+				outstandingBeforeByteCount := self.sendSeq - ackedSendSeq
 				self.sendSeq += advanceByteCount
 				nextSeq = self.sendSeq
 				ackCond.Broadcast()
@@ -5617,6 +5715,43 @@ func (self *TcpSequence) Run() {
 					select {
 					case ackSignal <- struct{}{}:
 					default:
+					}
+					// the half-window rule is the binding trigger again, so the
+					// peer is out of the small-window region this phase serves
+					recovering = false
+				} else if 0 < quickackEverySegments && 0 < len(payload) {
+					nowNanos := monotonicNanos()
+					if outstandingBeforeByteCount == 0 {
+						// E3: the flow resumed after a quiet longer than the
+						// compression timeout, which returns a peer's stack to
+						// slow start with no loss involved.
+						if self.tcpBufferSettings.AckCompressTimeout <
+							time.Duration(nowNanos-quiescentNanos) {
+							enterRecoveryWithLock()
+						}
+					}
+					// E2: a new connection's window is ten segments against an
+					// advertised half-window of hundreds of kilobytes.
+					if 0 < self.tcpBufferSettings.StartQuickackByteCount &&
+						ByteCount(self.sendSeq-self.initialSynSeq-1) <
+							self.tcpBufferSettings.StartQuickackByteCount {
+						enterRecoveryWithLock()
+					}
+					// The counting rule, which is the remedy: inside the phase,
+					// acknowledge every k in-order segments. It is the RFC 1122
+					// receiver, applied only where the peer's window is small.
+					if recovering {
+						segmentByteCount := uint32(self.peerMss)
+						if segmentByteCount == 0 {
+							segmentByteCount = uint32(self.tcpBufferSettings.Mtu)
+						}
+						spacingByteCount := uint32(quickackEverySegments) * segmentByteCount
+						if spacingByteCount <= self.sendSeq-ackedSendSeq {
+							select {
+							case ackSignal <- struct{}{}:
+							default:
+							}
+						}
 					}
 				}
 			}()

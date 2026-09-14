@@ -37,12 +37,23 @@ func TestAckCompressionIsTheOnlyClockBelowHalfAWindowRung(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
 	const ackCompressTimeout = 50 * time.Millisecond
-	const segmentByteCount = 100
+	const segmentByteCount = 1400
 	const segmentInterval = 5 * time.Millisecond
 	const observationWindow = 600 * time.Millisecond
+	const quickackEverySegments = 2
+	// more than this window sends, so the connection-start phase covers it
+	const startQuickackByteCount = ByteCount(1024 * 1024)
 
 	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 32, 0, func(sequence *TcpSequence) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
+		// the recovery phase, which the shipping default leaves off; the whole
+		// window of this row is connection start, which is E2
+		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		sequence.tcpBufferSettings.StartQuickackByteCount = startQuickackByteCount
+		sequence.tcpBufferSettings.RecoveryQuickackByteBound = startQuickackByteCount
+		// the peer's segment size, which the spacing is counted in; the
+		// harness's SYN carries no MSS option
+		sequence.peerMss = segmentByteCount
 	})
 	// the upstream is a pipe: nothing may block the send loop behind it
 	go io.Copy(io.Discard, harness.upstreamSocket)
