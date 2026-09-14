@@ -10,6 +10,35 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
+// What these rows do and do not claim (THROUGHPUTFIX §37.10 steps one and two).
+//
+// None of them claims the window bounds memory or latency for TCP carried
+// through the tunnel. That claim would pass for the wrong reason and would keep
+// passing with the rule deleted: the client tunnel moderates its own receive
+// window from bytes copied per round trip, so a slow carrier closes it, the
+// origin backs off, and the transfer layer is never handed more than the path
+// can carry. Measured in the slow-drain cell: about 2.5 ms of added delay on
+// every arm against predictions of hundreds, and a peak send queue of 20 KiB
+// whether the window was 2, 3.6 or 16 MiB. A window cannot cost what it is
+// never given.
+//
+// The traffic that has no such governor is the datagram return path, which
+// admits non-blocking at every stage and drops beyond: per-shard return
+// channels bounded by item count, a zero write timeout for non-TCP items, a
+// pack call that refuses at timeout zero, and a retry path covering only TCP
+// socket items. A source that offers regardless of admission fills whatever
+// window it is given. And because a destination's traffic rides one ordered
+// sequence, the queue it builds is the delay an unrelated TCP flow to that same
+// client waits behind. So:
+//
+//   - the delivery term is the only latency bound in the design, and it is what
+//     keeps a datagram source from inflating a co-resident flow's latency;
+//   - the advertisement reaches datagram traffic too, but the job it does there
+//     is the receiver's memory and the retransmission a drop costs, not latency;
+//   - the ceiling is a bound on what one provider retains across many senders.
+//
+// Each row below says which of the three it is asserting.
+
 // A sender and a receiver joined by a delayed acknowledgement half, with the
 // send window rule configurable, so the before and after are the same binary
 // with one field changed.
@@ -304,9 +333,12 @@ func TestDeliverySizedWindowConvergesInLogRoundTrips(t *testing.T) {
 	)
 }
 
-// §32.5: the ceiling is a share of a budget rather than a per-sequence
-// constant, because forty simultaneous downloaders at a per-sequence maximum
-// would retain more than a provider has. A constant that works in a one-client
+// §32.5, the retention claim: the ceiling is a share of a budget rather than a
+// per-sequence constant, because forty simultaneous downloaders at a
+// per-sequence maximum would retain more than a provider has. What reaches the
+// ceiling in practice is the traffic nothing backs off — a TCP flow through the
+// tunnel is held well below it by the client's own receive moderation — so this
+// bounds a provider against many datagram senders rather than against TCP. A constant that works in a one-client
 // cell is exactly what fails in production, and no measurement available today
 // would show it, so the row does.
 func TestDeliverySizedWindowCeilingIsAShareOfABudget(t *testing.T) {
@@ -409,7 +441,8 @@ func TestSendWindowHoldsTheInitialSizeWhereItCannotSee(t *testing.T) {
 	t.Logf("no budget: %q window %d; no samples: %q window %d", noBudget.Reason, noBudget.Window, noSamples.Reason, noSamples.Window)
 }
 
-// THROUGHPUTFIX §37.3, step two. A Pack that arrives above the receiver's hold
+// THROUGHPUTFIX §37.3, step two, the receiver-memory claim rather than a
+// latency one. A Pack that arrives above the receiver's hold
 // is dropped and must be sent again, so a sender whose window exceeds the hold
 // turns one loss into one window of retransmission. The receiver is the only
 // party that knows what it can hold — it has no round trip to size from, and
@@ -544,7 +577,9 @@ func TestDeliverySizedWindowRateFormHoldsAtAShortRoundTrip(t *testing.T) {
 	t.Logf("windows over a steady 5 ms path: %v (spread %.2fx)", windows, float64(largest)/float64(max(1, smallest)))
 }
 
-// THROUGHPUTFIX §37.10 step two's acceptance. A Pack above the receiver's hold
+// THROUGHPUTFIX §37.10 step two's acceptance, again as a memory and
+// retransmission claim: the advertisement is what keeps the receiver from
+// dropping, not what keeps the queue short. A Pack above the receiver's hold
 // is dropped and must be sent again, so before the advertisement a sender whose
 // window exceeded the hold turned one loss into one window of retransmission.
 //
@@ -619,13 +654,33 @@ func TestReceiveAdvertisementStopsTheLossRetransmitStorm(t *testing.T) {
 	)
 }
 
-// THROUGHPUTFIX §37.13, step one's second acceptance criterion: the interval
-// defect is a latency defect and not only a sizing one. Because the interval
-// floors at 300 ms, the rule as built permitted twice the rate times 300 ms
-// whatever the real round trip, so the queue it allowed never added less than
-// 600 ms at any rate. A fixed window has the same shape for a different
-// reason, its own size over the rate, which on a slow link is most of a
-// second.
+// THROUGHPUTFIX §37.13, step one's acceptance, claimed for the traffic the
+// rule is actually load-bearing for.
+//
+// What this row must not claim. A test asserting that the window bounds memory
+// or latency for TCP through the tunnel would pass for the wrong reason and
+// would keep passing with the rule removed entirely: the client tunnel's
+// receive moderation sizes its window from bytes copied per round trip, so a
+// slow carrier closes it, the origin's TCP backs off, and the transfer layer
+// is never handed more than the path can carry. The slow-drain cell measured
+// that at about 2.5 ms of added delay on every arm against predictions of
+// hundreds of milliseconds, with peak send queue at 20 KiB whether the window
+// was 2, 3.6 or 16 MiB. A window cannot cost what it is never given.
+//
+// What it does claim. Nothing backs a datagram source off: the UDP return path
+// admits non-blocking at every stage and drops beyond — per-shard return
+// channels bounded by item count, a zero write timeout for non-TCP items, the
+// pack call refusing at timeout zero, and a retry path that covers only TCP
+// socket items. So a source that offers regardless of admission fills the
+// window, and the window over the drain rate is the latency every flow sharing
+// that per-destination sequence must wait behind, including an unrelated TCP
+// flow to the same client. The delivery term is what drops the excess at
+// admission, and that is the only latency bound in the design.
+//
+// So the offerer here is the shape that cannot be backed off: it offers as
+// fast as it is admitted and discards what is refused, exactly as the datagram
+// return path does. The measurement is the standing queue any co-resident flow
+// inherits.
 //
 // Two corrections to the design's stated reading, both measured here.
 //
@@ -634,18 +689,17 @@ func TestReceiveAdvertisementStopsTheLossRetransmitStorm(t *testing.T) {
 // difference measures only the variation in it. Measured: the constant arm's
 // mean is 1.264 s and its minimum 1.231 s, a difference of 33 ms, while its
 // actual standing queue is about 1.2 s. The reading that works is the minimum
-// less the propagation the link imposes, which is the standing queue in time.
-// This is the same trap as a serial delay element raising a measured floor.
+// less the propagation the link imposes. This is the same trap as a serial
+// delay element raising a measured floor.
 //
 // And the sized arm does not land at one propagation round trip. The minimum
 // is the right multiplier relative to the mean, but on a path bound below the
 // sender even the minimum is inflated by the queue the window creates, so the
-// rule's fixed point is not twice the bandwidth-delay product of the
-// propagation delay. Measured: 129 ms of standing queue against a 25 ms
-// propagation, about five round trips, not one. What does hold, and is what
-// this row asserts, is the comparison the step exists for: the sized window
-// leaves about a ninth of the constant's queue on the same link.
-func TestSizedWindowAddsOneRoundTripOfQueueOnASlowPath(t *testing.T) {
+// fixed point is not twice the bandwidth-delay product of the propagation
+// delay: 129 to 178 ms of standing queue against a 25 ms propagation, about
+// five to seven round trips rather than one. What holds, and what this
+// asserts, is the comparison the step exists for.
+func TestSizedWindowBoundsTheQueueADatagramSourceImposesOnASharedSequence(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
 	// a slow last mile: 20 Mb/s at a 25 ms propagation round trip
@@ -669,10 +723,12 @@ func TestSizedWindowAddsOneRoundTripOfQueueOnASlowPath(t *testing.T) {
 				}
 			})
 		harness.receiveHold(ceiling)
+		// the source that cannot be backed off: offers as fast as it is
+		// admitted and discards refusals
 		harness.offer(t, payloadByteCount, offerWindow)
 		stats := harness.sender.DestinationSendStats(harness.receiverId)
 		// the standing queue in time: what the round trip carries above the
-		// propagation the link imposes
+		// propagation the link imposes, which is what a co-resident flow waits
 		return max(0, stats.Rtt.Min-propagation), stats.Rtt, stats.SendWindow
 	}
 
@@ -696,11 +752,11 @@ func TestSizedWindowAddsOneRoundTripOfQueueOnASlowPath(t *testing.T) {
 			constantEstimate.Window,
 		)
 	}
-	// measured at about a ninth; a factor of three is well inside that and
-	// well outside the run-to-run spread of a shared runner
+	// measured at about a seventh to a ninth; a factor of three is well inside
+	// that and well outside the run-to-run spread of a shared runner
 	if constantQueue < 3*sizedQueue {
 		t.Errorf(
-			"the sized window left %s of standing queue against the constant's %s on the same link; sizing from the path is supposed to be the shorter queue, and the interval defect this replaces never left less than 600 ms",
+			"a source that cannot be backed off left %s of standing queue with the sized window against %s with the constant; every flow sharing this destination's sequence waits behind that, so the delivery term is what keeps a datagram source from inflating an unrelated flow's latency",
 			sizedQueue,
 			constantQueue,
 		)

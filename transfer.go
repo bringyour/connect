@@ -5779,6 +5779,10 @@ type SendSequence struct {
 	// (FLIGHTGATEFIX §22). Allocated once with the sequence: 256 bytes.
 	// nil unless ReliableAdmissionBoundedByDelivery is set: an off flag must
 	// not retain bytes (FLIGHTGATEFIX §29.4).
+	// The ring is advanced by the acknowledgement worker and read by the
+	// window rule, which a stats caller on any goroutine can reach through
+	// DestinationSendStats. A leaf lock: nothing is taken under it.
+	deliveredBytesMutex sync.Mutex
 	deliveredBytes      []deliveredBytesSample
 	deliveredBytesHead  int
 	deliveredBytesCount int
@@ -8803,6 +8807,8 @@ func (self *SendSequence) observeDeliveredBytes(byteCount ByteCount, at time.Tim
 	if byteCount <= 0 || self.deliveredBytes == nil {
 		return
 	}
+	self.deliveredBytesMutex.Lock()
+	defer self.deliveredBytesMutex.Unlock()
 	self.deliveredByteTotal += byteCount
 	atNanos := at.UnixNano()
 	interval := self.deliveredBytesSampleInterval().Nanoseconds()
@@ -8842,7 +8848,12 @@ func (self *SendSequence) deliveredBytesSampleInterval() time.Duration {
 // worth depending on where the ring happened to sit (THROUGHPUTFIX §36.6).
 // Dividing by the span it measured removes that dependence.
 func (self *SendSequence) deliveredRate(minSpan time.Duration) (ByteCount, time.Duration, bool) {
-	if self.deliveredBytes == nil || self.deliveredBytesCount < 2 {
+	if self.deliveredBytes == nil {
+		return 0, 0, false
+	}
+	self.deliveredBytesMutex.Lock()
+	defer self.deliveredBytesMutex.Unlock()
+	if self.deliveredBytesCount < 2 {
 		return 0, 0, false
 	}
 	newest := self.deliveredBytes[self.deliveredBytesHead]
@@ -8901,11 +8912,26 @@ func (self *ReceiveSequence) receiveWindowAdvertisement() uint64 {
 	return uint64(max(0, share-held))
 }
 
+// How many samples the ring holds, for the window rule's evidence.
+func (self *SendSequence) deliveredSampleCount() int {
+	if self.deliveredBytes == nil {
+		return 0
+	}
+	self.deliveredBytesMutex.Lock()
+	defer self.deliveredBytesMutex.Unlock()
+	return self.deliveredBytesCount
+}
+
 // deliveredBytesOver reports what this lane acknowledged in the last d: the
 // running total now, less the total at the newest sample older than d. A
 // scan of at most sixteen entries, allocation-free.
 func (self *SendSequence) deliveredBytesOver(d time.Duration, now time.Time) ByteCount {
-	if self.deliveredBytes == nil || self.deliveredBytesCount == 0 || d <= 0 {
+	if self.deliveredBytes == nil || d <= 0 {
+		return 0
+	}
+	self.deliveredBytesMutex.Lock()
+	defer self.deliveredBytesMutex.Unlock()
+	if self.deliveredBytesCount == 0 {
 		return 0
 	}
 	horizon := now.Add(-d).UnixNano()
@@ -9043,7 +9069,7 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 		return estimate
 	}
 	estimate.RoundTrip = roundTrip.Min
-	estimate.SampleCount = self.deliveredBytesCount
+	estimate.SampleCount = self.deliveredSampleCount()
 
 	// the rate must span several acknowledgement bursts, and at least a couple
 	// of round trips where those are long
