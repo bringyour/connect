@@ -8226,3 +8226,178 @@ times the wake rate reaches the per-item rate: at 200 ms, 20,000 over
 136 is about 150, so a buffer of 150 or more at 200 ms should read the
 same 210 as 25 ms, and a run at 32, 64 and 160 at 200 ms pins both
 mechanisms in one sweep.
+
+## 42. The four ceilings as the path to a desktop's reach, the first to buildable detail
+
+### 42.1 The first ceiling: the client's H3 stream receive window
+
+The constant. `H3MaxStreamReceiveWindowByteCount:
+MemoryScaledByteCount(mib(3), kib(384))` at `transport.go:685`, with its
+companions at `:684–687` (stream initial 256 KiB, connection initial
+512 KiB, connection maximum `MemoryScaledByteCount(mib(4), kib(512))`),
+the owner-target variants at `:729–734`, and the fallbacks at `:858–875`
+that repeat the same constants when a setting is non-positive. All of
+them pass through the scale that returns one at or above the 64 MiB
+reference (§37.22), so the window is 3 MiB on every host with more than
+64 MiB and cannot be larger.
+
+What it becomes. Not a larger constant. The transport budget already
+exists as a draw on the process budget: `newDefaultPlatformTransportBudget`
+sets its total to `min(M, max(3 MiB, M/4))` (`memory_budget.go:30–35`),
+sixteen slots, and each transport registers a reservation against it,
+H3's from `H3BudgetByteCount` (`:1721–1725`), which is
+`MemoryScaledByteCount(mib(8), mib(3))` (`:681`): 8 MiB at the reference,
+capped there. A claim above the total waits (`memory_budget.go:32–35`).
+So the derivation has two steps and one new function:
+
+    h3ReservationByteCount = max(mib(3), M / 8)            a draw on M
+    H3MaxStreamReceiveWindowByteCount     = h3Reservation × 3/8
+    H3MaxConnectionReceiveWindowByteCount = h3Reservation × 4/8
+    initial windows unchanged (256 KiB, 512 KiB)
+
+At the 64 MiB reference the reservation is 8 MiB and the windows are
+3 and 4 MiB, exactly today, so no host regresses; at 256 MiB they are
+12 and 16; at 1 GiB, 48 and 64. The reservation stays under the
+transport total's M/4 with H1's 512 KiB beside it. `H3BudgetByteCount`
+becomes that draw, and the three sites that repeat the constants
+(`:685–687`, `:729–734`, `:864–875`) read it, so the constant is
+unreachable. The socket buffers `H3SocketReadBufferByteCount` and
+`WriteBufferByteCount` are not windows and stay as they are (§37.2, D3).
+quic-go's growth from the initial toward the maximum is untouched; the
+change is the ceiling only, which is the smaller change §37.4 named for
+layers that already autotune.
+
+Whether the server must move in the same change. The window is the
+receiver's. For download, the two hop-directions are provider to
+platform, whose receiver is the server, and platform to client, whose
+receiver is the client. The server's listener `quic.Config`
+(`server/connect/transport.go:562`) sets no windows, so it runs
+quic-go's defaults, 512 KiB initial and 6 MiB maximum stream
+(`internal/protocol/params.go:25,31`). So a client-only change moves the
+platform-to-client direction, which is the binder whenever the delay
+sits on the client's hop, the ordinary shape for a desktop far from a
+platform; it does nothing for a path whose delay sits on the provider's
+hop, where the server's 6 MiB binds at 218 Mb/s over 200 ms; and it does
+nothing for upload, whose first hop's receiver is always the server.
+A one-ended change is half by direction, not nothing, and the half it
+is is the desktop-download half. The server's side is the same rule
+applied to its config, `MaxStreamReceiveWindow` and
+`MaxConnectionReceiveWindow` from a per-connection share of the
+server's budget, in the server tree, and it should land in the same
+campaign so that both hop-directions read one value.
+
+The memory consequence at the common path, expressed as the others
+are (§37.7, §38.1). A receive window is credit: the client backs it
+only under a stall, its steady-state occupancy being the rate times
+its reader's latency, milliseconds of data; the memory it costs at
+once is the sender's, since quic-go's send side retains sent data up to
+the window it is granted, so the provider, and the server on the relay
+hop, hold up to the client's window per connection. At the target and
+200 ms that is 28.9 MB of framed window per client for gigabit; with
+the reservation at M/8 a client with a 256 MiB budget grants 12 MiB and
+buys 12 MiB × 0.865 over 0.2 s, 415 Mb/s, on that hop; the server holds
+that per client. So the raise is paid on the sending side per client,
+which is the divided-budget arithmetic of §37.11 landing on the
+provider and the platform, and the client's own budget bounds only the
+credit it advertises.
+
+The test that pins it, failing on a tree without the change. Unit: the
+resolved `quic.Config.MaxStreamReceiveWindow` doubles when the process
+budget doubles above the reference, 3 MiB at 64 MiB, 6 at 128, 12 at
+256, the pattern of 687b61c's share test, and reads 3 MiB at every
+budget on the tree as it stands. Cell: the namespace cell on H3 with
+the delay on the client's hop at 200 ms and the transfer unit on, the
+plateau moving from 109 Mb/s to 160 when the client's budget is set to
+256 MiB, and not moving when it is set to 64. The first cannot pass by
+accident; the second names the next binder.
+
+What the reach becomes. On download with the delay on the client's hop
+and the transfer unit landed, this raise moves the common path from
+109 to 160 Mb/s at 200 ms, 1.47 times, and from 54 to 80 at 400. The
+reach to a gigabit moves from 21.8 ms of path to 23.5, where the tun
+binds: about two milliseconds. That is worth knowing before anyone
+builds it, and it is the whole point of the ordering below: no single
+ceiling extends the reach, because the four sit within a few
+milliseconds of each other; each one raises the common path's rate by
+its ratio to the next, and the reach extends only when the ones behind
+it move too.
+
+### 42.2 The order, under the target clamp
+
+The target window is `T × rtt_min / 0.865`, 1.4 MB at 10 ms and 3.6 at
+25 (§41.1), and at those paths it sits below every ceiling here: the
+H3 window at 3 MiB permits 2.2 Gb/s over 10 ms and the tun's 4 MiB more.
+So at short paths the target bounds the transfer window at the
+gigabit's own product and none of the four ceilings binds below the
+target; a desktop on a short path already has a gigabit's reach, and
+no ceiling needs raising there. At the common path the target window
+is 28.9 MB at 200 ms and never binds, and the ceilings are what they
+were. The ranking of §40.3 survives unchanged, and the target clamp
+sharpens its scope: the four ceilings matter only above about 22 ms of
+path, which is the common path and not the fast link.
+
+### 42.3 The second and third, to the level of what moves together
+
+The tun's two constants. `TunSettings.TcpReceiveBuffer.Max` and
+`TcpSendBuffer.Max`, both `MemoryScaledByteCount(mib(4), kib(512))`
+(`tun.go:93–106`), applied as gVisor's range options (`:221–235`).
+They become `tunReservationByteCount = max(mib(4), M / 8)` each,
+`Default` unchanged as the bet; gVisor reads its limits on every
+autotune step (`endpoint.go:3446–3475`), so a live budget change moves
+live connections; both this tree, client side. What moves with them:
+for download nothing else, the receive maximum is the binder at 160
+and the raise lifts it to the shares; for upload the send maximum is
+bound with the ladder's 50 ms acknowledgement clock (§37.23), so the
+raise there moves nothing until §26's rule replaces the timer as the
+inner acknowledgement clock, and the provider's ladder `MaxWindowSize`
+(`ip.go:462`) becomes the largest power of two under the provider's
+per-client share. The cell: the namespace cell's download plateau at
+200 ms moving from 160 to the server's 218 or the shares' when the
+client's budget rises, with the H3 raise landed. Reach after it, with
+H3 landed: to the server's window when the provider's hop carries
+delay, and to the shares otherwise, which at 29 MB is a gigabit at
+200 ms on H3.
+
+The server's windows. `MaxStreamReceiveWindow` and
+`MaxConnectionReceiveWindow` on the listener's `quic.Config`
+(`server/connect/transport.go:562`), from a per-connection share of the
+server's budget, server tree. What moves with them: nothing in this
+tree; they bind the provider-to-platform direction on download when the
+provider's hop carries delay, and the client-to-platform direction on
+every upload, 218 Mb/s at 200 ms today. The cell: upload at 200 ms with
+the transfer unit and the client's tun raised, the plateau moving from
+218 with the server's windows raised, and not otherwise.
+
+The carrier sockets, the fourth. Client and provider through the
+websocket dialer's `NetDialContext` (`net_http.go:1949–1954`), which
+already calls `ConnectSettings.DialContext` and so
+`Control: DialControl` (`net.go:282`): the request attaches as
+`upstreamSocketBufferControl(carrierReservationByteCount, policy)` and
+§15's rule decides whether it pins. The server's H1 listener sets no
+socket buffers; its side is a request on accept, server tree, or the
+hosts' sysctls. H1 only; on H3 the carrier has no kernel window.
+
+### 42.4 Where each lives
+
+This tree: the transfer unit; the client's H3 stream and connection
+windows and their reservation; the tun's two maxima; the provider's
+ladder maximum and the §26 clock; the dialer's socket request for
+client and provider. The server tree: the listener's two quic windows;
+the accept-side socket request or the hosts' sysctls. Nothing else
+lives there. So the desktop-download path, delay on the client's hop,
+H3, is entirely this tree's: transfer unit, then the H3 windows, then
+the tun, and with those three landed and a 256 MiB desktop budget the
+common path reads about 415 Mb/s at 200 ms bounded by the 12 MiB
+reservation, and the shares are the lever from there. Upload and the
+provider-hop case need the server tree for their first raise above
+218, and that is the change whose timing is not ours.
+
+### 42.5 The reach after each, on one line each
+
+Download, delay on the client's hop, H3, a desktop with a 256 MiB
+budget: today 2 MiB, 71 Mb/s at 200 ms, gigabit to 9.5 ms of path; the
+transfer unit, 109 and 22 ms; the client's H3 windows, 160 and 23.5 ms;
+the tun, 415 at the 12 MiB reservation and the reach set by the shares,
+a gigabit at 200 ms needing 29 MB per framed layer, which is the
+budget's decision and not a constant's. Upload, or the provider's hop
+carrying the delay: the same to 218, then the server tree.
