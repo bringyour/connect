@@ -252,6 +252,31 @@ amortises.
 
 So the rule is correct in its destination and costs something in its ramp.
 
+### 3.6a The multiple converges near 2.3 with transfer size
+
+| Transfer | Measured | Predicted | n |
+|---|---|---|---|
+| 16 MiB | 1.707 | — | 10 |
+| 64 MiB | 2.128 | — | 7 |
+| 256 MiB | 2.242 | 2.268 | 5 |
+| 512 MiB | 2.263 | 2.293 | **2** |
+
+Within 1.3% of the steady-state solve at both long points, converging on ~2.3
+as the startup amortises.
+
+**The 512 MiB point rests on two repetitions**, after 9 of 32 runs were
+rejected for lost goroutines. That rejection is size-correlated -- a run of
+that length spends a minute exposed to another container's scheduler -- and it
+hit both arms roughly evenly, so it does not bias the multiple, but it thins
+precisely the point an asymptote claim rests on. Read it with that attached.
+
+**These multiples are against the overshooting rule of 3.7**, not against a
+path-derived one. They measure a large fixed window against a small one across
+transfer sizes, which is a real measurement of the mechanism and not a
+measurement of the corrected rule. The corrected rule's prediction differs:
+converging to a sufficient window faster should raise the short-transfer end
+and leave the long end where it is, flattening the curve rather than moving it.
+
 ### 3.7 Correction: the rule measured the wrong interval
 
 `window = k x delivered` is a fixed point by construction -- if extra window
