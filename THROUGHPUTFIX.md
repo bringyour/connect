@@ -2050,3 +2050,30 @@ round picks nothing.
 |---|---|---|---|---|
 | C1 | `TestAckCompressionStaysUnderTheRetransmissionFloor` | the default `AckCompressTimeout` is at most a quarter of gVisor's default minimum RTO and of `DefaultTunSettings().TcpMinRto` when set | a constant moved past the cliff in either place | pure |
 | C2 | `TestHalfWindowSignalFiresBeforeTheTimerAboveTheCrossover` | with W and T chosen so that `W/(2T)` is below the offered rate, ACKs are paced by the half-window signal and their interval is under T; below it, by the timer | none; characterises the trigger | in-process |
+
+### 20.4 The memory objection, verified answered on both sides; ordering is the question
+
+Read from `newSendSequenceWithLogicalLane` and the receive buffer's
+sequence construction. For a nonzero lane the per-sequence floor is
+zeroed (`resendQueueMinByteCount = 0`), so lanes claim no guaranteed
+floors; when the caller supplied a device-wide `ResendQueueBudget` (every
+sdk-hosted provider does, `configureDeviceLocalProviderMemory`) the
+lanes draw from it and nothing multiplies; when none was supplied (the
+bare provider) all nonzero lanes share one lazily built pool of one
+`ResendQueueMaxByteCount`. The receive side mirrors it exactly: one
+shared pool of `ReceiveQueueMaxByteCount` for every data lane when no
+`ReceiveQueueBudget` was supplied, the device budget otherwise. So eight
+lanes on a bare provider cost lane zero's queue plus one shared pool,
+about 4 MiB at the shipping bound, and on a phone receiving a download
+on eight lanes the cost is the fixed per-sequence state, a few KiB each.
+The direction asymmetry stands: the sequences that carry a download live
+on the provider, and a phone pays for lanes only on what it sends and
+receives, at pooled cost. Contract fan-out (20.3) remains the one cost
+that multiplies, and it lands on the platform rather than on a device.
+
+The feature's shape says it was finished to this point on purpose:
+pooled budgets on both sides, receivers advertising support so senders
+roll out alone, the count left at zero for a campaign. The ordering
+analysis of 20.3 is therefore the whole of what a lane rollout can get
+wrong, and rows L2 and L3 are the ones to run before the one, four and
+eight lane campaign reads a number.
