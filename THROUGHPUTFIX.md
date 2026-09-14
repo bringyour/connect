@@ -7183,3 +7183,107 @@ is under the caller's timeout, measured per stage. No unacknowledged
 item ever appears in the resend queue. And a fast-path write never
 blocks the calling goroutine beyond the immediate try, measured as the
 device or shard goroutine's longest stall under a stalled writer.
+
+### 38.13 The window that does not climb: the interval cancels nothing, the effective round trip does
+
+Measured directly: at 200 ms the sender holds 2.190 MiB, the rule
+computes 2.763, the peer advertises 28.422. Admission is faithful, the
+constant arm is correctly window-bound at 2 MiB, and nothing reads the
+constant. The computed window itself stops far below the
+advertisement, at about 1.4 times the constant here and at 5.19 MiB in
+an earlier run on the same path: it grows a little and stops wherever
+it is. The candidate put to me: the delivery rate is taken over about
+twice the minimum round trip and multiplied by the minimum round trip
+with a scale of two, and the two factors cancel, so every window is a
+fixed point.
+
+Checked against the line, the cancellation does not occur. `deliveredRate`
+returns the byte delta between two ring samples and the elapsed span
+between them (`transfer.go`, `deliveredRate`: `newest.total −
+older.total` over `newest.atNanos − older.atNanos`), and the estimate
+computes `perRoundTrip = delivered × rtt_min / span` before applying the
+scale (the clamp sequence of §38.9's read). The span's length divides
+out: what is multiplied by the scale is a rate times the minimum round
+trip, whatever interval the rate was taken over. For a window-limited
+flow at window W and effective round trip RTT_eff, delivered over any
+span is W × span / RTT_eff, so
+
+    perRoundTrip = W × rtt_min / RTT_eff
+    next window  = 2 × W × rtt_min / RTT_eff
+
+and the growth per step is g = 2 × rtt_min / RTT_eff. The interval is
+not in it. Unity growth, which is what is measured, requires the
+effective round trip to be twice the minimum, and that is the finding:
+not a cancellation in the arithmetic but a standing queue in the path.
+
+Where a round trip of twice the minimum comes from. If a stage below
+the sender's queue drains at a rate R lower than the window over the
+round trip, the excess window stands as queue in front of it, and the
+effective round trip becomes W / R once W exceeds R × rtt_min. Then
+
+    next window = 2 × W × rtt_min × R / W = 2 × R × rtt_min
+
+for every W above R × rtt_min: every such window maps to the same
+value in one step, the window is flat, it settles at twice the
+drain's bandwidth-delay product, and it varies between runs exactly as
+R varies. That is the self-limiting equilibrium the coordinator
+described, and it is the fixed point §36.7 designed: k times what the
+path delivers per minimum round trip, stopping where delivery stops,
+with one round trip of standing queue at k = 2. The rule is doing what
+it was built to do. What it is telling us is that delivery stops at R,
+about 6.8 MiB/s framed in this run and 12.8 in the earlier one, 55 to
+107 Mb/s, far below the path, and that R is a rate below the sender's
+queue and not a window anywhere. Both arms read the same number at
+200 ms because the constant arm's 2 MiB over its own effective round
+trip happens to land at about R; it is a coincidence of this path
+length, and it is why the fix showed no gain.
+
+What R is. The rule cannot say; it measures delivery and sizes to it.
+The plain window harness pumps with no configured rate
+(`newSendWindowHarness` passes zero, so the per-frame delay pump runs),
+and the paced variant (`newRateLimitedSendWindowHarness`) installs a
+drain at a configured `bytesPerSecond`; a cell built on the second has
+R by construction, and against it the rule sizing to twice R's product
+is correct and no window fix can show a gain. On the unpaced fixture R
+is a service rate somewhere in the fixture or the tree, the per-frame
+goroutine and sleep of the delay pump at thousands of frames a second,
+the receiver's goroutine, or the sender loop's build and seal, and a
+service rate varies with load, which is the two-to-one variance
+between runs. That is the §37.3 distinction, delay against service,
+arriving at the fixture.
+
+The measurement that separates the two accounts, from fields the
+estimate already reports. Under a rate stage, at the settled window
+the effective round trip is W* / R = 2 × rtt_min exactly, so
+`Rtt.Mean` reads about twice `Rtt.Min` and `Reason` reads "delivery".
+Under the cancellation account the mean stays near the minimum with the
+window flat regardless. And throughput equals R in every arm whose
+window exceeds R × rtt_min, in both arms at 200 ms here. If the mean
+reads twice the minimum, the standing queue is real and R is the next
+thing to find, by the harness's occupancy of each stage below the
+queue; if it reads the minimum, the mechanism is not this one, and the
+per-step pair `perRoundTrip` against `Window` is the field to read.
+
+The test contract, asserting growth as the user requires, in two
+parts so that it captures the rule and the fixture separately:
+
+- Growth. An unpaced delay line, an offered load above the window, and
+  an advertisement well above it: the computed window reaches the
+  advertisement within ⌈log2(advertised / initial)⌉ + 1 spans of twice
+  the minimum round trip, four spans and under two seconds from 2 to
+  28 MiB at 200 ms. This asserts g ≈ 2 where no rate stage exists.
+  Prediction, stated so it can be wrong: it passes on the current tree,
+  because nothing in the rule's arithmetic limits growth; if it fails,
+  §38.13 is wrong and the per-step pair above says where.
+- The fixed point. A paced drain at R with the same offered load and
+  advertisement: the computed window settles at 2 × R × rtt_min within
+  one frame plus the floor, `Rtt.Mean` at twice `Rtt.Min`, `Reason`
+  "delivery", throughput R in both arms. This asserts that the
+  equilibrium is the designed one and cannot pass by accident, since
+  the settled value is a number computed from the cell's own R.
+
+Together they say what a "no gain" reading means: on a fixture with a
+rate stage, the rule is right and the gain is not there to be had; on
+one without, the rule climbs. And they make the harness's next
+question precise, which is not why the window stops but what, below the
+sender's queue on the unpaced fixture, delivers at 55 to 107 Mb/s.
