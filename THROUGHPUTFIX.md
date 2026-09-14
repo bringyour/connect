@@ -1464,3 +1464,63 @@ socket-owned path, which CODESTYLE allows for exactly this lane as "the
 narrow shared-pump exception" provided the queue has independent byte and
 count bounds, cancellation joins the worker, and every pooled buffer is
 returned before lifecycle completion.
+
+### 16.4 Measured in process: three reader shapes, none traps autotuning; the diagnosis redirects
+
+Run on the runner's kernel with `lo` at MTU 1,500 and 25 ms of netem each
+way (a 50 ms round trip, the cell's), `tcp_rmem` 4096 131072 33554432, a
+loopback origin writing 24 MiB, reading `rcv_ssthresh`, `rcv_space`,
+`rcv_rtt` and `SO_RCVBUF` from the socket:
+
+| Reader | `rcvbuf` at the end | `rcv_space` | `rcv_rtt`, minimum seen | rate |
+|---|---:|---:|---:|---:|
+| reads 32 KiB continuously from the first byte | 30,678,545 | 1,456,688 | 51,000, 50,000 | 82.8 Mb/s |
+| parks 300 ms, then reads 32 KiB continuously | 7,102,985 | 1,064,224 | 51,000, 50,000 | 57.8 Mb/s |
+| parks 300 ms, then reads 64 KiB continuously | 25,080,056 | 4,063,232 | 50,000, 50,000 | 235.8 Mb/s |
+| held to 12 Mb/s for 3 s, then free (twice) | 33,554,432 and 13,854,500 | 2.3 and 2.6 MB | 50,000 both | 413 and 265 Mb/s after the hold |
+| held to 4 Mb/s for 4 s, then free | 131,072 through the hold, `rcv_space` 14,480; 5,245,453 after | 474,944 | 50,000 | 47.8 Mb/s after the hold |
+
+Every shape engaged once the reader read freely. A parked first read does
+not trap it (16.2's candidate 1 in its simple form is falsified), and the
+receiver's round-trip estimate does not collapse under window-limited
+bursts, which was the refinement that could have made the trap self-
+sustaining; the minimum observed was exactly 50 ms in every run. The only
+way the buffer stayed at 131,072 was a reader consuming less than the
+initial `rcv_space` per round trip, which is autotuning sizing the window
+to the application, as designed, and it engaged the moment consumption
+rose.
+
+So on this kernel a reader that drains a window per upstream round trip
+engages autotuning, and a stuck window means the reader was not draining
+a window per round trip. That contradicts the cell's arithmetic only if
+the upstream round trip is the 50 ms that 104,448 × 8 / 16 Mb/s implies;
+if the provider-to-origin round trip in the cell is the datacenter's few
+milliseconds, the initial window alone would carry 150 to 400 Mb/s, and
+16 Mb/s is not the upstream window's limit at all. Either way the reading
+that decides is the same and it is cheap:
+
+1. `ss -ti` on the provider's upstream socket in a stuck run: `rtt` (the
+   upstream round trip) and `rcv_space` (bytes the reader copied per
+   round trip). If `rtt` is milliseconds, the upstream window is a
+   symptom and the bottleneck is downstream of the socket reader, in the
+   tunnel. If `rtt` is 50 ms and `rcv_space` reads a full window per
+   round trip with `rb` still 131,072, the kernel is doing something these
+   runs did not show, and `nstat` for memory pressure and prune counters
+   is next (16.2, candidate 2).
+2. On the same run, the tunnel side of that flow: the NAT's advertised
+   window toward the client (`TcpSequence.windowSize`, which starts at the
+   memory-scaled `InitialWindowSize`, 512 KiB at 32 MiB, and doubles up
+   the ladder), the client's own window on its tun interface, and the
+   return sequence's `ReliableAdmissionWaitDuration` and resend queue
+   size for that client. The prediction now: the stuck runs show the
+   tunnel side holding the flow at 16 Mb/s from the first second, the
+   upstream reader consuming exactly that, and the upstream window
+   right-sized to it; the engaged runs differ on the tunnel side, not on
+   the socket.
+
+The budget dependence supports the redirection: the socket reader is the
+same at every budget, while the tunnel-side windows, queues and pools are
+what the 32 MiB budget scales. Row for the test stream, once the tunnel
+reading is in: `TestReturnPathDoesNotHoldAFreshFlowAtItsInitialWindow`,
+in process, asserting whichever tunnel-side bound the reading names grows
+within the first round trips of a fresh flow.
