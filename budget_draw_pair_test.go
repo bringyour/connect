@@ -87,3 +87,49 @@ func TestTheH3AndTunCeilingsMoveTogether(t *testing.T) {
 		}
 	}
 }
+
+// C-31 at the targets that ship. The row above walks the PROCESS budget, but a
+// shipped H3 carrier never reads it: the sdk sizes the carrier from the WHOLE
+// per-device memory target, not the platform share of it
+// (`sdk/device_local.go`, where `deviceMemoryShares` discards the share and the
+// generator passes `settings.MemoryTargetByteCount` to
+// `DefaultPlatformTransportSettingsWithMemoryTarget`). The device target is
+// 20 MiB on desktop and 24 MiB on mobile, so the shipped stream window is
+// 3M/64 of those, about 960 KiB and 1.125 MiB, and not the 384 KiB floor.
+//
+// Below the reference the draw and the scaled constant it replaces are the same
+// number by construction (three eighths of M/8 is 3M/64), so this is a guard
+// that passes on both forms. It fails if the carrier is resized from the
+// platform share, if the floor starts binding at a shipped target, or if the
+// process budget leaks into the per-device surface.
+func TestTheH3WindowsAtTheShippedDeviceTargets(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+
+	for _, c := range []struct {
+		name       string
+		target     ByteCount
+		stream     ByteCount
+		connection ByteCount
+	}{
+		{"the 20 MiB desktop device target", mib(20), kib(960), kib(1280)},
+		{"the 24 MiB mobile device target", mib(24), kib(1152), kib(1536)},
+	} {
+		// the process budget must not reach the per-device surface: read the
+		// same target under a small and a large process budget
+		for _, processBudget := range []ByteCount{0, mib(8), mib(32), mib(256)} {
+			SetMemoryBudget(processBudget)
+			settings := DefaultPlatformTransportSettingsWithMemoryTarget(c.target)
+			if settings.H3MaxStreamReceiveWindowByteCount != c.stream ||
+				settings.H3MaxConnectionReceiveWindowByteCount != c.connection {
+				t.Errorf(
+					"%s under a %d byte process budget gives an H3 stream window of %d and connection window of %d rather than %d and %d; a shipped carrier is sized from the whole device target, so a smaller window here means it is being sized from the platform share, the floor, or the process budget",
+					c.name, processBudget,
+					settings.H3MaxStreamReceiveWindowByteCount, settings.H3MaxConnectionReceiveWindowByteCount,
+					c.stream, c.connection,
+				)
+			}
+		}
+		t.Logf("%s: H3 stream window %d, connection window %d", c.name, c.stream, c.connection)
+	}
+}
