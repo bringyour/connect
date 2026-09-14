@@ -761,6 +761,9 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// borrow cap and the min as the guaranteed floor.
 		ResendQueueMaxByteCount: MemoryScaledByteCount(mib(2), kib(256)),
 		ResendQueueMinByteCount: kib(256),
+		// zero preserves the behavior of every tree before THROUGHPUTFIX §27;
+		// the lane campaign sets it
+		LaneFloorByteCount: 0,
 		// Off by default: the bound is implemented to §22 and measured on
 		// the §21.5 instrument, where it holds the resend queue below the
 		// budget as designed but costs about twice the transfer time in
@@ -4488,6 +4491,24 @@ type SendBufferSettings struct {
 	// `ResendQueueBudget` is set: below it admission never consults the
 	// shared budget, so every sequence progresses on floor capacity alone
 	ResendQueueMinByteCount ByteCount
+	// LaneFloorByteCount is that floor for a nonzero logical data lane, whose
+	// queue is otherwise given none: every byte it holds is borrowed from one
+	// shared pool the size of a single `ResendQueueMaxByteCount`, and each
+	// lane's cap is that whole pool, so one bulk flow's lane can hold all of
+	// it and a light lane keeps only the single item an empty queue
+	// guarantees (THROUGHPUTFIX §27).
+	//
+	// It is an exemption, not a reservation: bytes are consumed only by queued
+	// packets, so a client whose flows hash to one lane pays nothing for the
+	// lanes it never opens, and an active lane may still borrow the whole pool
+	// above its floor. What it buys is that no lane is reduced below its floor
+	// by another lane's occupancy.
+	//
+	// Zero, the shipping default, preserves today's behavior so a campaign can
+	// set it and the trees stay comparable. The candidate scale is
+	// `ResendQueueMinByteCount`, which is what lane zero and every distinct
+	// destination on an sdk-hosted provider already keep.
+	LaneFloorByteCount ByteCount
 	// ReliableAdmissionBoundedByDelivery bounds what a sequence may hold
 	// unacknowledged on a reliable lane by what that lane has shown it can
 	// carry: the bytes it acknowledged over the last scaled round trip,
@@ -5674,7 +5695,8 @@ func newSendSequenceWithLogicalLane(
 	resendQueueBudget := sendBufferSettings.ResendQueueBudget
 	resendQueueMinByteCount := sendBufferSettings.ResendQueueMinByteCount
 	if logicalLane != 0 {
-		resendQueueMinByteCount = 0
+		// the lane's own floor, which is zero unless one is configured
+		resendQueueMinByteCount = max(0, sendBufferSettings.LaneFloorByteCount)
 		if resendQueueBudget == nil {
 			resendQueueBudget = logicalLaneResendBudget
 		}
