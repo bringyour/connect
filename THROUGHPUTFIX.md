@@ -1689,3 +1689,364 @@ reader's synchronous admission, §18's first item, is next. Sixteen flows
 at 0.59 to 0.80 Gb/s then say whether they shared a client: sixteen to
 one client cannot pass the same bound, so either they spanned clients or
 their round trip differed, and the cell should record which.
+
+## 19. The two directions from source: what blocks, what waits, and where bytes funnel
+
+Read from `TcpSequence.Run` and `LocalUserNat`, 2026-09-13, against the
+measurement stream's cell (a gVisor `Tun` and a `LocalUserNat`, nothing
+above them) and confirmed from outside by the direction asymmetry it
+measured: uploads at 420 to 470 Mb/s at every budget, downloads at 100 to
+300, and a sixteenfold sweep of the acknowledgement compression timeout
+that moves upload from 673 to 5.5 Mb/s and download not at all.
+
+### 19.1 Upload, client to origin: the ladder, the compression, the blocking signal
+
+A segment from the client arrives on the flow's `sendItems` channel and
+is handled by the sequence goroutine in `handleSendItem`. The NAT's view
+of the client's stream is `sendSeq`, the next byte expected from the
+client, which is also the acknowledgement number the NAT writes toward
+the client. The payload is offered to `writePayloads`, a channel of
+`SequenceBufferSize` payloads (1,024 unbudgeted, 512 at 32 MiB, 192 at
+1 MiB, counted in payloads and not bytes), and the socket writer
+goroutine drains it in vectored writes of up to `WriteBatchSize` (64)
+payloads into the upstream kernel socket with a progress deadline of
+`WriteTimeout`.
+
+The blocking signal is exact: the offer is a `select` with a `default`
+branch; if the channel accepts at once the payload counts as
+`nonBlockingByteCount`, otherwise the goroutine waits on the channel and
+the payload counts as `blockingByteCount`. The channel is full when the
+socket writer is behind, and the socket writer is behind when the kernel
+send buffer is full, which is when the origin's window or the congestion
+window on the provider-to-origin path is full. So the signal reports the
+upstream path's absorption rate, one queue removed.
+
+The ladder acts on `windowSize`, the window the NAT advertises to the
+client in every segment it sends (`encodedWindowSize`), floored at
+`MinWindowSize` (64 KiB), starting at `InitialWindowSize` (1 MiB
+unbudgeted) and capped at `MaxWindowSize` (16 MiB unbudgeted). Once
+`windowSize` bytes have been offered since the last evaluation it doubles
+if all of them were non-blocking, halves if at least half were blocking,
+and otherwise stays, resetting both counters each time. It is an
+equilibrium seeker, as the correction to the brief says, and it reports
+where the writer first pushes back; it does not seek the cap. The
+measurement stream's fit of a six megabyte window under a saturated
+upload says it climbs several rungs, which the rung histogram it is
+sampling can confirm.
+
+The acknowledgement goroutine sends a pure ACK whenever `sendSeq` has
+advanced past `ackedSendSeq`, then waits for the earlier of
+`AckCompressTimeout` (50 ms) and `ackSignal`, which the sequence goroutine
+raises once unacknowledged client bytes reach half of `windowSize`. A data
+segment emitted toward the client by the reader also carries the current
+acknowledgement (`ackedSendSeq = sendSeq` there), so a bidirectional flow
+acknowledges for free. On a pure upload the interval between ACKs is
+`min(T, W/(2R))` for timeout T, window W and rate R, and the timer binds
+below `R = W/(2T)`, which at W = 6 MB and T = 50 ms is 500 Mb/s: at every
+measured rate the timer is the trigger, which is why the sweep moves
+upload so cleanly.
+
+### 19.2 Download, origin to client: the client's window, the acknowledgement condition
+
+The socket reader goroutine reads up to `ReadBufferByteCount` from the
+upstream socket. Under the connection mutex it computes
+`receiveWindowSize − (receiveSeq − receiveSeqAck)`: `receiveSeq` is the
+NAT's own sequence number toward the client, `receiveSeqAck` the highest
+the client has acknowledged, and `receiveWindowSize` the window the
+client last advertised, parsed from the SYN (`tcp.windowSize` shifted by
+`receiveWindowScale`) and updated from every client segment in
+`applySendAckWithLock`. If room exists it packetizes `min(room, read)`
+bytes into MTU-sized segments (`DataPackets`, one pool copy per segment)
+and advances `receiveSeq`; if none, it waits on `receiveAckCond` until a
+client ACK, applied on the sequence goroutine, broadcasts. Segments go to
+`readPackets` (64 deep), the batch consumer drains them and calls the
+receive callback, and the callback is the device's tun write in the cell,
+or the provider's synchronous Transfer admission in production.
+
+So the download is bound by the client's advertised window over the time
+a client acknowledgement takes to come back through the tun, the NAT's
+single ingress dispatch shard and the sequence goroutine, and by nothing
+the provider configures: no ladder, no compression timer, no
+`MaxWindowSize` (which only sizes the reorder bound and pools here). A
+pure download advances `sendSeq` only by pure ACKs, which carry no
+sequence space and return from `handleSendItem` at once, so the
+compression timer never even arms. This is why the sweep left download at
+265 to 312 across sixteenfold, and the direction is settled from source
+and from measurement alike.
+
+In the cell the client's window is ours, not gVisor's: `tun.go` sets
+`TCPReceiveBufferSizeRangeOption` and `TCPSendBufferSizeRangeOption` from
+`TunSettings.TcpReceiveBuffer` and `TcpSendBuffer`, whose defaults are
+memory-scaled, default 1 MiB and maximum `MemoryScaledByteCount(4 MiB,
+512 KiB)`. An in-process cell scales the client's windows with the
+provider's budget, so a 1 MiB budget gives the gVisor client a 512 KiB
+maximum window and a 32 MiB budget a 2 MiB one; the harness's client
+binds first at small budgets by construction. Whether the download's
+ceiling at the default budget (about 300 Mb/s against a 4 MiB client
+window) is that window over its acknowledgement turnaround or gVisor's
+per-byte cost is the open question the coordinator's sweep is settling;
+19.2's arithmetic says a 4 MiB window at 300 Mb/s needs a 110 ms
+turnaround, which the in-process path does not have, so the window is
+not the likely binder and per-byte cost in the harness client is. The
+reading that decides is the same as §16's: the reader's time in
+`receiveAckCond.Wait()` per flow.
+
+### 19.3 The serialization map of the download path
+
+From the upstream socket to the device, every point where bytes of one
+flow, or of all flows, pass one goroutine, channel or mutex, with its
+scope:
+
+| Point | What passes it | Scope |
+|---|---|---|
+| socket reader goroutine: read, window check, `DataPackets` copies | every byte of one flow | per flow |
+| `readPackets` channel (64 packets) and its batch consumer goroutine | every packet of one flow | per flow |
+| the receive callback, synchronous on the batch consumer | every batch of one flow | per flow, but see below |
+| in the cell: the tun write into gVisor (`InjectInbound`, stack dispatch, the endpoint's mutex, ACK generation) | every packet of every flow on the device | per device; per endpoint inside gVisor |
+| in production: `enqueueReturnItem` and the synchronous `sendReturnItem` on the flow goroutine | every batch of one flow | per flow |
+| the Transfer send sequence to the client: `packs` channel, `Run` goroutine, contract accounting, session encryption, framing, the resend queue | every pack to one client, all of its flows | per destination (`sendSequenceId`, §20) |
+| the multi-route writer and the transport connection's writer (H1: TLS records; H3: QUIC) | every pack to every destination of this provider | per provider client, per carrier family |
+| the exchange: resident ingress shards, then one forward per destination | every frame from this provider | per provider at ingress, per destination at the forward |
+| the client's transport reader and its receive sequence per source (ordered delivery, decryption) | every pack from this provider | per source at the client |
+| the client's `LocalUserNat` and tun write | every packet on the device | per device |
+
+The return direction of the download, the client's ACKs, funnels through
+`LocalUserNat`'s ingress dispatch, `SendShardCount` 1 by default, a
+single goroutine hashing every packet from the device to its flow's
+`sendItems` channel: per NAT, and shared by every flow's ACKs; at tens of
+thousands of small packets a second it is not the binder, but it is the
+one truly unsharded point below Transfer and worth a counter.
+
+Sixteen flows in the cell share the device's gVisor stack and the NAT's
+single ingress shard; in production they also share the per-destination
+sequence and the per-client transport. The cell's 2.5x from one flow to
+sixteen is what parallel per-flow work above shared per-device work looks
+like; the reporter's 1.0x from one flow to eight, with the upstream socket
+removed, is what a per-destination serialization looks like, which is
+§20.
+
+## 20. One sequence per client: the key, what it serializes, what lanes would change
+
+### 20.1 The key, from source
+
+`sendSequenceId` is `Destination`, `CompanionContract`, `ForceStream`,
+`LogicalLane`, `EncryptionRole` and `EncryptionCompanion`
+(`transfer.go`). No flow, no five-tuple. Ordinary provider return traffic
+uses one transfer key per source (`providerReplyTransferKey`), so every
+IP flow the provider returns to one client rides one send sequence: one
+`Run` goroutine, one `packs` channel, one resend queue, one ordered
+sequence-number space, one contract at a time. `LogicalDataLaneCount` is
+0 as shipped, so `LogicalLane` is 0 for all of it; the setting's comment
+says it waits on a one, four and eight lane campaign, and that receivers
+already understand and advertise bounded lanes. Confirmed: the
+per-client serialization the reporter's data points at is real, the
+escape is built and off, and it is wire-compatible.
+
+The resend queue bound is `ResendQueueMaxByteCount` per sequence, 2 MiB
+unbudgeted (1 MiB at 32 MiB, 256 KiB at 1 MiB); on an sdk-hosted
+provider all sequences also share `ResendQueueBudget`. TCP returns are
+`Ack` packs and occupy it; UDP returns are NoAck and bypass it but still
+pass the same goroutine. So the bound is per client, not per flow.
+
+### 20.2 What the single sequence costs a download
+
+Ordering. The receive side delivers in sequence-number order
+(`ReceiveSequence.nextSequenceNumber`; an item above the head is queued,
+bounded by `ReceiveQueueMaxByteCount`, and delivered only when the hole
+fills). A pack lost or delayed on the way to the client therefore holds
+every later pack, of every flow of that client, until it is recovered:
+head-of-line blocking across unrelated TCP connections, real, and
+nothing downstream reorders, because the client's NAT and tun receive
+packets in delivery order and each inner TCP connection sees its own
+segments in order only because the whole stream is. One recovery
+interval at the sender's timer, 300 ms to 8 s, stalls the client's every
+flow.
+
+Per byte in the sequence goroutine: contract accounting on the head,
+`setHead` and framing, the session cipher's AEAD over each pack
+(`writeMaybeWrappedBytes`), the multi-route write into the transport,
+plus the resend-queue bookkeeping and the acknowledgement window; then,
+on the transport writer goroutine, the carrier's own encryption again
+(TLS records on H1, QUIC on H3). Two encryptions and one goroutine
+handoff per pack, on a single goroutine per client. That is a serialized
+handoff whose service time sets the rate for that client, at any number
+of flows, at low CPU, which is the shape the reporter measured: 664.5 on
+one flow, 677.0 on eight, 671.0 with the upstream socket removed
+entirely, and nothing saturated.
+
+The per-destination reliable bound at their round trip: 2 MiB over 2 ms
+is 8.4 Gb/s and does not bind; over 20 ms it is 840 Mb/s and would sit
+just above their ceiling. Their round trip is not in the report; if it is
+the datacenter's few milliseconds, the queue is not the mechanism and the
+serialized per-pack work is, and §18's second item is dead for their path
+as well. `Client.ResendQueueSize` for the client during a run says which:
+at the bound, the queue; below it, the goroutine.
+
+### 20.3 What lanes would cost, argued before the number
+
+Memory. Nonzero lanes share one lazily built `logicalLaneResendBudget` of
+`ResendQueueMaxByteCount` (the comment: allocation-neutral for disabled
+and legacy clients, one pool shared by every nonzero lane), so the resend
+budget per client does not multiply with the lane count; `SequenceBufferSize`
+is divided among lanes (`logicalLaneSequenceBufferSize`), so the pack
+channels do not multiply either. What does multiply is per-sequence
+fixed state, a few KiB each (ack window, RTT window, lane acks, contract
+bookkeeping, goroutine stack), and contracts: each sequence holds its own
+contract, so N lanes are N contract requests per client and N escrows,
+which is platform load and control round trips rather than device
+memory. The program's memory ceiling is not the obstacle; contract fan-out
+is the cost to weigh.
+
+Ordering. Lane zero today gives one total order over everything to a
+destination: data of all flows, synthesized controls, encryption
+handshake, contract frames. Five-tuple-hashed lanes give order per
+tuple, with lane zero keeping control and anything unhashable. Nothing an
+IP path promises is lost: TCP needs order per connection, which a lane
+preserves. What changes and must be checked before a campaign: IPv4
+fragments after the first carry no ports, so a tuple hash sends them to
+a different lane than the first fragment and reassembly at the client
+must tolerate arrival order (the reassembler is keyed by identification
+and should; row L3 pins it); ICMP errors about a TCP flow hash on the
+ICMP tuple and may arrive before or after the data they concern, which is
+harmless; and a flow's synthesized RST or SYN-ACK shares the flow's
+tuple and lane, so its order relative to the flow's data holds. I find
+nothing in connect or the sdk that relies on cross-flow order to one
+destination; the receiver's per-lane sequences exist precisely so that
+it does not.
+
+What lanes do not change: the transport connection per carrier family is
+still one writer per provider, and the client's tun is still one device.
+Lanes parallelize the sequence goroutine's work and remove cross-flow
+head-of-line blocking; the next serialization after them is the carrier.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| L1 | `TestProviderReturnsToOneClientShareOneSequence` | with lanes off, TCP flows to one destination produce one `sendSequenceId`; `SequenceCount` in `DestinationSendStats` reads 1 | none; characterisation | in-process |
+| L2 | `TestLostPackHoldsEveryFlowOfTheClient` | with lanes off, dropping one pack of flow A delays delivery of flow B's later packs until A's recovery; with eight lanes, flow B's packs on another lane are delivered meanwhile | lanes off, by construction; documents the cost | in-process, two lanes at least |
+| L3 | `TestFragmentsReassembleAcrossLanes` | an IPv4 datagram fragmented at the provider and hashed to two lanes reassembles at the client in either arrival order | a reassembler that assumes order | in-process |
+
+## 21. The fourth send cell: the classification predicts the buffer, the path decides the effect
+
+The rule's four predictions against the campaign: gain at 1 MiB
+(measured +363 to +403), null at 8 MiB (measured null), pin wins at
+32 MiB (measured −20.8 for the deletion), pin wins unbudgeted (measured
+−11.5 inside a ±43 null band). The runner's values, read rather than
+inferred: `wmem_max = 4,194,304`, `tcp_wmem[2] = 4,194,304`. So at 32 MiB
+the request is 8 MiB and obtains 8,388,608; unbudgeted the request is
+16 MiB and obtains the same 8,388,608. The two cells pin the identical
+kernel buffer, and the classification is right that in both the pin is
+larger than autotuning's 4 MiB.
+
+What the classification does not say is whether the buffer binds. The
+buffer binds when `buffer × 8 / RTT` is below the rate the rest of the
+path sustains, and the compression sweep gives that rate: about 465 Mb/s
+at the shipping 50 ms. An autotuned 4 MiB over 50 ms carries 671, above
+465, so unbudgeted neither arm's buffer binds and the null is what the
+physics predicts; at 1 MiB the pinned 524,288 carries 84, far below, and
+the deletion is the whole gain; at 8 MiB the pin equals the ceiling and
+it is a wash. The coordinator's chain is right and the runner's values
+confirm both ends of it.
+
+The 32 MiB cell is then the odd one: the same 8 MiB pin against the same
+4 MiB autotuning ceiling, above the same 465, and yet the deletion cost
+20.8 per cent. Two readings. Either the autotuned arm at 32 MiB does not
+reach 4 MiB, because autotuning sizes the send buffer to the congestion
+window and the offered load shape at that budget (a 512-deep
+`writePayloads`, a 512 KiB initial window, an 8 MiB cap) earns a smaller
+window, so its buffer sat at two to three megabytes and did bind; or the
+−20.8 at five repetitions is the reading to doubt. `ss -tmi` on the
+autotuned arm's upstream socket at both budgets decides the first
+(`skmem tb` at 32 MiB below 4 MiB and at the default at 4 MiB), and the
+coordinator's 12 ms pair decides the second: with the ack-limited rate
+raised to about 673, above the 671 an autotuned buffer carries, the pin
+should reappear as a gain at the default budget.
+
+The rule as built does not depend on the resolution. It is main's pin
+everywhere main's pin exceeds the ceiling, and the kernel elsewhere, so
+against main it ties at 8 MiB, 32 MiB and the default and wins at 1 MiB;
+it cannot regress main in any of the four cells whatever the missing
+term is. What the missing term changes is the claim in 15.2 that the
+32 MiB loss "is recovered": that is true only if the loss is real, and
+the pair above says whether it is. The restated rule for the design
+record: the classification decides which arm has the larger buffer,
+exactly; pinning matters only where that buffer is below what the path
+sustains; above it both arms are limited elsewhere and the comparison is
+a null whichever buffer is larger.
+
+## 22. The acknowledgement compression: what it buys, what bounds it, and the floor it must stay under
+
+### 22.1 The model, checked against the loop
+
+The coordinator's model is the loop of 19.1: on a window-limited upload
+the compression adds to the effective round trip, `rate ≈ W / (RTT + T)`
+while the timer is the binding trigger, which it is below `W/(2T)`. With
+the sweep's fit (W about 6 MB, base turnaround about 63 ms) it predicts
+574 at 25 ms against 603 measured and 447 at 50 against 465, and the
+shape including the sub-linear fall-off. I have no better fit from source.
+The half-window trigger is the rate-dependent half of the setting and
+already exists; the timer is the idle bound, and it is what binds at every
+rate the fleet sees.
+
+### 22.2 What it costs to lower, in packets and in wakeups
+
+Packets: with the timer binding, the ACK rate is 1/T per sequence: 20 per
+second at 50 ms, 83 at 12 ms, about 5 KB/s of 60-byte packets. Against a
+saturated upload's thousands of data packets per second that is noise,
+and the gain on the cell's path is about 45 per cent, more on faster
+paths since T dominates the sum. So on packets and bytes the constant is
+buying almost nothing.
+
+Wakeups: on a phone the radio and the CPU wake per packet, and a rate
+limit on acknowledgements protects against wakeups that a packet count
+does not show. But the compression only matters while the client is
+uploading, and an uploading client's radio is awake for its own data
+packets at a far higher rate than 83 per second; a trickle upload that
+would otherwise be idle produces one ACK per burst under either constant.
+I find no wakeup regime in which 12 ms costs what 50 ms saves, and no
+comment in the source stating the reason 50 was chosen; the setting's
+comment says only that the half-window signal keeps the source from
+stalling on the timer.
+
+### 22.3 The bound from above, and what it must not cross
+
+A sender whose acknowledgement is held longer than its retransmission
+timeout floor retransmits data that was not lost, and each spurious
+retransmission halves its window; the collapse to 5.5 Mb/s at 200 ms is
+that cliff. The floor on the sender's side is the peer's stack's minimum
+RTO: 200 ms in gVisor (`MinRTO`) and in Linux (`TCP_RTO_MIN`), and the
+effective RTO is the smoothed round trip plus four deviations, so a
+compression jitter of 0 to T inflates the deviation term and moves the
+effective timeout up with T; the floor is what binds when the path is
+short. The shipping 50 ms has a fourfold margin to a cliff that costs 98
+per cent of upload, against a constant in a vendored dependency that
+nothing in this repository asserts.
+
+Now that the tun exposes its floor (`TunSettings.TcpMinRto`, landed
+beside `TcpMaxRto`), the relationship can be stated in code rather than
+carried in a margin. Of the three shapes: a runtime guard would couple a
+NAT setting to a device-stack setting that lives in a different process
+on every real deployment, since the peer is the client's stack and not
+ours, so it cannot enforce what it claims; a comment cannot fail. A test
+assertion is the right shape: `TestAckCompressionStaysUnderTheRetransmissionFloor`
+pins `DefaultTcpBufferSettings().AckCompressTimeout` at no more than one
+quarter of the gVisor stack's default minimum RTO read from the vendored
+constant, and no more than one quarter of any `TcpMinRto` the tun ships
+with, so a change to either constant fails a test that names the cliff.
+Row C1 below.
+
+### 22.4 The shape of the setting
+
+Right as it is: a timer for the idle bound plus a half-window trigger for
+the rate-dependent bound is the pair a receiver needs, and a rate-
+dependent rule would recompute what the half-window signal already
+supplies. What is wrong is the constant's position on the interval
+between what compression protects (nothing found, 22.2) and the floor it
+must stay under (22.3): the shipping value sits at the top of that
+interval, where it costs most and protects least. The measured curve
+between 12 and 50 ms is the design input a campaign picks from; this
+round picks nothing.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| C1 | `TestAckCompressionStaysUnderTheRetransmissionFloor` | the default `AckCompressTimeout` is at most a quarter of gVisor's default minimum RTO and of `DefaultTunSettings().TcpMinRto` when set | a constant moved past the cliff in either place | pure |
+| C2 | `TestHalfWindowSignalFiresBeforeTheTimerAboveTheCrossover` | with W and T chosen so that `W/(2T)` is below the offered rate, ACKs are paced by the half-window signal and their interval is under T; below it, by the timer | none; characterises the trigger | in-process |
