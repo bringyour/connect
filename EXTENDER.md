@@ -1172,27 +1172,51 @@ the feed parser (optional fields, rejection of an invalid present field).
 
 ### N. Provider extender status and toggle in the apps
 
-N1. Surface. A row named Extender directly under the provide mode row in
-settings on the macOS, Linux and Windows apps: a toggle bound to the
-provider extender setting, a status indicator in the provide mode
-indicator's style, and one line of secondary text beneath the setting
-stating the case (N3). The same row without the toggle wherever the
-provide mode row is repeated, on the provider stats and earnings screens.
-Hidden on iOS and Android, and on any app whose device reports the role
-unsupported, so an app talking to an older daemon shows nothing rather
-than a dead toggle. Extenders stay out of the phone builds; G1 stands.
+N1. Surface. A row named Extender directly under the provide mode row, in
+the Connections card of settings on macOS and in the Provide group of the
+Connect page on Linux and Windows, where each app keeps its provide
+control: a toggle bound to the provider extender setting, a status
+indicator in the provide mode indicator's style, and one line of
+secondary text beneath the setting stating the case (N3). The same row
+without the toggle, rendered once under the provide mode row of the
+provider statistics section (O4) on the earnings screen of macOS, the
+earnings page of Linux and the wallet page of Windows. Hidden on iOS and
+Android, and on any app whose device reports the role unsupported
+(`Supported` false): hidden, never disabled, and `SetProvideExtender` is
+never called while it is hidden, so an app talking to an older daemon
+shows nothing rather than a dead toggle and never writes a setting that
+daemon cannot take. Extenders stay out of the phone builds; G1 stands.
 
 N2. Status source. `ExtenderProvideStatus` gains `Supported`, true only in
-a process built with the role, and `State` and `Reason` (N3).
+a process built with the role, `State`, `ErrorCase` and `Reason` (N3),
+`StartError` (why a role that was asked for could not start, empty
+otherwise) and `LastActivationRefused` (true when `LastActivationError`
+is the operator's refusal rather than a request failure). connect's
+`ExtenderFamilyActivationStatus` gains the matching `LastRefused`, set by
+`recordFailure` from the refused branch of the activation call, false
+from every other failure, and cleared with `LastError` on success; the
+sdk copies it beside the newest standing error.
 `GetExtenderProvideStatus`, `AddExtenderProvideStatusChangeListener`,
 `GetProvideExtender` and `SetProvideExtender` join the `Device` interface
 and `DeviceRemote`: the status reads through the rpc with the last value
-cached, a service without the method or no connection answering an
-unsupported status, and the listener relayed through the rpc listener
-registry, exactly as the client-side extender status of K5; the setting
-reads and writes through the rpc. A mobile or js build answers the
-unsupported status locally, as it does today. Bindings regenerate. F3's
-"on `DeviceLocal` only" is superseded by this item.
+cached, a service without the method answering the unsupported status
+and dropping the cache, and no connection answering the last value read
+or pushed, else the unsupported status; the listener is relayed through
+the rpc listener registry, exactly as the client-side extender status of
+K5; the setting reads and writes through the rpc, queued while the device
+process is unreachable and replayed at the next sync exactly as the
+provide mode, the queued or last value read standing meanwhile (on
+before any read), so a toggle never snaps back during a daemon restart;
+a write the device process cannot take (the call answers a missing
+method) is dropped rather than queued, or it would replay on every
+reconnect. The wire version does not change: a device process without
+the setter also lacks the status method, reports the role unsupported,
+and the row is hidden (N1), so a settable value gated by a read-only
+capability flag shipped in the same version may use the missing-method
+path. A mobile or js build answers the unsupported status locally, as it
+does today; the browser sdk binds none of this, since its device is
+hosted (K8). Bindings regenerate. F3's "on `DeviceLocal` only" is
+superseded by this item.
 
 N3. States. Derived once in the sdk so every app renders one rule, tested
 in this order, the first match winning:
@@ -1201,6 +1225,11 @@ in this order, the first match winning:
 - `not_providing`: the setting is on but the device is not providing (no
   provider: provide mode none, the embedder switch off, a hosted device).
   Grey; `Not providing`.
+- `error`, start: the setting is on and the device is providing, but the
+  role could not start in this space (no network space, no extender
+  directory, no usable identity). A role that never started has no
+  revocation, family or bind to report, and an outcome exists. Red;
+  `Could not start: ` and the reason.
 - `error`, revoked: the role runs and the operator revoked the key.
   Red; `Revoked by the operator`.
 - `active`: at least one family is activated. Green; `Active · IPv4 and
@@ -1217,7 +1246,15 @@ in this order, the first match winning:
 During the activator's backoff after a refusal the state stays `error`
 with the reason, since an outcome exists; yellow is only ever the time
 before the first outcome. `Reason` carries the raw error text, and the
-apps prefix the localized case label.
+apps prefix the localized case label. `ErrorCase` names the error case
+(`revoked`, `start`, `listen`, `activation_failed`, `activation_refused`)
+so an app picks its label without re-deriving the rule; it is empty in
+every other state, including `active`, where `Reason` alone carries the
+other family's text and `LastActivationRefused` says whether that text is
+a refusal. A build without the role, a device process without the
+method, and a device out of contact with no last value all report
+`Supported` false and `off`, and the row is hidden (N1); a hosted device
+reports `not_providing`.
 
 N4. Toggle. The existing per-space setting `.provide_extender`, default on
 for desktop and the miner as today, stored independently of the provide
@@ -1225,33 +1262,51 @@ mode; the role runs only when both allow, and the miner swarm's embedder
 switch still wins. Toggling applies at once, the toggle stays enabled
 while providing is off, and the indicator is then grey with `Not
 providing`. The command line miner keeps printing the status on change.
+The setting is read from its file once per space and cached in
+`LocalState`; every write goes through the same cache, so a write that
+fails on disk still applies for the session and is logged. A hosted
+device ignores the write, in process and over the rpc, as it ignores the
+provide mode.
 
 N5. Strings. Keys for the apple, linux and windows platforms: `extender`
 (the row title), `extender_setting_description` (what turning it on does
 and the ports it uses), `extender_not_providing`, `extender_setting_up`,
 `extender_active` with a `{families}` placeholder filled from the existing
 `ipv4`, `ipv6` and `ipv4_and_ipv6` keys, `extender_revoked`,
-`extender_listen_failed` and `extender_activation_failed` with an
-`{error}` placeholder, `extender_activation_refused` with `{error}`; `Off`
-reuses the existing `off` key. Generated per platform as every other key.
+`extender_start_failed`, `extender_listen_failed` and
+`extender_activation_failed` with an `{error}` placeholder,
+`extender_activation_refused` with `{error}`; `Off` reuses the existing
+`off` key. Generated per platform as every other key.
 
-N6. Tests. Sdk: a table test of the state rule over every case of N3 and
-their order; the rpc mirror (the status through the rpc and the cached
-last value, a service without the method answering unsupported, the
-setting round trip, the listener firing on a change); the mobile stub
-answering unsupported; bindings. Each desktop app, in its existing view
-test style: the row hidden when unsupported, every state's color and
-text, the toggle writing the setting through the device, the read-only
-row on the stats screens.
+N6. Tests. Connect: a refusing operator leaves `LastRefused` true with
+its reason, a request error leaves it false, a later success clears
+both, and a refusal in the fallback mode marks every family. Sdk: a table
+test of the state rule over every case of N3 and their order, with the
+case each error carries; the rpc mirror (the status through the rpc and
+the cached last value, a service without the method answering unsupported
+even after a cached value, the setting round trip, the queued setting
+replayed at sync and the last-known value read while unreachable, a
+listener added while unreachable registered and replayed at sync, the
+listener firing on a change with `ErrorCase` and `Reason` intact); the
+start error over a space with no directory and over an unusable
+identity; the setting cache; the mobile stub answering unsupported;
+bindings. Each desktop app, in its existing view test style: the row
+hidden when unsupported, every state's color and text, the toggle
+writing the setting through the device, the read-only row on the stats
+screens.
 
 N7. Layout of the extender row. One rule for the three desktop apps, then
 the components of each, so 11b and 12c make no layout choice of their own.
 
 The reading. Every app derives what it draws from `ExtenderProvideStatus`
-and the setting in one pure function with no view behind it: `visible` is
+and the setting in one pure function with no view behind it, and reads
+only `Supported`, `State`, `ErrorCase`, `Reason`, `ActivatedV4`,
+`ActivatedV6` and `LastActivationRefused` from the status: `visible` is
 `Supported`; the dot is grey for `off` and `not_providing`, yellow for
 `setting_up`, green for `active` and red for `error`; the text is one
-string built from the keys of N5, in this order:
+string built from the keys of N5, chosen by `State` and, in the error
+state, by `ErrorCase`, so an app never re-derives the rule of N3 and
+never names a case the sdk did not pick:
 
 - `off`: `off`.
 - `not_providing`: `extender_not_providing` (apple: the catalog entry
@@ -1259,25 +1314,24 @@ string built from the keys of N5, in this order:
 - `setting_up`: `extender_setting_up`.
 - `active`: `extender_active` with `{families}` from `ipv4_and_ipv6` when
   `ActivatedV4` and `ActivatedV6` both hold, else `ipv4` or `ipv6`. When
-  `Reason` is not empty (the other family's last attempt failed) the
-  activation text of the next item, built with that reason, follows on the
-  same line after " · ".
-- `error`: `extender_revoked` when `RevokedTime` is not 0; else
-  `extender_listen_failed` with `Reason` when `Listening` is false and
-  `ListenError` is not empty; else `extender_activation_refused` with
-  `Reason` when `LastActivationRefused` is true and
-  `extender_activation_failed` with `Reason` otherwise. That is the sdk's
-  own order (N3), so an app never names a case the sdk did not pick.
+  `Reason` is not empty (the other family's last attempt failed;
+  `ErrorCase` is empty here) the other family's text follows on the same
+  line after " · ": `extender_activation_refused` with `Reason` when
+  `LastActivationRefused` is true, else `extender_activation_failed` with
+  `Reason`.
+- `error`, by `ErrorCase`: `revoked` gives `extender_revoked`; `start`
+  gives `extender_start_failed` with `Reason`; `listen` gives
+  `extender_listen_failed` with `Reason`; `activation_refused` gives
+  `extender_activation_refused` with `Reason`; `activation_failed` gives
+  `extender_activation_failed` with `Reason`. A case the app does not know
+  (a newer device process) renders `Reason` bare, in the error color.
 
-`LastActivationRefused` is new. The status of N2 gains it in 12b: true
-when the last completed attempt of the family whose error stands was
-answered by the operator with `Activated` false, false when the attempt
-did not complete. connect's `ExtenderFamilyActivationStatus` gains the
-matching `LastRefused`, set by `recordFailure` from the refused branch of
-the activation call and cleared with `LastError`; `deviceLocalExtender.state`
-carries it beside `LastActivationError`. Without it the two labels of N3
-cannot be told apart, since a refusal and a failure both land in
-`LastActivationError` as plain text. The state rule does not change.
+`ErrorCase` and `LastActivationRefused` are the fields of N2 that carry
+the refused and failed distinction: a refusal and a failure both land in
+`LastActivationError` as plain text, so without them the two labels of N5
+could not be told apart. `RevokedTime`, `Listening`, `ListenError`,
+`StartError` and `LastActivationError` are not read by the apps; the
+state rule reads them once.
 
 The dot is the platform's provide mode indicator without its public ring:
 the same size, the same drawing, one more color. Grey is the theme's muted
@@ -1303,8 +1357,16 @@ Toggling writes the setting through the device at once
 the row locally before the listener answers: off gives grey `Off`; on
 gives yellow `Setting up` when the device is providing and grey `Not
 providing` when it is not. The next status from the listener replaces
-that guess. The toggle is enabled in every state and hidden with the row
-while `Supported` is false; the description hides with it.
+that guess. The toggle's position is the setting read through
+`GetProvideExtender` beside every status, which answers the queued or
+last-known value while the device process is out of contact (N2), so the
+toggle never snaps back during a daemon restart; no status arrives
+meanwhile, the guess stands until the sync replays the fresh status, and
+an app that tracks the connection (`GetRemoteConnected`) may grey the dot
+in the meantime, which is not required. The toggle is enabled in every
+state and hidden with the row while `Supported` is false, never merely
+disabled, and `SetProvideExtender` is never called while the row is
+hidden; the description hides with it.
 
 The read-only row is the settings row with the provide mode row's chevron
 in place of the toggle. It opens the screen where the toggle lives, which
@@ -1353,17 +1415,21 @@ macOS.
 - Strings, by English literal through the catalog, all present since 11a:
   "Extender", "Off", "Not providing", "Setting up", "Active · %@" with
   "IPv4 and IPv6", "IPv4", "IPv6", "Revoked by the operator",
-  "Could not listen: %@", "Activation refused: %@", "Activation failed: %@",
-  and the description sentence; `String(localized:)` with `%@` filled by
-  `String(format:)`.
+  "Could not start: %@", "Could not listen: %@", "Activation refused: %@",
+  "Activation failed: %@", and the description sentence;
+  `String(localized:)` with `%@` filled by `String(format:)`.
 - Source: `DeviceManager` gains `@Published private(set) var extenderProvideStatus: ExtenderProvideStatusModel`
   (`.unsupported` until a device reports) fed by
   `device.add(ExtenderProvideStatusChangeListener …)` beside the provide
   listeners and seeded from `getExtenderProvideStatus()`, and
   `@Published var provideExtender: Bool` whose `didSet` calls
   `device.setProvideExtender(_:)` under `DeviceSettingWritePolicy.shouldPropagate`,
-  as `provideControlMode` does; both reset with the device. The model and
-  the reading are `ExtenderProvideStatusModel` and `ExtenderProvideDisplay`
+  as `provideControlMode` does; both reset with the device, and
+  `provideExtender` is re-read from `getProvideExtender()` under the echo
+  guard on every pushed status. The model and the reading are
+  `ExtenderProvideStatusModel` (`supported`, `state`, `errorCase`,
+  `reason`, `activatedV4`, `activatedV6`, `lastActivationRefused` and
+  `enabled`, the last being what O8 reads) and `ExtenderProvideDisplay`
   in `Shared/ViewModels/ExtenderProvideModel.swift`, plain values in the
   shape of `ExtenderStatusModel`; `ExtenderProvideDisplay.of(status:)`
   returns the dot color case, the text and `visible`, and
@@ -1417,6 +1483,7 @@ Linux.
   `Format(T_("extender_active", "Active · {}"), families)` with
   `T_("ipv4_and_ipv6", "IPv4 and IPv6")`, `T_("ipv4", "IPv4")`,
   `T_("ipv6", "IPv6")`, `T_("extender_revoked", "Revoked by the operator")`,
+  `Format(T_("extender_start_failed", "Could not start: {}"), reason)`,
   `Format(T_("extender_listen_failed", "Could not listen: {}"), reason)`,
   `Format(T_("extender_activation_refused", "Activation refused: {}"), reason)`,
   `Format(T_("extender_activation_failed", "Activation failed: {}"), reason)`
@@ -1430,10 +1497,11 @@ Linux.
   beside the extender status listener in `SubscribeDrawer`. The reading is
   `extender::ProvideRowFor(...)` in `ExtenderProvidePresentation.hpp` (new,
   header-only and SDK-free like `ExtenderStatusPresentation.hpp`), taking
-  `haveStatus, supported, state, reason, listening, listenError,
-  activatedV4, activatedV6, revoked, refused, provideExtender` and returning
+  `haveStatus, supported, state, errorCase, reason, activatedV4,
+  activatedV6, refused, provideExtender` and returning
   `ProvideRow{visible, dot (Grey, Green, Yellow, Red), textKey,
-  textEnglish, argument, on}`; the widget only draws it, and drops a push
+  textEnglish, argument, on}`; `provideExtender` is `GetProvideExtender()`
+  read beside each status; the widget only draws it, and drops a push
   that changes nothing.
 - Accessibility: the switch's label as above; the row root gets
   `update_property(Gtk::Accessible::Property::DESCRIPTION, stateText)`;
@@ -1483,15 +1551,18 @@ Windows.
 - Strings: `Loc("extender")`, `Loc("off")`, `Loc("extender_not_providing")`,
   `Loc("extender_setting_up")`, `Format("extender_active", families)` with
   `Loc("ipv4_and_ipv6")`, `Loc("ipv4")`, `Loc("ipv6")`,
-  `Loc("extender_revoked")`, `Format("extender_listen_failed", reason)`,
+  `Loc("extender_revoked")`, `Format("extender_start_failed", reason)`,
+  `Format("extender_listen_failed", reason)`,
   `Format("extender_activation_refused", reason)`,
   `Format("extender_activation_failed", reason)`,
   `Loc("extender_setting_description")`; every key is in
   `Strings/en/Resources.resw` since 11a, with the placeholder lowered to
   `{}`.
 - Source: `SdkHost` gains `ExtenderProvideStatusView` (`supported, state,
-  reason, listening, listenError, activatedV4, activatedV6, revoked,
-  refused, provideExtender`, with equality), `SetExtenderProvideStatusHandler`,
+  errorCase, reason, activatedV4, activatedV6, refused, enabled,
+  provideExtender`, with equality; `provideExtender` is
+  `GetProvideExtender()` read beside each status, and `enabled` is what
+  O8 reads), `SetExtenderProvideStatusHandler`,
   `PublishExtenderProvideStatus` (dedup by value, the shape of
   `PublishExtenderStatus`, subscribed beside it), `CurrentExtenderProvideStatus()`
   and `SetProvideExtender(bool)`. `MainWindow` hands each view to
@@ -1600,10 +1671,10 @@ Checklist and tests.
   `networkTests/ExtenderProvideRowTests.swift` in the style of
   `ExtenderPanelTests.swift` (Swift Testing, `@Test`, `#expect`, values
   not views): unsupported is hidden; every N3 case gives its color case
-  and its text; the three family texts; the active line with the other
-  family's refusal and with its failure; revoked beats listen beats
-  activation; the toggle guess for on while providing, on while not, and
-  off.
+  and its text, each error case by `ErrorCase` alone; the three family
+  texts; the active line with the other family's refusal and with its
+  failure; an unknown error case renders the reason bare; the toggle guess
+  for on while providing, on while not, and off.
 - linux (`app`): new `src/ExtenderProvidePresentation.hpp`, new
   `tests/ExtenderProvidePresentationTest.cpp` added to the test source
   list in `meson.build`; change `src/SdkHost.hpp`, `src/SdkHost.cpp`,
@@ -1635,49 +1706,90 @@ DNS forwarder that answer probers are not extender traffic and are not
 counted. `ExtenderServer.Stats()` returns `ExtenderStats` with
 `IngressByteCount`, `IngressReadCount`, `EgressByteCount` and
 `EgressReadCount`, cumulative for the life of the server like the packet
-stats of a device.
+stats of a device. Each start of the role builds a new server, so the
+counters restart from zero whenever the role restarts (the setting or
+provide toggled off and on), which the series of O3 absorbs.
 
-O2. Device surface. `Device.GetExtenderStats() *ExtenderStats` on
-`DeviceLocal` reads the running role's server and is nil whenever the role
-is not running (unsupported, off, not providing), which is what tells an
-app there is no series to show. `DeviceRemote` reads it through the rpc
-exactly as `GetProviderPacketStats`, nil when the service lacks the method
-or is unreachable. Bindings regenerate.
+O2. Device surface. `Device.GetExtenderStats() *ExtenderStats` (the sdk
+type mirrors O1's four fields) on `DeviceLocal` reads the running role's
+server and is nil whenever the role is not running: every case of N3's
+`off` and `not_providing` (unsupported, the setting off, provide mode
+none, the embedder switch off, a hosted device), a role that could not
+start, and a closed device. Nil is the same fact as the status's
+`Enabled` false, and the two never disagree, since both read the
+installed role. `DeviceRemote` reads it through the rpc as
+`GetProviderPacketStats`, with no cache and nil while the service is
+unreachable, except that a service without the method keeps its session
+and answers nil, as the status read of N2 does: the row and the section
+are hidden against such a device, and losing rpc control of the tunnel
+over a chart would be the wrong trade. The read is one more small rpc
+per throughput tick on every remote device, including those that never
+run the role, as the provider stats read already is; accepted. Bindings
+regenerate, cgo and gomobile; the browser sdk binds none of this, as for
+N2.
 
 O3. Series. `ContractViewController` gains an extender series sampled
 beside the provider series on the same one second tick, with the same
 hold and gap rules, exposed as `GetExtenderThroughputPoints()` and
-notified through the existing throughput listener. Its points carry the
+notified through the existing throughput listener, with the latest
+sampled stats beside it as `GetExtenderStats()`, the mirror of
+`GetProviderPacketStats()` on the controller. Its points carry the
 extender sample in the `Remote` route only, egress and ingress as O1
-defines them, the reads riding in the packet count fields of
+defines them (the sample's egress fields are the bytes and reads moving
+back toward clients, its ingress fields the bytes and reads moving toward
+the operator), the reads riding in the packet count fields of
 `ThroughputSample` and the bit rates computed from the bytes as for every
-other series; `Local` and `Block` are empty samples. The series is empty
-while the device reports no extender stats, so a role that stops mid
-window ends its series as a provider that stops ends its own.
+other series; `Local` and `Block` are empty samples, and no provider
+mirror is applied. The series has no points until the device first
+reports extender stats, and its first point lands one tick after that,
+since the first sample only sets the base. Once the role stops and the
+device reports nil, the series is held, not emptied: one zero point per
+tick, the old points aging out of the window, as the provider series
+holds at zero when providing stops. A restarted role reports counters
+from zero, which the series takes as a gap (a zero point and a rebase,
+deltas resuming the next tick), and a restart within one interval clamps
+its negative deltas to zero. The section's presence is therefore never
+read from the points (O4).
 
 O4. App sections. An Extender statistics section directly above the
 provider statistics section, on every screen that shows the provider
-one, visible only while the provider statistics are visible and the
-device reports extender stats; hidden otherwise, with no placeholder,
-since the settings row of N1 already explains the state. Contents: the
-extender row of N1 without the toggle, then the transfer chart of the
-extender series over the `Remote` route with the title Extender, the
-same 60 second window as the provider chart, bytes per second and reads
-per second. On macOS that screen is the earnings screen, where the
-provider section lives; Android has no role and gets nothing.
+one, visible only while the provider statistics are visible and the role
+is running; hidden otherwise, with no placeholder, since the row of N1
+already explains the state. The role is running while
+`ExtenderProvideStatus.Enabled` holds, which the apps already receive
+through the status listener of N2 within a second of a change, and which
+is `GetExtenderStats() != nil` on the device (the controller's
+`GetExtenderStats()` of O3 is the same fact one tick late, for a consumer
+with no status listener); the throughput listener is silent when a role
+stops inside an idle window, so the section's visibility follows the
+pushed status and never the throughput tick or the point count.
+Contents: the title and the transfer chart of the extender series over
+the `Remote` route with the title Extender, the same 60 second window as
+the provider chart, bytes per second and reads per second. The read-only
+extender row of N1 is rendered once per screen, directly under the
+provide mode row inside the provider section, so it stays on screen
+while the role is off or not providing, which is when its text matters.
+On macOS that screen is the earnings screen, where the provider section
+lives; Android has no role and gets nothing.
 
 O5. Linux and Windows catch-up. Neither app has a provider statistics
 section, so this phase brings the macOS one to both, with the extender
-section above it: the title, the existing provide mode glyph row, the
-Local chart of the provider series, the provider transport distribution
-bar opening the provider transport settings (the client bar and the sdk
+section above it: the title, the existing provide mode glyph row moved
+into the section, the read-only extender row under it (O4), the Local
+chart of the provider series, the provider transport distribution bar
+opening the provider transport settings (the client bar and the sdk
 distribution math already exist on both), the Blocked chart at half
-height, and the "providing is disabled" line otherwise, placed on the
-earnings page on Linux and the wallet page on Windows where the provide
-mode row already is. The sdk hosts of both read the provider and the
-extender point lists on the throughput listener as they read the client
-list today. Tapping the provider section opens the provider contracts
-where the app has that screen and does nothing where it does not.
+height, and `providing_disabled` as the section header's meta label
+while the provider statistics are not visible, the reliability group's
+mechanism, with the chart rows collapsed; placed on the earnings page on
+Linux and the wallet page on Windows where the provide mode row already
+is. The sdk hosts of both read the provider and the extender point lists
+on the throughput listener as they read the client list today, and the
+running state of the role from the status of N2. The provider section's
+header is static on both: neither app has a provider contracts screen
+fed by provider data (their contract sheets accept the provider mode but
+read the client feed), so the tap-through macOS has is deferred to a
+provider contracts feed on both.
 
 O6. Strings. `extender_statistics` (the section title), `reads_per_second`
 for the chart unit, and, where Linux and Windows lack them, the strings
@@ -1687,12 +1799,18 @@ of the provider section: `provider_statistics` and the existing
 O7. Tests. Connect: the counters over a relayed session on each carrier,
 both directions, bytes and reads, with the decoy proxy and the DNS
 forwarder proven not to count. Sdk: `GetExtenderStats` nil while the role
-is not running and live while it is, the rpc mirror including the
-missing method, the extender series sampling (deltas, holds, an emptied
-series) in the existing series test style, bindings. Apps: the section's
-visibility rule and its chart binding in each app's test style; on Linux
-and Windows the provider section's own visibility and bindings the same
-way.
+is not running (off, not providing, hosted, closed) and live while it
+is, equal to the server's own counters after a relayed session and zero
+again after a restart; the rpc mirror, including the missing method
+keeping the session and the unreachable device answering nil with
+nothing cached; the extender series sampling (deltas in the `Remote`
+route with empty `Local` and `Block`, holds, the series held at zero
+after the stats go nil, the gap and the clamp on a restart, the first
+point one tick after the first stats) in the existing series test style,
+and the poll loop against a device whose stats come and go; bindings.
+Apps: the section's visibility rule as a pure function over every
+combination and its chart binding in each app's test style; on Linux and
+Windows the provider section's own visibility and bindings the same way.
 
 O8. Layout of the statistics sections. The extender section of O4 and,
 on Linux and Windows, the provider section of O5 it sits above, mapped
@@ -1705,16 +1823,18 @@ stats, the gate `ProviderStatsSection` already applies on macOS
 otherwise the provider section shows its title, the provide mode row, the
 extender row and the `providing_disabled` line, and nothing else. The
 extender section is visible while the provider statistics are visible and
-`Device.GetExtenderStats()` is not nil, read on the same throughput tick as
-the points and published only on change; hidden otherwise with no
-placeholder, its separator hidden with it. Its contents are the title
+the role is running, the `enabled` of the status model the row of N7
+already keeps (O4), which changes on the pushed status and not on the
+throughput tick; hidden otherwise with no placeholder, its separator
+hidden with it. The points are read on the throughput tick as the
+provider points are, and a chart with no points yet draws empty for the
+tick or two before the first one lands. Its contents are the title
 (`extender_statistics`) and the transfer chart of the extender series;
 the extender row of N1 is rendered once per screen, directly under the
-provide mode row inside the provider section as N1 places it, so it stays
+provide mode row inside the provider section as O4 places it, so it stays
 on screen while the role is off or not providing, which is when its text
-matters. O4's contents sentence is superseded by this item. Neither
-section on any platform is a tap target for extender contracts, since
-there are none.
+matters. Neither section on any platform is a tap target for extender
+contracts, since there are none.
 
 The chart. `TransferChart` over the extender series in the `Remote` route,
 title `extender` ("Extender"), the view controller's window (60 s), the
@@ -1722,12 +1842,17 @@ full chart height of the provider Local chart on that platform, bytes in
 `urLightBlue` (#D6E6F4, the H1 transport token) and reads in `urPink`
 (#ED8FFF, the count series color of the Remote and Local charts), which
 keeps it in the chart family while nothing else draws a pale blue byte
-series beside a green one. The chart is mirrored around its axis with egress above and
-ingress below, so the top half and its ▲ label are the bytes and reads
-moving back toward clients (egress, O1) and the bottom half and its ▼
-label are the bytes and reads moving toward the operator (ingress, O1);
-no chart code changes for the direction, only the documentation of the
-series. The count label reads `<compact count> reads/s`: `TransferChart`
+series beside a green one. The chart is mirrored around its axis with
+egress above and ingress below, so the top half and its ▲ label are the
+bytes and reads moving back toward clients (egress, O1) and the bottom
+half and its ▼ label are the bytes and reads moving toward the operator
+(ingress, O1); no chart code changes for the direction and no per-row
+text: toward and from clients is what the two halves mean, stated in O3
+and here, and the arrows stay the only direction marks, as on every other
+chart. The provider Local chart's upper half is the client's upload
+relayed out, so the two charts' upper halves read differently relative to
+the client; a flipped presentation, if ever wanted, is a chart option and
+not a series change. The count label reads `<compact count> reads/s`: `TransferChart`
 gains a count unit, `packets` by default and `reads` here, and the
 formatters gain the reads variant (apple `formatReadRate`, linux and
 windows `FormatCountRate(count, unit)`), the unit from `reads_per_second`
@@ -1748,15 +1873,16 @@ macOS.
   and `ProviderStatsSection(navigate:)`: `if extenderStatsVisible {
   ExtenderStatsSection(); Spacer().frame(height: 12); Divider();
   Spacer().frame(height: 12) }`, where `extenderStatsVisible` is the
-  provider gate above and `throughputStore.hasExtenderStats`. The card
-  then reads reliability, divider, extender statistics, divider, provider
+  provider gate above and `deviceManager.extenderProvideStatus.enabled`
+  (N7's model, fed by the pushed status). The card then reads
+  reliability, divider, extender statistics, divider, provider
   statistics, each divider with its 12 pt below as today.
 - Store: `ThroughputStore` gains `@Published private(set) var extenderPoints: [ThroughputPoint]`
-  from `contractViewController.getExtenderThroughputPoints()` and
-  `@Published private(set) var hasExtenderStats: Bool` from
-  `device.getExtenderStats() != nil`, both read in `update()` on the same
-  tick as the provider points and published only when changed, both
-  cleared in `reset()`.
+  from `contractViewController.getExtenderThroughputPoints()`, read in
+  `update()` on the same tick as the provider points and published only
+  when changed, cleared in `reset()`. The store reads no extender stats:
+  the section's presence is the status's `enabled`, and the sdk polls
+  `getExtenderStats()` itself for the series.
 - Provider section: unchanged but for the read-only row of N7 under
   `ProvideModeRow`; the section's tap still opens `.providerContracts`.
 
@@ -1778,8 +1904,8 @@ contracts screen fed by provider data: `ContractsSheet` and
 `ClientContractsSheet` accept `ContractDetailsMode::Provider` but read the
 client feed, and neither `SdkHost` opens
 `openProviderContractDetailsViewController`; so the group header is
-static, and O5's tap-through is deferred to a provider contracts feed on
-both. Charts are the pane's 132 px rows, the Blocked chart at 66.
+static until both have a provider contracts feed, the deferral O5
+records. Charts are the pane's 132 px rows, the Blocked chart at 66.
 
 Linux.
 
@@ -1806,18 +1932,21 @@ Linux.
   `SettleEmpty()` when hidden.
 - Feed: `SdkHost` gains `ProviderThroughputPoints()`,
   `ExtenderThroughputPoints()` (each `std::optional<urnet::ThroughputPointList>`,
-  the shape of `ThroughputPoints`), `HasProviderStats()`
-  (`contractVc_->getProviderPacketStats().has_value()`) and
-  `HasExtenderStats()` (`device_->getExtenderStats().has_value()`), all
-  nullopt or false with no session. `MainWindow` forwards `DrawerEvent`s to
-  `earningsPage_->OnHostEvent(event)` under the same visibility gate as
-  `connectPage_`; on `DrawerEvent::Throughput` the page pulls the two point
-  lists, the window, `ProviderTransportDistribution()`, and the two flags,
-  in one `PullProviderThroughput` that mirrors `ConnectPage::PullThroughput`,
-  and applies the visibility rule from `extender::StatsSectionsFor(providingEnabled, hasProviderStats, hasExtenderStats)`
+  the shape of `ThroughputPoints`) and `HasProviderStats()`
+  (`contractVc_->getProviderPacketStats().has_value()`), all nullopt or
+  false with no session; the running state of the role is the `enabled`
+  of the `GetExtenderProvideStatus()` the N7 drawer event already
+  carries, so the host reads no extender stats. `MainWindow` forwards
+  `DrawerEvent`s to `earningsPage_->OnHostEvent(event)` under the same
+  visibility gate as `connectPage_`; on `DrawerEvent::Throughput` the page
+  pulls the two point lists, the window, `ProviderTransportDistribution()`
+  and the provider flag, in one `PullProviderThroughput` that mirrors
+  `ConnectPage::PullThroughput`, and applies the visibility rule from
+  `extender::StatsSectionsFor(providingEnabled, hasProviderStats, extenderRunning)`
   in `ExtenderProvidePresentation.hpp`, which returns `{providerVisible,
   extenderVisible, disabledMeta}`. `ApplyProvideState` keeps the
-  `providingEnabled_` gate and re-applies the rule when it flips. The
+  `providingEnabled_` gate and `ApplyExtenderProvideState` (N7) keeps
+  `extenderRunning_`, each re-applying the rule when its input flips. The
   charts redraw on their own timers, as every `TransferChart` does.
 - Chart: `TransferChart` gains `enum class CountUnit { Packets, Reads }` as
   a trailing constructor parameter defaulting to `Packets`; `Reads` labels
@@ -1854,20 +1983,24 @@ Windows.
   `WalletView()` is visible, the gate `ConnectPage::OnChartTick` applies to
   `ConnectView()`.
 - Feed: `SdkHost` gains `ProviderThroughputSnapshot{providerPoints,
-  extenderPoints, windowSeconds, hasProviderStats, hasExtenderStats,
-  providerDistribution}`, a `ProviderThroughputHandler` set by
-  `SetProviderThroughputHandler`, and `CurrentProviderThroughput()` for the
-  seed when the wallet view shows. `PublishThroughput` fills it on the same
-  tick from `getProviderThroughputPoints()`, `getExtenderThroughputPoints()`,
-  `getProviderPacketStats().has_value()`, `device_->getExtenderStats().has_value()`
-  and `MapTransportDistribution(getProviderTransportDistribution())`, and
+  extenderPoints, windowSeconds, hasProviderStats, providerDistribution}`,
+  a `ProviderThroughputHandler` set by `SetProviderThroughputHandler`, and
+  `CurrentProviderThroughput()` for the seed when the wallet view shows.
+  `PublishThroughput` fills it on the same tick from
+  `getProviderThroughputPoints()`, `getExtenderThroughputPoints()`,
+  `getProviderPacketStats().has_value()` and
+  `MapTransportDistribution(getProviderTransportDistribution())`, and
   publishes the provider distribution only when it changed, as the client
-  one. `WalletPage::ApplyProviderThroughput` sets the points on the charts,
+  one; the host reads no extender stats, since the running state of the
+  role is the `enabled` of the `ExtenderProvideStatusView` of N7.
+  `WalletPage::ApplyProviderThroughput` sets the points on the charts,
   the distribution on the bar (`BeginLoading` before the first, `SettleEmpty`
   when hidden), and the visibility of the two groups from
-  `ExtenderStatsSectionsFor(providingEnabled, hasProviderStats, hasExtenderStats)`
+  `ExtenderStatsSectionsFor(providingEnabled, hasProviderStats, extenderRunning)`
   in `ExtenderPresentation.h`, the same shape as linux's;
-  `ApplyProvideState` keeps `providingEnabled_` and re-applies the rule.
+  `ApplyProvideState` keeps `providingEnabled_` and
+  `ApplyExtenderProvideState` keeps `extenderRunning_`, each re-applying
+  the rule when its input flips.
 - Chart: `TransferChart` gains `enum class CountUnit { Packets, Reads }` as
   a trailing constructor parameter defaulting to `Packets`; `Reads` labels
   the count rows with `FormatCountRate(value, Narrow(Localized("reads_per_second")))`,
@@ -1933,10 +2066,10 @@ Checklist and tests.
   (`countUnit`), `Shared/Utilities/RateFormatUtils.swift` (`formatReadRate`).
   Tests: new `networkTests/ExtenderStatsSectionTests.swift` in the style of
   `TransportStatsTests.swift`: the visibility rule as a pure function
-  (`extenderStatsSectionVisible(provideControlMode:hasProviderStats:hasExtenderStats:)`,
+  (`extenderStatsSectionVisible(provideControlMode:hasProviderStats:extenderRunning:)`,
   every combination), `formatReadRate(340) == "340 reads/s"` and the
-  compact forms, the store's mapping of an extender point list and of a
-  nil `getExtenderStats`.
+  compact forms, the store's mapping of an extender point list and of an
+  empty one.
 - linux (`app`): change `src/SdkHost.hpp`, `src/SdkHost.cpp`,
   `src/EarningsPage.hpp`, `src/EarningsPage.cpp`, `src/MainWindow.cpp`,
   `src/TransferChart.hpp`, `src/TransferChart.cpp`, `src/Formatters.hpp`,
@@ -2002,12 +2135,14 @@ with the database.
 | `stats.json` | extender and family fields of M7, optional to consumers |
 | `/stats/providers-map` | `extender_count` per region; regions with extenders only |
 | `grafana/dashboards/providers.json` | new internal dashboard |
-| `sdk.ExtenderProvideStatus` | `Supported`, `State`, `Reason` added |
+| `connect.ExtenderFamilyActivationStatus` | `LastRefused` added |
+| `sdk.ExtenderProvideStatus` | `Supported`, `State`, `ErrorCase`, `Reason`, `StartError`, `LastActivationRefused` added |
 | `sdk.Device` | `GetExtenderProvideStatus`, `AddExtenderProvideStatusChangeListener`, `GetProvideExtender`, `SetProvideExtender` added; mirrored on `DeviceRemote` |
+| `sdk.DeviceRemoteState` | `ProvideExtender` queued and last-known, applied at sync; the rpc version does not change |
 | localization keys | the extender row strings of N5 |
 | `extender.ExtenderServer` | `Stats()` and `ExtenderStats` (O1) |
 | `sdk.Device` | `GetExtenderStats` added; mirrored on `DeviceRemote` |
-| `sdk.ContractViewController` | `GetExtenderThroughputPoints` added |
+| `sdk.ContractViewController` | `GetExtenderThroughputPoints`, `GetExtenderStats` added |
 | localization keys | the statistics strings of O6 |
 
 Old clients keep working: the header's new fields are optional, the hello
@@ -2125,29 +2260,37 @@ Phase 5b follows 4 because both touch the server.
    serves every new field and omits an unset one; the dashboards pass the
    allowlist and coverage tests; the helper's areas are linear in the
    counts and a ringed dot renders with the ring under it.
-11. Provider extender status and toggle: N1 to N7. 11a (sdk): the status
-   fields and the state rule, the `Device` interface and `DeviceRemote`
-   mirror, the mobile stub, bindings; concurrently (localizations): the
-   keys of N5 generated into the apple, linux and windows trees. 11b (one
-   agent per desktop app: apple for macOS with the row hidden on iOS,
-   linux, windows): the row, the read-only row, the tests, laid out as N7
-   specifies. Acceptance:
-   the state rule is pinned case by case; a remote device reports the
-   local status and setting and an old service reports unsupported; each
-   desktop app renders every state with its color and text, hides the row
-   when unsupported, and writes the setting through the device.
+11. Provider extender status and toggle: N1 to N7. 11a (connect):
+   `LastRefused` on the family activation status; (sdk, the refused case
+   after the connect half): the status fields, the error case and the
+   state rule with the start case, the `Device` interface and
+   `DeviceRemote` mirror with the queued setting and the last-known
+   value, the setting cache, the mobile stub, bindings; concurrently
+   (localizations): the keys of N5 generated into the apple, linux and
+   windows trees. 11b (one agent per desktop app: apple for macOS with
+   the row hidden on iOS, linux, windows): the row, the read-only row,
+   the tests, laid out as N7 specifies. Acceptance: the state rule is
+   pinned case by case with the case each error carries, and a refusal
+   and a request error render as distinct cases; a remote device reports
+   the local status and setting, an old service reports unsupported, and
+   a setting written while the device process is down is read back at
+   once and applied at the next sync; each desktop app renders every
+   state with its color and text from `State` and `ErrorCase` alone,
+   hides the row (never disables it) when unsupported and never calls
+   the setter while it is hidden, and writes the setting through the
+   device.
 12. Extender statistics: O1 to O8. 12a (connect): the counters and their
    tests. 12b (sdk, after 11a and 12a): the device surface, the rpc
-   mirror, the series, `LastActivationRefused` on the status with its
-   connect field (N7), bindings; concurrently (localizations): the keys
-   of O6. 12c (one agent per desktop app, after 12b, carrying 11b as well
-   so each app tree is edited once): the extender section, and on Linux
-   and Windows the provider section it sits above, laid out as O8
-   specifies. Acceptance: a relayed
-   byte is counted once in the right direction with its read; the series
-   follows the counters and empties when the role stops; each desktop app
-   shows the extender section only with the provider one and a running
-   role, and Linux and Windows show the provider section as macOS does.
+   mirror, the series with the controller's latest stats beside it,
+   bindings; concurrently (localizations): the keys of O6. 12c (one agent
+   per desktop app, after 12b, carrying 11b as well so each app tree is
+   edited once): the extender section, and on Linux and Windows the
+   provider section it sits above, laid out as O8 specifies. Acceptance:
+   a relayed byte is counted once in the right direction with its read;
+   the series follows the counters, holds at zero when the role stops and
+   takes a restart as a gap; each desktop app shows the extender section
+   only with the provider one and a running role, keyed off the pushed
+   status, and Linux and Windows show the provider section as macOS does.
 
 ## 6. Known limitations
 
