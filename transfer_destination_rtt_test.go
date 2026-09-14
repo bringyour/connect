@@ -55,6 +55,13 @@ func TestDestinationSendStatsCarryTheRoundTripMean(t *testing.T) {
 	receiver.RouteManager().UpdateTransport(NewSendGatewayTransport(), []Route{receiverOut})
 	receiver.AddReceiveCallback(func(TransferPath, []*protocol.Frame, Peer) {})
 
+	// Each frame departs `delay` after it arrives, concurrently. A pump that
+	// sleeps the delay in its own loop is a serial line at 1/delay frames a
+	// second, not a delay: under a sender offering faster than that it backs
+	// up, and it raises the measured minimum as well as the mean, because the
+	// minimum is over the samples that exist rather than over a hypothetical
+	// unqueued one. Measured on this fixture, a serial 20 ms pump gave a
+	// minimum of 41 to 42 ms; this one gives 20.8 to 22.1.
 	pumpsDone := []chan struct{}{}
 	pump := func(from Route, to Route, delay time.Duration) {
 		done := make(chan struct{})
@@ -64,15 +71,16 @@ func TestDestinationSendStatsCarryTheRoundTripMean(t *testing.T) {
 			for {
 				select {
 				case transferFrameBytes := <-from:
-					if 0 < delay {
-						time.Sleep(delay)
-					}
-					select {
-					case to <- transferFrameBytes:
-					case <-ctx.Done():
-						MessagePoolReturn(transferFrameBytes)
-						return
-					}
+					go func(transferFrameBytes []byte) {
+						if 0 < delay {
+							time.Sleep(delay)
+						}
+						select {
+						case to <- transferFrameBytes:
+						case <-ctx.Done():
+							MessagePoolReturn(transferFrameBytes)
+						}
+					}(transferFrameBytes)
 				case <-ctx.Done():
 					return
 				}
@@ -157,6 +165,18 @@ func TestDestinationSendStatsCarryTheRoundTripMean(t *testing.T) {
 			after.Rtt.Mean,
 			after.Rtt.SampleCount,
 			ackDelay,
+		)
+	}
+	// the floor is the delay the path imposes plus what the product adds to
+	// one acknowledgement, which a sweep of this fixture at 0, 5, 20 and 40 ms
+	// put at 0.2 to 2.1 ms: inside the truncation and scheduling term and
+	// nothing more
+	if productFloor := after.Rtt.Min - ackDelay; 10*time.Millisecond < productFloor {
+		t.Errorf(
+			"the smallest round trip is %s against a %s imposed delay, so %s is added below the fastest acknowledgement of the run; a sweep of this fixture put that at 0.2 to 2.1 ms",
+			after.Rtt.Min,
+			ackDelay,
+			productFloor,
 		)
 	}
 	// the evidence travels with the value: an estimate whose newest sample is
