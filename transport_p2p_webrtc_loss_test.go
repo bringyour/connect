@@ -106,9 +106,33 @@ func TestWebRtcFastPathFitsIpv6MinimumMtuOnActualWire(t *testing.T) {
 	)
 	activeFast := pair.active.(webRtcFastPathConn)
 	passiveFast := pair.passive.(webRtcFastPathConn)
-	if !activeFast.WaitFastPathReady(pair.ctx, 10*time.Second) ||
-		!passiveFast.WaitFastPathReady(pair.ctx, 10*time.Second) {
-		t.Fatal("fast carrier did not become ready before MTU enforcement")
+	// Bounded by this test's own deadline rather than by a fixed ten seconds.
+	//
+	// Establishment here is ICE, DTLS and SCTP, none of which this row tests:
+	// it tests that a fast-path write fits the minimum IPv6 MTU. A fixed wait
+	// for a step the row does not test is a second deadline competing with the
+	// one the runner set, and under load it expired first, so the row failed in
+	// setup and reported a carrier that did not become ready rather than
+	// anything about MTU. The pair's own context is no help — it is built with
+	// a 45 second timeout, far longer than the wait — so the bound has to come
+	// from the test.
+	//
+	// Derived rather than counted, and named as such: the margin below is a
+	// judgement, not a measurement. It leaves room for the assertion after this
+	// point to run and fail on its own terms rather than being killed by the
+	// runner mid-write.
+	readyTimeout := 10 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		if remaining := time.Until(deadline) - 5*time.Second; remaining < readyTimeout {
+			readyTimeout = max(remaining, time.Second)
+		}
+	}
+	if !activeFast.WaitFastPathReady(pair.ctx, readyTimeout) ||
+		!passiveFast.WaitFastPathReady(pair.ctx, readyTimeout) {
+		t.Fatalf(
+			"fast carrier did not become ready within %s before MTU enforcement; this row tests the MTU of a fast-path write, so a failure here is establishment rather than the property under test",
+			readyTimeout,
+		)
 	}
 	enforceMtu.Store(true)
 
@@ -123,7 +147,8 @@ func TestWebRtcFastPathFitsIpv6MinimumMtuOnActualWire(t *testing.T) {
 	if fragmentCount != 2 {
 		t.Fatalf("fragment count=%d want=2", fragmentCount)
 	}
-	timer := time.NewTimer(10 * time.Second)
+	// the same bound as the readiness wait, for the same reason
+	timer := time.NewTimer(readyTimeout)
 	defer timer.Stop()
 	select {
 	case outerPacketByteCount := <-oversizedPacket:
