@@ -689,6 +689,55 @@ and no hold -- so that cell could never have shown this. And its source side
 calls the provider's receive path directly, so the upload arm is a rebuild
 rather than a knob and remains untested.
 
+### 3.11c The stall is SILENT RENEGING, not a sizing problem
+
+Traced from source. A selective acknowledgement does **not release the item**.
+`receiveAck` marks it `selectiveAcked`, sets its resend time to send time plus
+`SelectiveAckTimeout` (60 s), and re-adds it to the resend queue. Every resend
+path then **skips** it -- the paced resend, gap recovery, and the carrier-change
+resend that fires on route death. The flag clears only on the timeout resend,
+60 s later.
+
+**And eviction sends nothing at all.**
+
+So when the hold evicts a held item to admit an earlier arrival, the sender is
+holding a sixty-second lease on bytes the receiver no longer has. That is
+silent reneging, and it is why the transfer stalls rather than merely
+retransmitting: at 8 and 16 MiB the evictions dominate and nothing completes.
+At 3 MiB the refused items were never held, so they resend on the ordinary path
+bounded by a four-per-scan gap burst -- 800 drops, completed.
+
+**The harm is therefore not that a window is too large for a hold.** It is that
+a receiver can silently discard bytes a sender believes are delivered, with a
+minute-long timeout as the only recovery.
+
+THE FIX IS TWO FIELDS, not one:
+  - `Ack.receive_window_byte_count` -- capacity **from the delivered point**.
+    (A correction to the design's own earlier figure: "share less what it
+    holds" double-counts, since held bytes are already inside outstanding, and
+    would pull the right edge inward as the hold fills.)
+  - an **eviction notice** carrying the ids removed, on the next ack. The
+    sender clears `selectiveAcked` and resends at once, on the unbounded
+    carrier-change path rather than the four-per-scan gap burst.
+
+Gap structure need **not** be advertised. Because a selective ack does not
+release the item, held bytes are at most the sender's outstanding-from-
+delivered, so a sender keeping that under the advertised capacity can never
+force an eviction -- one gap or a thousand. The ordinary rule, no new concept.
+
+PREDICTIONS for the rerun, recorded first: with both fields, zero evictions,
+zero refusals, completion at 8 and 16 MiB, a dip of one round trip. With the
+notice alone, completion at every window with one round trip per eviction
+generation instead of a minute. The second isolates which field does which job
+and shows what a legacy sender gets when only the receiver is upgraded.
+
+OPEN, and it decides the severity: the hold is memory-scaled and the send
+ceiling is not, so they diverge as the budget falls. If some shipped budget
+puts the hold below the window -- a well-provisioned provider talking to a
+constrained phone is the obvious shape -- then a route death stalls a mobile
+transfer for 60 s **on main today**, with none of this program's changes. Being
+checked.
+
 ### 3.12 The landing, sized to the evidence
 
 | Group | Contents |
