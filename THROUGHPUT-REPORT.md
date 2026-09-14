@@ -785,6 +785,15 @@ exceeds the peer's window.
 the four failing runs. What fills the hold is not the loss; it is everything
 the peer sends after the gap, and the peer is entitled to its whole window.
 
+**And it needs no failure at all.** The general condition is any gap persisting
+longer than hold / rate -- 75 ms at a 938 KiB hold and 100 Mb/s. **Two live
+routes of unequal latency produce that with nothing failing**: a frame striped
+onto the slower route arrives late, everything sent after it on the faster
+route arrives first and fills the hold, and the gap outlives the hold's
+capacity. On a phone with one carrier on cellular and another on wifi that is
+the ordinary case. A cell is sweeping the latency difference to find the
+threshold.
+
 A variance on the record: in a campaign running all three budgets sequentially
 in one process, the 24 MiB arm completed 2/2, where alone it failed 4/4. The
 budget is restored between scenarios and each builds fresh clients, so this is
@@ -806,14 +815,34 @@ were corroboration on the branch only.
    constrained side**: a phone at 24 MiB goes from 938 KiB to 2 MiB, +1.1 MiB
    against a ceiling this program deferred.
 
-   1a. **A possible zero-cost alternative, under assessment.** On the branch
-   cell the 3 MiB arm completed with 800 drops, because refused items were
-   never held and so resend on the ordinary path. **Refusal recovers;
-   eviction reneges silently.** So a receiver that NEVER EVICTS -- refusing the
-   arriving item rather than removing a held one -- keeps its memory unchanged,
-   needs no wire field, keeps the sender's selective acks truthful, and
-   recovers on the path that already works. The objection to test is
-   head-of-line blocking.
+   **SUPERSEDED by 1a.**
+
+   1a. **NEVER-EVICT, and it is sound.** Refuse the arriving item rather than
+   remove a held one. No memory cost on the constrained side, no wire field,
+   no coordination; protects an updated receiver against any peer.
+
+   The head-of-line objection dissolves on one line of the receive path: an
+   arrival AT the delivery point is delivered directly -- the branch where the
+   sequence number equals the next expected registers the contract, delivers,
+   and returns -- and only an item BEYOND the delivery point reaches the queue
+   -and-evict branch. **So the filler of a hole never needs hold space, and a
+   gap behind a full hold always fills.**
+
+   A refusal acknowledges nothing, so selective acks stay truthful, and the
+   sender resends on paths that already exist: a dead route's frames on the
+   carrier-change path (prompt, not burst-bounded), a gap with held items
+   beyond it on gap recovery (those held items are its proving acks), the
+   refused tail on the paced resend at the 300 ms floor. Each fill drains the
+   prefix and frees space.
+
+   Recovery: one round trip plus a few paced intervals -- **under a second at
+   50 ms, against sixty**. The cost is redundant resends, bounded by a window
+   per round and that 300 ms floor, which the advertisement later removes by
+   removing the refusals.
+
+   Caveat for the code comment: the hold keeps what arrived FIRST rather than
+   what is earliest in sequence, so under sustained reordering recovery
+   lengthens by rounds. Never by a lease.
 2. **Sender-side, deployable on providers alone** to protect phones already in
    the field: a carrier change voids selective acknowledgements, so the
    carrier-change resend covers evicted items and a minute becomes a round trip.
