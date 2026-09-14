@@ -54,7 +54,16 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 	})
 	originPort := listener.Addr().(*net.TCPAddr).Port
 
-	observeLane := func(clientLane uint32) (map[uint32]int, []logicalLaneGateObservation) {
+	// the two gates, read directly rather than inferred: the advertised
+	// version recorded for the destination's base class, and whether the
+	// returns carried a valid scheduling key
+	type laneGateReading struct {
+		lanes           map[uint32]int
+		observations    []logicalLaneGateObservation
+		recordedVersion uint32
+		versionRecorded bool
+	}
+	observeLane := func(clientLane uint32) laneGateReading {
 		provider, _, client := newProviderSourceLifecycleTestFixture(t, nil)
 		// the provider's own count, which is the setting a rollout turns on
 		client.sendBuffer.sendBufferSettings.LogicalDataLaneCount = 8
@@ -146,13 +155,36 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 				}
 			}
 		}()
+		base := sendSequenceId{
+			Destination:    peerId,
+			EncryptionRole: sequenceTlsRoleServer,
+		}
+		recordedVersion, versionRecorded := func() (uint32, bool) {
+			client.sendBuffer.mutex.Lock()
+			defer client.sendBuffer.mutex.Unlock()
+			for id, version := range client.sendBuffer.logicalLaneVersions {
+				if id.Destination == peerId {
+					return version, true
+				}
+			}
+			_ = base
+			return 0, false
+		}()
+
 		observationLock.Lock()
 		defer observationLock.Unlock()
-		return lanes, append([]logicalLaneGateObservation{}, observations...)
+		return laneGateReading{
+			lanes:           lanes,
+			observations:    append([]logicalLaneGateObservation{}, observations...),
+			recordedVersion: recordedVersion,
+			versionRecorded: versionRecorded,
+		}
 	}
 
-	zeroLanes, zeroObservations := observeLane(0)
-	dataLanes, dataObservations := observeLane(3)
+	zeroReading := observeLane(0)
+	dataReading := observeLane(3)
+	zeroLanes, zeroObservations := zeroReading.lanes, zeroReading.observations
+	dataLanes, dataObservations := dataReading.lanes, dataReading.observations
 
 	summarise := func(observations []logicalLaneGateObservation) map[string]int {
 		gates := map[string]int{}
@@ -162,14 +194,18 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 		return gates
 	}
 	t.Logf(
-		"a client on lane 0: provider return sequences by lane %v, gates %v",
+		"a client on lane 0: provider return sequences by lane %v, gates %v, advertised version recorded=%t value=%d",
 		zeroLanes,
 		summarise(zeroObservations),
+		zeroReading.versionRecorded,
+		zeroReading.recordedVersion,
 	)
 	t.Logf(
-		"a client on lane 3: provider return sequences by lane %v, gates %v",
+		"a client on lane 3: provider return sequences by lane %v, gates %v, advertised version recorded=%t value=%d",
 		dataLanes,
 		summarise(dataObservations),
+		dataReading.versionRecorded,
+		dataReading.recordedVersion,
 	)
 	for _, observation := range zeroObservations {
 		t.Logf(
