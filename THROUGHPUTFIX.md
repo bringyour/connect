@@ -5658,3 +5658,82 @@ The same cell at a client budget of 52 MiB or more completes, which is
 the guard point measured. With guard 1 alone the 24 MiB cell completes
 with zero evictions; with guard 2 alone it completes with about one
 window of redundant resend per route death.
+
+### 37.18 Reproduced on main; never-evict is sound and costs nothing
+
+Connect main, none of this program's changes, provider unbudgeted at a
+2 MiB window, client budget the axis, both values recorded resolved per
+run. At 8 MiB the hold is at its floor, 312 KiB, 6.4 times inverted,
+and none of two runs completed. At 24 MiB the hold is 938 KiB, 2.13
+times inverted, saturated in four of four runs, none completed, with
+thirteen to eighteen thousand arrivals refused. At 52 MiB the hold is
+2.031 MiB, not inverted, zero drops, both runs completed. The control
+is what makes it a defect rather than a demonstration: its hold reaches
+84 to 90 per cent of capacity, so the path works it hard, and it takes
+no drops at all; the only variable is whether the hold exceeds the
+peer's window. The trigger is smaller than either of us assumed: the
+dying route carried 20, 71, 215 and 355 frames in the four failing
+runs. What fills the hold is not the loss but everything the peer
+sends after the gap, and the peer is entitled to its whole window. So
+the condition is any gap that persists longer than the hold takes to
+fill at the path's rate, 75 ms for 938 KiB at 100 Mb/s, which a
+latency skew between two live routes can produce with no failure at
+all. The harness could not run the resend columns on main, since the
+statistics reader does not exist there; peak hold against resolved
+capacity is the reading, and the resend figures corroborate on the
+branch only.
+
+Never-evict. The question: what if the receiver never removes a held
+item, and refuses the arrival instead, whatever their order? It is
+sound, and the fact that makes it sound is in the receive path. An
+arrival at the delivery point is delivered directly: the branch
+`sequenceNumber == nextSequenceNumber` registers the contract, delivers
+and returns, and only an item beyond the delivery point enters the
+branch that queues and evicts (`transfer.go`, the receive path above
+"store only up to a max size in the receive queue"). So the one item
+that drains a full hold, the filler of the hole at the delivery point,
+never needs hold space, and the deadlock the objection describes, a gap
+that never fills behind a hold full of later items, cannot occur. The
+head-of-line objection dissolves on that line.
+
+What a refusal does instead. A refused item is not acknowledged, so
+the sender's selective acknowledgements stay truthful, which is the
+whole difference from eviction, and the sender retransmits it on the
+paths that already exist: a frame of a dead route on the carrier-change
+path, promptly and without the four-per-scan bound; a gap with held
+items beyond it on the gap recovery, since those held items are its
+proving acknowledgements; and the refused tail, which has nothing held
+beyond it, on the paced resend at or after the 300 ms floor. Each
+hole filled drains the hold's contiguous prefix and frees space for the
+next resend to land. Recovery after a route death is then one round
+trip for the dead route's frames, the drain, and at most a few paced
+intervals for refused generations, under a second at 50 ms, against
+sixty seconds; its cost is redundant resends of refused items that
+arrive while the hold is still full, bounded by the sender's window per
+round, and the 300 ms floor on the tail, which the advertisement later
+removes by removing the refusals. The hold keeps what arrived first
+rather than what is earliest in sequence, so under sustained
+reordering the kept set is arbitrary in order and the drain after a
+fill can be short; that lengthens recovery by rounds, never by a lease.
+`ReceiveQueueDropCount` widens to refusals in any order, and the
+eviction counter becomes a check that reads zero.
+
+So never-evict replaces the floor raise as guard 1: it costs no memory
+on the constrained side, where the floor raise would have taken a
+24 MiB phone from 938 KiB to 2 MiB against a ceiling this program
+deferred, it needs no wire field and no coordination, and it protects
+an updated receiver against any peer. Coverage confirmed as framed:
+guard 1 protects an updated client from an unupdated provider; guard 2,
+a carrier change voiding selective acknowledgements at the sender,
+protects a client already in the field from an updated provider;
+neither subsumes the other and both are needed until the field has
+turned over. The two fields of §37.16 then remove the refusals rather
+than recover from them, and remain the fix proper.
+
+Prediction for the 24 MiB cell with never-evict alone: four of four
+complete; refusals in the thousands as now; evictions zero; the
+completion delay after the route death under a second; peak hold at
+capacity for the duration of the recovery and memory otherwise
+unchanged. If a run still stalls, the stall is a refused item the
+sender is not resending, and the item's `resendTime` and whether it has
+proving acknowledgements beyond it are the fields to read.
