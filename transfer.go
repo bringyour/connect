@@ -10067,6 +10067,14 @@ type ReceiveBufferSettings struct {
 	// ReceiveQueueBudget, when set, is a byte budget shared across sequences
 	// (see `ResendQueueBudget`)
 	ReceiveQueueBudget *TransferMemoryBudget
+	// AdvertiseReceiveWindow puts what this receiver can still hold out of
+	// order on the acknowledgement, so the sender may clamp its window to it
+	// (THROUGHPUTFIX §37.3). Off by default and held out of the landing until
+	// the multi-route failover cell of §37.15 reports: the one reachable case
+	// for it is a route dying with frames striped across two routes, which no
+	// cell has yet run, and the shipping window is under the hold by an
+	// accident of ordering rather than by design.
+	AdvertiseReceiveWindow bool
 	// ReceiveQueueRetainedByteAccounting charges the shared queue budget for
 	// carrier/frame backing classes plus the decoded owner rather than payload
 	// bytes alone. Per-sequence ReceiveQueueMaxByteCount remains a logical
@@ -11390,8 +11398,14 @@ func (self *ReceiveSequence) Run() {
 			path := sendTransferPath(self.client.ClientId(), ackDestination)
 
 			// what this receiver can still hold out of order, so the sender may
-			// clamp its window to it (THROUGHPUTFIX §37.3)
-			receiveWindowByteCount := self.receiveWindowAdvertisement()
+			// clamp its window to it (THROUGHPUTFIX §37.3). A receiver that
+			// does not advertise is indistinguishable from a legacy peer, and
+			// the sender falls back to assuming the shipped hold.
+			receiveWindowByteCount := uint64(0)
+			advertiseReceiveWindow := self.receiveBufferSettings.AdvertiseReceiveWindow
+			if advertiseReceiveWindow {
+				receiveWindowByteCount = self.receiveWindowAdvertisement()
+			}
 
 			var transferFrameBytes []byte
 			if 2 <= self.receiveBufferSettings.ProtocolVersion {
@@ -11407,7 +11421,7 @@ func (self *ReceiveSequence) Run() {
 					compactContractRecovery: sendAck.compactContractRecoverySupported,
 					logicalLaneVersion:      transferLogicalLaneVersion,
 					receiveWindowByteCount:  receiveWindowByteCount,
-					receiveWindowSet:        true,
+					receiveWindowSet:        advertiseReceiveWindow,
 				}
 				if sendAck.contractMissing {
 					saf.missingContractId = &sendAck.missingContractId
@@ -11421,7 +11435,9 @@ func (self *ReceiveSequence) Run() {
 					Tag:                     sendAck.tag.protocol(),
 					CompactContractRecovery: sendAck.compactContractRecoverySupported,
 					LogicalLaneVersion:      transferLogicalLaneVersion,
-					ReceiveWindowByteCount:  &receiveWindowByteCount,
+				}
+				if advertiseReceiveWindow {
+					ack.ReceiveWindowByteCount = &receiveWindowByteCount
 				}
 				if sendAck.contractMissing {
 					ack.MissingContractId = sendAck.missingContractId.Bytes()
