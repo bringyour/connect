@@ -956,6 +956,100 @@ visibly** -- the window equals the advertised capacity and the estimate names
 the binding term -- rather than silently at a constant. That visibility is the
 whole difference between this and what it replaces.
 
+### 3.15 The rule works; what bounds it is above it
+
+The ceiling defect was three faults, not two. The configured ceiling defaulted to
+the initial size; apply froze the budget total into that setting, so a budget
+attached afterwards left it zero; and the window was capped at min(initial,
+ceiling), so the step to a peer's advertised capacity could never happen at all.
+
+Fixed, the resolved ceiling reads 2 / 8 / 32 / 128 MiB as the budget rises.
+Independently verified over 12 runs: window 5.194 MiB strictly below a 28.441
+ceiling, interval 412 ms against a 202 ms measured path, receiver's hold moving
+2.5 -> 32 MiB. Every element of the mechanism confirmed.
+
+**Measured gain 1.233x** (CI 1.064-1.306, better in 10 of 12) -- not the 2.96x
+first reported by the stream that wrote the code. Both are probably correct
+measurements of different fixtures, because each cell has a different second
+ceiling above the transfer window.
+
+### 3.16 A clamped window fills completely
+
+The regime nothing had measured, and the one the common path runs in.
+
+  configuration        peak/ceiling   mean/ceiling
+  hard clamp, 1 MiB    1.001          0.983
+  unclamped control    0.059          0.048
+
+Under a hard clamp the window equals the ceiling, the peak reaches it within one
+frame, and the mean reaches 98.3%. A small fixed window refills as fast as it
+drains, so the sawtooth costing 31% at a large window costs under 2% clamped.
+
+**Efficiency per byte of budget: 0.983 MiB of useful occupancy from 1.000 MiB
+clamped, against 0.529 unclamped -- 1.86x better.** Every platform is
+budget-limited at 200-400 ms, so that is the operating regime.
+
+The transition across the boundary is smooth and monotone, 0.95 falling to 0.49
+with no discontinuity, which closes the dynamic case of shares changing as
+clients arrive and leave.
+
+CONDITION: a bound clamp is not automatically a filled one. Between 2.0 and 2.6
+MiB the window equals the ceiling yet the peak reaches only 0.65-0.83. The 98%
+belongs to a clamp binding WELL BELOW where the flow would otherwise settle.
+
+### 3.17 No single ceiling extends the reach
+
+The sentence that makes the landing path legible.
+
+  layer                  rate at 200 ms   reach to 1 Gb/s
+  today                  71 Mb/s          --
+  transfer unit          109              21.8 ms
+  + H3 stream window     160              23.5 ms
+  + tun maxima           415              ~83 ms
+  + share table          830              --
+
+Each ceiling lifts the rate by its ratio to the next; the reach extends only
+when the layers behind it move too. Landing the first alone buys 2 ms of reach,
+and anyone measuring that would reasonably conclude the work was not worth
+doing.
+
+**Upload is a separate sequence** and is bounded by an acknowledgement clock
+before any window: 71 -> 129 with the transfer unit, -> 156 with a steady-state
+ack cadence, -> 218 with the send maximum, where the server's own window binds.
+Without the cadence change **upload reaches a gigabit at no budget and no path
+length whatsoever**, because the 50 ms clock multiplies into every window above
+it.
+
+### 3.18 What the surface replaces, and why it is not bigger constants
+
+Every window and hold is `MemoryScaledByteCount` of a constant, and that scale
+returns 1 at or above a 64 MiB reference. **So all were sized for a small host
+and can only shrink. A provider with 8 GB runs a 64 MiB device's window.**
+
+The replacement is fractions of a budget. What makes that different from larger
+constants: the fractions encode ratios between layers while the budget supplies
+the scale, so a fraction changes only when the architecture changes and a
+deployment changes only the budget.
+
+The derived defaults also correct an existing misallocation: the carrier
+reservation should be M/16 where it currently draws M/8, so it has been taking
+twice its share.
+
+### 3.19 The server-side change: one site, and safer than today
+
+`newConnectQuicConfig` builds the listener's config with no flow-control windows,
+so every accepted connection runs the library's 6 MiB default. That is where
+every 200 ms upload and every 200 ms provider-hop download stops, at ~218 Mb/s.
+
+The server needs no budget concept: the library supplies a callback on every
+attempted growth. Two settings plus one counter, about fifty lines, inert until
+a deployment sets them.
+
+**And it is strictly safer than today.** A receive window is credit, so the cost
+lands on senders we have already budgeted. The server's own exposure is
+unconsumed credit under backpressure -- today 6 MiB times the connection count
+with no cap. The aggregate setting bounds it for the first time.
+
 ## 4. What is still open
 
 | Question | State |
