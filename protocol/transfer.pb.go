@@ -816,17 +816,35 @@ type Ack struct {
 	// retires every nonzero lane when that sequence closes or a later delivery
 	// Ack omits the capability.
 	LogicalLaneVersion uint32 `protobuf:"varint,7,opt,name=logical_lane_version,json=logicalLaneVersion,proto3" json:"logical_lane_version,omitempty"`
-	// What this receiver can still hold out of order: its receive hold's share
-	// less what it currently holds. A sender may not let its window exceed the
-	// latest advertised value, because a Pack that arrives above the hold is
-	// dropped and must be sent again, so a window larger than the hold turns
-	// one loss into one window of retransmission.
+	// What this receiver may hold out of order, measured from the delivered
+	// point: the hold's capacity, not its free space. A sender may not let its
+	// outstanding-from-delivered bytes exceed the latest advertised value.
+	// Held bytes are not subtracted, because a selective acknowledgement does
+	// not release the item at the sender, so they are already inside its
+	// outstanding count; subtracting them would pull the right edge of the
+	// window inward as the hold fills, which a window must never do.
+	//
+	// A sender that keeps to this can never force an eviction, whatever the
+	// gap structure, because the hold would have to contain more than the
+	// sender has outstanding.
 	//
 	// Absent is a legacy peer, which the sender treats as the shipping hold
-	// rather than as zero. Zero is a real value and means a receiver that is
-	// currently full, which is why this is optional rather than a plain
+	// rather than as zero. Zero is a real value and means a receiver with no
+	// capacity at all, which is why this is optional rather than a plain
 	// varint with a sentinel.
 	ReceiveWindowByteCount *uint64 `protobuf:"varint,8,opt,name=receive_window_byte_count,json=receiveWindowByteCount,proto3,oneof" json:"receive_window_byte_count,omitempty"`
+	// Sequence numbers of items this receiver had acknowledged and then removed
+	// from its hold to admit an earlier arrival. A selective acknowledgement
+	// leases an item rather than releasing it: the sender keeps it in its
+	// resend queue with its resend time pushed out by the selective-ack
+	// timeout, and every resend path skips it until that timeout expires. So a
+	// removal the sender is not told about is a silent withdrawal of bytes it
+	// believes were delivered, and the only recovery is a minute-long timeout.
+	//
+	// On receiving these a sender clears the selective-ack mark and resends at
+	// once. Packed varints, and a generation larger than one acknowledgement
+	// can carry is split across acknowledgements.
+	EvictedSequenceNumbers []uint64 `protobuf:"varint,9,rep,packed,name=evicted_sequence_numbers,json=evictedSequenceNumbers,proto3" json:"evicted_sequence_numbers,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -915,6 +933,13 @@ func (x *Ack) GetReceiveWindowByteCount() uint64 {
 		return *x.ReceiveWindowByteCount
 	}
 	return 0
+}
+
+func (x *Ack) GetEvictedSequenceNumbers() []uint64 {
+	if x != nil {
+		return x.EvictedSequenceNumbers
+	}
+	return nil
 }
 
 type Tag struct {
@@ -2705,7 +2730,7 @@ const file_transfer_proto_rawDesc = "" +
 	"\f_contract_id\"_\n" +
 	"\fFilteredPack\x12<\n" +
 	"\x0econtract_frame\x18\a \x01(\v2\x10.bringyour.FrameH\x00R\rcontractFrame\x88\x01\x01B\x11\n" +
-	"\x0f_contract_frame\"\xab\x03\n" +
+	"\x0f_contract_frame\"\xe5\x03\n" +
 	"\x03Ack\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\fR\tmessageId\x12\x1f\n" +
@@ -2716,7 +2741,8 @@ const file_transfer_proto_rawDesc = "" +
 	"\x13missing_contract_id\x18\x05 \x01(\fH\x01R\x11missingContractId\x88\x01\x01\x12:\n" +
 	"\x19compact_contract_recovery\x18\x06 \x01(\bR\x17compactContractRecovery\x120\n" +
 	"\x14logical_lane_version\x18\a \x01(\rR\x12logicalLaneVersion\x12>\n" +
-	"\x19receive_window_byte_count\x18\b \x01(\x04H\x02R\x16receiveWindowByteCount\x88\x01\x01B\x06\n" +
+	"\x19receive_window_byte_count\x18\b \x01(\x04H\x02R\x16receiveWindowByteCount\x88\x01\x01\x128\n" +
+	"\x18evicted_sequence_numbers\x18\t \x03(\x04R\x16evictedSequenceNumbersB\x06\n" +
 	"\x04_tagB\x16\n" +
 	"\x14_missing_contract_idB\x1c\n" +
 	"\x1a_receive_window_byte_count\"\"\n" +

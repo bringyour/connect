@@ -343,6 +343,8 @@ type sendAckFrame struct {
 	logicalLaneVersion      uint32
 	receiveWindowByteCount  uint64
 	receiveWindowSet        bool
+	// sequence numbers the receiver evicted after acknowledging them
+	evictedSequenceNumbers []uint64
 }
 
 func (m *sendAckFrame) sizeAck() int {
@@ -368,6 +370,13 @@ func (m *sendAckFrame) sizeAck() int {
 	}
 	if m.receiveWindowSet {
 		n += protoSizeTag(8) + protoSizeVarint(m.receiveWindowByteCount)
+	}
+	if 0 < len(m.evictedSequenceNumbers) {
+		body := 0
+		for _, sequenceNumber := range m.evictedSequenceNumbers {
+			body += protoSizeVarint(sequenceNumber)
+		}
+		n += protoSizeTag(9) + protoSizeVarint(uint64(body)) + body
 	}
 	return n
 }
@@ -400,6 +409,18 @@ func (m *sendAckFrame) appendAck(b []byte) []byte {
 	if m.receiveWindowSet {
 		b = protoAppendTag(b, 8, protoWireVarint)
 		b = protoAppendVarint(b, m.receiveWindowByteCount)
+	}
+	// packed, which is what proto3 emits for a repeated scalar
+	if 0 < len(m.evictedSequenceNumbers) {
+		body := 0
+		for _, sequenceNumber := range m.evictedSequenceNumbers {
+			body += protoSizeVarint(sequenceNumber)
+		}
+		b = protoAppendTag(b, 9, protoWireBytes)
+		b = protoAppendVarint(b, uint64(body))
+		for _, sequenceNumber := range m.evictedSequenceNumbers {
+			b = protoAppendVarint(b, sequenceNumber)
+		}
 	}
 	return b
 }
@@ -1381,6 +1402,23 @@ func decodeAck(b []byte) (*protocol.Ack, bool) {
 			b = b[vn:]
 			receiveWindowByteCount := v
 			ack.ReceiveWindowByteCount = &receiveWindowByteCount
+		case 9: // evicted_sequence_numbers, packed varints
+			if typ != protowire.BytesType {
+				return nil, false
+			}
+			body, bn := protowire.ConsumeBytes(b)
+			if bn < 0 {
+				return nil, false
+			}
+			b = b[bn:]
+			for 0 < len(body) {
+				v, vn := protowire.ConsumeVarint(body)
+				if vn < 0 {
+					return nil, false
+				}
+				body = body[vn:]
+				ack.EvictedSequenceNumbers = append(ack.EvictedSequenceNumbers, v)
+			}
 		default:
 			fn := protowire.ConsumeFieldValue(num, typ, b)
 			if fn < 0 {
@@ -1485,6 +1523,23 @@ func decodeAckOwned(b []byte, decoded *decodedTransferFrame) bool {
 			b = b[vn:]
 			receiveWindowByteCount := v
 			ack.ReceiveWindowByteCount = &receiveWindowByteCount
+		case 9: // evicted_sequence_numbers, packed varints
+			if typ != protowire.BytesType {
+				return false
+			}
+			body, bn := protowire.ConsumeBytes(b)
+			if bn < 0 {
+				return false
+			}
+			b = b[bn:]
+			for 0 < len(body) {
+				v, vn := protowire.ConsumeVarint(body)
+				if vn < 0 {
+					return false
+				}
+				body = body[vn:]
+				ack.EvictedSequenceNumbers = append(ack.EvictedSequenceNumbers, v)
+			}
 		default:
 			fn := protowire.ConsumeFieldValue(num, typ, b)
 			if fn < 0 {

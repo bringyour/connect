@@ -173,17 +173,36 @@ message Ack {
     // Ack omits the capability.
     uint32 logical_lane_version = 7;
 
-    // What this receiver can still hold out of order: its receive hold's share
-    // less what it currently holds. A sender may not let its window exceed the
-    // latest advertised value, because a Pack that arrives above the hold is
-    // dropped and must be sent again, so a window larger than the hold turns
-    // one loss into one window of retransmission.
+    // What this receiver may hold out of order, measured from the delivered
+    // point: the hold's capacity, not its free space. A sender may not let its
+    // outstanding-from-delivered bytes exceed the latest advertised value.
+    // Held bytes are not subtracted, because a selective acknowledgement does
+    // not release the item at the sender, so they are already inside its
+    // outstanding count; subtracting them would pull the right edge of the
+    // window inward as the hold fills, which a window must never do.
+    //
+    // A sender that keeps to this can never force an eviction, whatever the
+    // gap structure, because the hold would have to contain more than the
+    // sender has outstanding.
     //
     // Absent is a legacy peer, which the sender treats as the shipping hold
-    // rather than as zero. Zero is a real value and means a receiver that is
-    // currently full, which is why this is optional rather than a plain
+    // rather than as zero. Zero is a real value and means a receiver with no
+    // capacity at all, which is why this is optional rather than a plain
     // varint with a sentinel.
     optional uint64 receive_window_byte_count = 8;
+
+    // Sequence numbers of items this receiver had acknowledged and then removed
+    // from its hold to admit an earlier arrival. A selective acknowledgement
+    // leases an item rather than releasing it: the sender keeps it in its
+    // resend queue with its resend time pushed out by the selective-ack
+    // timeout, and every resend path skips it until that timeout expires. So a
+    // removal the sender is not told about is a silent withdrawal of bytes it
+    // believes were delivered, and the only recovery is a minute-long timeout.
+    //
+    // On receiving these a sender clears the selective-ack mark and resends at
+    // once. Packed varints, and a generation larger than one acknowledgement
+    // can carry is split across acknowledgements.
+    repeated uint64 evicted_sequence_numbers = 9;
 }
 
 

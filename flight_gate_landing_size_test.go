@@ -34,6 +34,10 @@ const (
 	// is the narrow type and the flag packs against the existing bools, so
 	// the pair costs one word rather than two.
 	receiveAdvertisementStateByteCount = 8
+	// one pointer, nil on every acknowledgement that evicted nothing, naming
+	// the items a receiver removed from its hold after acknowledging them
+	// (THROUGHPUTFIX §37.16)
+	evictionNoticeStateByteCount = 8
 )
 
 func TestLandingStructsMatchMergedLessTheDeferState(t *testing.T) {
@@ -42,10 +46,13 @@ func TestLandingStructsMatchMergedLessTheDeferState(t *testing.T) {
 			got, want)
 	}
 	if got, want := unsafe.Sizeof(receiveAckMessage{}),
-		uintptr(mergedReceiveAckMessageByteCount+receiveAdvertisementStateByteCount); got != want {
+		uintptr(mergedReceiveAckMessageByteCount+
+			receiveAdvertisementStateByteCount+
+			evictionNoticeStateByteCount); got != want {
 		t.Errorf(
-			"receiveAckMessage is %d bytes, want merged's %d plus %d for the receiver's advertised remaining capacity",
-			got, mergedReceiveAckMessageByteCount, receiveAdvertisementStateByteCount,
+			"receiveAckMessage is %d bytes, want merged's %d plus %d for the receiver's advertised capacity and %d for the eviction notice",
+			got, mergedReceiveAckMessageByteCount,
+			receiveAdvertisementStateByteCount, evictionNoticeStateByteCount,
 		)
 	}
 	want := uintptr(

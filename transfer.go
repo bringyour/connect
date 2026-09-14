@@ -835,6 +835,7 @@ func DefaultReceiveBufferSettingsWithBufferSize(bufferSize int) *ReceiveBufferSe
 		// when a shared budget is set, the max acts as the per-sequence
 		// borrow cap and the min as the guaranteed floor.
 		ReceiveQueueMaxByteCount: MemoryScaledByteCount(mib(2)+kib(512), kib(320)),
+		EvictionNotice:           true,
 		ReceiveQueueMinByteCount: kib(320),
 		AllowLegacyNack:          true,
 		MaxOpenReceiveContract:   4,
@@ -1374,8 +1375,23 @@ type ClientReceiveStatsSnapshot struct {
 	// fit. That is the drop FLIGHTGATEFIX §34.2 identifies as what destroys
 	// the acknowledgements a lane proof depends on, and until now it was
 	// visible only as a log line. Observation only.
-	ReceiveQueueDropCount      uint64
-	ReceiveQueueDropByteCount  uint64
+	ReceiveQueueDropCount     uint64
+	ReceiveQueueDropByteCount uint64
+	// ReceiveQueueEvictionCount and ReceiveQueueEvictionByteCount are items
+	// the hold already held and removed to admit an earlier arrival. A drop is
+	// an arrival refused and an eviction is a promise withdrawn: the sender was
+	// told the item was received, and a selective acknowledgement leases the
+	// item for SelectiveAckTimeout rather than releasing it, so until the
+	// eviction notice reaches the sender those bytes are invisible to every
+	// resend path. Until this counter existed the drop count was the only
+	// reading of hold pressure and it is a lower bound (THROUGHPUTFIX §37.16).
+	ReceiveQueueEvictionCount     uint64
+	ReceiveQueueEvictionByteCount uint64
+	// evictions the notice could not carry, which are the ones that still cost
+	// a sixty second lease
+	ReceiveQueueEvictionNoticeOverflow uint64
+	// items a sender resent because the receiver told it they were evicted
+	SendEvictionResendCount    uint64
 	AckHandoffDropCount        uint64
 	AckHandoffQueueFullCount   uint64
 	AckHandoffMissCount        uint64
@@ -1445,7 +1461,10 @@ type ClientSendRecoveryStatsSnapshot struct {
 	CarrierChangeWriteCount uint64
 	// selective acknowledgements voided because the route that earned them was
 	// retired (THROUGHPUTFIX §37.17 guard two)
-	CarrierChangeSelectiveAckVoidCount    uint64
+	CarrierChangeSelectiveAckVoidCount uint64
+	// items resent because the receiver told the sender it had evicted them
+	// (THROUGHPUTFIX §37.16)
+	SendEvictionResendCount               uint64
 	SelectiveGapWriteCount                uint64
 	AckTailProbeWriteCount                uint64
 	CumulativeProbeWriteCount             uint64
@@ -1587,6 +1606,10 @@ type Client struct {
 	receivePackHandoffAdaptiveMaxByteCount atomic.Uint64
 	receiveQueueDropCount                  atomic.Uint64
 	receiveQueueDropByteCount              atomic.Uint64
+	receiveQueueEvictionCount              atomic.Uint64
+	receiveQueueEvictionByteCount          atomic.Uint64
+	receiveQueueEvictionNoticeOverflow     atomic.Uint64
+	sendEvictionResendCount                atomic.Uint64
 	receiveAckHandoffDropCount             atomic.Uint64
 	receiveAckHandoffQueueFullCount        atomic.Uint64
 	receiveAckHandoffMissCount             atomic.Uint64
@@ -1929,28 +1952,31 @@ func (self *Client) ClientTag() string {
 // message counts are consistent-enough telemetry rather than a transaction.
 func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 	snapshot := ClientReceiveStatsSnapshot{
-		PackHandoffDropCount:            self.receivePackHandoffDropCount.Load(),
-		PackHandoffDropByteCount:        self.receivePackHandoffDropByteCount.Load(),
-		PackHandoffWaitCount:            self.receivePackHandoffWaitCount.Load(),
-		PackHandoffWaitSuccess:          self.receivePackHandoffWaitSuccess.Load(),
-		PackHandoffMaxCount:             self.receivePackHandoffMaxCount.Load(),
-		PackHandoffMaxByteCount:         self.receivePackHandoffMaxByteCount.Load(),
-		PackHandoffSaturationCount:      self.receivePackHandoffSaturationCount.Load(),
-		PackHandoffDepthGrowCount:       self.receivePackHandoffDepthGrowCount.Load(),
-		PackHandoffDeepenedFlows:        self.receivePackHandoffDeepenedFlowCount.Load(),
-		PackHandoffAdaptiveMaxDepth:     self.receivePackHandoffAdaptiveMaxDepth.Load(),
-		PackHandoffAdaptiveMaxByteCount: self.receivePackHandoffAdaptiveMaxByteCount.Load(),
-		ReceiveQueueDropCount:           self.receiveQueueDropCount.Load(),
-		ReceiveQueueDropByteCount:       self.receiveQueueDropByteCount.Load(),
-		AckHandoffDropCount:             self.receiveAckHandoffDropCount.Load(),
-		AckHandoffQueueFullCount:        self.receiveAckHandoffQueueFullCount.Load(),
-		AckHandoffMissCount:             self.receiveAckHandoffMissCount.Load(),
-		AckHandoffWaitCount:             self.receiveAckHandoffWaitCount.Load(),
-		AckHandoffWaitSuccess:           self.receiveAckHandoffWaitSuccess.Load(),
-		AckRouteWriteCount:              self.receiveAckRouteWriteCount.Load(),
-		AckRoutePriorityWriteCount:      self.receiveAckRoutePriorityWriteCount.Load(),
-		AckRouteWriteBlockedCount:       self.receiveAckRouteWriteBlockedCount.Load(),
-		AckRouteWriteErrorCount:         self.receiveAckRouteWriteErrorCount.Load(),
+		PackHandoffDropCount:               self.receivePackHandoffDropCount.Load(),
+		PackHandoffDropByteCount:           self.receivePackHandoffDropByteCount.Load(),
+		PackHandoffWaitCount:               self.receivePackHandoffWaitCount.Load(),
+		PackHandoffWaitSuccess:             self.receivePackHandoffWaitSuccess.Load(),
+		PackHandoffMaxCount:                self.receivePackHandoffMaxCount.Load(),
+		PackHandoffMaxByteCount:            self.receivePackHandoffMaxByteCount.Load(),
+		PackHandoffSaturationCount:         self.receivePackHandoffSaturationCount.Load(),
+		PackHandoffDepthGrowCount:          self.receivePackHandoffDepthGrowCount.Load(),
+		PackHandoffDeepenedFlows:           self.receivePackHandoffDeepenedFlowCount.Load(),
+		PackHandoffAdaptiveMaxDepth:        self.receivePackHandoffAdaptiveMaxDepth.Load(),
+		PackHandoffAdaptiveMaxByteCount:    self.receivePackHandoffAdaptiveMaxByteCount.Load(),
+		ReceiveQueueDropCount:              self.receiveQueueDropCount.Load(),
+		ReceiveQueueDropByteCount:          self.receiveQueueDropByteCount.Load(),
+		ReceiveQueueEvictionCount:          self.receiveQueueEvictionCount.Load(),
+		ReceiveQueueEvictionByteCount:      self.receiveQueueEvictionByteCount.Load(),
+		ReceiveQueueEvictionNoticeOverflow: self.receiveQueueEvictionNoticeOverflow.Load(),
+		AckHandoffDropCount:                self.receiveAckHandoffDropCount.Load(),
+		AckHandoffQueueFullCount:           self.receiveAckHandoffQueueFullCount.Load(),
+		AckHandoffMissCount:                self.receiveAckHandoffMissCount.Load(),
+		AckHandoffWaitCount:                self.receiveAckHandoffWaitCount.Load(),
+		AckHandoffWaitSuccess:              self.receiveAckHandoffWaitSuccess.Load(),
+		AckRouteWriteCount:                 self.receiveAckRouteWriteCount.Load(),
+		AckRoutePriorityWriteCount:         self.receiveAckRoutePriorityWriteCount.Load(),
+		AckRouteWriteBlockedCount:          self.receiveAckRouteWriteBlockedCount.Load(),
+		AckRouteWriteErrorCount:            self.receiveAckRouteWriteErrorCount.Load(),
 		AckRouteWriteWaitDuration: time.Duration(
 			self.receiveAckRouteWriteWaitNanoseconds.Load(),
 		),
@@ -1990,6 +2016,7 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 		TimeoutResendDeferCount:             self.timeoutResendDeferCount.Load(),
 		CarrierChangeWriteCount:             self.carrierChangeWriteCount.Load(),
 		CarrierChangeSelectiveAckVoidCount:  self.carrierChangeSelectiveAckVoidCount.Load(),
+		SendEvictionResendCount:             self.sendEvictionResendCount.Load(),
 		SelectiveGapWriteCount:              self.selectiveGapWriteCount.Load(),
 		AckTailProbeWriteCount:              self.ackTailProbeWriteCount.Load(),
 		CumulativeProbeWriteCount:           self.cumulativeProbeWriteCount.Load(),
@@ -2573,6 +2600,8 @@ func (self *Client) recordSendRecovery(recoveryKind sendRecoveryKind, writeErr e
 		self.cumulativeProbeWriteCount.Add(1)
 	case sendRecoveryContractMissing:
 		self.missingContractWriteCount.Add(1)
+	case sendRecoveryEviction:
+		self.sendEvictionResendCount.Add(1)
 	}
 	if writeErr != nil {
 		self.recoveryWriteErrorCount.Add(1)
@@ -5804,6 +5833,12 @@ type SendSequence struct {
 	// the receiver's latest advertised hold (THROUGHPUTFIX §37.3)
 	receiveWindowByteCount atomic.Uint64
 	receiveWindowSet       atomic.Bool
+	// Sequence numbers the receiver says it evicted, handed over from the ack
+	// worker for the sequence goroutine to act on. The item state an eviction
+	// changes belongs to the sequence goroutine, so the notice crosses here
+	// under a leaf lock rather than being applied where it arrives.
+	pendingEvictedMutex    sync.Mutex
+	pendingEvictedSequence []uint64
 	// laneAcks is the highest acknowledged sequence number per carrier route,
 	// a fixed array scanned linearly since a snapshot has a handful of
 	// routes, reset on a route generation change. It is what lets the
@@ -6305,6 +6340,16 @@ type receiveAckMessage struct {
 	// against the tail rather than adding a word of its own.
 	receiveWindowSet       bool
 	receiveWindowByteCount uint32
+	// Set when the receiver removed items from its hold after acknowledging
+	// them. A pointer rather than a slice so this struct stays comparable and
+	// so the common case, which is every acknowledgement that evicts nothing,
+	// costs one word.
+	evictions *ackEvictionNotice
+}
+
+// The items a receiver removed from its hold after acknowledging them.
+type ackEvictionNotice struct {
+	sequenceNumbers []uint64
 }
 
 type receiveAckHandoffResult uint8
@@ -6341,6 +6386,11 @@ func receiveAckMessageFromProtocol(ack *protocol.Ack) (receiveAckMessage, error)
 	if ack.ReceiveWindowByteCount != nil {
 		receiveAck.receiveWindowByteCount = uint32(min(*ack.ReceiveWindowByteCount, math.MaxUint32))
 		receiveAck.receiveWindowSet = true
+	}
+	if 0 < len(ack.EvictedSequenceNumbers) {
+		receiveAck.evictions = &ackEvictionNotice{
+			sequenceNumbers: ack.EvictedSequenceNumbers,
+		}
 	}
 	if 0 < len(ack.MissingContractId) {
 		receiveAck.missingContractId, err = IdFromBytes(ack.MissingContractId)
@@ -6443,6 +6493,10 @@ func (self *SendSequence) coalesceReceivedAck(
 	ackWindow *sequenceAckWindow,
 	ack receiveAckMessage,
 ) {
+	// Before the pending check: an eviction notice rides whatever
+	// acknowledgement is next, which may be one whose own message this sender
+	// has already released.
+	self.observeEvictions(ack)
 	sequenceNumber, ok := self.resendQueue.ContainsMessageId(ack.messageId)
 	if !ok {
 		return
@@ -7114,6 +7168,8 @@ sendSequenceLoop:
 		}
 
 		sendTime := time.Now()
+		// before the recovery scans, so an evicted item is due on this pass
+		self.resendEvicted(self.takePendingEvictions())
 		if flightPolicyChanged {
 			self.scheduleRetiredReliableCarrierRecovery(sendTime)
 		}
@@ -8926,6 +8982,67 @@ func (self *SendSequence) observeReceiveWindowAdvertisement(ack receiveAckMessag
 	self.receiveWindowSet.Store(true)
 }
 
+// Resends the items the receiver says it removed from its hold after
+// acknowledging them (THROUGHPUTFIX §37.16).
+//
+// A selective acknowledgement does not release the item. It marks it, pushes
+// its resend time out by SelectiveAckTimeout and returns it to the resend
+// queue, and every resend path skips a marked item: the paced resend, the gap
+// recovery and the carrier-change resend that fires on route death. Only the
+// timeout resend clears the mark, a minute later, by which time the sequence's
+// own ack timeout is due from the same refreshed send time. So an eviction the
+// sender is not told about is a silent withdrawal, and what the failover cell
+// measured past the hold threshold is not extra retransmission but a stalled
+// transfer.
+//
+// Clearing the mark and making the item due now is the whole of the fix. It
+// takes the unbounded path rather than the gap recovery's burst of four per
+// scan, because an eviction generation is as large as what was in flight on a
+// dead route.
+// Hands an eviction notice to the sequence goroutine.
+func (self *SendSequence) observeEvictions(ack receiveAckMessage) {
+	if ack.evictions == nil || len(ack.evictions.sequenceNumbers) == 0 {
+		return
+	}
+	self.pendingEvictedMutex.Lock()
+	defer self.pendingEvictedMutex.Unlock()
+	self.pendingEvictedSequence = append(
+		self.pendingEvictedSequence, ack.evictions.sequenceNumbers...)
+}
+
+func (self *SendSequence) takePendingEvictions() []uint64 {
+	self.pendingEvictedMutex.Lock()
+	defer self.pendingEvictedMutex.Unlock()
+	if len(self.pendingEvictedSequence) == 0 {
+		return nil
+	}
+	evicted := self.pendingEvictedSequence
+	self.pendingEvictedSequence = nil
+	return evicted
+}
+
+func (self *SendSequence) resendEvicted(evictedSequenceNumbers []uint64) {
+	if len(evictedSequenceNumbers) == 0 {
+		return
+	}
+	now := time.Now()
+	for _, sequenceNumber := range evictedSequenceNumbers {
+		item := self.resendQueue.GetBySequenceNumber(sequenceNumber)
+		if item == nil || !item.selectiveAcked {
+			// already released, already resent, or never ours
+			continue
+		}
+		removed := self.resendQueue.RemoveBySequenceNumber(sequenceNumber)
+		if removed != item {
+			panic(errors.New("Missing evicted item"))
+		}
+		item.selectiveAcked = false
+		item.resendTime = now
+		item.recoveryKind = sendRecoveryEviction
+		self.resendQueue.Add(item)
+	}
+}
+
 // The latest hold the receiver advertised, and whether it has advertised one.
 // A peer that never has is legacy, and the window rule holds at the shipping
 // receive hold against it rather than growing to a size it could not take.
@@ -8944,13 +9061,50 @@ func (self *SendSequence) receivedWindowAdvertisement() (ByteCount, bool) {
 // The share is this sequence's own bound, further bounded by what a shared
 // receive budget will lend, so a receiver never advertises memory it would
 // have to borrow from its other sequences.
+// Records an eviction for the next acknowledgement to carry.
+func (self *ReceiveSequence) noteEviction(sequenceNumber uint64) {
+	self.evictedMutex.Lock()
+	defer self.evictedMutex.Unlock()
+	if evictionNoticeMaxCount <= len(self.evictedSequenceNumbers) {
+		self.client.receiveQueueEvictionNoticeOverflow.Add(1)
+		return
+	}
+	self.evictedSequenceNumbers = append(self.evictedSequenceNumbers, sequenceNumber)
+}
+
+// Takes the pending evictions for one acknowledgement to carry.
+func (self *ReceiveSequence) takeEvictions() []uint64 {
+	self.evictedMutex.Lock()
+	defer self.evictedMutex.Unlock()
+	if len(self.evictedSequenceNumbers) == 0 {
+		return nil
+	}
+	evicted := self.evictedSequenceNumbers
+	self.evictedSequenceNumbers = nil
+	return evicted
+}
+
+// What the receiver may hold out of order, measured from the delivered point:
+// its capacity, not its free space.
+//
+// THROUGHPUTFIX §37.16 corrects §37.3 here. Capacity less what is held double
+// counts, because a selective acknowledgement does not release the item — the
+// sender keeps it in its resend queue on a lease — so held bytes are already
+// inside the sender's outstanding count. Subtracting them would shrink the
+// window by the held amount for nothing and, as the hold fills after a route
+// death, pull the right edge of the window inward, which is the one thing a
+// window must never do. The figure is monotone except when the budget moves.
+//
+// The rule this pairs with on the sender: outstanding-from-delivered at most
+// this. A sender that keeps to it can never force an eviction whatever the gap
+// structure, because the hold would have to contain more than the sender has
+// outstanding.
 func (self *ReceiveSequence) receiveWindowAdvertisement() uint64 {
 	share := self.receiveBufferSettings.ReceiveQueueMaxByteCount
 	if budget := self.receiveQueue.Budget(); budget != nil {
 		share = min(share, budget.TotalByteCount())
 	}
-	_, held := self.receiveQueue.QueueSize()
-	return uint64(max(0, share-held))
+	return uint64(max(0, share))
 }
 
 // How many samples the ring holds, for the window rule's evidence.
@@ -9102,6 +9256,14 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 		ceiling = min(ceiling, receiveHoldShippingByteCount())
 	}
 	estimate.Ceiling = ceiling
+	// The ceiling binds the bet as well as the sized value. A receiver's
+	// capacity does not depend on the sender having round-trip samples, and
+	// §37.16's rule — outstanding-from-delivered at most the advertised
+	// capacity — has to hold from the first Pack or the opening burst is
+	// exactly what overruns the hold. Measured before this clamp existed: a
+	// 4 MiB initial against a 256 KiB advertised hold gave 35 evictions and
+	// 330 refused arrivals while the sized window was reporting 64 KiB.
+	estimate.Window = min(max(initial, floor), ceiling)
 
 	// The round trip it can see.
 	roundTrip := self.rttWindow.Estimate()
@@ -9841,6 +10003,11 @@ const (
 	sendRecoveryAckTailProbe
 	sendRecoveryCumulativeProbe
 	sendRecoveryContractMissing
+	// the receiver told us it removed an item it had already acknowledged
+	// (THROUGHPUTFIX §37.16). Not a gap: the gap recovery's burst is sized for
+	// a few late packets and an eviction generation is bounded by what was in
+	// flight on a dead route, so these ride the unbounded path.
+	sendRecoveryEviction
 )
 
 type sendItem struct {
@@ -10116,6 +10283,15 @@ type ReceiveBufferSettings struct {
 	// cell has yet run, and the shipping window is under the hold by an
 	// accident of ordering rather than by design.
 	AdvertiseReceiveWindow bool
+	// EvictionNotice puts the sequence numbers of items this receiver removed
+	// from its hold after acknowledging them onto the next acknowledgement, so
+	// the sender resends them instead of holding a sixty second lease on bytes
+	// that are gone (THROUGHPUTFIX §37.16). On by default: silent reneging is a
+	// correctness defect that exists without any window change, and a receiver
+	// whose hold is smaller than its peer's window can reach it today. Off is
+	// the pre-fix behaviour and exists so a cell can measure the difference in
+	// one binary.
+	EvictionNotice bool
 	// ReceiveQueueRetainedByteAccounting charges the shared queue budget for
 	// carrier/frame backing classes plus the decoded owner rather than payload
 	// bytes alone. Per-sequence ReceiveQueueMaxByteCount remains a logical
@@ -10728,6 +10904,13 @@ func (self *ReceiveBuffer) Flush() {
 	}
 }
 
+// The most eviction notices one acknowledgement will carry. An eviction
+// generation after a route death is bounded by what was in flight on the dead
+// route, so at a 16 MiB window and 4 KiB items it is a few thousand; anything
+// past this cap keeps the sixty second lease and is counted, because the one
+// thing this must not do is make the harm invisible again.
+const evictionNoticeMaxCount = 4096
+
 type ReceiveSequence struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -10740,6 +10923,11 @@ type ReceiveSequence struct {
 
 	source     TransferPath
 	sequenceId Id
+	// Sequence numbers the hold removed after acknowledging them, drained onto
+	// the next acknowledgement. Written by the pack worker and read by the ack
+	// writer, so it takes its own leaf lock.
+	evictedMutex           sync.Mutex
+	evictedSequenceNumbers []uint64
 	// immutable receiver-visible lane metadata copied into every Peer callback.
 	transferKey TransferKey
 	// encryptionRole is the local per-peer session role that owns this
@@ -11447,6 +11635,14 @@ func (self *ReceiveSequence) Run() {
 			if advertiseReceiveWindow {
 				receiveWindowByteCount = self.receiveWindowAdvertisement()
 			}
+			// Evictions ride the next acknowledgement whatever the
+			// advertisement setting: a receiver that withdraws bytes has to say
+			// so even to a peer that never told it anything
+			// (THROUGHPUTFIX §37.16).
+			evictedSequenceNumbers := []uint64(nil)
+			if self.receiveBufferSettings.EvictionNotice {
+				evictedSequenceNumbers = self.takeEvictions()
+			}
 
 			var transferFrameBytes []byte
 			if 2 <= self.receiveBufferSettings.ProtocolVersion {
@@ -11463,6 +11659,7 @@ func (self *ReceiveSequence) Run() {
 					logicalLaneVersion:      transferLogicalLaneVersion,
 					receiveWindowByteCount:  receiveWindowByteCount,
 					receiveWindowSet:        advertiseReceiveWindow,
+					evictedSequenceNumbers:  evictedSequenceNumbers,
 				}
 				if sendAck.contractMissing {
 					saf.missingContractId = &sendAck.missingContractId
@@ -11480,6 +11677,7 @@ func (self *ReceiveSequence) Run() {
 				if advertiseReceiveWindow {
 					ack.ReceiveWindowByteCount = &receiveWindowByteCount
 				}
+				ack.EvictedSequenceNumbers = evictedSequenceNumbers
 				if sendAck.contractMissing {
 					ack.MissingContractId = sendAck.missingContractId.Bytes()
 				}
@@ -12079,6 +12277,12 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			lastItem := self.receiveQueue.PeekLast()
 			if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
 				self.receiveQueue.RemoveByMessageId(lastItem.messageId)
+				self.client.receiveQueueEvictionCount.Add(1)
+				self.client.receiveQueueEvictionByteCount.Add(
+					uint64(max(lastItem.MessageByteCount(), 0)))
+				// the sender was told this item arrived; tell it that it did
+				// not survive (THROUGHPUTFIX §37.16)
+				self.noteEviction(lastItem.sequenceNumber)
 				lastItem.messagePoolReturn()
 			} else {
 				break
