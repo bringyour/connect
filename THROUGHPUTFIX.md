@@ -3436,3 +3436,124 @@ connect on Android, which is where the relay is most expensive.
 The first row is where a multiple lives on every client and on the
 number the reporter measured; the second and third are multiples for
 particular hosts; the fourth is aggregate only; the fifth is a dead end.
+
+### 31.8 The direction asymmetry: what the download path carries that the upload path does not
+
+The pin pair's number that matters here: in the same harness, same
+process, same tun and same client stack, an upload reaches 665 Mb/s
+(pinned, 12 ms compression) while a download tops near 300. So the
+harness's client is not uniformly expensive per byte, and 31.4's simple
+form, "the userspace stack is the cost", is too coarse. The two paths
+differ in three stages, all per packet, and all three are on the
+download side.
+
+Upload, from source: the client stack's send path segments the app's
+write, emits segments to the tun, the harness reads them, the NAT's
+dispatch shard parses and hands each to its flow's send loop, and the
+socket writer gathers up to 64 payloads into one vectored write that the
+kernel copies once. The reverse traffic is the NAT's acknowledgements,
+which the NAT compresses to one per timer interval or per half window:
+tens per second, each processed by the client stack's send side as one
+cumulative acknowledgement that frees hundreds of segments at once.
+
+Download, from source: the NAT reads 64 KiB and `DataPackets` segments
+it, one pool buffer, one payload copy, one header and one checksum pass
+per 1,448 bytes; each segment crosses a channel to the batch consumer,
+which injects it into the tun; the client stack's receive path verifies
+the checksum, takes the endpoint lock, queues or reassembles, delivers,
+and generates an acknowledgement every second segment; and every one of
+those acknowledgements comes back through the tun, the harness reader,
+the NAT's single dispatch shard, the flow's `sendItems` channel and
+`handleSendItem`, where `applySendAckWithLock` advances the window and
+wakes the reader. At 665 Mb/s that would be 28,000 reverse packets a
+second, each paying every per-packet ingress stage.
+
+So the stages absent from the upload path are: segmentation at the NAT
+(the kernel does it for the upload, on a vectored write); the client
+stack's receive path per segment (the cell measured it at about four
+times its UDP receive; the send path's cost is bounded above by the
+upload result itself); and the inner acknowledgement chain at TCP's
+native rate, which the upload never pays because our NAT compresses its
+own acknowledgements and nothing compresses the client's. That last one
+is the sharpest reading of the asymmetry: downloads pay for
+uncompressed inner acknowledgements through the whole chain, uploads do
+not, and the difference is about a 28,000-packet-per-second reverse
+stream at the reporter's rate. On the reporter's path those packets do
+not stop at a dispatch shard: each becomes its own Pack unless the
+client batches its tun reads, with its own marshal, session cipher, TLS
+record, exchange forward and provider receive, at roughly eight times
+the Pack rate of the data itself.
+
+What this does to candidate two: the specific version stands and is
+narrower than 31.4. For gVisor-hosted clients the receive path per
+segment is a real term and the kernel tun removes it; for every client
+the two terms on our side of the tun remain, `DataPackets` and the
+acknowledgement chain, and both are packets-per-byte costs that the
+inner MTU divides and nothing else on the list touches. The cheap lever
+the asymmetry names by itself is acknowledgement thinning at the
+client's tun, the mirror of the NAT's compression, which carries §22's
+and §25's caveats in the other direction and is not designed here. The
+namespace cell's acceptance test follows: reach the reporter's figure on
+a download, and record packets per second in each direction beside the
+throughput, because the reverse stream is the number that decides which
+term binds.
+
+### 31.9 Two candidates from the implementation stream, weighed against the ordering domain
+
+The lane reading is confirmed by direct reading: a real provider with a
+real return path and a count of eight returns on lane three only when
+the client is on lane three, and on lane zero when the client is; the
+explicit reply key short-circuits before the count, the version and the
+scheduling key are consulted, the scheduling key is valid on every
+return, and the version is never reached. §27.5's one-field change is
+what the row asserts.
+
+The send buffer's client-wide mutex, taken once per Pack for the
+sequence lookup. What it protects: the sequence maps (`sendSequences`,
+the wire and sequence-id indexes, the destination index), against
+creation and retirement racing with lookup. Whether it is needed on the
+Pack path: a lookup needs only a consistent snapshot, so a copy-on-write
+map read atomically, with creation re-checking under the lock, is
+correct and removes the acquisition; the implementation stream did the
+same for the gate. Whether it is the flow-scaling limit: no, and I must
+correct §30.3 in the same breath. Packs are groups of up to sixteen
+packets, so the Pack rate at 665 Mb/s is about 3,600 per second and in
+the cell about 1,600; an uncontended mutex acquisition is tens of
+nanoseconds, a contended one perhaps a microsecond, and at those rates
+either is under a thousandth of a core. The 13 to 17 per cent I
+attributed to the gate's second acquisition cannot be that lock, and the
+cell in which the flow scaling was measured has no Transfer layer and no
+send buffer at all, so the lock cannot be in its 1.84 either. The
+unconditional acquisition is of the same order as the gate's, which is
+to say negligible, and replacing it is hygiene. The ordering domain is
+not this lock wearing its clothes: the domain's cost is one goroutine
+per client doing every Pack's marshal and cipher in series, and the
+fixes are different because the costs are different. The 13 to 17 per
+cent stays unexplained until the arms are rerun with the gate's
+acquisition removed, which the implementation stream has already done;
+if the gap remains, it is elsewhere in the arm, and if it vanishes I was
+right for the wrong reason and will say so.
+
+The local NAT's `SendShardCount`, defaulting to one. Why it is one, from
+the settings' own comment: each shard's dispatch channel holds
+`SequenceBufferSize` slots that pin in-flight pool buffers under
+backpressure, so shards multiply pinned memory, and the count sits
+beside the memory-scaled buffer size for that reason; flows pin to a
+shard by address tuple so per-flow order survives any count. What the
+shard does per packet: parse the headers, look up the flow under the NAT
+mutex, hand off to the flow's channel, one to three microseconds. At the
+rates in question, 57,000 upload packets a second at 665 Mb/s or 28,000
+download acknowledgements, that is six to seventeen per cent of one
+core, real and not binding; it binds at several gigabits, which is where
+this program wants to be and is not. So it is a genuine per-client
+serialization, cheap to enable, costed in pinned memory by design, and
+not the current bound; the row that would show when it binds is the
+dispatch shard's occupancy and CPU share beside throughput, and enabling
+it should wait for that reading rather than for optimism.
+
+Neither displaces the ordering domain in the aggregate story, and
+neither touches the single-flow number, which 31.2 and 31.8 place in
+the per-packet stages and the acknowledgement chain. The merge of the
+runtime pin rule stands as a regression fix: eighteen per cent of upload
+at the shipping compression and twenty-six at 12 ms on this host is what
+an unconditional deletion would cost, twelve of twelve paired.
