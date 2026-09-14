@@ -2298,3 +2298,30 @@ is chosen here; the quiescence bound is the campaign's.
 | K1 | `TestHalfWindowSignalCannotFireBelowHalfTheAdvertisedWindow` | a peer sending bursts smaller than `windowSize/2` receives acknowledgements only at `AckCompressTimeout` intervals | none; characterises the structure | in-process |
 | K2 | `TestAckIsNotWithheldFromABurstThatStopped` (after the remedy) | with bytes outstanding and no arrival for the quiescence bound, the acknowledgement leaves within that bound rather than at the timer | the tree as shipped | in-process |
 | K3 | `TestRecoveryAfterATimeoutIsNotClockedByCompression` | a peer stack (the tun's gVisor) that takes one retransmission timeout on a 50 ms path recovers its window within a bound set by round trips, not by `AckCompressTimeout` multiples | the tree as shipped | in-process, tun and NAT |
+
+### 25.1 The two claims, and the reading that replaces the inference
+
+The measurement stream's evidence for the trigger is complete: five of
+five collapsed runs show exactly one timeout retransmission and ten of
+ten healthy runs none, the timeout fires because a held acknowledgement
+crosses the peer's 200 ms floor rather than because anything was lost,
+and one firing suffices because the smoothed estimate then adapts while
+the collapsed window is starved. That is the first claim, and it needs
+an absurd constant on a clean path.
+
+The second claim is what §25 argues and is independent of the trigger:
+any collapse of the peer's window, ordinary loss on a real path
+included, is followed by acknowledgement-clocked growth that the
+compression timer paces once the peer's window is under half of the
+advertised one, which is every recovery. It reaches the shipping 50 ms,
+it is worst on the fastest paths, and the state that would let the NAT
+stop withholding is already local (bytes outstanding, arrivals stopped).
+The remedy is the suspension §25 shapes, not a smaller constant, and it
+is a design section and a campaign.
+
+To observe the growth directly rather than infer it from rates, the tun
+now returns a `TunTcpConn` that keeps its endpoint, and
+`TunTcpConn.TcpInfo()` reads the stack's `TCPInfoOption`: `SndCwnd`,
+`SndSsthresh`, `RTT`, `RTTVar`, `RTO`, `State` and `CcState`. Sampling it
+through a collapsed run should show the congestion window stepping once
+per compression interval after the timeout, which is row K3's reading.
