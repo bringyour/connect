@@ -600,6 +600,60 @@ count not derived from the path. On a real H3 carrier it would bind at 3 MiB.
 
 ---
 
+### 3.10 Why every cell was flat, and where occupancy could ever approach a window
+
+The fact that explains both falsifications, present in the design's own record
+and not applied either time: **the sequence goroutine writes a Pack to the
+carrier BEFORE it enters the resend queue.** So the queue holds only what the
+carrier has already accepted. Against a carrier accepting at the drain rate
+that is 20 KiB, and no window above it is ever reached. Both cells were flat,
+and flat at the same figure, for this reason.
+
+It follows that occupancy can approach the window only where a layer below the
+sequence accepts faster than the far end drains. Neither carrier here does:
+the reliable one accepts only what its congestion window allows, an autotuned
+kernel socket about twice its own BDP, and no carrier socket is pinned. **The
+one such layer on the production path is the platform relay**, whose bound
+lives in the server tree -- the harness's 1024-frame route buffer was a model
+of it.
+
+A fast long-RTT wire fills the window in flight, but that is the throughput
+case, not a harm.
+
+### 3.11 The one constructible harm: multi-route reordering
+
+With a single reliable carrier a loss is a **contiguous tail**, resent in
+order, so the receiver's out-of-order hold is never used. That is why no cell
+has exercised it.
+
+With **two routes**, a route death leaves a **scattered subset**, the hold must
+buffer around the gaps, and beyond 2.5 MiB it evicts.
+
+A two-route failover cell is being built. Predictions recorded before it runs:
+
+  without the advertisement      ~2 MiB evicted and retransmitted
+  with it                        zero
+  at the shipping 2 MiB window   zero, by an accident of ordering
+                                 under the 2.5 MiB hold
+
+That third row is what makes it a test rather than a demonstration: the
+shipping configuration is safe by **luck, not design**, so the harm appears
+only once the window grows past the hold. Which makes the advertisement not a
+fix for an existing bug but **a prerequisite for the ceiling raise being
+safe**.
+
+If the first row shows no eviction, the advertisement has no measured
+justification and should not land.
+
+### 3.12 The landing, sized to the evidence
+
+| Group | Contents |
+|---|---|
+| **Measured, lands** | Raise the transfer, tun and H3 ceilings consistently (H3 pending the namespace cell). The 1.7-2.3x throughput result |
+| **Structural and cheap, lands** | The interval and floor correction; the mandatory budget (no-budget-means-floor). A rule that measures a resend timer instead of a round trip is wrong on its own terms, whatever its consequences |
+| **Structural, measure first** | The receive advertisement, conditional on the two-route cell |
+| **Deferred** | Proportional occupancy division and pooling, until a regime produces the need |
+
 ## 4. What is still open
 
 | Question | State |
