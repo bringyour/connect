@@ -112,6 +112,15 @@ func newTransferQueue[T transferQueueItem](cmp TransferQueueCmpFunction[T]) *tra
 	return transferQueue
 }
 
+// Budget is the shared budget this queue borrows above its floor from, or nil
+// when it is bounded only by its own maximum. Read to bound a window by what
+// the budget will lend rather than by a per-queue constant.
+func (self *transferQueue[T]) Budget() *TransferMemoryBudget {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return self.budget
+}
+
 // setBudget attaches a shared budget with a guaranteed floor. Set before the
 // queue is used; the floor and budget do not change afterwards.
 func (self *transferQueue[T]) setBudget(budget *TransferMemoryBudget, minByteCount ByteCount) {
