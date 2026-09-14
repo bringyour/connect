@@ -4159,37 +4159,44 @@ imposed delay to the loop's actual round trip, which is our
 acknowledgement delay. Both are stated below; the record already
 carries the two numbers that make the first exact.
 
-Bytes of a full-size upload packet on the wire, from the protobuf
-definitions (`protocol/transfer.proto`, `protocol/frame.proto`) and the
-send-path literal (`transfer.go:8366–8404`), steady state, one IP packet
-per Pack (`sendPackBatchMaxMessageByteCount = DefaultMtu = 1100`, so two
-full packets never coalesce):
+Bytes of a full-size upload packet on the wire, as a running ledger,
+from the protobuf definitions (`protocol/transfer.proto`,
+`protocol/frame.proto`) and the send-path literal
+(`transfer.go:8366–8404`), steady state, one IP packet per Pack
+(`sendPackBatchMaxMessageByteCount = DefaultMtu = 1100`, so two full
+packets never coalesce). The harness read an earlier form of this list
+as 1,375 B, which gives 0.901; that reading omitted the frame wrapper
+and the seal, so the ledger is stated with totals at every step:
 
-- inner IP packet: `DefaultTunnelMtu` 1,280 B; payload 1,240 B, or
-  1,228 B with TCP timestamps;
-- `Frame{message_type, message_bytes, raw}` around it: 1,290 B as the
-  repeated field, including its two-byte length;
-- `Pack`: `message_id` 18, `sequence_id` 18, `sequence_number` 4,
-  `tag{send_time}` 9, plus the frame: 1,339 B. `head`, `nack`,
-  `contract_frame` and `contract_id` are absent on a steady-state
-  acknowledged Pack; a compact contract head adds 18;
-- outer `TransferFrame`: `transfer_path` with two ids 38 B (56 with a
-  stream id), the `TransferPack` frame wrapper 8 B: 1,385 B plaintext;
-- the encrypted form seals the same bytes with a 12 B nonce and a 16 B
-  GCM tag (`transfer_encrypt.go:91,308`) and adds the field wrapper and
-  the two session hints: about 1,420 B.
+    inner IP packet, DefaultTunnelMtu                        1,280
+      of which TCP payload: 1,240, or 1,228 with timestamps
+    Frame{message_type 2, message_bytes tag+len 3, raw 2}    1,287
+    as Pack.frames, repeated tag + two-byte length            1,290
+    Pack: message_id 18, sequence_id 18, sequence_number 4,
+      tag{send_time} 9                                        1,339
+    outer Frame{TransferPack}: message_type 2, tag+len 3      1,344
+    TransferFrame.frame tag + length                          1,347
+    TransferFrame.transfer_path, two ids                      1,385  plaintext
+    seal: nonce 12, GCM tag 16, field tag+len 3,
+      session_role 2, session_companion 2                     1,420  encrypted
 
-So goodput per framed byte is 0.887 plaintext or 0.865 encrypted with
-timestamps (0.895 and 0.873 without), and for the download direction,
+`head`, `nack`, `contract_frame` and `contract_id` are absent on a
+steady-state acknowledged Pack; a compact contract head adds 18 and a
+stream id 18. So goodput per framed byte is 0.887 plaintext and 0.865
+encrypted with timestamps (0.895 and 0.873 without); for download,
 where the provider packetizer builds 1,100 B packets with 1,060 B of
-payload, 0.880 plaintext or 0.855 encrypted. The fitted 0.845 is that
-factor times D/(D + δ) with δ our acknowledgement delay. The reading
-that fits both the derivation and the receiver's 10 ms
-`AckCompressTimeout` is the encrypted upload frame: 0.865 gives
-δ = 4.7 ms at 200 ms, the mean wait under a 10 ms timer; the plaintext
-frame would need δ = 10 ms, every acknowledgement waiting the full
-timer, which the timer does not do. The two 2 MiB points solved
-directly for the pair give 0.84 and 4 to 5 ms, the same reading.
+payload, 0.880 and 0.855.
+
+Measured: 0.860, from the record's mean frame length against the inner
+segment size, half a per cent from the encrypted-with-timestamps row.
+It implies a mean frame of 1,428 B, eight bytes above the ledger, which
+is a varint or an occasional contract id and is within what the ledger
+can say. The fitted 0.845 is that factor times D/(D + δ) with δ our
+acknowledgement delay: 0.860 gives δ = 3.5 ms at 200 ms, under the
+10 ms `AckCompressTimeout` and near its mean wait. The plaintext row
+would need δ = 10 ms, every acknowledgement waiting the full timer,
+which the timer does not do; the two 2 MiB points solved directly for
+the pair gave 0.84 and 4 to 5 ms, the same reading.
 
 What makes it exact rather than argued: `DestinationSendStats` already
 carries `writeByteCount` and `writeCount`, whose quotient is the mean
@@ -4258,6 +4265,11 @@ capacity. The other framed-byte bounds are excluded by the sweep
 itself: the resend queue was raised past the plateau, the shared resend
 budget is sized as one `ResendQueueMaxByteCount` and scales with it,
 and the 2.5 MiB receive queue holds only out-of-order Packs.
+
+Confirmed. Cell C identified the plateau as the tunnel's send buffer at
+its 4 MiB cap, with both predictions above hitting and 32 of 32 runs
+valid: halving the tun's maximum halved the plateau, halving the
+origin's socket ceiling moved nothing.
 
 ### 36.5 The delivery-sized rule as built
 
@@ -4606,13 +4618,15 @@ an operator can reason about without knowing the round trip:
 
 From these each layer's window is derived:
 
+    window_L = initial_L                                  until sampled
     window_L = clamp(min(T × rtt_L, k × achieved_L × rtt_L),
-                     initial_L,
-                     share_L)
+                     floor_L,
+                     share_L)                             once sampled
 
 where `rtt_L` is the minimum round trip that layer measures on its own
 loop, `achieved_L` is the delivery rate it measures, `share_L` is its
-draw on M, and framed layers divide by their goodput factor so that a
+draw on M, `floor_L` is a working minimum of a few packets and not the
+initial bet, for the reason §37.13 gives, and framed layers divide by their goodput factor so that a
 goodput target means the same bytes at every layer. The three terms are
 three visible regimes: if the path is full the window sits at k times
 delivery, §36.7; if the target is the limit it sits at T times the
@@ -4728,24 +4742,36 @@ plus the Transfer hold under loss. And a fourth on loop A, the upstream
 socket's kernel buffer, which is the kernel's memory but the provider's
 host.
 
-One flow on a long path therefore holds, at the sender, the target
-times the sum of the loops' round trips over the copies, T × (rtt_B +
-rtt_C + rtt_D): at most three times T × rtt_B, and about 1.75 times it
-in the production ratio of §37.11. Sizing every layer to its own
-bandwidth-delay product does not change the copy count; it was already
-three, at three constants that happened to be near each other. What the
-budget does is make the aggregate a choice: N clients each hold at most
-their shares across the copies, the shares come from M, and when the
-sum of needs exceeds M the shares scale down together and the achieved
-rate falls short of T, visibly. The composite bound is then
+What is held is not what is permitted, and the record now has the
+measurement that separates them (§37.13): a 16 MiB window on a short
+path held 1.04 MiB of pool, the same as a 2 MiB window on the same path
+held, because a window is an admission limit and occupancy is what the
+path puts in flight. Occupancy at a layer is the achieved rate times
+that layer's own round trip, plus whatever stands as queue when the
+layer below is slower; it reaches the permission only where the path
+can fill it. One flow on a long path therefore holds, at the sender,
+the achieved rate times the sum of the loops' round trips over the
+copies, `achieved × (rtt_B + rtt_C + rtt_D)`: at most three times
+`T × rtt_B`, about 1.75 times it in the production ratio of §37.11,
+and far less than any of those on a short path however large the
+window. Sizing every layer to its own bandwidth-delay product does not
+change the copy count; it was already three, at three constants that
+happened to be near each other. What the budget does is make the
+aggregate a choice: it bounds occupancy, the sum of what clients
+actually hold, and when that sum approaches M admission stops at the
+pool and the achieved rate falls short of T, visibly. The composite
+bound is then
 
-    one flow:          Σ over copies of min(T × rtt_L, share_L)
-    a provider:        Σ over clients ≤ M, by construction
+    one flow, occupancy:   Σ over copies of achieved × rtt_L,
+                           at most Σ over copies of min(T × rtt_L, share_L)
+    a provider:            Σ over clients of occupancy ≤ M, by construction
 
-and nothing measured can exceed M, which is what makes it shippable.
-The distribution of M into shares is the floor-and-borrow admission the
-queues already have (§29), one pool per copy kind rather than per
-sequence; the design does not add a second allocator.
+and the permissions may sum to more than M, because on every path
+shorter than the knee they are not held. A memory argument that counts
+permission as occupancy would push the shares smaller than they need
+to be and cost throughput on exactly the paths that could use it,
+which is why the earlier form of this paragraph was wrong in the
+direction that matters.
 
 Two consequences worth having plainly. First, sizing from the path
 with a budget is cheaper than today's constants, not dearer: a flow on
@@ -4780,8 +4806,9 @@ independent rules and does not fail when the path changes.
 
 ### 37.9 What each layer becomes
 
-- Transfer send, both roles: `window = clamp(min(T × rtt_min / f,
-  k × achieved × rtt_min), initial, min(share, advertised))`, with
+- Transfer send, both roles: `initial` until sampled, then
+  `window = clamp(min(T × rtt_min / f, k × achieved × rtt_min),
+  floor, min(share, advertised))` with `floor` a few packets, with
   `rtt_min` from `RttEstimate.Min`, `achieved` as a rate between ring
   samples (§36.6), `f` the goodput factor, `advertised` from §37.3.
   `DeliverySizedWindowScale` and `DeliverySizedWindowCeilingByteCount`
@@ -5073,3 +5100,86 @@ the field. Absent samples, the window is the initial size of §37.5.
 One policy makes the safe configuration the default and the unsafe one
 impossible rather than discouraged, which is the property a comment
 cannot provide.
+
+### 37.13 Admission and occupancy: what the no-delay guard measured, and the slow last mile it did not
+
+The coordinator predicted the no-delay guard would fail on memory,
+because the interval defect makes a short path the worst case: at a
+5 ms delay the rule used 300 ms as its interval and computed a 16 MiB
+window against a 2 MiB fixed arm. The windows confirmed that. The
+memory did not follow: peak pool 1.043 against 1.051 MiB, the larger
+window higher in five of ten runs, peak heap within 80 KiB against a
+null band of 656, both deltas negative at 64 MiB. Peak pool was 0.066
+of the 16 MiB window and 0.52 of the 2 MiB one, which is the same
+1.04 MiB in both arms, and that number is the loop's bandwidth-delay
+product at the cell's rate: the path put the same bytes in flight
+whichever window permitted more. A window is an admission limit;
+occupancy is what the path fills. §37.7 is restated in those terms.
+
+Do they need different mechanisms. Yes, and Transfer already has both,
+which is the useful finding: the per-sequence window bounds admission,
+`CanAdd` against the estimate's `Window`, and the shared pool bounds
+occupancy, because `ResendQueueBudget` is charged by bytes actually
+queued and its floor-and-borrow admission refuses when the pool is
+full (§29). The companion policy the coordinator names, a sender stops
+admitting when what it holds approaches its share regardless of what
+its window permits, is the pool's admission when a budget is attached,
+and §37.12's rule that no budget means the floor is what makes it
+always present. So the budget divides occupancy and not permission:
+permissions may sum past M across clients, since on every path shorter
+than the knee they are not held, and the pool's floor guarantees each
+client its least and its borrow hands the rest to whoever fills it.
+For the layers whose growth we do not own, occupancy cannot exceed
+permission, a full buffer is the window, so their permission ceilings
+from the surface bound occupancy conservatively, and quic-go's growth
+veto can be driven by pool occupancy rather than by a constant. The
+failure mode moves accordingly: not a window shrunk in advance for a
+path that might have needed it, but admission refused at the pool
+when the held bytes reach it, counted and visible.
+
+The advertisement does two jobs. A receiver that advertises remaining
+capacity, its share less what it holds (§37.3), is telling the sender
+about occupancy, not permission, and that is the quantity that turned
+out to matter. Its first job was loss recovery: a sender's window may
+never exceed what the receiver can buffer around a hole. Its second is
+memory: a receiver at its budget throttles its senders instead of
+dropping, which is what TCP's window has always been, an occupancy
+signal from the receiver's buffer. The pool is the occupancy mechanism
+for the send side and the advertisement is the one for the receive
+side, and between them occupancy is bounded at both ends without
+dividing permission at either.
+
+The slow last mile, which the guard did not clear. Its cell has no
+bottleneck below the sender's rate, so the queue drains as fast as it
+fills. On a path bound below the sender, at a rate r, the sender fills
+its window and the excess stands as queue: occupancy is r × rtt plus
+the standing queue, the standing queue is the window less r × rtt, and
+every flow of that client sharing the writer waits behind it for
+window over r. Predictions for the cell the harness is building, the
+added delay per arm, which is rate-independent where it is the rule's
+own doing:
+
+- the shipping constant, 2 MiB: 2 MiB / r, 840 ms at 20 Mb/s, 170 at
+  100;
+- a 16 MiB constant: 16 MiB / r, 6.7 s at 20 Mb/s;
+- the rule as built: twice r × 300 ms over r is 600 ms at any rate
+  above the floor's, and the floor's 2 MiB / r below it, so never less
+  than 600 ms; the interval defect is a latency defect on slow paths,
+  not only a sizing one;
+- the rule with the minimum round trip and the rate form, and a floor
+  of a few packets: (k − 1) × rtt_min, one propagation round trip at
+  k = 2, tens of milliseconds.
+
+The reading that shows it is `Rtt.Mean − Rtt.Min` on the sequence,
+which is the standing queue in time, beside the pool's occupancy.
+
+That last row exposes a defect in the formula as I first wrote it, now
+corrected in §37.4 and §37.9. The initial size was the lower clamp of
+the rule, so a provider's wide-area bet of 3.6 MB would have stood as
+1.4 s of queue on a 20 Mb/s last mile for as long as the sequence
+lived. The initial is the value before the estimate has samples and
+nothing after; once sampled the rule may shrink to k × r × rtt_min,
+which on a slow path is far below today's constant, and the only floor
+under it is a working minimum of a few packets, which
+`ResendQueueMinByteCount` already is for reliable admission. A bet
+that cannot be walked back is not a bet.
