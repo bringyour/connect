@@ -1524,3 +1524,168 @@ what the 32 MiB budget scales. Row for the test stream, once the tunnel
 reading is in: `TestReturnPathDoesNotHoldAFreshFlowAtItsInitialWindow`,
 in process, asserting whichever tunnel-side bound the reading names grows
 within the first round trips of a fresh flow.
+
+### 15.4 The contradiction resolved: the cell and the runner agree, and the sentence was mine
+
+§15.1 said that on the runner's kernel a post-connect `SO_RCVBUF` "does
+not freeze the window at its SYN-time value". The measurement stream's
+cell, with the receive line restored, reads an advertised window of
+451,584 in six of six runs against 6,171,648 to 31,707,136 unmodified.
+Those were read as opposites. They are the same reading.
+
+Same kernel (`7.0.12-linuxkit`), same call (`SetReadBuffer(262144)` after
+connect, the 1 MiB budget's request, the cell's), same instrument
+(`tcp_info`, which is what `ss -ti` prints), loopback at MTU 1,500 with a
+50 ms round trip:
+
+| Arm | `rcvbuf` | `rcv_ssthresh` at the end, three runs |
+|---|---:|---|
+| pinned, 262,144 | 524,288 | 397,574, 394,460, 394,338 |
+| unpinned | 16,786,971, 33,554,432, 30,925,017 | 12,782,745, 25,558,071, 23,555,196 |
+| pinned, 212,992 (a stock host's clamp) | 425,984 | 319,385 |
+
+The cell's 451,584 is 0.86 × 524,288 and the runner's 395,000 is 0.75 ×
+524,288; the ratio is the kernel's learned payload fraction of an skb,
+which differs between a real interface and a netem loopback. Both say the
+same thing: after a post-connect pin the window is capped at the pinned
+buffer, thirteen times below what autotuning reaches on this host, and it
+is not frozen near the 64,088-byte establishment clamp. So of the four
+possibilities, it is the fourth in the harmless form: my reading was
+right and my sentence was ambiguous, and no two readings of this kernel
+disagree.
+
+What is kernel-dependent is the magnitude of the loss, not its sign. The
+reporter measured, with `strace` and `ss` on their production host, a
+window that stayed near 64 KB; on that kernel the clamp is left at its
+establishment value by a post-connect pin, and the loss is the whole
+window. On `7.0.12` the clamp follows the pin, and the loss is the gap
+between the pinned buffer and autotuning. On a stock host both are a
+loss of one order of magnitude or more against `tcp_rmem[2]`, and the
+deletion wins on both; on a host whose `2 × min(request, rmem_max)`
+exceeds `tcp_rmem[2]`, the pin wins on `7.0.12` and still loses on the
+reporter's kernel. §15's rule is right on both because it applies a
+receive pin only before connect, which sets the clamp from the buffer on
+every generation. Two things to tell the reporter: their diagnosis holds
+and is worse on their kernel than on a current one, and their fix is
+conditional twice, on the budget inequality of 15.1 and, for any future
+pin, on the kernel's treatment of a post-connect request.
+
+### 10.11 What 41d5045 does and does not answer, stated after the measurement stream's reading
+
+The measurement stream predicts, from the source, that a client whose
+acknowledgements are withheld past the timeout and then resumed is
+released on both trees. That is correct, and it is the trade §10.3 states:
+silence runs from the latest of the last acknowledgement, the outstanding
+count last rising from zero, and the last carrier absence, and a client
+that acknowledges nothing advances none of them. 41d5045 does not change
+that outcome and was not built to. What it changes is the quantity, which
+removes three false positives main has and this tree does not: a client
+that acknowledges slowly with several flows parked (row A2, §17's second
+shape), a freed slot restarting the clock (row A3), and the provider's
+own carrier being down (row A4). H4 as first posed, a live client that
+goes completely silent behind a stall and comes back, is a different
+problem and remains a decision on an estimate.
+
+Whether the provider can tell that client from a departed one: from its
+return path, no. Total silence is total silence, and the wedges of 209,
+264 and 723 s were exactly that on the relay route. From outside the
+return path there are two facts, one available now and one not:
+
+- A live direct route. When the destination is reached over a P2P
+  transport, that transport's own liveness (its consent and heartbeat
+  cadence) is the client's liveness within the transport's detection
+  time, and silence on the return path while the direct route stays up
+  is inadmissible. The route manager has no per-destination predicate
+  today, only `HasActiveTransport()` for the whole client; the addition
+  is `RouteManager.HasActiveDirectRoute(destinationId)`, reading the
+  writer match state's routes for a transport bound to that peer, and
+  `abandonSilentSource` advancing `carrierAbsentNanos` while it is true,
+  the way it does for the carrier. Not built in this round; it is the
+  next change in this path and it converts the trade into a decision on
+  a fact for every P2P-connected client.
+- Platform presence for exchange-relayed clients, §10.8, which is the
+  route the wedges were measured on and the only fact for it.
+
+The trade for the exchange-relayed case, and its cost, stated for the
+landing decision: a client silent for 120 s while the provider holds a
+carrier has its NAT flows retired and its return sequences cancelled, is
+readmitted at once, and on return finds its inner connections reset and
+re-establishes them; the retained bytes of the parked returns are lost
+with the flows. Per event that is one reconnect for that user. The
+benefit it buys is the reporter's: a departed client's zombies are gone
+in 120 to 150 s instead of never, which the report measured at 72 per
+cent of a provider's throughput at 40 of them. The rate of such events in
+production is not known; a counter of releases per provider
+(`releaseUnreachableSource` fires once per event and should increment a
+`CongestionDropStats` field, a one-line follow-up) would make it known,
+and the previous program's 0 of 120 runs silent for 120 s on the shipped
+tree is the only measurement in hand.
+
+The discriminating cell the stream describes, acknowledgements that
+continue but throttled so individual items park for many timeouts, is the
+right one for what was built. The evidence keys on the Transfer-level
+acknowledgement of this source's socket-owned return packs (each
+`sendAckResult` on the source's `sourceAckEvidence`) and on the count of
+those packs outstanding; it does not key on inner TCP acknowledgements,
+on packets received from the client, or on any other source. So the cell
+needs some acknowledgement of the source's returns to land at least once
+per 120 s while individual items wait longer than 120 s for a slot: forty
+flows on a client shaped to 50 kb/s gives a mean wait of forty times
+24 KiB over 50 kb/s, about 157 s. Main releases that client; this tree
+does not. Its positive control is the same client with all
+acknowledgements blocked for 150 s, which releases on both.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| A11 | `TestLiveClientSilentPastTheTimeoutIsReleasedAndReadmitted` | the trade, explicitly: acknowledgements withheld past T while the provider holds a carrier; the release fires within [T, 1.3 T] of the last acknowledgement; the parked producer returns with sent = false; the source is readmitted; a subsequent return from the same source is admitted under a fresh lifecycle whose evidence reads nothing outstanding | holds on both trees; documents the trade and keeps it from being widened silently | in-process |
+
+### 16.5 What the 32 MiB budget scales, and the tunnel-side prediction
+
+The retrospective incidence, 5 of 10 at 32 MiB, 0 of 91 at the default
+and 1 of 63 at 1 MiB, points at what that budget feeds. From the
+constructors, the settings that differ, with the 1 MiB and default
+values beside them:
+
+| Setting | 1 MiB | 32 MiB | default |
+|---|---:|---:|---:|
+| `TcpBufferSettings.ReadBufferByteCount` (socket read) | 16 KiB | 32 KiB | 64 KiB |
+| `TcpBufferSettings.InitialWindowSize` (NAT window toward the client) | 128 KiB | 512 KiB | 1 MiB |
+| `TcpBufferSettings.MaxWindowSize` | 256 KiB | 8 MiB | 16 MiB |
+| `TcpBufferSettings.SequenceBufferSize` | 192 | 512 | 1,024 |
+| `SendBufferSettings.ResendQueueMaxByteCount` (return sequence, per lane) | 256 KiB | 1 MiB | 2 MiB |
+| `ReceiveBufferSettings.ReceiveQueueMaxByteCount` | 320 KiB | 1.25 MiB | 2.5 MiB |
+| `TcpBufferSettings.GlobalLimit` (flows) | 64 | 256 | unlimited |
+
+A return sequence can hold `ResendQueueMaxByteCount` unacknowledged, so
+one client's download through the provider is bounded by that over the
+acknowledgement round trip. At 32 MiB that is 1 MiB per acknowledgement
+RTT, and 16 Mb/s is 1 MiB per 520 ms. So the prediction, before the
+40-repetition sweep: in the stuck runs the return sequence to the client
+sits at its 1 MiB bound with an acknowledgement round trip near 500 ms
+(the queue-inflated state the flight-gate program called M4), and the
+upstream window sits at 104,448 because the reader is draining only what
+the tunnel takes; in the engaged runs the queue is under its bound and
+the round trip near 50 ms. The readings are `Client.ResendQueueSize` for
+that destination and the sequence's `ReliableLaneLongestAckGap` and
+round-trip window, sampled through the run, beside `ss -ti rtt` on the
+upstream socket. Why the inflation would be bistable and specific to
+1 MiB is the part the sweep must show; the candidates are the exchange
+forward buffer and the client's tun receive path, and 104,448 is the
+kernel's window from a 131,072-byte buffer at its learned payload ratio,
+not a provider constant.
+
+### 18.1 The single-flow ceiling already fits the reliable bound
+
+The measured single TCP flow, 0.26 to 0.33 Gb/s, is 2 MiB per 50 to
+65 ms: `ResendQueueMaxByteCount` over the tunnel's acknowledgement round
+trip, §18's second item, with no other term needed. The cheapest
+experiment in the program follows: raise `ResendQueueMaxByteCount` to
+8 MiB in the provider's settings and repeat the single-flow cell. If the
+flow rises by about four times toward the UDP figure, the ceiling is the
+per-destination reliable bound and the design question becomes how to
+size it, by the acknowledgement round trip and the measured delivery
+rate rather than by a fixed byte count, or by lanes; if it does not, the
+reader's synchronous admission, §18's first item, is next. Sixteen flows
+at 0.59 to 0.80 Gb/s then say whether they shared a client: sixteen to
+one client cannot pass the same bound, so either they spanned clients or
+their round trip differed, and the cell should record which.
