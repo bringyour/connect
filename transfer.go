@@ -12466,6 +12466,36 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 func (self *ReceiveSequence) commitHeldPrefix() {
 	capacity := self.receiveBufferSettings.ReceiveQueueMaxByteCount
 	frameByteCount := max(self.maxHeldByteCount, 1)
+
+	// The whole hold commits together whenever the newest held item would
+	// survive every gap below it filling, which is the ordinary case: a sender
+	// honouring the advertisement never gives the hold more than it can take,
+	// and a hold well under capacity has room for its gaps whatever the
+	// sender does. Deciding that needs only the newest held item, the count
+	// and the byte total, all of which the queue answers without a walk, and
+	// it skips the sort the general case pays on every out-of-order arrival.
+	heldCount, heldTotal := self.receiveQueue.QueueSize()
+	if heldCount == 0 {
+		return
+	}
+	if newest := self.receiveQueue.PeekLast(); newest != nil {
+		missing := int64(newest.sequenceNumber) -
+			int64(self.nextSequenceNumber) - int64(heldCount-1)
+		if missing < 0 {
+			missing = 0
+		}
+		if ByteCount(missing)*frameByteCount+heldTotal <= capacity {
+			self.heldScratch = self.receiveQueue.UnorderedItems(self.heldScratch)
+			for _, held := range self.heldScratch {
+				if held.committed {
+					continue
+				}
+				self.commitHeldItem(held)
+			}
+			return
+		}
+	}
+
 	self.heldScratch = self.receiveQueue.AscendingItems(self.heldScratch)
 	heldByteCount := ByteCount(0)
 	for i, held := range self.heldScratch {
@@ -12480,17 +12510,22 @@ func (self *ReceiveSequence) commitHeldPrefix() {
 		if held.committed {
 			continue
 		}
-		held.committed = true
-		self.client.receiveQueueCommitCount.Add(1)
-		self.sendAck(
-			held.sequenceNumber,
-			held.messageId,
-			true,
-			held.tag,
-			held.unwrapped,
-			held.transportType,
-		)
+		self.commitHeldItem(held)
 	}
+}
+
+// Acknowledges one held item as it crosses the boundary.
+func (self *ReceiveSequence) commitHeldItem(held *receiveItem) {
+	held.committed = true
+	self.client.receiveQueueCommitCount.Add(1)
+	self.sendAck(
+		held.sequenceNumber,
+		held.messageId,
+		true,
+		held.tag,
+		held.unwrapped,
+		held.transportType,
+	)
 }
 
 func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error) {
