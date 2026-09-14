@@ -2909,3 +2909,53 @@ start-window number by acknowledging every segment; both should land
 before the §26 cells run. Items 3 and 4 are §26.10's rulings and are
 already with the implementer. Rows to add: Q2, Q4 exact, Q9, Q10, and
 `TestOverdueBurstEndIsAckedAtOnce`.
+
+### 28.5 Two resolutions: rows F2 and F3 re-read, and what the overdue burst end was
+
+Rows F2 and F3 landed in `ac3f117`, which §28.3 wrongly recorded as
+owed; corrected. Re-read against what they were to establish:
+
+F3, `TestLaneFloorsAreExemptionsNotReservations`, asserts the intended
+property. One active lane beside seven idle ones puts nearly the whole
+pool on the wire (60,416 of 65,536); a reservation implementation would
+leave it `total − 7 × floor`, 8,192 with these numbers, so the row
+discriminates by a wide margin whatever floor the campaign picks.
+
+F2, `TestOneLaneClientPaysNoFloor`, asserts two things: no pool exists
+before a nonzero lane sends, which is the lazy creation §27.1 relies on
+and is exactly right; and, after one lane of eight sends, that the pool
+is not full (`UsedByteCount < TotalByteCount`). That second clause
+discriminates only by the numbers chosen: with eight lanes at an 8 KiB
+floor against a 64 KiB pool, a reservation would fill it exactly and
+fail, but at a 4 KiB floor a reservation would read 32 KiB used and the
+row would pass while asserting the wrong property. The property intended
+is that the seven unopened lanes are charged nothing, which is
+`UsedByteCount == the active lane's queued bytes − LaneFloorByteCount`,
+or at least `UsedByteCount ≤ the active lane's queued bytes`, and it
+holds independent of the numbers. That is the one change to make before
+the lane cells run; the 9,840 the row logs is consistent with it and the
+row should assert it rather than log it.
+
+The overdue burst end (28.2.2): a defect that would have existed had the
+acknowledgement goroutine been able to be away for the bound, and it
+cannot be on the production path. Its emission is
+`receivePacket(packet, receiveRecoveryModeRegenerableControl)`, which the
+provider admits through the non-blocking return shard, dropping on a
+full queue rather than waiting, and which the cell's tun writes
+synchronously in microseconds; so at every wait start the last arrival
+is at most microseconds old and the remaining is positive. My review
+said the pure ACK's admission "can block"; it cannot, by the same
+callback rule this document cites elsewhere, and the premise was wrong.
+What was true was narrower: the arithmetic treated a non-positive
+remaining as no cut, which is a latent defect reachable only under a
+hook that holds the emission, and the explicit check is correct hygiene
+at no cost. The implementer's finding that no threshold separates the
+two versions is the expected result of that, not a weakness of the row:
+they differ only when the emission is held past the bound and the burst
+produced no `ackSignal` of its own (immediate count exhausted, fewer than
+k segments), a shape that needs a hook, not a timer. The arming row pins
+the reachable property, and restoring the deviation failing it is the
+right evidence. The measured start-window and steady-state movements,
+seven against five expected where the deviation gave twenty-five, and
+sixteen against twenty-nine where an ungated rule gives forty-seven, are
+the two behavioural fixes doing what §28.2 said they would.
