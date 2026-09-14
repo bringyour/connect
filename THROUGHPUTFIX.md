@@ -2959,3 +2959,118 @@ right evidence. The measured start-window and steady-state movements,
 seven against five expected where the deviation gave twenty-five, and
 sixteen against twenty-nine where an ungated rule gives forty-seven, are
 the two behavioural fixes doing what §28.2 said they would.
+
+## 29. Three closures: the zombie remainder re-weighted, the compression floor ruled, and why the pool contract is hard to satisfy in a fixture
+
+### 29.1 The zombie interval, and what the remainder now asks of §13's candidates
+
+The implementer read a dead destination's resend interval directly: two
+doublings, then pinned at the 8 s ceiling inside twelve seconds. So
+`sendCount` advances for a destination that never acknowledges, there is
+no timer defect, §13.1's 2.1 Mb/s per zombie is the steady state, and the
+reporter's 8 Mb/s describes the first seconds after a kill. Forty
+zombies put about 84 Mb/s on the wire in steady state against a measured
+loss of about 460, so bandwidth accounts for under a fifth of the
+coupling and the remainder, about 376 Mb/s, is what the other candidates
+must carry, nearly the whole effect rather than a minority of it.
+
+That changes their weight. A candidate whose cost per zombie is its
+bytes cannot carry it: the transport write path and the exchange's
+forwarding, both linear in zombie bytes, are demoted. A candidate whose
+cost per zombie is what it pins is promoted, and one fits the threshold
+shape: the message pools. Each zombie's resend queue holds up to
+`ResendQueueMaxByteCount` of pool buffers for as long as it lives, 80 MiB
+at forty, independent of its resend rate; once the pinned buffers exceed
+the pool's free capacity every `MessagePoolGet` on the live flows'
+packet path falls through to a fresh heap allocation, which does not
+return to the pool, so the live traffic runs at its full packet rate as
+a garbage-collected allocation rate with a large pinned live heap behind
+it. The cost per zombie is then super-linear at the point the pool
+exhausts and roughly flat before it, which is 8 at −11, 16 at −27 and 40
+at −72 in shape. The instrument is `MessagePoolStats()` for the
+fall-through rate beside `runtime.MemStats` (`NumGC`, `PauseTotalNs`)
+and live throughput, swept over the zombie count as §13.4 specifies;
+the prediction is that fall-throughs begin at the zombie count where
+pinned resend bytes cross the pool's free capacity and that live
+throughput falls with the fall-through rate from there. Row:
+`TestPinnedResendQueuesTurnTheLivePathIntoHeapAllocation`, in process,
+N never-acknowledged sequences holding their bound while one live
+sequence's packet path is sampled for pool misses, asserting the miss
+rate rises from zero at the pool's capacity boundary. The sdk-hosted
+shared budget stays the other promoted candidate on that host class.
+If the sweep shows no fall-through at forty, both are dead and the
+remainder is in the transport's per-pack service time after all, which
+the same sweep's CPU profile would then have to show.
+
+### 29.2 The ruling: the compression floor is a test assertion, and why not the alternatives
+
+§22.3 named the shape and this makes it the decision. The measurement
+stream has shown the relationship is an identity: moving the peer's
+retransmission floor to 400 ms moved the cliff to exactly 400, with the
+collapse depth scaling as the mechanism predicts. A runtime guard cannot
+hold it, because the floor that matters is the peer's, and the peer is
+the client's stack, gVisor under our tun on some platforms and the
+kernel's TCP on others (Linux and Darwin at 200 ms, Windows at 300), a
+value no provider can read at runtime; a guard would assert against a
+copy of a number it cannot verify. A comment cannot fail. A test
+assertion can, and it can read the one instance of the constant we do
+ship: `tcp.MinRTO` is exported from the vendored stack at 200 ms, and
+`TunSettings.TcpMinRto` is ours when a campaign sets it.
+
+So row C1 is the ruling, stated exactly:
+`TestAckCompressionStaysUnderTheRetransmissionFloor` asserts
+`DefaultTcpBufferSettings().AckCompressTimeout ≤ tcp.MinRTO / 4`, and
+`≤ DefaultTunSettings().TcpMinRto / 4` whenever that is positive, and it
+names the cliff in its failure message with the 400-for-400 evidence. The
+quarter is the margin the shipping value has today, made explicit; a
+campaign that lowers the timeout only widens it, a campaign that raises
+either floor must move the ratio in the same commit, and a gVisor update
+that moves `MinRTO` fails this row on the day it lands rather than in a
+provider's upload months later. The fleet floor for kernels we do not
+ship is recorded beside it as the constant `minimumPeerRetransmissionFloor`
+at 200 ms with its provenance, so the assertion is against the lowest
+floor a peer can have rather than against our tun alone.
+
+### 29.3 Why the pool contract is hard to satisfy when writing a fixture
+
+Two new cells, one session, two ownership violations. A violation is a
+buffer returned or shared that no owner held, an over-return; a leak is
+the opposite and only the boundary reconciliation
+(`MessagePoolOutstandingByteCount`) sees it. So both fixtures returned a
+buffer something else had already taken, and the reason that is easy to
+do is an asymmetry the entry points do not name.
+
+The three rules of CODESTYLE are right. What they do not say is which
+rule a given entry point applies, and the same packet is treated
+differently one layer apart. A sequence-level entry takes the buffer:
+`TcpSequence.receivePacket`, `UdpSequence.receivePacket` and
+`receiveBatch` emit to the receive callback and return the buffer
+afterwards themselves, so a fixture that calls them must not return it.
+A callback-level entry borrows it: `LocalUserNat.receiveTransfer*`,
+`RemoteUserNatProvider.Receive*`, `ReceiveBatch` and
+`receiveTransferWithRecovery` hold it for the call, share what they keep
+(`MessagePoolShareReadOnly` is a second reference on the same buffer,
+and the original stays the caller's), and return nothing, so a fixture
+that calls them must return it after the call. A send entry takes it on
+success only, so a fixture must read the result before deciding who
+returns. `DataPackets` allocates new buffers the caller owns. A fixture
+author who has just watched a callee visibly keep a share, or who
+imitates the sequence's own return-after-callback at the wrong layer, or
+who returns "to be safe" after a send that succeeded, produces exactly
+the violation the handler catches; the batch callback's `true` return
+compounds it, since it reads as a transfer and means only "delivered".
+
+What would make the correct pattern obvious, as a design rather than a
+fix: every function that receives a pool buffer states one of three
+words in its doc comment, borrows, takes, or takes on success, and
+CODESTYLE's pool section lists the entry points under those three
+headings so the rule is looked up rather than inferred; fixtures invoke
+borrowing entry points through one helper that returns the buffer after
+the call (`withBorrowedPacket(packet, func())`), which makes the
+under-return impossible to forget and the over-return impossible to
+write; and every fixture's cleanup runs the boundary reconciliation, so
+the leak direction is caught as reliably as the over-return now is. One
+live example to check under that reconciliation before it is trusted:
+`startUnreachableProviderReturn` in the reporter's tests calls the
+provider's borrowing entry with a copied packet and never returns it,
+which is the under-return the handler cannot see.
