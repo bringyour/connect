@@ -202,8 +202,14 @@ similar relative speedup. That framing is what made this testable: rather than
 raising a cell's throughput to reach the reported regime, raise the latency
 until the regime comes down to the cell.
 
-Adaptive window (sized from delivered bytes over the last ack round trip)
-against the fixed 2 MiB, same binary, one field changed:
+Adaptive window against the fixed 2 MiB, same binary, one field changed.
+
+**Read the correction in 3.7 before these figures.** The rule as measured was
+not sizing from the path: it divided delivered bytes by a resend-timing
+quantity that floors at 300 ms, so it overshot and pinned itself to its
+ceiling. What this arm demonstrates is that a larger window produces more
+throughput at a long delay. It does not yet demonstrate that a path-derived
+rule produces it.
 
 | Carrier RTT | Transfer | Fixed | Adaptive | Paired multiple | Better |
 |---|---|---|---|---|---|
@@ -218,6 +224,9 @@ The rule's own evidence confirms it engaged: sized on every adaptive run,
 computing 14-16 MiB, against a fixed 2 MiB on the other arm. The sequence's
 round-trip minimum reads 200.1 ms against 200 imposed, so the delay was real
 rather than a queue in the harness.
+
+That 14-16 MiB is itself the symptom: the cell's plateau implies about 3.2 MB,
+so the rule computed four to five times what the path could use.
 
 ### 3.4 The mechanism, confirmed independently without the fix
 
@@ -243,7 +252,61 @@ amortises.
 
 So the rule is correct in its destination and costs something in its ramp.
 
-### 3.6 The next ceiling, at ~4 MiB
+### 3.7 Correction: the rule measured the wrong interval
+
+`window = k x delivered` is a fixed point by construction -- if extra window
+produces no extra delivery, `delivered` stops rising and the window stops with
+it. No ceiling should be needed as anything but a backstop.
+
+It does not self-limit today because delivery is measured over `ScaledRtt`,
+which is a **resend-timing** quantity that floors at `RttMinResendInterval`
+(300 ms). Measured in process:
+
+| ack delay | interval used | rtt mean | overshoot |
+|---|---|---|---|
+| 5 ms | 300 ms | 6.69 ms | 44.8x |
+| 25 ms | 300 ms | 27.41 ms | 10.9x |
+| 100 ms | 300 ms | 101.93 ms | 2.9x |
+
+So the rule accumulates up to 45x the bandwidth-delay product, hits its
+ceiling, and the ceiling becomes the operative bound rather than the backstop.
+
+**The worst case is a short path**, which is the opposite of the intended
+behaviour: at 5 ms it computed a 27 MB window for a path needing 125 KB.
+
+The correction is one line -- the sampled mean from `RttWindow.Estimate()`,
+which carries its sample count so an unsampled interval cannot read as a fast
+one. Not yet made; it belongs in the composite fix.
+
+PREDICTION, recorded before it is tested: corrected, the rule converges to
+2x BDP, about 8 MB on this cell at 200 ms. The constant sweep gives 129.5 Mb/s
+at 8 MiB against the 117.6 the overshooting rule managed, so the corrected
+rule should be FASTER, converging to a sufficient window instead of ramping
+toward an excessive one.
+
+### 3.8 There is no receiver-advertised window
+
+The `Ack` carries a message id, sequence id, selective flag, tag, missing
+contract id and lane version. **Nothing about remaining out-of-order
+capacity.** So nothing couples a sender's window to what its receiver can hold.
+
+On overflow the receiver evicts its NEWEST buffered items to admit an older
+one, and refuses the arriving pack if that pack is itself the newest. Either
+way those bytes are retransmitted.
+
+`ReceiveQueueMaxByteCount` defaults to 2.5 MiB. Against a 16 MiB send window,
+one loss on a fast path opens a hole the receiver can buffer 2.5 MiB around;
+everything past it is evicted or refused while the sender keeps offering.
+Correcting the interval narrows this without closing it: 2x BDP on a 100 ms
+path is 6.5 MB against 2.5 MiB, still 2.6x.
+
+The receive queue is memory-scaled and the send ceiling is not, so they diverge
+further on a small-memory host.
+
+**This is why the send rule ships default-off.** Enabling it without the
+receive side would trade throughput for a loss-recovery regression.
+
+### 3.9 The next ceiling, at ~4 MiB
 
 Both sweeps plateau from 8 MiB upward. It is a *window*, not a rate: 129.5
 against 65.1 is a factor of 1.99 across a doubled delay, with bytes in flight
@@ -271,7 +334,9 @@ count not derived from the path. On a real H3 carrier it would bind at 3 MiB.
 | Question | State |
 |---|---|
 | Does the multiple keep growing with transfer size? | Running. Steady-state solve implies ~2.4 |
-| Is the rule a no-op at low latency, where the queue cannot bind? | Queued. **Decides shippability.** Most paths are short |
+| Is the rule a no-op at low latency? | Queued, and now **predicted to fail**: the interval bug makes short paths the worst case (27 MB computed for a 125 KB need) |
+| Does the corrected interval make the rule faster, as 3.7 predicts? | Not yet tested |
+| Does the receive side need path sizing, or receiver-advertised flow control? | In design. The second is a wire change |
 | What does the rule cost in memory while doing nothing? | Queued with the above |
 | Which inner window sets the 4 MiB plateau? | Queued |
 | Why do 8 flows give 1.84x one flow, identically with and without the Transfer layer? | Unexplained |
