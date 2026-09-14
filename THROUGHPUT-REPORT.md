@@ -399,10 +399,58 @@ times each loop's round trip across three retransmission copies and treated
 that as held memory. It is a bound on admission; occupancy is lower wherever
 the path is short.
 
-WHAT THIS DOES NOT CLEAR, and it is now the sharpest open risk: the cell has no
-bottleneck below the sender's rate, so the queue drains as fast as it fills. On
-a real path with a slow last mile the sender can outrun the drain and the queue
-fills toward the window. Untested. A slow-drain cell is being built for it.
+### 3.8b The slow-drain falsifier fired: the concern closes for TCP
+
+60/60 valid. At a 20 Mb/s drain:
+
+  arm                      predicted added delay   measured
+  2 MiB constant           ~840 ms                 2.3 ms
+  3.6 MB constant          ~1440 ms                2.9 ms
+  16 MiB constant          ~6700 ms                2.6 ms
+  the rule as built        never below 600 ms      2.5 ms
+
+Peak send queue: **0.019-0.021 MiB**, a hundredth of the window or less, and
+identical whether the window is 2, 3.6 or 16 MiB. Occupancy is SMALLER under a
+slow drain (0.02 MiB) than an unlimited one (0.59 MiB) -- the opposite of what
+a queueing argument predicts.
+
+THE MECHANISM: end-to-end TCP flow control through the tunnel. A slow carrier
+closes the client tun's receive window, the origin's TCP backs off, and the
+transfer layer is never handed more than the path can carry. A window cannot
+cost memory it is never given, and a floored interval cannot cost latency
+through a queue that never forms.
+
+So the composite memory bound is not merely conservative, it is largely
+inoperative for TCP: the budget is not what keeps a TCP flow bounded, TCP is.
+The budget's job is the cases where that protection does not exist.
+
+**THE ONE ROUTE LEFT IS UDP**, which has no end-to-end flow control, so a
+source that outruns the drain has nothing to back it off. This program's own
+cells show UDP does not share TCP's ceiling (1.39 Gb/s against 0.3), so a UDP
+source is exactly what can outrun a slow drain. Being built. It is also the
+only cell that can confirm the initial-size clamping defect of 3.7b, since in
+the TCP cell nothing fills the queue and a rule that can shrink is
+indistinguishable from one that cannot.
+
+### 3.8c Three instrument faults, two of which would have inverted the result
+
+1. **The pacer paced to timer granularity, not rate.** A frame at 20 Mb/s is
+   due in ~450 us, below runtime granularity, so per-frame sleeping capped the
+   link near 8 Mb/s against a configured 20.
+2. **The carrier's own route absorbed the backpressure.** The default
+   1024-frame route is a third of a second of buffering at 20 Mb/s: 785 frames
+   sat in the wire while the send queue held 0.03 MiB and the RTT minimum read
+   510-565 ms with no delay imposed. Caught only because wire-held frames were
+   recorded SEPARATELY rather than folded into occupancy.
+3. **Occupancy was inferred from the global pool**, which charges each root its
+   whole size class and counts tun, NAT and origin buffers. It read 1.044 and
+   1.056 MiB for a 2 MiB and a 16 MiB window -- identical, and identical to the
+   no-delay guard at full speed. That coincidence exposed it.
+
+All three are the shape this program has now seen seven times: something
+accurate standing in for the record that decides. The pool count was accurate
+and uninformative; the wire's buffering was real and not the queue; the timer
+slept exactly as asked and not as intended.
 
 ### 3.9 The next ceiling, at ~4 MiB, identified
 
