@@ -29,12 +29,31 @@ func newProviderSourceLifecycleTestFixtureWithOob(
 	configure func(*RemoteUserNatProviderSettings),
 ) (*RemoteUserNatProvider, *LocalUserNat, *Client) {
 	t.Helper()
+	return newProviderSourceLifecycleTestFixtureWithClientSettings(
+		t, clientOob, nil, configure)
+}
+
+// The same fixture with the client's own settings configurable. A cell that
+// needs a non-default send buffer has to say so before the client starts: the
+// send loop reads its settings from its own goroutine, so writing them after
+// NewClient is a data race and the race detector reports it.
+func newProviderSourceLifecycleTestFixtureWithClientSettings(
+	t *testing.T,
+	clientOob OutOfBandControl,
+	configureClient func(*ClientSettings),
+	configure func(*RemoteUserNatProviderSettings),
+) (*RemoteUserNatProvider, *LocalUserNat, *Client) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
+	clientSettings := DefaultClientSettings()
+	if configureClient != nil {
+		configureClient(clientSettings)
+	}
 	client := NewClient(
 		ctx,
 		NewId(),
 		clientOob,
-		DefaultClientSettings(),
+		clientSettings,
 	)
 	localUserNat := NewLocalUserNatWithDefaults(ctx, "source-lifecycle-test")
 	settings := DefaultRemoteUserNatProviderSettings()

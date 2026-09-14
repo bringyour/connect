@@ -4907,7 +4907,10 @@ type SendBuffer struct {
 	// (THROUGHPUTFIX §30.3).
 	logicalLaneVersionSnapshot atomic.Pointer[map[sendSequenceId]uint32]
 	// reports what the lane gate saw on each Pack; nil is a production no-op
-	logicalLaneGateObserverForTest func(logicalLaneGateObservation)
+	// The lane gate's decision, for a cell that needs to read which gate bound
+	// rather than infer it from the lane. Atomic because a cell installs it on
+	// a running client and the gate runs on the send goroutine.
+	logicalLaneGateObserverForTest atomic.Pointer[logicalLaneGateObserver]
 	// When the caller did not provide a device-wide resend budget, every
 	// nonzero lane still shares this one fixed pool instead of receiving one
 	// independent ResendQueueMaxByteCount allocation per lane.
@@ -4967,6 +4970,11 @@ func NewSendBuffer(ctx context.Context,
 	}
 }
 
+// One installed reader of the lane gate's decision.
+type logicalLaneGateObserver struct {
+	observe func(logicalLaneGateObservation)
+}
+
 // selectLogicalLane reads capability state before sequence assignment. An
 // explicit TransferKey always reproduces its already-negotiated lane; ordinary
 // IP traffic hashes only after this exact lane-zero class has acknowledged
@@ -4974,8 +4982,8 @@ func NewSendBuffer(ctx context.Context,
 func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
 	observedBase := sendSequenceId{}
 	observe := func(gate string, version uint32, lane uint32) uint32 {
-		if self.logicalLaneGateObserverForTest != nil {
-			self.logicalLaneGateObserverForTest(logicalLaneGateObservation{
+		if observer := self.logicalLaneGateObserverForTest.Load(); observer != nil {
+			observer.observe(logicalLaneGateObservation{
 				base:            observedBase,
 				explicit:        sendPack.logicalLaneExplicit,
 				explicitLane:    sendPack.logicalLane,

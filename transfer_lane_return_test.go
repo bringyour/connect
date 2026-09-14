@@ -64,20 +64,32 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 		versionRecorded bool
 	}
 	observeLane := func(clientLane uint32, advertised bool) laneGateReading {
-		provider, _, client := newProviderSourceLifecycleTestFixture(t, nil)
-		// the provider's own count, which is the setting a rollout turns on
-		client.sendBuffer.sendBufferSettings.LogicalDataLaneCount = 8
-		client.sendBuffer.sendBufferSettings.LaneFloorByteCount = ByteCount(256 * 1024)
+		// the provider's own count, which is the setting a rollout turns on,
+		// set before the client starts because the send loop reads its
+		// settings from its own goroutine
+		provider, _, client := newProviderSourceLifecycleTestFixtureWithClientSettings(
+			t,
+			NewNoContractClientOob(),
+			func(settings *ClientSettings) {
+				settings.SendBufferSettings.LogicalDataLaneCount = 8
+				settings.SendBufferSettings.LaneFloorByteCount = ByteCount(256 * 1024)
+			},
+			nil,
+		)
 
 		var observationLock sync.Mutex
 		observations := []logicalLaneGateObservation{}
-		client.sendBuffer.logicalLaneGateObserverForTest = func(observation logicalLaneGateObservation) {
-			observationLock.Lock()
-			defer observationLock.Unlock()
-			observations = append(observations, observation)
-		}
+		client.sendBuffer.logicalLaneGateObserverForTest.Store(
+			&logicalLaneGateObserver{
+				observe: func(observation logicalLaneGateObservation) {
+					observationLock.Lock()
+					defer observationLock.Unlock()
+					observations = append(observations, observation)
+				},
+			},
+		)
 		t.Cleanup(func() {
-			client.sendBuffer.logicalLaneGateObserverForTest = nil
+			client.sendBuffer.logicalLaneGateObserverForTest.Store(nil)
 		})
 
 		peerId := NewId()
@@ -142,7 +154,29 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 				syn,
 			)
 		})
-		// the origin's data comes back through the NAT and out as returns
+		// The origin's data comes back through the NAT and out as returns. Wait
+		// for the gate to have decided at least once rather than for a fixed
+		// second: the advertised arm reads the base class out of that first
+		// decision, and with no decision it would record the advertisement
+		// against the zero base and the second flow would meet an
+		// unadvertised destination. That was a one-in-ten flake.
+		waitForObservations := func(atLeast int) int {
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				observationLock.Lock()
+				count := len(observations)
+				observationLock.Unlock()
+				if atLeast <= count || !time.Now().Before(deadline) {
+					return count
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		if count := waitForObservations(1); count == 0 {
+			t.Fatalf("the provider's returns never reached the lane gate, so this cell has nothing to read")
+		}
+		// and then let the flow settle, so nothing is still in flight when the
+		// pool ownership check runs
 		time.Sleep(time.Second)
 
 		if advertised {
@@ -188,6 +222,9 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 					secondSyn,
 				)
 			})
+			if count := waitForObservations(1); count == 0 {
+				t.Fatalf("the second flow's returns never reached the lane gate")
+			}
 			time.Sleep(time.Second)
 		}
 
@@ -336,9 +373,17 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 func TestLaneCountGateDoesNotTakeTheBufferLockPerPack(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
-	_, _, client := newProviderSourceLifecycleTestFixture(t, nil)
-	client.sendBuffer.sendBufferSettings.LogicalDataLaneCount = 8
-	client.sendBuffer.sendBufferSettings.LaneFloorByteCount = ByteCount(256 * 1024)
+	// set before the client starts: the send loop reads its settings from its
+	// own goroutine, so a write after NewClient is a data race
+	_, _, client := newProviderSourceLifecycleTestFixtureWithClientSettings(
+		t,
+		NewNoContractClientOob(),
+		func(settings *ClientSettings) {
+			settings.SendBufferSettings.LogicalDataLaneCount = 8
+			settings.SendBufferSettings.LaneFloorByteCount = ByteCount(256 * 1024)
+		},
+		nil,
+	)
 
 	// a Pack shaped like a provider's return: a valid scheduling key and no
 	// explicit lane, so the gate runs its whole path
