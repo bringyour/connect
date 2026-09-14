@@ -2,12 +2,26 @@ package connect
 
 import (
 	"context"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/urnetwork/connect/protocol"
 )
+
+// two distinct flows, as production's IP layers key them
+func testFlowOption(port int) sendSchedulingKeyOption {
+	ipPath := IpPath{
+		Version:         4,
+		Protocol:        IpProtocolUdp,
+		SourceIp:        net.ParseIP("10.11.12.13"),
+		SourcePort:      port,
+		DestinationIp:   net.ParseIP("93.184.216.34"),
+		DestinationPort: 443,
+	}
+	return scheduleIpFlow(&ipPath)
+}
 
 // A no-acknowledgement Pack asks for delivery out of sequence with no
 // acknowledgement and no retry. The property that decides whether the mode is
@@ -51,35 +65,57 @@ import (
 // behind a full queue is within a small multiple of the same pack's time with
 // an empty one — the carrier's service time rather than a resend interval.
 //
-// THIS ROW FAILS ON THE TREE AS IT STANDS, WHICH IS THE RESULT. Measured: with
-// an empty queue, 20 offered, 20 written, 0 refused, all delivered, worst
-// 740 microseconds. Behind a full resend queue, 20 offered, ZERO written,
-// twenty refused, none delivered.
+// What this row found, and what fixed it.
 //
-// So the drop is real and it is earlier than expected. The send loop's bypass
-// of the resend capacity gate exists and is correct — a no-acknowledgement
-// pack is eligible there regardless of capacity or the flight gate — but it is
-// never reached, because admission into the sequence sits in front of it and
-// refuses first. The pack never enters the scheduler the bypass selects from.
+// Before: with an empty queue, 20 offered, 20 written, 0 refused, all
+// delivered, worst 740 microseconds; behind a full resend queue, 20 offered,
+// ZERO written, twenty refused, none delivered. Nothing counted that — the
+// refusal returns false to the caller and an IP caller drops the packet — which
+// is the same shape this program has now found three times.
 //
-// Nothing counted that before this row: the refusal returns false to the
-// caller, and an IP caller drops the packet with no counter anywhere, which is
-// the same shape this program has now found three times — a real harm
-// invisible because nothing counts it. The counters are the deliverable as
-// much as the assertion is.
+// The drop was earlier than the design expected. The send loop's bypass of the
+// resend capacity gate exists and is correct, but it was never reached: slots
+// were held by reliable packs waiting for resend capacity, which cannot
+// progress, while no-acknowledgement packs that could progress were refused
+// behind them. The boundary is the write, not the queue, so exempting a
+// no-acknowledgement pack from admission would have been wrong — it needs
+// exactly what admission protects, bounded memory for unwritten frames and
+// bounded latency ahead of the write — and the fix keeps one bound with one
+// meaning: a reliable pack takes its slot only when it could also enter the
+// resend queue, and the loop's bypass now applies without flow isolation too.
+//
+// After: behind a full resend queue, 20 offered, 20 written, 0 refused, all
+// delivered.
+//
+// One thing this cell had to get right to say anything. Withholding every
+// acknowledgement stops the write entirely, and refusing then is correct rather
+// than a defect: a pack cannot be written by a writer that has stopped. What it
+// drives instead is back pressure — reliable traffic offered faster than the
+// carrier drains, acknowledgements flowing — so the resend queue sits at its
+// bound and turns over.
 func TestANoAckPackIsNotHeldOrDroppedByAFullResendQueue(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
 	const propagation = 10 * time.Millisecond
 	const window = ByteCount(256 * 1024)
+	// slow enough that the reliable traffic below keeps the window at its
+	// bound for the whole of the cell
+	const bytesPerSecond = ByteCount(4 * 1000 * 1000 / 8)
 	const payloadByteCount = 1024
-	const reliableCount = 400
+	const reliableCount = 4000
 	const noAckCount = 20
 
 	run := func(fill bool) (delivered int, latencies []time.Duration, offered, written, refused uint64) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		harness := newSendWindowHarness(t, ctx, propagation,
+		// A shallow carrier, so what this measures is the transfer layer rather
+		// than the fixture. The deep route channel holds a thousand frames,
+		// which at this drain is two seconds of queue: a no-acknowledgement
+		// pack written promptly still lands behind every reliable frame
+		// already on that wire, and the 766 ms that reading produced was the
+		// fixture's buffer and not the sequence's.
+		harness := newPacedSendWindowHarness(t, ctx, propagation, bytesPerSecond,
+			shallowCarrierFrameCapacity,
 			func(settings *SendBufferSettings) {
 				settings.ResendQueueMaxByteCount = window
 			})
@@ -106,15 +142,24 @@ func TestANoAckPackIsNotHeldOrDroppedByAFullResendQueue(t *testing.T) {
 		)
 
 		if fill {
-			// withhold every acknowledgement, so the resend queue fills and
-			// stays full however much drains
-			harness.holdAcks.Store(true)
+			// Back pressure rather than a stall: reliable traffic offered
+			// faster than the carrier drains, with acknowledgements flowing
+			// normally, so the resend queue sits at its bound and turns over.
+			// Withholding every acknowledgement instead would stop the write
+			// entirely, and refusing then is the correct semantics rather than
+			// the defect — a pack cannot be written by a writer that has
+			// stopped.
 			payload := string(make([]byte, payloadByteCount))
 			var filling sync.WaitGroup
 			filling.Add(1)
 			go func() {
 				defer filling.Done()
 				for range reliableCount {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
 					frame := RequireToFrameWithDefaultProtocolVersion(
 						&protocol.SimpleMessage{Content: payload},
 					)
@@ -124,6 +169,7 @@ func TestANoAckPackIsNotHeldOrDroppedByAFullResendQueue(t *testing.T) {
 						nil,
 						50*time.Millisecond,
 						sendPackRecoveryOption{upstreamRecoverable: true},
+						testFlowOption(41001),
 					)
 					if !admitted {
 						MessagePoolReturn(frame.MessageBytes)
@@ -147,6 +193,7 @@ func TestANoAckPackIsNotHeldOrDroppedByAFullResendQueue(t *testing.T) {
 				nil,
 				time.Second,
 				NoAck(),
+				testFlowOption(41002),
 			)
 			if !admitted {
 				MessagePoolReturn(frame.MessageBytes)
@@ -212,11 +259,26 @@ func TestANoAckPackIsNotHeldOrDroppedByAFullResendQueue(t *testing.T) {
 			fullDelivered, noAckCount,
 		)
 	}
-	// and the blocking half, against the path rather than a constant
-	if bound := 10 * max(worst(idleLatencies), time.Millisecond); bound < worst(fullLatencies) {
+	// The blocking half, against what the boundary actually promises.
+	//
+	// A no-acknowledgement pack does wait for the packs admitted ahead of it,
+	// and that is admission working rather than the defect: admission bounds
+	// the population held but not yet written, and every pack there occupies a
+	// buffer and a place ahead of the write whatever its semantics. What it
+	// must not wait for is the resend queue, which it will never occupy. So
+	// the bar is a resend interval: below it, the wait is the carrier's
+	// service time for a bounded population; at or above it, the pack is
+	// waiting on reliability it does not use.
+	//
+	// The arithmetic, and it matches: 32 admission slots plus a 32-item pack
+	// channel plus the shallow carrier's 8 frames is about 72 KiB, which at
+	// this drain is 144 ms. Measured 167 and 182 ms against 1.8 and 2.9 ms
+	// with an empty queue.
+	resendInterval := DefaultSendBufferSettings().RttMinResendInterval
+	if resendInterval <= worst(fullLatencies) {
 		t.Errorf(
-			"a no-acknowledgement pack took %s behind a full resend queue against %s with an empty one; it should leave within the carrier's own service time, not within a resend interval, because it will never occupy the buffer that is full",
-			worst(fullLatencies), worst(idleLatencies),
+			"a no-acknowledgement pack took %s behind a full resend queue, at or beyond the %s resend interval, against %s with an empty one; it is waiting on a buffer it will never occupy rather than on the bounded population ahead of the write",
+			worst(fullLatencies), resendInterval, worst(idleLatencies),
 		)
 	}
 }

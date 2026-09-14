@@ -4836,8 +4836,9 @@ type SendBufferSettings struct {
 	LaneFloorByteCount ByteCount
 	// ReliableAdmissionBoundedByDelivery bounds what a sequence may hold
 	// unacknowledged on a reliable lane by what that lane has shown it can
-	// carry: the bytes it acknowledged over the last scaled round trip,
-	// floored at ResendQueueMinByteCount (FLIGHTGATEFIX §22). Delivery is a
+	// carry: the bytes it acknowledged over the last measured minimum round
+	// trip, floored at ResendQueueMinByteCount (FLIGHTGATEFIX §22, with
+	// THROUGHPUTFIX §36.7's interval correction applied here too). Delivery is a
 	// count the sequence already has rather than a model, and no queue
 	// depth can inflate it, where the window's mean round trip lags an
 	// inflation by design and is what the retransmit timer already reads.
@@ -6011,6 +6012,12 @@ type SendSequence struct {
 	// packAdmission counts both channel-resident and scheduler-resident Packs,
 	// so flow isolation cannot expand the configured memory bound.
 	packAdmission *sendPackAdmission
+	// Whether a pack entering now could also enter the resend queue, published
+	// by the send loop each pass. A reliable pack takes its admission slot
+	// only when this is true (THROUGHPUTFIX §38.11): admission bounds the
+	// packs held but not yet written, and a slot held by a pack that cannot
+	// progress is a slot denied to one that could.
+	resendCapacityAvailable atomic.Bool
 	// Published by Run after each route-policy snapshot so concurrent Pack
 	// callers never read the goroutine-owned multi-route writer directly.
 	flowIsolation atomic.Bool
@@ -6261,6 +6268,10 @@ func newSendSequenceWithLogicalLane(
 			logicalLane,
 		)
 	}
+	// true until the send loop says otherwise, so a sequence that has not run
+	// a pass yet admits rather than waiting on a flag nothing has published
+	seq.resendCapacityAvailable.Store(true)
+
 	return seq
 }
 
@@ -6369,6 +6380,56 @@ func (self *SendSequence) ResendQueueSizeAndMessageTypes() (int, ByteCount, Id, 
 
 // acquirePackAdmission spends the same caller timeout as channel admission.
 // The returned timeout is the remaining budget for the channel handoff.
+// awaitResendCapacity holds a reliable pack outside admission until the send
+// loop reports that the resend queue could take it, or the caller's timeout
+// runs out. Returns the remaining timeout.
+//
+// Polled rather than signalled: the resend queue has no capacity notification,
+// the wait already costs a round trip when it happens at all, and the common
+// case is one atomic read. A stale true costs what the old behaviour cost — a
+// slot taken and a short wait inside the sequence — and never a lost pack.
+func (self *SendSequence) awaitResendCapacity(
+	sendPack *SendPack,
+	timeout time.Duration,
+) (bool, error, time.Duration) {
+	if self.resendCapacityAvailable.Load() {
+		return true, nil, timeout
+	}
+	if timeout == 0 {
+		return false, nil, timeout
+	}
+	startTime := time.Now()
+	var timeoutChannel <-chan time.Time
+	if 0 < timeout {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutChannel = timer.C
+	}
+	poll := time.NewTicker(resendCapacityPollInterval)
+	defer poll.Stop()
+	for {
+		select {
+		case <-sendPack.Ctx.Done():
+			return false, errors.New("Done."), timeout
+		case <-self.ctx.Done():
+			return false, errors.New("Done."), timeout
+		case <-timeoutChannel:
+			return false, nil, 0
+		case <-poll.C:
+			if self.resendCapacityAvailable.Load() {
+				if 0 < timeout {
+					timeout = max(time.Duration(0), timeout-time.Since(startTime))
+				}
+				return true, nil, timeout
+			}
+		}
+	}
+}
+
+// How often a reliable pack rechecks for resend capacity while it waits
+// outside admission.
+const resendCapacityPollInterval = 2 * time.Millisecond
+
 func (self *SendSequence) acquirePackAdmission(
 	sendPack *SendPack,
 	timeout time.Duration,
@@ -6517,6 +6578,35 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 		}
 	}
 
+	// The boundary is the write, not the queue.
+	//
+	// Admission bounds the population of packs held but not yet written, and
+	// every pack there occupies a buffer and a place ahead of the write
+	// whether or not it will ever be acknowledged. So a no-acknowledgement
+	// pack does need what admission protects — bounded memory for unwritten
+	// frames, bounded latency ahead of the write, per-flow fairness — and
+	// exempting it here would let an offered rate above the written rate grow
+	// the scheduler without bound, which is the unreliable source case with
+	// the drop moved from a counter into the heap. The capacity bypass in the
+	// send loop is right after the write and would be wrong before it.
+	//
+	// The defect was the composition. Slots were held by reliable packs
+	// waiting for resend capacity, which cannot progress, while
+	// no-acknowledgement packs that could progress were refused behind them:
+	// measured at twenty offered, zero written, twenty refused, against twenty
+	// of twenty at 740 microseconds with an empty queue.
+	//
+	// So one bound keeps one meaning. A reliable pack acquires its slot only
+	// when it could also enter the resend queue, which moves the capacity wait
+	// out in front of admission, to the caller and its timeout, where refusals
+	// are already counted and where socket items already wait today.
+	if sendPack.Ack {
+		admitted, err, capacityTimeout := self.awaitResendCapacity(sendPack, timeout)
+		if err != nil || !admitted {
+			return false, err
+		}
+		timeout = capacityTimeout
+	}
 	admitted, err, timeout := self.acquirePackAdmission(sendPack, timeout)
 	if err != nil || !admitted {
 		return false, err
@@ -7782,6 +7872,7 @@ sendSequenceLoop:
 			reliableAdmissionWaitStart = time.Time{}
 		}
 		resendCapacity = resendCapacity && reliableAdmission
+		self.resendCapacityAvailable.Store(resendCapacity)
 		// The unreliable flight only gates admission while no reliable carrier
 		// can take the overflow; otherwise a full flight is written reliable-only
 		// (see writeMaybeWrappedBytes) instead of stalling the sequence.
@@ -7816,6 +7907,20 @@ sendSequenceLoop:
 			}
 		} else if resendCapacity {
 			sendPack = scheduler.TakeFifoEligible(flightEligible)
+		} else {
+			// Capacity is unavailable, and a no-acknowledgement pack does not
+			// need it: it will never enter the resend queue, so the bound it is
+			// waiting behind is one it can never occupy. The flow-isolated
+			// branch above already selects on that basis; without isolation the
+			// whole selection used to be gated on capacity, so a pack that
+			// could progress waited on packs that could not. That is the other
+			// half of the same composition defect admission had
+			// (THROUGHPUTFIX §38.11).
+			sendPack = scheduler.TakeFifoEligible(func(candidate *SendPack) bool {
+				return self.noAckPackCanBypassRecoveryAdmission(candidate) &&
+					flightEligible(candidate)
+			})
+			bypassedRecoveryAdmission = sendPack != nil
 		}
 		if sendPack != nil {
 			processingPacks[0] = sendPack
@@ -9716,9 +9821,27 @@ func (self SendWindowEstimate) bindingTerm(sequence *SendSequence) string {
 // never below the per-sequence floor. A lane may hold what it has shown it
 // can carry, which is a statement about the lane rather than an estimate of
 // its rate (FLIGHTGATEFIX §22).
+// The bytes a reliable lane has shown it can carry over one round trip.
+//
+// The horizon is the measured minimum round trip, not the scaled resend timer.
+// Those are different quantities and the difference is the interval defect
+// THROUGHPUTFIX §36.7 corrected for the window rule: ScaledRtt is floored at
+// RttMinResendInterval, 300 ms, so on a 25 ms path it reads twelve times the
+// round trip and on a 6.7 ms path forty-five. Measured across three paths
+// before that correction: 300 ms flat against real round trips of 6.7, 27 and
+// 102 ms, an overshoot of 2.9 to 44.8 times. A bound that admits what the lane
+// delivered over the last twelve round trips is not a bandwidth-delay product.
+//
+// This is the same defect in a second place. It ships off, so it has never
+// been the binder, but a campaign turning it on would have reimposed at
+// admission exactly what the window rule had just removed.
 func (self *SendSequence) reliableAdmissionByteLimit(now time.Time) ByteCount {
 	floor := self.sendBufferSettings.ResendQueueMinByteCount
-	delivered := self.deliveredBytesOver(self.rttWindow.ScaledRtt(), now)
+	horizon := self.rttWindow.ScaledRtt()
+	if estimate := self.rttWindow.Estimate(); estimate.Sampled() && 0 < estimate.Min {
+		horizon = estimate.Min
+	}
+	delivered := self.deliveredBytesOver(horizon, now)
 	return max(floor, delivered)
 }
 

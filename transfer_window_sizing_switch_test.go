@@ -435,3 +435,76 @@ func windowEstimateForSettings(settings *SendBufferSettings) SendWindowEstimate 
 	sequence.receiveWindowSet.Store(true)
 	return sequence.sendWindowEstimate(time.Now())
 }
+
+// The same interval defect, found in a second admission bound while tracing
+// which term governs admission.
+//
+// THROUGHPUTFIX §36.7 corrected the window rule to multiply by the measured
+// minimum round trip rather than by ScaledRtt, the retransmit pacing estimate,
+// which is floored at RttMinResendInterval, 300 ms. The reliable admission
+// bound of FLIGHTGATEFIX §22 read the same floored timer: it admits what the
+// lane delivered over one horizon, and with that horizon at 300 ms on a 25 ms
+// path it admits twelve round trips of delivery rather than one. Measured
+// across three paths before the window correction: 300 ms flat against real
+// round trips of 6.7, 27 and 102 ms, 2.9 to 44.8 times over.
+//
+// It ships off, so it has never been the binder. That is why it survived: a
+// value derived correctly in one place and read from the wrong source in
+// another, which is the fourth instance of that shape in this rule and the
+// reason the remedy is one owner of the effective window rather than four
+// separate corrections.
+//
+// Prediction, recorded before the run: on a path whose minimum round trip is
+// well under the resend floor, the admission bound reads the path, so it is far
+// below what the floored timer would have admitted.
+func TestTheReliableAdmissionBoundReadsThePathNotTheResendFloor(t *testing.T) {
+	settings := DefaultSendBufferSettings()
+	settings.ReliableAdmissionBoundedByDelivery = true
+	sequence := &SendSequence{
+		sendBufferSettings: settings,
+		resendQueue:        newResendQueue(nil, 0),
+		deliveredBytes:     make([]deliveredBytesSample, deliveredBytesRingSize),
+		rttWindow: NewRttWindow(
+			NewNoopLogger(),
+			settings.RttWindowSize,
+			settings.RttWindowTimeout,
+			settings.RttScale,
+			settings.MinResendInterval,
+			settings.RttMinResendInterval,
+			settings.MaxResendInterval,
+		),
+	}
+
+	// a 20 ms path, closed against the wall clock the window reads, and
+	// delivery spread evenly across 400 ms of history ending now
+	const roundTrip = 20 * time.Millisecond
+	const perSample = ByteCount(100 * 1024)
+	now := time.Now()
+	for i := range 40 {
+		at := now.Add(-400*time.Millisecond + time.Duration(i)*10*time.Millisecond)
+		sequence.observeDeliveredBytes(perSample, at)
+	}
+	for range 8 {
+		sequence.rttWindow.CloseSendTime(uint64(time.Now().Add(-roundTrip).UnixMilli()))
+	}
+	if estimate := sequence.rttWindow.Estimate(); !estimate.Sampled() ||
+		roundTrip*2 < estimate.Min {
+		t.Fatalf(
+			"the fixture's own round trip reads %s against the %s it meant to set, so this cell cannot say which horizon the bound used",
+			estimate.Min, roundTrip,
+		)
+	}
+
+	limit := sequence.reliableAdmissionByteLimit(now)
+	overTheFloor := sequence.deliveredBytesOver(settings.RttMinResendInterval, now)
+	t.Logf(
+		"admission limit %d over a %s path; the %s resend floor would have admitted %d",
+		limit, roundTrip, settings.RttMinResendInterval, overTheFloor,
+	)
+	if overTheFloor <= limit {
+		t.Errorf(
+			"the admission bound admitted %d against the %d the floored resend timer would have; on a %s path the timer reads fifteen round trips, and a bound that admits fifteen round trips of delivery is not a bandwidth-delay product",
+			limit, overTheFloor, roundTrip,
+		)
+	}
+}
