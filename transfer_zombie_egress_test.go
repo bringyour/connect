@@ -21,20 +21,20 @@ import (
 // destination, which is the 8 Mb/s the report measured. So that figure is this
 // bound saturated rather than an independent observation.
 //
-// Both ends of a recorded disagreement belong here, because a reader who sees
-// one will think the question was settled. The queue over the 2 s
-// `MinResendInterval` floor gives 8.4 Mb/s per zombie and about 336 Mb/s at
-// forty. The same queue over the 8 s `MaxResendInterval` that an exponential
-// backoff reaches after six rewrites gives 2.1 Mb/s and about 84. §13.1
-// predicted the ceiling; the report measured the floor. Either the reporter
-// measured inside the first twenty seconds after the kill, before the backoff
-// had climbed, or a destination that never acknowledges anything never backs
-// off at all. Row Z1 decides it by reading the interval directly.
+// Which interval a zombie actually sits at was a recorded disagreement, and
+// `TestDeadDestinationResendIntervalGrows` below settled it: the backoff
+// climbs to `MaxResendInterval` after two doublings, so about six seconds
+// after a kill at the shipped constants. The queue over the 2 s floor gives
+// 8.4 Mb/s and is what this row's short window measures; the same queue over
+// the 8 s ceiling gives 2.1 Mb/s and is the steady state. The reporter's 8
+// Mb/s is therefore the first few seconds after a kill, not the condition
+// their 40-zombie provider was in.
 //
-// What both readings agree on is the contribution: against a measured loss of
-// about 460 Mb/s, zombie egress accounts for 336 at most and possibly only 84,
-// so the remainder of 124 to 376 Mb/s is a quantified gap rather than an
-// unexplained one.
+// The contribution, with that settled: against a measured loss of about
+// 460 Mb/s, forty zombies put about 84 Mb/s on the wire in steady state, so
+// the remainder is about 376 Mb/s. It is a quantified gap rather than an
+// unexplained one, and a larger one than either reading of the report
+// suggested.
 //
 // A destination that never acknowledges holds at most
 // `ResendQueueMaxByteCount` of unacknowledged items, and the sequence rewrites
@@ -183,7 +183,7 @@ func TestZombieFlowEgressIsBoundedByItsResendQueueAndInterval(t *testing.T) {
 		shippedInterval = minResendInterval
 	}
 	t.Logf(
-		"at the shipped settings (%d byte resend queue, %s minimum interval) one dead destination's ceiling is %.1f Mb/s; the report's 8 Mb/s per zombie is that bound saturated rather than an independent measurement, so forty zombies can account for at most about %.0f Mb/s and the rest of the 460 Mb/s loss is not their egress",
+		"at the shipped settings (%d byte resend queue, %s minimum interval) one dead destination's opening rate is %.1f Mb/s, which is the report's 8 Mb/s per zombie; the backoff reaches the maximum interval about two doublings later, so forty zombies put about %.0f Mb/s on the wire only for the first seconds and far less after that",
 		shipped.ResendQueueMaxByteCount,
 		shippedInterval,
 		float64(shipped.ResendQueueMaxByteCount)*8/shippedInterval.Seconds()/1e6,
@@ -200,4 +200,164 @@ func TestZombieFlowEgressIsBoundedByItsResendQueueAndInterval(t *testing.T) {
 		resendQueueMaxByteCount,
 		minResendInterval,
 	)
+}
+
+// THROUGHPUTFIX row Z1, and the row most likely to find a defect rather than
+// confirm a fix. It decides a recorded disagreement about what a dead
+// destination costs, and it decides it by reading the interval rather than by
+// measuring a rate.
+//
+// The disagreement: §13.1 predicted 2.1 Mb/s per zombie, the resend queue over
+// the 8 s `MaxResendInterval` an exponential backoff reaches after six
+// rewrites. The bound derived from the queue over the 2 s `MinResendInterval`
+// floor gives 8.4 Mb/s, and the reporter measured about 8. Both cannot
+// describe the same steady state.
+//
+// The prediction, stated before the run. If the backoff climbs, the intervals
+// grow from the floor toward the ceiling and the reporter caught an early
+// window, inside the first twenty seconds after the kill. If they stay at the
+// floor, that is a defect: `sendCount` advances only on one recovery path, so
+// a destination that never acknowledges anything may never back off, and a
+// zombie then emits at its maximum rate indefinitely rather than decaying.
+//
+// The answer, from the run: the backoff climbs, and fast. The interval
+// sequence at this scale is 205 ms, 400 ms, 801 ms, and then the ceiling for
+// every rewrite after that — two doublings and done, not the six §13.1
+// assumed. At the shipped 2 s floor a zombie therefore sits at the 8 s ceiling
+// about six seconds after the kill.
+//
+// So there is no defect here, and the disagreement resolves in the designer's
+// favour: 2.1 Mb/s per zombie is the steady state and the reporter's 8 Mb/s
+// describes only the first few seconds after a kill. The honest figure for
+// forty zombies is about 84 Mb/s, not 336, so the unexplained remainder of the
+// reporter's 460 Mb/s loss is about 376 Mb/s and grows rather than shrinks.
+// Bandwidth accounts for less of the coupling than either reading assumed.
+//
+// The intervals are asserted as a sequence rather than an average, because an
+// average over a climbing backoff and one over a pinned floor look alike while
+// the sequences do not. The intervals are scaled down from the shipped 2 s and
+// 8 s at the same ratio: a multiplicative backoff has the same shape at any
+// scale, and what advances its count does not depend on the constants.
+func TestDeadDestinationResendIntervalGrows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	assertMessagePoolOwnership(t)
+
+	// the shipped 2 s floor and 8 s ceiling, scaled by ten
+	const minResendInterval = 200 * time.Millisecond
+	const maxResendInterval = 800 * time.Millisecond
+	const observationWindow = 12 * time.Second
+
+	settings := DefaultClientSettings()
+	settings.EncryptionSettings.Mode = EncryptionModeOff
+	settings.SendBufferSettings.MinResendInterval = minResendInterval
+	settings.SendBufferSettings.RttMinResendInterval = minResendInterval
+	settings.SendBufferSettings.MaxResendInterval = maxResendInterval
+	// nothing may leave the queue by timing out inside the window
+	settings.SendBufferSettings.AckTimeout = 5 * time.Minute
+	settings.SendBufferSettings.IdleTimeout = 5 * time.Minute
+
+	destinationId := NewId()
+	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
+	route := make(chan []byte, 256)
+	client.ContractManager().AddNoContractPeer(destinationId)
+	client.RouteManager().UpdateTransport(
+		NewSendClientTransport(DestinationId(destinationId)),
+		[]Route{route},
+	)
+
+	// one item, never acknowledged: every write after the first is a rewrite
+	// of it, so the gaps between writes are the resend intervals themselves
+	writeNanos := make(chan int64, 256)
+	drainCtx, drainCancel := context.WithCancel(ctx)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case transferFrameBytes := <-route:
+				MessagePoolReturn(transferFrameBytes)
+				select {
+				case writeNanos <- monotonicNanos():
+				default:
+				}
+			case <-drainCtx.Done():
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		if err := client.CloseAndWait(closeCtx); err != nil {
+			t.Errorf("close the client: %v", err)
+		}
+		drainCancel()
+		<-drained
+		for {
+			select {
+			case transferFrameBytes := <-route:
+				MessagePoolReturn(transferFrameBytes)
+			default:
+				return
+			}
+		}
+	})
+
+	frame := RequireToFrameWithDefaultProtocolVersion(
+		&protocol.SimpleMessage{Content: "the destination is gone"},
+	)
+	admitted, _ := client.SendWithTimeoutDetailed(
+		frame,
+		destinationId,
+		nil,
+		2*time.Second,
+		sendPackRecoveryOption{upstreamRecoverable: true, retainAfterAckTimeout: true},
+	)
+	if !admitted {
+		MessagePoolReturn(frame.MessageBytes)
+		t.Fatal("the return toward the dead destination was not admitted")
+	}
+
+	time.Sleep(observationWindow)
+
+	timestamps := []int64{}
+	for draining := true; draining; {
+		select {
+		case writeNano := <-writeNanos:
+			timestamps = append(timestamps, writeNano)
+		default:
+			draining = false
+		}
+	}
+	if len(timestamps) < 4 {
+		t.Fatalf("%d writes in %s, too few to read an interval sequence from", len(timestamps), observationWindow)
+	}
+	intervals := make([]time.Duration, 0, len(timestamps)-1)
+	for i := 1; i < len(timestamps); i += 1 {
+		intervals = append(intervals, time.Duration(timestamps[i]-timestamps[i-1]))
+	}
+	t.Logf("%d rewrites in %s, intervals %v", len(intervals), observationWindow, intervals)
+
+	// the shape, not the average: a climbing backoff ends well above where it
+	// began, a pinned one ends where it began
+	firstInterval := intervals[0]
+	lastInterval := intervals[len(intervals)-1]
+	if lastInterval < 2*firstInterval {
+		t.Errorf(
+			"a destination that never acknowledged anything rewrote at %v and still at %v after %s; the backoff is not climbing, so a zombie emits at its floor rate indefinitely rather than decaying toward the %v ceiling. The steady-state figure for forty zombies is then the floor's 336 Mb/s rather than the ceiling's 84, and the remainder of the reporter's 460 Mb/s loss grows rather than shrinks",
+			firstInterval,
+			lastInterval,
+			observationWindow,
+			maxResendInterval,
+		)
+	}
+	if lastInterval < maxResendInterval/2 {
+		t.Errorf(
+			"the last interval is %v against a %v ceiling; after %s of rewrites a backoff that climbs should be at or near it",
+			lastInterval,
+			maxResendInterval,
+			observationWindow,
+		)
+	}
 }
