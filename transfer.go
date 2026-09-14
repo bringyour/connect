@@ -4508,6 +4508,11 @@ type SendBufferSettings struct {
 	// set it and the trees stay comparable. The candidate scale is
 	// `ResendQueueMinByteCount`, which is what lane zero and every distinct
 	// destination on an sdk-hosted provider already keep.
+	//
+	// Deployment rule, because the default has a sharp edge: enabling lanes
+	// with this at zero ships the starvation. `LogicalDataLaneCount` and this
+	// are one decision, set in a single change; a nonzero lane count with a
+	// zero floor is not a configuration this program endorses.
 	LaneFloorByteCount ByteCount
 	// ReliableAdmissionBoundedByDelivery bounds what a sequence may hold
 	// unacknowledged on a reliable lane by what that lane has shown it can
@@ -4868,6 +4873,10 @@ func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
 	if sendPack.logicalLaneExplicit {
 		return min(sendPack.logicalLane, uint32(maxLogicalDataLaneCount))
 	}
+	// A nonzero count is set together with SendBufferSettings.LaneFloorByteCount
+	// and never alone: without the floor every lane above zero borrows all of
+	// its bytes from one shared pool and a light lane beside a bulk one keeps
+	// a single Pack in flight (THROUGHPUTFIX §27).
 	count := min(
 		max(0, self.sendBufferSettings.LogicalDataLaneCount),
 		maxLogicalDataLaneCount,

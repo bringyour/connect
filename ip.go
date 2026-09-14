@@ -4978,6 +4978,12 @@ func (self *TcpSequence) Run() {
 	recovering := false
 	recoveryAckedByteCount := uint32(0)
 	quiescentNanos := monotonicNanos()
+	// The phase's third exit, quiet for AckCompressTimeout, is not a separate
+	// clearing of `recovering`: its effect is supplied by E3, whose fresh
+	// entry on the next arrival after such a quiet resets every counter. The
+	// behaviour is the same and the state is not, so `recovering` reads true
+	// through a quiet period; anyone exporting it should know that.
+	//
 	// the first segments after entry, acknowledged one each
 	recoveryImmediateSegmentCount := 0
 	// in-order segments carrying payload since the last acknowledgement
@@ -4991,25 +4997,35 @@ func (self *TcpSequence) Run() {
 	// an exit starts fresh counters, so a peer that loses on every window pays
 	// the bound each time, which is the right outcome for a path that needs
 	// its acknowledgements.
-	// `freshEvidence` is a new loss, which restarts the budget and re-arms the
-	// immediate segments because the peer's window has just collapsed again.
-	// Connection start and resumption after idle are conditions rather than
-	// events: while the phase already runs they add nothing, and re-entering
-	// on each of them would reset the segment count on every arrival and the
-	// counting rule would never reach its spacing.
-	enterRecoveryWithLock := func(freshEvidence bool) {
+	// A fresh entry, from not recovering, sets all of the phase's state. While
+	// the phase already runs, connection start and resumption after idle are
+	// conditions rather than events and do nothing: E2 holds on every arrival
+	// of the start window, and re-entering on each would refill the immediate
+	// counter before the arrival consumed it, acknowledging every segment
+	// rather than the first few and then every k, and would zero the bound's
+	// counter so the bound could never end the phase.
+	//
+	// A new loss is a new collapse, so it re-arms the immediate segments, and
+	// it leaves the bound's counter alone: a peer that keeps losing pays the
+	// bound and re-enters afresh (§26.3), rather than holding the phase open
+	// for ever on a go-back-N run of stale arrivals.
+	enterRecoveryWithLock := func(lossEvidence bool) {
 		if quickackEverySegments <= 0 {
 			return
 		}
-		if recovering && !freshEvidence {
+		immediateSegmentCount := max(
+			0,
+			self.tcpBufferSettings.QuickackImmediateSegmentCount,
+		)
+		if recovering {
+			if lossEvidence {
+				recoveryImmediateSegmentCount = immediateSegmentCount
+			}
 			return
 		}
 		recovering = true
 		recoveryAckedByteCount = 0
-		recoveryImmediateSegmentCount = max(
-			0,
-			self.tcpBufferSettings.QuickackImmediateSegmentCount,
-		)
+		recoveryImmediateSegmentCount = immediateSegmentCount
 		recoverySegmentCount = 0
 	}
 
@@ -5428,17 +5444,34 @@ func (self *TcpSequence) Run() {
 				// and either acknowledges or re-arms at the moved deadline.
 				compressDeadlineNanos := monotonicNanos() +
 					int64(self.tcpBufferSettings.AckCompressTimeout)
+				// armed, and whether the burst it watches has already ended
+				burstEndStateWithoutLock := func() (bool, bool) {
+					self.mutex.Lock()
+					defer self.mutex.Unlock()
+					if self.tcpBufferSettings.QuiescenceBound <= 0 || !recovering {
+						return false, false
+					}
+					ended := self.sendSeq != ackedSendSeq &&
+						lastArrivalNanos != 0 &&
+						self.tcpBufferSettings.QuiescenceBound <=
+							time.Duration(monotonicNanos()-lastArrivalNanos)
+					return true, ended
+				}
 				for {
 					remaining := time.Duration(compressDeadlineNanos - monotonicNanos())
 					if remaining <= 0 {
 						break
 					}
+					burstEndArmed, burstEnded := burstEndStateWithoutLock()
+					if burstEndArmed && burstEnded {
+						// Overdue: the burst went silent past the bound while
+						// this goroutine was elsewhere, which the synchronous
+						// admission of a pure ACK can make it. Waiting the
+						// compression interval here is the starvation returning
+						// on the slow acknowledgement path.
+						break
+					}
 					waitTimeout := remaining
-					burstEndArmed := 0 < self.tcpBufferSettings.QuiescenceBound && func() bool {
-						self.mutex.Lock()
-						defer self.mutex.Unlock()
-						return recovering
-					}()
 					if burstEndArmed && self.tcpBufferSettings.QuiescenceBound < waitTimeout {
 						waitTimeout = self.tcpBufferSettings.QuiescenceBound
 					}
@@ -5451,16 +5484,9 @@ func (self *TcpSequence) Run() {
 						if burstEndArmed && waitTimeout < remaining {
 							// woken on the burst-end cadence: acknowledge only
 							// once a burst with bytes outstanding has been
-							// silent for the whole bound
-							burstEnded := func() bool {
-								self.mutex.Lock()
-								defer self.mutex.Unlock()
-								return self.sendSeq != ackedSendSeq &&
-									lastArrivalNanos != 0 &&
-									self.tcpBufferSettings.QuiescenceBound <=
-										time.Duration(monotonicNanos()-lastArrivalNanos)
-							}()
-							if !burstEnded {
+							// silent for the whole bound, and otherwise re-arm
+							// at the deadline the arrivals moved
+							if _, ended := burstEndStateWithoutLock(); !ended {
 								continue
 							}
 						}

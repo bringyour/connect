@@ -2,6 +2,7 @@ package connect
 
 import (
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -480,4 +481,237 @@ func TestBurstEndWakesPerIntervalNotPerArrival(t *testing.T) {
 		)
 	}
 	t.Logf("%d arrivals in %s woke the acknowledgement goroutine %d times, against %d allowed", arrivalCount, elapsed, wakes, allowedWakes)
+}
+
+// sends `count` in-order segments of `payload`, spaced by `interval`, from
+// `seq`, and returns the sequence number after them
+func sendHarnessSegments(
+	harness *tcpReorderTestHarness,
+	seq uint32,
+	payload string,
+	count int,
+	interval time.Duration,
+) uint32 {
+	for range count {
+		harness.sendPayload(seq, payload, false)
+		seq += uint32(len(payload))
+		time.Sleep(interval)
+	}
+	return seq
+}
+
+// counts acknowledgements as they arrive, since the harness's channel is
+// bounded and drops
+func countHarnessAcks(harness *tcpReorderTestHarness) *atomic.Int64 {
+	ackCount := &atomic.Int64{}
+	go func() {
+		for range harness.acks {
+			ackCount.Add(1)
+		}
+	}()
+	return ackCount
+}
+
+// THROUGHPUTFIX §26.6 row Q4, asserted as an exact count because that is what
+// separates the behaviour the design intends from the one a non-idempotent
+// entry produces. Connection start is a condition that holds on every arrival
+// of the start window, not an event: an entry that refills the immediate
+// counter each time acknowledges every segment of the window, which would
+// flatter the start-window number in a campaign and look like the remedy
+// working better than it does. The window is to draw the immediate
+// acknowledgements and then one per k segments, and the byte bound is to end
+// it.
+func TestConnectionStartQuickackIsBounded(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const ackCompressTimeout = 2 * time.Second
+	const segmentByteCount = 1400
+	const segmentInterval = 2 * time.Millisecond
+	const quickackEverySegments = 4
+	const immediateSegmentCount = 1
+	const startSegmentCount = 20
+	const totalSegmentCount = 40
+	const startQuickackByteCount = ByteCount(startSegmentCount * segmentByteCount)
+
+	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 64, 0, func(sequence *TcpSequence) {
+		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
+		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = immediateSegmentCount
+		sequence.tcpBufferSettings.StartQuickackByteCount = startQuickackByteCount
+		sequence.tcpBufferSettings.RecoveryQuickackByteBound = startQuickackByteCount
+		sequence.tcpBufferSettings.QuiescenceBound = 0
+		sequence.peerMss = segmentByteCount
+	})
+	go io.Copy(io.Discard, harness.upstreamSocket)
+	ackCount := countHarnessAcks(harness)
+
+	payload := string(make([]byte, segmentByteCount))
+	sendHarnessSegments(harness, harness.nextSeq, payload, totalSegmentCount, segmentInterval)
+	// the last acknowledgement of the window has to land before it is counted
+	time.Sleep(200 * time.Millisecond)
+
+	// the immediate ones, then one per k over the rest of the window; nothing
+	// after the bound ends the phase, since the compression timer is longer
+	// than this row runs
+	expectedAckCount := immediateSegmentCount +
+		(startSegmentCount-immediateSegmentCount)/quickackEverySegments
+	perSegmentAckCount := startSegmentCount
+	acks := int(ackCount.Load())
+	if acks < expectedAckCount-2 || expectedAckCount+3 < acks {
+		t.Errorf(
+			"%d segments with a %d segment start window drew %d acknowledgements, want about %d: %d immediate and one per %d segments of the rest; one per segment would be %d and is what an entry that re-arms on every arrival of the window gives",
+			totalSegmentCount,
+			startSegmentCount,
+			acks,
+			expectedAckCount,
+			immediateSegmentCount,
+			quickackEverySegments,
+			perSegmentAckCount,
+		)
+	}
+	t.Logf("%d segments drew %d acknowledgements, want about %d, against %d for one per segment", totalSegmentCount, acks, expectedAckCount, perSegmentAckCount)
+}
+
+// §26.6 row Q2. A loss enters the phase and the byte bound ends it: what one
+// event may cost is bounded, and the bytes after the bound go back to the
+// timer and the half-window. Without the bound a peer that never grows out of
+// the small-window region keeps the rule alive for ever.
+func TestRetransmissionEntersTheRecoveryPhaseAndTheBoundEndsIt(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const ackCompressTimeout = 2 * time.Second
+	const segmentByteCount = 1400
+	const segmentInterval = 2 * time.Millisecond
+	const quickackEverySegments = 2
+	const boundSegmentCount = 10
+	const afterLossSegmentCount = 40
+	const recoveryQuickackByteBound = ByteCount(boundSegmentCount * segmentByteCount)
+
+	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 64, 0, func(sequence *TcpSequence) {
+		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
+		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 0
+		// no start window: only a loss may enter the phase here
+		sequence.tcpBufferSettings.StartQuickackByteCount = 0
+		sequence.tcpBufferSettings.RecoveryQuickackByteBound = recoveryQuickackByteBound
+		sequence.tcpBufferSettings.QuiescenceBound = 0
+		sequence.peerMss = segmentByteCount
+	})
+	go io.Copy(io.Discard, harness.upstreamSocket)
+
+	payload := string(make([]byte, segmentByteCount))
+	seq := harness.nextSeq
+	harness.sendPayload(seq, payload, false)
+	if !waitHarnessAck(harness, 5*time.Second) {
+		t.Fatal("the first in-order segment was never acknowledged")
+	}
+	// the loss evidence, which also draws its own duplicate acknowledgement
+	harness.sendPayload(seq, payload, false)
+	seq += segmentByteCount
+	time.Sleep(20 * time.Millisecond)
+	drainHarnessAcks(harness)
+	ackCount := countHarnessAcks(harness)
+
+	sendHarnessSegments(harness, seq, payload, afterLossSegmentCount, segmentInterval)
+	time.Sleep(200 * time.Millisecond)
+
+	// the bound's worth at the configured spacing, and nothing after it
+	expectedAckCount := boundSegmentCount / quickackEverySegments
+	unboundedAckCount := afterLossSegmentCount / quickackEverySegments
+	acks := int(ackCount.Load())
+	if acks < expectedAckCount-2 || expectedAckCount+3 < acks {
+		t.Errorf(
+			"%d in-order segments after a retransmission drew %d acknowledgements, want about %d, which is the %d byte bound at one per %d segments; an unbounded phase gives %d",
+			afterLossSegmentCount,
+			acks,
+			expectedAckCount,
+			recoveryQuickackByteBound,
+			quickackEverySegments,
+			unboundedAckCount,
+		)
+	}
+	t.Logf("%d segments after a loss drew %d acknowledgements, want about %d, against %d unbounded", afterLossSegmentCount, acks, expectedAckCount, unboundedAckCount)
+}
+
+// §28.2.2. The burst-end deadline can pass while the acknowledgement goroutine
+// is elsewhere: emitting a pure acknowledgement is a synchronous admission and
+// can block. A wait that only shortens itself when the deadline is still ahead
+// then waits the whole compression interval, which is the starvation returning
+// on exactly the slow acknowledgement path. An already-overdue burst end must
+// acknowledge at once.
+//
+// What this row decides and what it does not, stated so a later reader does
+// not mistake its scope. It pins the observable: an overdue burst end is
+// acknowledged without falling back to the compression interval. It does not
+// separate the explicit overdue check from a wait merely capped at the bound,
+// because both answer within one bound and a threshold that told them apart
+// would be a few milliseconds wide and would flake. The reviewed shape, a
+// remaining time computed once and applied only when positive, is caught by
+// TestBurstEndTriggerArmsOnFirstArrivalAndRearms, which fails on it with "no
+// acknowledgement left within 200ms of the burst ending".
+func TestOverdueBurstEndIsAckedAtOnce(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const ackCompressTimeout = 2 * time.Second
+	const quiescenceBound = 30 * time.Millisecond
+	const segmentByteCount = 1400
+
+	// the hold is on the second acknowledgement, so that segments arriving
+	// during it are not covered by the one being emitted: the goroutine then
+	// reaches its wait with bytes outstanding and a deadline already past
+	var buildCount atomic.Int64
+	held := make(chan struct{})
+	var heldOnce sync.Once
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 64, 0, func(sequence *TcpSequence) {
+		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
+		// only the burst-end trigger may end a wait
+		sequence.tcpBufferSettings.QuickackEverySegments = 4096
+		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 1
+		sequence.tcpBufferSettings.StartQuickackByteCount = ByteCount(16 * 1024 * 1024)
+		sequence.tcpBufferSettings.QuiescenceBound = quiescenceBound
+		sequence.peerMss = segmentByteCount
+		sequence.afterPureAckBuildForTest = func([]byte) {
+			if buildCount.Add(1) != 2 {
+				return
+			}
+			heldOnce.Do(func() { close(held) })
+			<-release
+		}
+	})
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	go io.Copy(io.Discard, harness.upstreamSocket)
+
+	payload := string(make([]byte, segmentByteCount))
+	seq := harness.nextSeq
+	harness.sendPayload(seq, payload, false)
+	seq += segmentByteCount
+	if !waitHarnessAck(harness, 5*time.Second) {
+		t.Fatal("the first in-order segment was never acknowledged")
+	}
+	// the second acknowledgement is built and held here
+	harness.sendPayload(seq, payload, false)
+	seq += segmentByteCount
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the acknowledgement path was never held")
+	}
+
+	// a burst arrives while the goroutine is held and is not covered by the
+	// acknowledgement it is emitting, then goes silent past the bound
+	seq = sendHarnessSegments(harness, seq, payload, 4, time.Millisecond)
+	time.Sleep(3 * quiescenceBound)
+	drainHarnessAcks(harness)
+	releaseOnce.Do(func() { close(release) })
+
+	if !waitHarnessAck(harness, 8*quiescenceBound) {
+		t.Errorf(
+			"no acknowledgement left within %s of the acknowledgement path being released, although a burst with bytes outstanding had been silent for longer than the %s bound before it; a wait that shortens itself only when the deadline is still ahead falls back to the %s timer here, which is the starvation on the slow acknowledgement path",
+			8*quiescenceBound,
+			quiescenceBound,
+			ackCompressTimeout,
+		)
+	}
 }
