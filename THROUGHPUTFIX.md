@@ -2325,3 +2325,233 @@ now returns a `TunTcpConn` that keeps its endpoint, and
 `SndSsthresh`, `RTT`, `RTTVar`, `RTO`, `State` and `CcState`. Sampling it
 through a collapsed run should show the congestion window stepping once
 per compression interval after the timeout, which is row K3's reading.
+
+## 26. Design: acknowledgements that follow the peer's recovery instead of the timer
+
+Written before the confirming campaign, 2026-09-13. §25 established the
+structure; this is the remedy developed to the point where the test
+stream can build to it. Nothing here chooses a constant.
+
+### 26.1 Severity first: worst on the fastest paths, and which direction it reaches
+
+A peer whose window is below half of the NAT's advertised window is
+acknowledged only by the compression timer, so each growth step of its
+recovery takes `RTT + T` instead of `RTT`. At the shipping 50 ms the
+penalty is a factor `(RTT + T)/RTT`: two at a 50 ms round trip, six at
+10 ms, fifty-one at 1 ms. Lossy paths enter recovery more often; fast
+paths pay far more per entry; and a same-datacenter rig, the reporter's,
+is the regime where one loss costs the most. That is the headline of
+this section.
+
+Which direction it reaches must be stated with equal care, because §19
+settled the direction from source and from measurement. The compression
+paces the NAT's acknowledgements of bytes the client sends toward the
+origin: it governs uploads, and the request half of any bidirectional
+flow, and nothing about the origin-to-client stream. The reporter's
+headline ceiling is a download, and this mechanism does not bear on it;
+their uploads, which they did not measure, and the same-datacenter
+regime are what it reaches. Saying otherwise would conflate the two
+directions this program has just finished separating.
+
+### 26.2 What the NAT already holds
+
+Per flow, under the connection mutex or on the send loop: `sendSeq`, the
+next byte expected from the client; `ackedSendSeq`, the last value
+acknowledged, so `outstanding = sendSeq − ackedSendSeq` is what the
+client has sent that we have not acknowledged; `windowSize`, the
+advertised window; `initialSynSeq`, the client's initial sequence, so
+`sendSeq − initialSynSeq − 1` is bytes received on the connection;
+`peerMss`; the arrival of every segment through `handleSendItem`; and,
+for every arrival, the disposition it already computes: in order (`start
+== 0`), a retransmission of accepted bytes (`end <= 0`, `Stale`), or past
+a hole (`0 < start`, `Retained` or `Rejected`). The last two already
+produce an immediate duplicate acknowledgement (`sendCurrentAck`), so
+the loss event itself is acknowledged at once today; what is not is the
+in-order data that follows it. The acknowledgement goroutine already
+takes `ackSignal`, a one-slot channel any rule may fill without blocking.
+
+### 26.3 The predicate, the phase, and the single acknowledgement
+
+Two rules, both from that state.
+
+Recovery phase. Entered by the send loop when either holds:
+
+- E1, loss evidence: an arrival with disposition `Stale`, `Retained` or
+  `Rejected`. A peer that retransmits or sends past a hole has taken a
+  loss event, and its window is collapsed or halved.
+- E2, connection start: `sendSeq − initialSynSeq − 1 <
+  StartQuickackByteCount`. A new connection's window is ten segments
+  against an advertised half-window of hundreds of kilobytes.
+
+While the phase is active, the send loop fills `ackSignal` on every
+in-order arrival that brings the bytes since the last acknowledgement to
+at least `QuickackEverySegments × peerMss`. That is the RFC 1122
+receiver, applied only inside the phase. The phase exits on the first of:
+
+- the bytes since the last acknowledgement reach `windowSize/2`, so the
+  existing half-window rule is now the binding trigger and the peer is
+  out of the small-window region;
+- `RecoveryQuickackByteBound` bytes have been acknowledged since entry,
+  which bounds what one event may cost;
+- `outstanding == 0` for longer than `AckCompressTimeout`: the flow went
+  quiet, and nothing is being clocked.
+
+A new E1 after exit re-enters with fresh counters. A peer that never
+leaves recovery, losing on every window, therefore re-enters on every
+loss and pays the bound each time, which is the right outcome: a path
+that loses on every window needs its acknowledgements, and the timer
+never applied to it usefully.
+
+Burst end. Independently of the phase, whenever `outstanding > 0` and no
+arrival has occurred for `QuiescenceBound`, the send loop fills
+`ackSignal` once. The peer sent what it may and stopped; it is waiting on
+us. This catches the odd last segment of a burst that the every-k rule
+leaves, and short flows whose whole request is under k segments. It is
+armed only while `outstanding > 0`, so it costs nothing on an idle flow.
+
+What separates a recovering peer from a quiet one is `outstanding`. A
+quiet peer has acknowledged everything it sent and `outstanding == 0`:
+no rule fires, the timer stays the only clock, and compression keeps
+what it buys. A peer with bytes outstanding that has stopped sending is
+either recovering or paused mid-stream, and in both cases one
+acknowledgement after `QuiescenceBound` is what an ordinary receiver
+would have sent within its delayed-ACK bound anyway.
+
+### 26.4 What it costs, including when it fires wrongly
+
+Worst-case acknowledgement rate while the phase is active: one per
+`QuickackEverySegments` segments, at the peer's send rate; at 465 Mb/s
+and two-segment spacing that is about 20,000 per second, which is what
+a Linux receiver sends in the same state, and it lasts at most
+`RecoveryQuickackByteBound` bytes per event. Outside the phase the rate
+is the timer's `1/T` plus one per burst end, as now plus at most one.
+
+Spurious entry. E1 on a reordered rather than lost segment enters the
+phase for one bound's worth of acknowledgements, once. E2 costs one
+bound per connection, which is what Linux's quickack at connection start
+costs too. The burst-end rule on an application pause mid-stream costs
+one acknowledgement per pause. None of these is ordinary idleness: with
+nothing outstanding no rule fires. The compression's purpose, few
+acknowledgements during continuous streaming with a large window, is
+untouched, because in that state arrivals never stop and bytes between
+acknowledgements reach the half-window before any quickack rule would.
+
+Where the acknowledgements land matters for the cost: the NAT is on the
+provider and its acknowledgements travel the tunnel to the client, so a
+phone receives them. That is why the per-event bound exists and why the
+campaign must measure it on a device, not only on the rig.
+
+### 26.5 Parameters, and what sets each
+
+| Parameter | Role | What the campaign measures to set it |
+|---|---|---|
+| `StartQuickackByteCount` | length of the connection-start phase | time to the first full window on a fresh upload at 1 ms and 50 ms, against acknowledgements received by the client, sweeping the count |
+| `QuickackEverySegments` | acknowledgement spacing inside the phase | recovery time after a forced loss against acknowledgements per event, at 1, 2 and 4 |
+| `RecoveryQuickackByteBound` | most one event may cost | acknowledgements per loss event on a device against the recovery time it buys, sweeping the bound |
+| `QuiescenceBound` | how long a burst must be silent | burst-tail latency on a slow-starting peer against acknowledgements sent to a paused stream; the floor is timer granularity and the candidate scale is a fraction of the flow's measured inter-arrival time |
+
+Prediction, stated for the campaign to test: post-loss recovery time at
+1 ms round trip falls from tens of compression intervals to within a
+small multiple of round trips; at 50 ms the gain is under a factor of
+two; steady-state upload throughput at 50 ms is unchanged within the
+null band; the 200 ms cliff's recovery is no longer starved, though the
+spurious timeout that triggers it remains and stays bounded by row C1.
+
+### 26.6 Tests, in the contract shape; the root cause is the starvation
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| Q1 | `TestSlowStartingPeerIsAckedPerBurstNotPerTimer` | a scripted peer in process (a `TcpSequence` with its writer stubbed) sends one segment, waits for the NAT's acknowledgement, sends two, four, eight, up to a window kept under half of a 1 MiB advertised window, with `AckCompressTimeout` at 200 ms and `QuiescenceBound` at 5 ms: every round's acknowledgement is emitted before the timer would have fired, so ten doublings complete in under a tenth of ten timer intervals | the tree as shipped, where each round waits the full timer and ten doublings take ten intervals | in-process; asserted on progress per round, with the margin a factor of ten so scheduling cannot flip it |
+| Q2 | `TestRetransmissionEntersTheRecoveryPhaseAndTheBoundEndsIt` | after a `Stale` arrival, the next in-order segments are acknowledged every `QuickackEverySegments`; after `RecoveryQuickackByteBound` bytes, acknowledgements return to the timer and half-window rules | the tree as shipped | in-process |
+| Q3 | `TestQuietPeerIsNotAckedEarly` | with `outstanding == 0`, no acknowledgement leaves for ten timer intervals; with `outstanding > 0` and no arrival, exactly one leaves after `QuiescenceBound` | a remedy that fires on idleness | in-process |
+| Q4 | `TestConnectionStartQuickackIsBounded` | the first `StartQuickackByteCount` bytes are acknowledged every k segments and the bytes after them are not | the tree as shipped, and a remedy without the bound | in-process |
+| Q5 | `TestRecoveryAfterATimeoutIsNotClockedByCompression` (K3) | the tun's gVisor peer takes one retransmission timeout on a 50 ms path and regains its window within a bound of round trips rather than of timer intervals; `TunTcpConn.TcpInfo` samples `SndCwnd` stepping per round trip | the tree as shipped | in-process, tun and NAT, the root cause end to end |
+
+## 27. Design: a floor for every lane, and the grant order that the managers already use
+
+Written before the discriminator, 2026-09-13, conditional on it. §20.5
+showed that a nonzero lane keeps only one Pack in flight beside a lane
+that holds the pool. Two designs, then a recommendation.
+
+### 27.1 Option A: floors as exemptions, the pool unchanged
+
+The floor is already a field the queue understands: `minByteCount`, the
+part of a queue not borrowed from the pool. For a data lane it is set to
+`LaneFloorByteCount` instead of zero, whether the lane borrows from the
+shared lane pool or from a supplied device budget; the pool stays one
+`ResendQueueMaxByteCount`. Under contention the heavy lane may still take
+the whole pool, but every other lane keeps `LaneFloorByteCount` in
+flight without asking the pool, which is what lane zero and every
+distinct destination on an sdk-hosted provider have today.
+
+What it costs. A floor is accounting, not allocation: bytes are consumed
+only by queued packets, and an unopened lane's exemption is unused
+headroom. A client whose flows hash to one data lane therefore pays
+nothing for the seven it never opens, and the pool itself is created
+lazily on the first nonzero lane as now. The worst case per client on
+the bare provider is lane zero's own bound plus the pool plus the sum of
+floors actually in use: `2 MiB + 2 MiB + 7 × LaneFloorByteCount`, which
+at the 256 KiB the sequences already use across destinations is
+5.75 MiB, of which the floors are 1.75 MiB and only while seven lanes
+are simultaneously above zero. On an sdk-hosted provider the floors draw
+on the device budget exactly as cross-destination floors do, and on a
+phone they apply only to the lanes it sends on. Nothing is reserved.
+
+What it does not give: fairness above the floors. Between two heavy
+lanes the pool still goes to whichever runs first after a release.
+
+### 27.2 Option B: the ordered grant the managers already use
+
+`TransferMemoryBudget` has two ways to wait. Sequences use
+`CapacityNotify`, a broadcast on every release, and then race `CanAdd`.
+The WebRTC managers use `addCapacityWaiter` and
+`notifyEligibleCapacityWaiters`, a FIFO grant that scans past a request
+too large for the available capacity so a smaller one cannot starve,
+and subtracts each grant from a capacity snapshot so one release does
+not wake every waiter. Under B, a sequence whose `CanAdd` fails
+registers a waiter for the next Pack's bytes and proceeds when granted;
+a heavy lane re-registers after each grant behind the lanes already
+waiting, so grants rotate among the lanes that want them, and a light
+lane's share of the pool's drain is at least one grant per cycle
+without any reserved floor.
+
+What it costs. No memory. A change to the admission wait of every
+sequence, including lane zero and the cross-destination sharing on
+sdk-hosted providers, on a path every Pack takes; the waiter list is
+touched only on a failed admission, so the per-Pack cost is a failed
+`CanAdd` away, but the ordering semantics of a shared admission path
+change for everything at once. It also fixes something A does not:
+fairness among destinations above their floors on a device budget,
+which today is the same broadcast race.
+
+The divergence between the two waits looks accidental: the managers'
+grant list exists because fixed-size lifetime owners needed an exact
+ceiling, and the sequences predate it. That is an argument for B in the
+long run, and it is not an argument for making the lane campaign carry
+it.
+
+### 27.3 Recommendation
+
+A for the lane campaign, B as its own change afterward. A is one
+assignment where the floor is zeroed today, reuses semantics proven
+across destinations, costs one-lane clients nothing, bounds the
+per-client memory in a sentence, and removes the starvation the
+discriminator is about to look for, so the campaign's number generalises
+past clean cells. B changes a hot admission path shared by every
+sequence and deserves its own rows and its own measurement, on
+destinations as much as on lanes; landing it inside the lane campaign
+would make the lane count's number depend on two changes at once.
+`LaneFloorByteCount` is the one parameter, and the campaign sets it by
+the light flow's delivered rate beside a saturating lane against the
+per-client memory at 4 and 8 lanes; the candidate scale is the existing
+`ResendQueueMinByteCount`.
+
+### 27.4 Tests, in the contract shape; the root cause is the starved light lane
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| F1 | `TestLightLaneKeepsItsFloorBesideASaturatingLane` | two data lanes on one pool of one cap; the heavy lane's queue is filled to the cap with nothing acknowledged; the light lane then admits at least `LaneFloorByteCount` bytes of Packs with no release from the heavy lane | the tree as built, where the light lane admits one item and blocks | in-process, synchronous admission, no timing |
+| F2 | `TestOneLaneClientPaysNoFloor` | with eight lanes enabled and every flow hashing to one data lane, the pool's `UsedByteCount` never exceeds that lane's queued bytes and no pool exists before the first nonzero lane | a reservation implementation | in-process |
+| F3 | `TestLaneFloorsAreExemptionsNotReservations` | with seven lanes idle and one active, the active lane borrows up to the full cap | a reservation implementation | in-process |
+| F4 | `TestGrantOrderRotatesAmongWaitingLanes` (option B, if built) | with the pool full and three lanes waiting, releases are granted in waiting order and a re-registering heavy lane goes behind the others | the broadcast wait | in-process |
+| F5 | `TestLightLaneDeliveryBesideASaturatingLane` (the campaign's in-process mirror) | with F1's shape and acknowledgements flowing, the light lane's delivered bytes per acknowledgement round trip stay above its floor and above one Pack | the tree as built | in-process |
