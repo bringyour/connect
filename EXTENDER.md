@@ -1019,6 +1019,12 @@ the small table rather than a probe per contract. A dispute in the window
 is a contract created in the window that is disputed, decided or not; a
 dispute is raised at close and contracts are short-lived, so the creation
 window is the right window.
+Refinement from the implementation: the contract writes its own
+`create_time` with `clock_timestamp()`, not the transaction time, so the
+party rows do not rely on the column default; the insert copies the
+contract's `create_time` from the row written earlier in the same
+transaction, and a test pins the equality on both the escrow and the
+no-escrow paths. The default stays for rows written without a value.
 
 M4. Gauges. The collector exports, on its 5 minute db tick, beside what it
 exports today:
@@ -1048,6 +1054,14 @@ requires them on both `public-traffic.json` and the signals row. The six
 contract gauges are internal: a new `internalMeasurementMetrics` list
 requires them on the providers dashboard, and they never enter
 `publicSafeMetrics`.
+Refinement from the implementation: an extender whose activation
+resolved no country (a row written before M1, or a lookup that failed)
+counts in `online_extenders` and in its family series but has no country
+to label, so it is absent from the per-country series; the per-country
+values can therefore sum to less than the total, exactly as a provider
+row without a country is absent from the provider map. The bucket cache
+reads and writes redis through a pipeline rather than a multi-key command,
+since the keys carry no hash tag and span cluster slots.
 
 M5. Public dashboard. `public-traffic.json` gains a row `extender network`
 after the provider network row: a stat and a time series of online
@@ -1058,6 +1072,10 @@ distinct color, and a bar gauge of the top extender countries. Everything
 is read with `max(...)` and no template variable, as the public tests
 require. The per-country extender counts publish nothing the directory
 does not already give away.
+Refinement from the implementation: the public dashboard now carries
+two geomaps, the provider map and the extender map, and the test that
+pinned a single map pins both by panel id and refuses a third; the
+per-family stats select the family beside the metric.
 
 M6. Providers dashboard. `grafana/dashboards/providers.json`, uid
 `urnetwork-providers`, title `urnetwork / providers`, internal (no public
@@ -1071,6 +1089,10 @@ contracts with an extender 24h, open disputes, disputes 24h, each a stat
 and a time series), derived ratios as stats (the share of open contracts
 with an extender party, the 24 hour dispute rate), and the top 10
 provider and extender countries as time series.
+Refinement from the implementation: the six per-family stat panels
+read `max(<metric>{env="$env",ip_family="..."})`, so the dashboard test
+requires the env matcher first in every selector rather than the exact
+single-matcher literal.
 
 M7. Feed. `stats.json` gains `online_extenders`,
 `online_providers_ipv4`, `online_providers_ipv6`,
