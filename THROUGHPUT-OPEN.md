@@ -4,23 +4,37 @@ Companion to THROUGHPUTFIX.md (design sections) and
 tests/PERFVAR-MEASUREMENTS.md (campaign ledger).
 Updated 2026-09-14.
 
-## Blocked on one instrument
+## CONFIRMED (2026-09-14)
 
-Three questions need a cell that reaches the reporter's regime ON A DOWNLOAD.
-No cell we have does; every one tops out 3-4x below their single-flow figure.
+The BDP hypothesis is measured. Raising LATENCY brings the regime down to the
+cell, so no instrument reaching 665 Mb/s was ever required.
+
+| RTT | flow | fixed | adaptive | paired multiple | better |
+|---|---|---|---|---|---|
+| 200 ms | 16 MiB | 68.2 | 117.6 | 1.707 | 10/10 |
+| 400 ms | 16 MiB | 35.0 | 60.0 | 1.716 | 10/10 |
+| 200 ms | 64 MiB | 70.3 | 149.7 | 2.128 | 7/7 |
+
+Latency-invariant to 0.5%. Rule defaults OFF.
+
+## In flight
 
 | # | Item | Owner | State |
 |---|------|-------|-------|
-| 1 | Namespace cell: kernel-stack client, real tun | harness | BUILDING. Real TUN works in container; named netns refused, testing `unshare --net` vs `--privileged` |
-| 2 | Acceptance test for it: 1 flow, download, no provider, near 665 Mb/s | harness | Defined, not met |
-| 3 | BDP hypothesis (user's): queue / effective ack RTT | — | UNTESTED, not refuted. Cell tops out ~190 Mb/s vs a predicted 671 ceiling |
-| 4 | Writer-occupancy test of the zombie/BDP unification | harness | Queued behind #1. Readers exist |
+| 1 | Asymptote: does the multiple keep growing with transfer size? | harness | Running. Steady-state solve implies ~2.4 |
+| 2 | No-op guard at low RTT, with memory readings | harness | Queued. Decides shippability |
+| 3 | Cell C: which inner window sets the 4 MiB plateau | harness | Queued. Halve, never raise |
+| 4 | Full race suite on the window + reply-key commits | implementer | Pending |
+| 5 | Should the rule stop climbing when delivery stops responding? | implementer/designer | Pending |
+| 6 | §36: calibration, the H3 exclusion | designer | Pending |
+| 7 | What the rule would compute on the REPORTER'S path | designer | Pending. The payoff question |
+| 8 | Namespace cell | harness | PAUSED. Bare forwarder does 3,984-4,271 Mb/s, 6x the bar |
 
 ## Open questions with no owner yet
 
 | # | Item | Note |
 |---|------|------|
-| 5 | Why 8 flows = 1.84x 1 flow, identically with and without Transfer | Unexplained. Suggests both cells share a bound |
+| 9 | Why 8 flows = 1.84x 1 flow, identically with and without Transfer | Unexplained. Suggests both cells share a bound |
 | 6 | Structural decomposition: where the 113x kernel-vs-our-path goes | Designer; partly superseded by the BDP work |
 | 7 | Lane rollout decision set | Needs reply-key change + floor + lock fix together. Provider-side only |
 
@@ -51,4 +65,7 @@ No cell we have does; every one tops out 3-4x below their single-flow figure.
 - Window cap model — 64x range moved rates 3x, non-monotonically
 - Client receive window as the download limiter — flat across 32x
 - Retransmission as the cliff mechanism — zero spurious recovery
+- H3 stream window as the 4 MiB plateau — designer refuted its own prediction:
+  3.24 MB goodput in flight cannot come from a 3.15 MB framed window, and the
+  fixture's carrier is in-process (no QUIC, no carrier socket)
 - Window collapse as the cliff mechanism — rung flat, duration exploded
