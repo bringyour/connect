@@ -3595,6 +3595,14 @@ carrier it ran on. And the transport's kernel send buffer, autotuned to
 `tcp_wmem[2]`, 4 MiB stock, above the queue; §15's rule does not apply
 to transport sockets and need not.
 
+Amended after the sweep (§36). The constant-queue sweep that tested this
+section's arithmetic ran on an in-process carrier with no H3 window and
+no carrier socket, so neither cap above was on its path; its plateau is
+an inner-path window (§36.4), and this section's naming of the H3 window
+as the next ceiling was wrong for that cell. The H3 ceiling stands as a
+prediction for a real carrier, where it binds at 3 MiB (§36.2), and the
+memory scale can lower it but never raise it (`memory_budget.go:79–84`).
+
 The receive side. `ReceiveQueueMaxByteCount` (2.5 MiB unscaled) bounds
 the out-of-order queue: Packs held above a hole until the hole fills; on
 an in-order path it is empty and never binds, and under loss it caps how
@@ -4072,3 +4080,917 @@ retired flows but the round-trip inflation it lifts off every live flow
 of the provider, which is the reporter's 72 per cent restored. That
 reframes §10 as a throughput fix for the live flows and not only a
 cleanup of the dead ones.
+
+## 36. The plateau: an inner-path window at four mebibytes, the framed-to-goodput factor derived, and what the delivery-sized rule converges to
+
+The constant-queue sweep at 200 ms and 400 ms confirmed §32's shape and
+refuted §32.1's naming of the next ceiling. The harness fits all four
+constant arms with an effective window of the smaller of 0.845 times the
+nominal queue and 3.91 MiB, in goodput bytes over the imposed delay,
+latency-invariant to half a per cent across the doubled round trip. Two
+terms, both derivable, neither of which is the H3 stream window.
+
+### 36.1 The calibration that decides it without a fit
+
+The resend queue charges `len(transferFrameBytes)` per item
+(`transfer.go:9721–9726`): the nominal queue is a framed-byte window.
+The harness measures inner goodput. So a 2 MiB queue that delivers
+0.845 × 2 MiB of goodput per round trip is telling us the sweep's own
+conversion from a framed window to goodput times delay, and that
+conversion is below one for two reasons that never go away: every framed
+byte carries less than one payload byte, and the loop's round trip is
+the imposed delay plus our own acknowledgement delay. The plateau's
+3.91 MiB is in the same goodput units. A framed window of 3 MiB
+(3,145,728 B) cannot put 3.91 MiB (4,100,000 B) of goodput in flight
+over a round trip at least as long as the imposed delay, because
+goodput per framed byte is below one. That excludes the 3 MiB H3 stream
+window as the binder before any fit and at any memory budget, since
+`memoryTargetScale` returns one at or above the reference budget and a
+fraction below it (`memory_budget.go:79–84`): the scale can only lower
+that ceiling. §32.1 is amended accordingly.
+
+### 36.2 Where the plateau is not, and the H3 prediction that stands
+
+The coordinator read the cells' source: the abandon fixture builds send
+and receive gateway transports fed by Go channels, with the delay
+element on that wire, and the zombie and flow-scaling cells inherit it.
+The only real socket in any of the three is the loopback origin the
+provider dials. There is no QUIC stream window and no carrier TCP socket
+on the measured path, so the two caps §32.1 placed beside the queue
+were not there to bind.
+
+The H3 finding stands on its own as a prediction for the namespace cell,
+which will have a real carrier. From source:
+
+- `transport.go:684–687`: stream window 256 KiB initial,
+  `MemoryScaledByteCount(mib(3), kib(384))` maximum; connection window
+  512 KiB initial, `MemoryScaledByteCount(mib(4), kib(512))` maximum.
+  `transport.go:858–889` passes them unclamped into `quic.Config`.
+- `transport.go:2695`: one `OpenStreamSync` per H3 connection, so the
+  stream window binds before the connection window.
+- quic-go v0.61 (`flow_controller_base.go:55–75`) doubles the window
+  whenever more than half of it is consumed within four times that
+  fraction of the smoothed round trip since the epoch began, capped at
+  the maximum, and sends `MAX_STREAM_DATA` once a quarter of the window
+  is consumed (`WindowUpdateThreshold = 0.25`). Growth is path-driven;
+  the ceiling is a fixed, memory-scaled byte count with no path in it.
+  The same defect shape as the resend queue, one layer down.
+- It is the receiver's setting on each hop. Where the path runs through
+  the platform, the client-to-platform and provider-to-platform
+  directions terminate in the server's quic-go configuration, which is
+  in the server tree and not in this file.
+
+Prediction for the namespace cell, stated before it runs: on H3 with
+the queue above 3 MiB and the delay on the carrier hop, the plateau
+sits at 3 MiB of framed bytes per round trip, which at the 0.865
+framing factor of §36.3 is 2.6 MiB of goodput times delay, 109 Mb/s at
+200 ms, below the 164 measured in process; halving
+`H3MaxStreamReceiveWindowByteCount` on the receiving endpoint of the
+delayed hop halves it. If the cell's transfer frames ride the H3
+datagram path instead (`UseDatagramForPath`, `transport.go:3251`),
+stream flow control does not apply and the plateau is this section's
+inner window again.
+
+### 36.3 The 0.845 factor, derived rather than fitted
+
+The factor is the product of two things: goodput per framed byte, which
+is a property of the wire format and the inner MTU, and the ratio of the
+imposed delay to the loop's actual round trip, which is our
+acknowledgement delay. Both are stated below; the record already
+carries the two numbers that make the first exact.
+
+Bytes of a full-size upload packet on the wire, from the protobuf
+definitions (`protocol/transfer.proto`, `protocol/frame.proto`) and the
+send-path literal (`transfer.go:8366–8404`), steady state, one IP packet
+per Pack (`sendPackBatchMaxMessageByteCount = DefaultMtu = 1100`, so two
+full packets never coalesce):
+
+- inner IP packet: `DefaultTunnelMtu` 1,280 B; payload 1,240 B, or
+  1,228 B with TCP timestamps;
+- `Frame{message_type, message_bytes, raw}` around it: 1,290 B as the
+  repeated field, including its two-byte length;
+- `Pack`: `message_id` 18, `sequence_id` 18, `sequence_number` 4,
+  `tag{send_time}` 9, plus the frame: 1,339 B. `head`, `nack`,
+  `contract_frame` and `contract_id` are absent on a steady-state
+  acknowledged Pack; a compact contract head adds 18;
+- outer `TransferFrame`: `transfer_path` with two ids 38 B (56 with a
+  stream id), the `TransferPack` frame wrapper 8 B: 1,385 B plaintext;
+- the encrypted form seals the same bytes with a 12 B nonce and a 16 B
+  GCM tag (`transfer_encrypt.go:91,308`) and adds the field wrapper and
+  the two session hints: about 1,420 B.
+
+So goodput per framed byte is 0.887 plaintext or 0.865 encrypted with
+timestamps (0.895 and 0.873 without), and for the download direction,
+where the provider packetizer builds 1,100 B packets with 1,060 B of
+payload, 0.880 plaintext or 0.855 encrypted. The fitted 0.845 is that
+factor times D/(D + δ) with δ our acknowledgement delay. The reading
+that fits both the derivation and the receiver's 10 ms
+`AckCompressTimeout` is the encrypted upload frame: 0.865 gives
+δ = 4.7 ms at 200 ms, the mean wait under a 10 ms timer; the plaintext
+frame would need δ = 10 ms, every acknowledgement waiting the full
+timer, which the timer does not do. The two 2 MiB points solved
+directly for the pair give 0.84 and 4 to 5 ms, the same reading.
+
+What makes it exact rather than argued: `DestinationSendStats` already
+carries `writeByteCount` and `writeCount`, whose quotient is the mean
+framed bytes per item, and the origin socket's `TCP_INFO` carries the
+inner segment size. Their quotient is the factor; the residual against
+0.845 is δ, which is itself a reading of our acknowledgement path and
+should be recorded as one.
+
+### 36.4 The 3.91 MiB ceiling: the tun's send buffer, not a kernel socket
+
+With δ = 4.7 ms the plateau is 3.91 MiB × (204.7/200) = 4.00 MiB of
+payload in flight at 200 ms and 3.96 MiB at 400 ms: a 4 MiB
+payload-counted window at full utilisation. A framed-counted window
+would have to hold 4.6 MiB, and nothing on the in-process path is
+configured to that.
+
+Which 4 MiB is decided by which loop the delay is on, and I had that
+wrong when I first listed the candidates. The delay element sits on the
+transfer wire between client and provider. The origin's kernel socket
+and the provider's upstream socket close a different loop, provider to
+origin over loopback, whose round trip is microseconds; a 4 MiB send
+buffer over microseconds bounds nothing, and the kernel acknowledges
+into its receive buffer whether or not the NAT is reading, so those
+buffers are passive holds behind the NAT, not windows over the delayed
+wire. The windows that do close a loop across the delayed wire are the
+transfer sequence's, which the sweep raised past the plateau, and the
+inner TCP's: on upload the client's gVisor send buffer, gVisor's
+congestion window, and the provider ladder's advertised window; on
+download the client's gVisor receive window.
+
+The tun's buffers autotune. `tun.go:221–235` sets the receive and send
+ranges, `Default` `MemoryScaledByteCount(mib(1), kib(128))` and `Max`
+`MemoryScaledByteCount(mib(4), kib(512))`, and does not touch
+`TCPModerateReceiveBufferOption`, whose stack default is on
+(gVisor `tcp/protocol.go:613`), so receive-side moderation runs
+(`endpoint.go:916–918,1322–1334`), sized from bytes copied per measured
+round trip. The send buffer grows to twice the congestion window times
+the segment size, capped at `Max` (`endpoint.go:3446–3475`). Both grow
+from the path and stop at a constant. On a lossless wire the congestion
+window is unbounded, so the send buffer reaches its 4 MiB cap and binds
+in-flight payload at 4 MiB: 4.00 MiB measured. The ladder's maximum is
+1 MiB under `DefaultTcpBufferSettings` (`ip.go:421`), which would have
+capped an upload cell at 42 Mb/s at 200 ms, and 16 MiB under the
+buffer-size settings (`ip.go:462`); the cell therefore uses the latter,
+and the record should say so.
+
+The discriminator, now sharpened: at fixed 200 ms, halving
+`TcpSendBuffer.Max` on the client halves the upload plateau, 164 → 82
+Mb/s; halving `net.ipv4.tcp_wmem[2]` in the origin's namespace moves
+nothing, because that socket is not on the delayed loop. A download
+cell plateaus at the same 4 MiB through the receive side's moderation,
+and halving `TcpReceiveBuffer.Max` halves it. The ratio of goodput
+times delay to the halved window sits near one in every case, since
+these windows count payload.
+
+If that ratio sits near 0.845 instead, something on the path is
+charging framed bytes and the tun is not the binder. On an in-process
+carrier there is exactly one place that can be: the fixture's wire, if
+its capacity is bounded in items rather than bytes, a buffered channel
+depth or a per-message goroutine budget in the delay pump. An item bound
+has a signature the record can show without a new cell: the count of
+frames in flight is the same at both delays, 129.5 Mb/s over 1,420 B
+frames for 200 ms is 2,280 frames and 65.1 Mb/s over 400 ms is 2,290,
+and `writeCount` less the acknowledged count would sit at that
+capacity. The other framed-byte bounds are excluded by the sweep
+itself: the resend queue was raised past the plateau, the shared resend
+budget is sized as one `ResendQueueMaxByteCount` and scales with it,
+and the 2.5 MiB receive queue holds only out-of-order Packs.
+
+### 36.5 The delivery-sized rule as built
+
+The rule that produced the first measured speedup is, from
+`transfer.go:8836–8873`:
+
+    Interval = rttWindow.ScaledRtt()
+    Window   = clamp(scale × deliveredBytesOver(Interval), floor, ceiling)
+
+and `ScaledRtt` is `clamp(RttScale × mean, RttMinResendInterval,
+MaxResendInterval)` (`transfer_rtt.go:308–326`) with `RttScale` 2.0,
+the floor 300 ms and the ceiling 8 s (`transfer.go:691–709`). So the
+"last acknowledgement round trip" of §32.5 is twice the mean round
+trip, and never less than 300 ms. With `scale` 2 the window is four
+times what the path delivered per round trip on any path whose round
+trip exceeds 150 ms, and on any shorter path it is twice what the path
+delivered in 300 ms, which at a 25 ms round trip is twenty-four times
+the bandwidth-delay product. The doc comment's safety argument, at most
+one round trip of extra queueing and therefore a scale of two, is
+written for a rule that multiplies by one round trip; this one
+multiplies by two, or by 300 ms.
+
+That is what the harness saw: 4 × 3.91 MiB is 15.6 MiB, the 14 to 16 MiB
+the rule computed at 200 ms. The ceiling was reached by construction,
+not by a runaway, and it was inert for throughput because the inner
+window bounds what the inner stack can hand the sequence: the transfer
+window can only fill with Packs the inner TCP has sent, and it sends at
+most 4 MiB unacknowledged. Where the excess would not be inert is a path
+whose binder is below the sequence rather than above it, a slow carrier
+hop or the writer's own service rate: there the inner stack keeps
+sending, the queue fills to the whole transfer window in front of the
+slow stage, and every flow sharing that stage pays window over rate of
+added round trip, which is §35's mechanism turned on ourselves.
+
+The mean is the wrong multiplier for a second reason. The tag is
+stamped at Pack construction (`transfer.go:8382,8542,8644`), ahead of
+the transport writer, so the sample contains whatever queue the window
+itself creates. A rule that sizes from rate times a round trip that
+grows with its own window has the ceiling as its only fixed point on a
+path bound below it. `RttEstimate.Min` exists (`transfer_rtt.go:227`),
+taken from the monotonic-minimum deque under the same lock and coalesce
+as the mean; the minimum is the propagation plus our fixed delays and
+does not grow with the window, and rate times that minimum has the
+plateau as its fixed point. That is the change §36.7 and §37 make.
+
+### 36.6 The ramp: where the hundred milliseconds comes from, and the honest trade
+
+Solved from two transfer sizes, the adaptive arm reaches the same steady
+state as a constant 16 MiB queue, 164.7 against 164.1 Mb/s, and pays
+about 100 ms more getting there, which is why the multiple grows with
+transfer size, 1.7 at 16 MiB and 2.1 at 64. The cost is structural, not
+a matter of distance. Growth needs evidence, and evidence is
+acknowledgements: a window raised at t is not seen delivering until its
+first acknowledgements return at t plus one round trip, and a trailing
+sum over a full interval does not read the new rate until a further
+interval has passed. Two round trips per doubling, of which the first is
+physics and the second is the estimator's shape. With the binder at 4
+MiB of payload, 4.6 MiB framed, and a 2 MiB floor, the ramp is one
+doubling; a higher floor would buy almost nothing here and would cost
+what §15 measured on a 32 MiB budget.
+
+The trades, stated so a campaign can pick and nobody guesses:
+
+- Rate over a sub-interval, projected. Replace the trailing sum over
+  the interval with a rate, bytes acknowledged between two ring samples
+  over the time between them, times the minimum round trip. The
+  estimator reads the new rate as soon as the raised window's first
+  acknowledgements arrive, which removes the second round trip per
+  doubling and leaves the first. The bound on over-grant is unchanged:
+  the window is still k times a demonstrated delivery. The new cost is
+  projection from a short interval: acknowledgements arrive in bursts
+  under the receiver's 10 ms compression and the ladder's 50 ms, and a
+  rate read across too few of them over-projects by the burst ratio.
+  The interval must span several compression periods; the ring's
+  present cadence, a sample every `RttMinResendInterval / 4` = 75 ms
+  (`transfer.go:8774`), is already coarser than that and coarser than a
+  25 ms round trip, which is a second reason the sum-over-horizon form
+  cannot serve a short path: `deliveredBytesOver(25 ms)` returns up to
+  100 ms of delivery.
+- A larger k. Removes ramp time in proportion and multiplies the
+  over-grant in a stale-estimate episode by the same factor: k − 1
+  round trips of queue in front of whatever binds, paid by every flow
+  sharing the writer. The property built in was one round trip. Nothing
+  here argues for spending it.
+- A higher floor, or an evidence-free start. Grants without
+  demonstration. §37.5 makes this a deliberate, written-down bet rather
+  than an inherited floor, and says which direction of error is cheap.
+
+The first is the design-consistent one; it changes no bound. The second
+trades the margin and should be measured against it, not adopted for
+the ramp. The third is where the composite design puts the startup
+cost, deliberately.
+
+### 36.7 Whether to stop at the plateau: yes, and the interval is the mechanism
+
+The question was whether the rule should stop climbing when additional
+window stops producing additional delivery, rather than converging
+toward a configured number the path cannot use. It should, and no
+detector is needed: a rule of the form k × rate × minimum round trip
+stops when the rate stops, because nothing else in it moves. The
+plateau becomes the fixed point, at k times the path's delivery per
+propagation round trip, and the configured ceiling becomes what it
+should be, a budget bound that a well-behaved path never reaches. With
+the mean or with `ScaledRtt` the fixed point is the ceiling, on every
+path, and the "plateau detection" being asked for would be a patch over
+the wrong multiplier.
+
+On a composite tree (§37) the same form answers the harder version of
+the question: delivery not responding may mean the layer above has not
+grown yet rather than that the path is full. k × rate × minimum round
+trip holds at k times whatever the layer above lets through, and
+follows it up one round trip after it grows. The rule never needs to
+know which it was.
+
+What remains after that change is k itself at steady state: k × BDP of
+window is (k − 1) × BDP of standing queue in front of the binder, one
+round trip of it at k = 2, which is the margin that keeps the pipe full
+through an estimate that runs briefly short and is also latency every
+sharer of the writer pays. If the standing queue proves costly in the
+zombie sweep's live-flow round trip, the shape that removes it is the
+known one: probe with k above one, drain, cruise near one, which is
+BBR's gain cycle. That is a candidate after the minimum-round-trip
+change is measured, not before, and the campaign picks k.
+
+Predictions, stated before the cell: at 200 ms the computed window
+falls from 14–16 MiB to about 9.3 MiB, twice the 4.6 MiB framed binder,
+with steady-state throughput unchanged at 164 Mb/s and the startup
+excess halved to about 50 ms; at a 25 ms imposed delay the computed
+window is twice the rate times 25 ms and doubles per round trip to the
+binder instead of starting at the ceiling. If throughput at 200 ms
+falls with the smaller computed window, the inner binder is not what
+§36.4 says and the transfer window was doing work above 4.6 MiB, which
+the record's `Rtt.Min` against `Rtt.Mean` would show as a round trip
+that had been growing with the window.
+
+## 37. Every window from the origin socket to the client application, and the composite fix: a target throughput, a memory budget, and an initial size
+
+The user has settled the scope: every buffer in the path sizes from the
+round trip, and the configuration is a target throughput, a memory
+budget, and a reasonable initial size, from which each window is
+derived rather than configured. This section is the enumeration that
+design needs, the restatement of every constant as the target and round
+trip it silently encodes, the sort into layers that already autotune
+and layers that do not, the round trip each layer can actually measure,
+the composite rule, its memory bound for one flow and for a provider at
+scale, and an implementation order in which each step is measurable on
+its own. Our cell is the reference throughout: a ceiling is a window
+over a round trip, so the cell reaches any regime by moving the round
+trip, which is what produced the confirmed result, and every binding
+claim below is testable by halving one window at a fixed delay.
+
+### 37.1 A window means nothing without its loop
+
+Bytes in flight are bounded by a window only relative to the
+acknowledgement loop that window closes, and the path has four loops
+with four different round trips:
+
+- Loop A, provider to origin: a kernel TCP connection from the NAT's
+  upstream socket to the origin. Its round trip is the real network to
+  the origin, microseconds over loopback in the cell.
+- Loop B, the inner TCP: the client's stack to the provider's NAT
+  (`TcpSequence`), which terminates it. Its round trip is the whole
+  tunnel, the carrier crossed twice, plus every Transfer queue and
+  acknowledgement delay in both directions. It is the longest loop.
+- Loop C, the Transfer sequence: per destination, client to provider
+  through the platform, with the acknowledgement returning over the
+  same carriers plus the receiver's 10 ms compression. Its round trip
+  is the carriers' plus our delays.
+- Loop D, the carrier per hop: client to platform and platform to
+  provider, each an H3 connection or an H1 TCP socket with its own
+  windows, over that hop's network round trip alone.
+
+Loops A and D are short in the cell and in the datacenter regime;
+loop B contains loop C, which contains loop D. The same bytes sit in
+all of them at once, which is what §37.7 is about.
+
+### 37.2 The enumeration
+
+For each window: its value and derivation, whether that derivation
+carries a term from the path, the loop it closes and the estimator it
+has, the target and round trip the constant encodes, and where it sits
+in the binding order. Constants are restated in goodput bytes per round
+trip, framed layers converted at the 0.865 of §36.3, so that layers can
+be compared at all; the rate columns are that quantity over 25 ms and
+over 200 ms, the two regimes the cell can impose.
+
+Transfer, loop C, both directions:
+
+- C1, the send window, `ResendQueueMaxByteCount`,
+  `MemoryScaledByteCount(mib(2), kib(256))` (`transfer.go:762`): 2 MiB
+  framed, 1.73 MiB goodput per round trip. No path term as shipped; the
+  delivery-sized rule adds one, as built through `ScaledRtt` (§36.5).
+  Estimator: `RttWindow`, mean and minimum, sender's clock. Encodes
+  580 Mb/s at 25 ms, 72 at 200 (measured 68.6). First binder in the
+  cell, measured.
+- C2, `SequenceBufferSize`, 32 items: the pre-send burst buffer in
+  items (§32.1). Not a window; unchanged by this design.
+- C3, the receive hold, `ReceiveQueueMaxByteCount`,
+  `MemoryScaledByteCount(mib(2) + kib(512), kib(320))`
+  (`transfer.go:831`): 2.5 MiB framed, 2.16 MiB goodput. No path term;
+  no estimator, and none possible, since a receiver sees arrivals and
+  not a round trip. Encodes 725 Mb/s at 25 ms, 91 at 200, but only
+  under loss: on an in-order path it is empty. When an arrival does not
+  fit, later items are evicted to admit an earlier one and an arrival
+  above everything held is dropped and counted
+  (`transfer.go:11789–11800`, `ReceiveQueueDropCount`). Position: the
+  loss-regime binder, §37.3.
+- C4, the shared budgets, `ResendQueueBudget` and `ReceiveQueueBudget`
+  with `NewTransferMemoryBudget`, and the lane pools sized as one
+  `ResendQueueMaxByteCount` (§27, §29): caps that scale with C1 and
+  C3, no path term of their own; the place the composite budget already
+  has a foothold.
+
+The inner TCP, loop B:
+
+- B1, the tun's send buffer, `TcpSendBuffer{Default 1 MiB, Max 4 MiB}`
+  memory-scaled (`tun.go:93–106`), upload. Path term: yes, twice the
+  congestion window times the segment size, capped at `Max`
+  (`endpoint.go:3446–3475`). Estimator: gVisor's own, loop B. Encodes
+  1,340 Mb/s at 25 ms, 168 at 200 (measured 164). Second binder in the
+  cell, measured; the constant is the cap only.
+- B2, the tun's receive window, `TcpReceiveBuffer{Default 1 MiB, Max
+  4 MiB}`, download. Path term: yes, receive moderation on by default
+  (`protocol.go:613`), grown from bytes copied per measured round trip
+  (`endpoint.go:1322–1334`). Same numbers as B1 for the other direction.
+- B3, gVisor's congestion window: path-sized, no constant; binds only
+  under loss.
+- B4, the ladder's advertised window, upload, `MinWindowSize`,
+  `InitialWindowSize` and `MaxWindowSize`: 1 MiB under
+  `DefaultTcpBufferSettings` (`ip.go:421`), 16 MiB power-of-two-scaled
+  under the buffer-size settings (`ip.go:462`). Path term: yes but from
+  the wrong loop, it doubles while `writePayloads` does not block and
+  halves when it blocks half the time, which is loop A's backpressure
+  and carries no round trip of loop B. No estimator of loop B; the NAT
+  has none. Encodes 335 Mb/s at 25 ms and 42 at 200 as shipped plain,
+  5,370 and 670 with the buffer-size settings. Above B1 in the cell;
+  below everything at the plain default, which is the single most
+  inconsistent constant in the chain.
+- B5, the NAT's download send hold: the `DataPackets` awaiting the
+  client's inner acknowledgement, bounded only by B2, the client's
+  advertised window, through `receiveAckCond.Wait()` (`ip.go:5287`).
+  No cap of the provider's own, no estimator. Encodes whatever the
+  client advertises; forty clients at 4 MiB is 160 MiB the provider
+  did not choose.
+
+The carrier, loop D, per hop, the receiver's setting on each:
+
+- D1, the H3 stream window, 256 KiB initial to
+  `MemoryScaledByteCount(mib(3), kib(384))` (`transport.go:684–685`):
+  3 MiB framed, 2.6 MiB goodput. Path term: yes, quic-go's growth
+  (§36.2); the ceiling is the constant. Estimator: quic-go's smoothed
+  round trip of its hop. Encodes 870 Mb/s at 25 ms, 109 at 200. Binds
+  before B1 on a real carrier with the queue above 3 MiB; absent in
+  process. The server's side of two hop-directions is in the server
+  tree.
+- D2, the H3 connection window, 512 KiB to
+  `MemoryScaledByteCount(mib(4), kib(512))`: 3.46 MiB goodput; one
+  stream per connection (`transport.go:2695`), so inert behind D1.
+- D3, the H3 UDP socket buffers, `H3SocketReadBufferByteCount` and
+  `H3SocketWriteBufferByteCount`, 1 MiB memory-scaled: not windows,
+  there is no loop through a UDP socket; they absorb bursts of rate
+  times scheduling latency and overflow as loss. A different rule, not
+  this design's.
+- D4, quic-go's congestion window: path-sized; its packet-count
+  constant is far above any window here.
+- D5, the H1 carrier's kernel socket: `tcp_wmem[2]` 4 MiB and
+  `tcp_rmem[2]` 6 MiB stock, autotuned, path term yes, ceilings the
+  host's sysctls; no pin on the carrier dialer today. Encodes 1,340
+  and about 1,600 Mb/s at 25 ms per hop.
+
+Provider to origin, loop A:
+
+- A1, the provider's upstream socket, `ConnectSettings.DialControl`
+  from §15: pinned at twice `min(MaxWindowSize, wmem_max)` when that
+  exceeds the autotune ceiling, otherwise autotuned to `tcp_wmem[2]`
+  and `tcp_rmem[2]` with the kernel's own estimator. Path term: yes.
+  Encodes about 1,340 Mb/s at 25 ms of loop A's round trip; inert in
+  the cell, the binder for a distant origin in production.
+- A2, the origin's own socket: not ours.
+
+Buffers that bound items or bursts and not bytes in flight, listed to
+close the enumeration and left alone: the receive-side handoff of 256
+items and its adaptive pack handoff, the NAT's 64 KiB read chunk and
+`WriteBatchSize` 64, the coalescer's fixed frame array.
+
+Read across, the implied targets at one round trip run from 42 Mb/s to
+5,370 at 200 ms depending on which constant one asks, and no two layers
+agree. That disagreement is the binding order: at equal round trip it
+is C1 (1.73 MiB goodput), then C3 under loss (2.16), then D1 (2.6),
+then B1 and B2 (4.0), then D2, then B4 with the buffer-size settings
+(16), and the plain B4 (1 MiB) below all of them. The cell measured
+C1 then B1, which is that order with D absent.
+
+### 37.3 The receive hold under loss, and whether both must move
+
+The coordinator's question: if the send window can now grow to 16 MiB
+while the receive side holds 2.5, a loss on a fast path has a hole it
+cannot fill. It is real. A Pack lost at sequence n with W bytes in
+flight behind it puts up to W − 2.5 MiB of arrivals above the hold; each
+is dropped on arrival (`transfer.go:11789–11800`) and must be sent
+again after the sender's gap recovery or its paced interval, which is
+floored at 300 ms. One loss then costs one window of retransmission,
+13.5 MiB at 16 MiB, on top of the hole's own recovery; at the cell's
+plateau rate that is two thirds of a second of resending per loss
+event, and the acknowledgements those drops destroy are the ones
+FLIGHTGATEFIX §34.2 identified as what a lane proof depends on. TCP
+cannot have this failure because its receive buffer is its advertised
+window; Transfer has no receiver-advertised window at all (§32.1), and
+that is the missing coupling, not a second window to size.
+
+So the answer is not that both must be sized from the path. The hold
+has no round trip to size from. The answer is that the sender's window
+may never exceed what the receiver will hold, and the receiver must say
+what that is: `Ack` gains a `receive_window_byte_count`, the receiver's
+current hold capacity, and the sender clamps its window to the latest
+advertised value; absent, a legacy peer, the sender keeps today's
+constant. The hold's capacity is then a budget quantity, the receiver's
+share of §37.4's memory, and it costs nothing on a clean path because
+the hold is empty there. The `Ack` already carries `selective` per
+message (`transfer.proto:148–154`), so the receiver already tells the
+sender what it holds; this adds what it could hold.
+
+### 37.4 The configuration surface: what each constant actually was
+
+Every constant in §37.2 is a target throughput at an assumed round
+trip, and the defect is that both are implicit and neither travels with
+the path. Two mebibytes is 500 Mb/s at 33 ms or 84 at 200; three on the
+H3 stream is the same thing with a different assumption. The memory
+scale makes it worse in a specific way: scaling a byte count by memory
+keeps the implied target fixed only if the round trip never changes, so
+a phone at a 32 MiB budget gets half the window and, on the same path,
+half the target, which nobody chose.
+
+The surface the user has set is three quantities, and each is a thing
+an operator can reason about without knowing the round trip:
+
+- a target throughput, T, in goodput;
+- a memory budget, M, which the process already has
+  (`SetMemoryBudget`, `memory_budget.go:56`, with
+  `memoryTargetScale`) and which the carriers already draw on
+  (`PlatformTransportBudget`) and Transfer already draws on
+  (`ResendQueueBudget`, `ReceiveQueueBudget`);
+- an initial size, the bet a layer makes about the path before it has
+  measured it, which §37.5 argues is a third configured thing and not
+  derived from the other two.
+
+From these each layer's window is derived:
+
+    window_L = clamp(min(T × rtt_L, k × achieved_L × rtt_L),
+                     initial_L,
+                     share_L)
+
+where `rtt_L` is the minimum round trip that layer measures on its own
+loop, `achieved_L` is the delivery rate it measures, `share_L` is its
+draw on M, and framed layers divide by their goodput factor so that a
+goodput target means the same bytes at every layer. The three terms are
+three visible regimes: if the path is full the window sits at k times
+delivery, §36.7; if the target is the limit it sits at T times the
+round trip; if memory is the limit it sits at the share and the achieved
+rate falls short of T, which is the honest failure and is visible in
+the estimate's fields rather than silent in a constant.
+
+Per role or per process. One target per process, chosen by role, the
+way the memory budget already has role profiles ("provider entry points
+select their explicit profile", `ip.go:418–420`). Per-layer targets
+would recreate the inconsistency of §37.2 by hand; the layers are a
+serial chain carrying the same bytes, and one intended rate is the only
+thing that makes their windows comparable. On a provider T is per
+client, the rate one client's flows may take, and M caps the aggregate;
+on a phone T is the process's.
+
+Layers that already autotune keep their growth and get their ceiling
+from the surface. That is the smaller change and the better one: the
+mechanism that grows quic-go's window from 256 KiB, the tun's buffers
+from 1 MiB and the kernel's from its defaults is already the k ×
+achieved term of the rule above, measured by the layer that owns the
+loop; what each lacks is a ceiling that is not a constant and an
+initial size that is not one either. For those layers the composite
+sets `initial_L` and `min(T × rtt_L, share_L)` and touches nothing
+else. quic-go is the precedent in the tree: an initial size, a growth
+mechanism and a ceiling as three separate concepts, defective only in
+that the ceiling is a constant. Transfer had none of the three, which
+is why §32.5 had to build a rule; the NAT has growth from the wrong
+loop and no estimator, §37.6.
+
+Convergence. T × rtt_L is not a number anyone should allocate against
+until rtt_L is worth trusting. Until it is, the window is `initial_L`,
+and the estimate carries its own trustworthiness: `RttEstimate` already
+reports `SampleCount` and `NewestSampleAge` (§33), and the rule uses
+the measured terms only above a sample count and below an age that the
+campaign picks. The initial size is what covers the gap, which is why
+it is first-class.
+
+### 37.5 The initial size
+
+What it derives from. A fixed byte count per layer, or the target times
+an assumed round trip that is written down. The second, for the reason
+the user gave: it is exactly what every current constant already is,
+except undocumented, and writing the assumption beside the target makes
+it reviewable. It also makes the assumption one number: every layer's
+initial size is T times the same assumed round trip, converted by that
+layer's goodput factor, so that no layer starts smaller than the others
+and the ramps run concurrently rather than in series. That last point
+is the composite's answer to the ramp: on a tree where every layer
+climbs, the startup cost is the sum of serial ramps if each layer waits
+for the one above to grow before it can see delivery, and the maximum
+of them if they all start at the same bet. The assumed round trip is
+per role, since a datacenter provider and a phone on a cellular path
+are not betting on the same thing, and the campaign picks it.
+
+Which way to be wrong. Too small costs a ramp: one round trip per
+doubling from the initial size to the path's window, which is
+measurable and bounded, and on the cell is the 100 ms of §36.6. Too
+large costs, where the window is credit rather than backed memory, a
+standing queue in front of any layer below that turns out slower, which
+is latency for every flow sharing the writer (§35), and where it is
+backed, memory held for nothing on a short path, which on a phone is
+the expensive direction. The asymmetry argues for a bet on the short
+side and a climb, from the argument and not from the current
+behaviour: the cost of a low bet is one measurable round trip per
+doubling and nothing else, and the cost of a high bet lands on other
+flows and on the device. The ramp is then addressed by the concurrency
+of the bets and by the estimator's form (§36.6), not by betting high.
+
+### 37.6 The round trip each layer measures, and the layers with none
+
+- Transfer send: `RttWindow`, mean and minimum, on loop C. The
+  minimum is the multiplier (§36.5); the mean and the gap between them
+  are diagnostics.
+- Transfer receive: none, and none needed, §37.3; it advertises a
+  share.
+- The tun's send and receive: gVisor's own estimator on loop B, the
+  longest loop, which is why B1 and B2 bind earlier than their byte
+  rank suggests once the hops have different round trips: 4 MiB over
+  the whole tunnel against 3 MiB over one hop.
+- quic-go: its own smoothed round trip on its hop, both sides.
+- The kernel: its own, loops A and D.
+- The NAT: none. The ladder sizes from loop A's backpressure, and the
+  download hold from the client's advertisement. The design does not
+  give it an estimator. For upload, the client's stack already sizes
+  from loop B, so the NAT's advertised window needs only to be no
+  smaller than the client's send window, which makes it the same kind
+  of thing as the Transfer receive hold: a share, advertised. Its
+  `InitialWindowSize` becomes the initial bet and its `MaxWindowSize`
+  the share; the doubling-and-halving on backpressure stays, because it
+  is the one thing on the path that carries loop A's state into loop B
+  and it is right to. For download, the NAT sends no more than the
+  smaller of the client's advertised window and the provider's share:
+  a sender may always send less than it is offered, and today it has no
+  bound of its own, which is B5.
+
+The principle that falls out, and it is one principle: sizing lives at
+senders, who can measure a round trip; receivers advertise a share of
+memory. That is TCP's own design, and the chain's defects are the
+places it is not followed: Transfer's receiver advertises nothing, the
+NAT's download side has no share, and every ceiling is a constant.
+
+### 37.7 Memory: the compounding, and the composite bound
+
+The same bytes are held in more than one place because there are three
+reliable layers, each keeping a retransmission copy: on a provider
+serving a download, the NAT's `DataPackets` until the inner
+acknowledgement, the Transfer frame until the Transfer acknowledgement,
+and the carrier's copy until the carrier's, quic-go's stream data or
+the kernel's socket buffer. Three copies at the sender; at the
+receiver, one, the tun's receive buffer until the application reads,
+plus the Transfer hold under loss. And a fourth on loop A, the upstream
+socket's kernel buffer, which is the kernel's memory but the provider's
+host.
+
+One flow on a long path therefore holds, at the sender, the target
+times the sum of the loops' round trips over the copies, T × (rtt_B +
+rtt_C + rtt_D): at most three times T × rtt_B, and about 1.75 times it
+in the production ratio of §37.11. Sizing every layer to its own
+bandwidth-delay product does not change the copy count; it was already
+three, at three constants that happened to be near each other. What the
+budget does is make the aggregate a choice: N clients each hold at most
+their shares across the copies, the shares come from M, and when the
+sum of needs exceeds M the shares scale down together and the achieved
+rate falls short of T, visibly. The composite bound is then
+
+    one flow:          Σ over copies of min(T × rtt_L, share_L)
+    a provider:        Σ over clients ≤ M, by construction
+
+and nothing measured can exceed M, which is what makes it shippable.
+The distribution of M into shares is the floor-and-borrow admission the
+queues already have (§29), one pool per copy kind rather than per
+sequence; the design does not add a second allocator.
+
+Two consequences worth having plainly. First, sizing from the path
+with a budget is cheaper than today's constants, not dearer: a flow on
+a short path holds T × rtt, which is below the constant whenever the
+round trip is below the constant's hidden assumption, and today it
+holds the constant regardless. Second, the copy count is the lever the
+budget cannot reach. The NAT's held segment and the Transfer frame that
+carries it can be one buffer, the frame's payload referencing the held
+segment, which takes the sender from three copies to two and is worth
+a third of the provider's memory at any budget. It is a follow-on to
+this landing and is named here so that it is not mistaken for part of
+it.
+
+### 37.8 "Size the binder and cap the rest just above it"
+
+The cheaper fix is unsound across regimes, and the record already
+contains the counterexample. Which window binds is the minimum over
+layers of its goodput bytes over its own loop's round trip, and those
+round trips differ per layer and change with the path: the H3 stream
+window sat above the Transfer queue at the shipping constants and below
+it the moment the queue was sized from the path; it moves again when
+the delay sits on the origin leg and loop A binds; and B1 outranks D1
+whenever the tunnel's round trip is more than four thirds of one hop's.
+A cap set "just above" one regime's binder is the binder in the next.
+
+What survives of the idea is its economy, and the composite keeps it:
+one target, one budget and one assumed round trip give every layer a
+consistent ceiling by construction, the measured round trip is the
+only thing that differs per layer, and the layers that already grow
+themselves are not given new sizing at all. That is cheaper than four
+independent rules and does not fail when the path changes.
+
+### 37.9 What each layer becomes
+
+- Transfer send, both roles: `window = clamp(min(T × rtt_min / f,
+  k × achieved × rtt_min), initial, min(share, advertised))`, with
+  `rtt_min` from `RttEstimate.Min`, `achieved` as a rate between ring
+  samples (§36.6), `f` the goodput factor, `advertised` from §37.3.
+  `DeliverySizedWindowScale` and `DeliverySizedWindowCeilingByteCount`
+  are replaced by the target, the assumed round trip and the share.
+- Transfer receive, both roles: hold capacity from the share;
+  `Ack.receive_window_byte_count`; drops at the hold become impossible
+  by construction for a peer that reads the field.
+- The tun: `Default` becomes the initial bet, `Max` becomes
+  `min(T × rtt_assumed_max, share)` where `rtt_assumed_max` is the
+  longest path the target is meant to hold on, written down; growth
+  stays gVisor's.
+- The NAT: `InitialWindowSize` the bet, `MaxWindowSize` the share, the
+  ladder unchanged; a download send bound of `min(advertised, share)`,
+  which is new.
+- H3: `H3InitialStreamReceiveWindowByteCount` the bet,
+  `H3MaxStreamReceiveWindowByteCount` `min(T × rtt_assumed_max / f,
+  share of PlatformTransportBudget)`, the connection window keeping
+  its ratio; quic-go's growth stays. The server mirrors it in its tree,
+  and until it does the server's constant is the binder on two
+  hop-directions, which the namespace cell will show.
+- The carriers' and upstream sockets: the `DialControl` request
+  becomes `min(T × rtt_assumed_max, share)`, on the carrier dialer as
+  well as the upstream one; §15's rule decides whether that pins or
+  leaves autotuning alone, as it does today.
+- Unchanged: the item buffers, the UDP socket buffers, the coalescer.
+
+### 37.10 Implementation order, each step measurable alone
+
+1. The Transfer send rule's interval and form (§36.7): minimum round
+   trip, rate between samples. Measured at 200 ms: computed window 16
+   → about 9.3 MiB, throughput unchanged at 164, startup excess about
+   halved.
+2. The receive advertisement (§37.3) and the hold as a share. Measured
+   in a loss cell at 200 ms with a 16 MiB send window: retransmitted
+   bytes per loss event fall from about a window to about an item, and
+   `ReceiveQueueDropCount` goes to zero.
+3. The surface (§37.4) on Transfer first: target, assumed round trip,
+   shares. Measured: the shipping 2 MiB arm reproduced by T × assumed
+   round trip equal to 2 MiB, so the before and after are one binary
+   with the assumption written down; then the startup excess against
+   the bet.
+4. The tun's ceilings and initial from the surface. Measured: the
+   4 MiB plateau moves with the share, halved and doubled at 200 ms,
+   §36.4's discriminator run in the other direction.
+5. The NAT's initial, share and download bound. Measured in upload and
+   download cells at 200 ms; the download bound measured as provider
+   memory at forty clients, which today is the clients' choice.
+6. H3 ceilings and initial from the surface, with the server's mirror.
+   Measured in the namespace cell: the 109 Mb/s plateau of §36.2 moves
+   with the share; until the server mirrors, it does not.
+7. The dialer requests from the surface. Measured in the namespace cell
+   on H1 and against a delayed origin leg.
+8. The copy elimination of §37.7, after the above, as its own
+   measurement of provider memory at scale.
+
+Each step is one knob at a fixed delay, and its prediction is written
+above before it runs.
+
+### 37.11 At the target: one gigabit per second, worked through
+
+The user has set the target at one gigabit per second for every layer.
+This section designs against 1 Gb/s = 125 MB/s, decimal; if it was
+meant as one gibibyte per second every figure below multiplies by 8.6
+and the budget binds that much sooner. The constant is one setting,
+`TargetThroughputBytesPerSecond`, and nothing below depends on its
+value except through it.
+
+The window one layer needs at the target, goodput, with the framed
+layers' figure at 0.865 in brackets:
+
+    round trip    window            framed
+    1 ms          125 kB            145 kB
+    10 ms         1.25 MB           1.45 MB
+    25 ms         3.1 MB            3.6 MB
+    50 ms         6.25 MB           7.2 MB
+    100 ms        12.5 MB           14.5 MB
+    200 ms        25 MB             28.9 MB
+
+At the target the k × achieved term of §37.4's rule is not the
+binder, since achieved equals T, so the window is T × rtt exactly and
+the memory per copy is that row.
+
+How the budget is divided across the layers. Dividing it evenly is
+wrong, and my first draft of this section was wrong in the opposite
+direction for an instructive reason: I argued the copies hold the same
+bytes and so need the same room. They hold the same bytes for different
+lengths of time. The carrier holds a byte until its hop acknowledges it,
+one hop's round trip; Transfer holds it until the far sequence
+acknowledges it, both hops plus our delays; the NAT or the tun holds it
+until the inner acknowledgement returns, the whole tunnel both ways. At
+one rate the three holds are T × rtt_D, T × rtt_C and T × rtt_B, and
+in production those stand roughly as 1 : 2 : 4, with the innermost
+layer the largest. In the cell, one wire, they are equal, which is why
+the cell could not have shown this.
+
+So the division rule is the one that makes the arithmetic come out and
+needs no knowledge of the binding order: each layer's share is its own
+need, `T × rtt_L` from its own estimator, and when the sum of needs
+exceeds M every need is scaled by the same factor, `M / Σ need`. Under
+that rule every layer's window over its own round trip is the same
+number, `T × min(1, M / Σ need)`, so no layer binds ahead of another:
+the chain is co-binding, delivers `min(T, M / Σ rtt_L)`, and no other
+division of the same bytes delivers more, because any other division
+lowers the smallest window-over-round-trip. That answers the question
+directly. A layer need not know it is the binder, and the order need
+not be assumed at design time; each layer knows its own round trip,
+which is the only thing the rule asks of it, and the arbiter applies
+one factor to all. A layer can be seen to be the binder at runtime,
+its window fully in use while the others show slack, and the estimates
+expose that for the record, but the rule does not depend on it. A
+static division with an assumed order fails exactly when the ratio of
+the loops' round trips changes, which it does between the cell (1 : 1
+: 1), production (1 : 2 : 4) and a distant origin (loop A dominant).
+
+The mechanisms exist for the layers whose growth we do not own. gVisor
+reads its buffer limits from the stack option on every autotune step
+(`GetTCPSendBufferLimits(e.stack)` in `computeTCPSendBufferSize`), so
+re-setting `TCPSendBufferSizeRangeOption` moves a live endpoint's
+ceiling. quic-go's connection flow controller takes an
+`allowWindowIncrease` callback (`flow_controller_base.go:70`,
+`Config.AllowConnectionWindowIncrease`), a runtime veto on growth that
+is a budget hook in all but name; the static maxima are set from the
+budget's upper bound and the callback enforces the live share. The
+kernel's socket buffers can be re-set with `SO_SNDBUF` and `SO_RCVBUF`
+at any time, at the cost §15 documents of locking autotuning, so for
+loop A the share is applied through the pin request and otherwise left
+to the kernel. Transfer's shares are ours directly.
+
+The phone under that rule. A 24 MiB budget is 25.2 MB. The achieved
+rate on a long path is `M / Σ rtt_L` over the copies, so in the cell's
+regime, where the three round trips are equal, the target holds to a
+67 ms wire and falls to 670 Mb/s at 100 ms and 335 at 200; in the
+production ratio the sum is 1.75 × the tunnel round trip, the target
+holds to a 115 ms tunnel and falls to 576 Mb/s at 200 ms. The layers
+that get less than they asked for lose nothing in consistency, since
+all sit at the same window over round trip; what falls is the rate,
+visibly, which is the intended failure mode. Two levers move the knee:
+the copy count, which §37.7's buffer sharing takes from three to two on
+the send side, and our own acknowledgement delay, which is inside every
+one of the three round trips and is the only term that is ours to
+shorten at every rate.
+
+The provider. Forty clients at 100 ms want 12.5 MB each for one copy
+and about 22 MB each across the copies in the production ratio, close
+to a gigabyte, and a provider is unbudgeted today, which is why the
+arithmetic never surfaced. Two systems are possible, they have
+different failure modes, and this design chooses the first:
+
+- A divided budget, chosen. The provider gets M from its role profile.
+  Each client's share is its need under the same rule as the layers,
+  scaled by one factor when the sum of clients' needs exceeds M, so a
+  client's window shrinks as others arrive and every client's rate
+  falls together, `min(T, M / Σ over clients of Σ rtt_L)`. The target
+  is an intent, a ceiling per client, and the provider's uplink caps
+  the aggregate rate long before forty gigabits; the budget arbitrates
+  memory and the uplink arbitrates rate, and both shortfalls are
+  visible in each client's estimate. Its failure mode is graceful
+  degradation, which is what TCP does across flows on a link and what
+  a provider's users already experience from its uplink. The
+  floor-and-borrow admission the queues already have (§29) is this
+  rule's implementation: the floor is the least a client is lent, the
+  borrow is the scaled need.
+- Admission, not chosen. The target as a promise: the provider serves
+  at most `M / (Σ rtt_L × T)` clients at their full windows and refuses
+  the rest. Its failure mode is refusal, it needs the contract layer to
+  carry the refusal, and it would admit about one client per gigabit
+  of uplink regardless of memory. It is named so it is not chosen by
+  accident. What the divided budget keeps of it is the floor: when
+  `N × floor` reaches M the provider is at capacity. The NAT's
+  `GlobalLimit` is already derived from a memory target through an
+  assumed per-flow byte count (`ip.go:595–596`,
+  `natTarget × 2/5 / providerTcpFlowByteCount`); that byte count is the
+  same hidden constant in another place, and the floor replaces it, so
+  the one admission bound this landing touches is derived rather than
+  invented.
+
+The short path, where the scheme pays for itself with no tension. At
+1 ms and 10 ms the target wants 145 kB and 1.45 MB framed, both below
+the 2 MiB allocated unconditionally today, so on short paths the new
+scheme hits the target with less memory than the constant it replaces.
+The crossover is at 14.5 ms of loop-C round trip, where 2 MiB framed is
+exactly the target's window. That number is worth having beside §36.3:
+the path's own acknowledgement delay, δ plus the writer's service, is
+about that size, so on a path whose network round trip is negligible
+the target wants about 3.6 MB framed, more than today's constant, and
+every millisecond of our own delay removed is 125 kB per layer per
+client at the target. The change is faster on long paths and cheaper on
+short ones, and the boundary between the two is a number, not a
+judgement.
+
+The initial size at the target is a guess at the path: 145 kB bets on
+a local one, 3.6 MB on a wide-area one, 29 MB on a 200 ms one. The
+trade is quantifiable. The measured startup excess was 100 ms from a
+2 MiB bet, which at the target is a 14 ms bet, to the 4.6 MiB framed
+the cell could use at 200 ms: 1.2 doublings, about 0.4 round trips per
+doubling with the sum-form estimator, and the rate form of §36.6
+should halve that. So a 145 kB bet on a 200 ms path is 7.6 doublings,
+about 0.6 s of excess per sequence start; a 3.6 MB bet is 3 doublings,
+about 0.25 s; a 29 MB bet has no ramp. In the other direction, a 3.6 MB
+bet on a 1 ms path with a slower layer below it stands as queue until
+the estimate is trusted, `SampleCount` samples at that round trip, which
+is milliseconds, and the tun's own 1 MiB default bounds what can arrive
+in the meantime; a 29 MB bet on the same path is the same brief queue
+at eight times the size. Both errors scale with the round trip they are
+wrong about, but the low bet's cost is paid in whole on every long
+path and the high bet's is paid briefly on every short one. Per role,
+then, from the argument: a phone bets low, because its sequences start
+often and its interactive flows share the writer with the bulk ones; a
+provider bets at the wide-area row, because its client sequences are
+long-lived and the harm of the bet on a short path is a queue that
+lasts one estimate. The assumed round trip per role is the setting, it
+is written beside the target, and the campaign picks it.
