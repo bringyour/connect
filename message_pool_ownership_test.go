@@ -96,6 +96,17 @@ func assertMessagePoolOwnership(t messagePoolOwnershipReporter) {
 	})
 }
 
+// Calls a borrowing entry point with a pooled buffer and returns the buffer
+// after the call, which is the contract those entries keep (CODESTYLE, "Which
+// entry points borrow, take, or take on success"). Fixtures should reach for
+// this rather than calling a borrowing entry directly: every leak this suite
+// has found was a fixture that built a buffer, handed it to one, and never
+// returned it.
+func withBorrowedMessage(message []byte, borrow func(message []byte)) {
+	defer MessagePoolReturn(message)
+	borrow(message)
+}
+
 // The package backstop. The per-test handler gives attribution; this gives
 // coverage, including violations from goroutines that outlive the test that
 // started them and from tests that never opted in.

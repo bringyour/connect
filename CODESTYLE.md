@@ -174,3 +174,39 @@ Pool buffers (`MessagePoolGet`) have a single owner that is responsible for retu
 1. **A successful send takes ownership.** When a buffer is handed to a sender and the send returns success, the sender now owns the buffer and is responsible for returning it.
 2. **An unsuccessful send leaves ownership with the caller.** If the send returns not-success, the caller still owns the buffer and must return it (or reuse/retry it).
 3. **A callback buffer is borrowed, valid only for the call.** A buffer passed to a callback is owned by the caller and is only valid for the duration of that call. To use it beyond the callback (e.g. to forward it on a channel or hand it to another goroutine), the callback must take a shared copy with `MessagePoolShareReadOnly` and pass that copy on; ownership of the copy then follows the send rules above.
+
+### Which entry points borrow, take, or take on success
+
+Adjacent entry points a layer apart differ, and nothing in their names says
+which. Three test cells and one adopted helper leaked or over-returned before
+this was written down, each by calling one of these as if it were another.
+Every new entry point goes under one of these headings, and its doc comment
+says which in those words.
+
+**Borrows** — valid for the call, a share kept where the callee needs one, and
+the caller still owns the original afterwards. A caller that built the buffer
+must return it after the call.
+
+- `RemoteUserNatProvider.Receive`, `receiveTransfer`, `receiveTransferWithRecovery`
+- `RemoteUserNatProvider.ReceiveBatch`, `receiveTransferBatch`
+- every `ReceiveFunction` / `ReceivePacketFunction` callback
+
+**Takes** — ownership moves at the call and the buffer is returned by the
+callee. The caller must not return it and must not use it afterwards.
+
+- `TcpSequence.receivePacket`, `TcpSequence.receiveBatch`
+
+**Takes on success** — a true return transfers ownership; a false return
+leaves it with the caller, who must return it.
+
+- `LocalUserNat.SendPacket`, `SendPacketWithTimeout`, `SendPackets`
+- `Client.SendWithTimeout`, `SendWithTimeoutDetailed`
+
+A batch entry's true return reads as a transfer and means delivered; the
+per-buffer ownership is the heading it sits under, not what the boolean
+suggests.
+
+Fixtures should call a borrowing entry through one helper that returns the
+buffer after the call, so the correct pattern is the easy one, and should run
+the pool boundary reconciliation in cleanup, which catches the leak direction
+as well as the over-return direction.

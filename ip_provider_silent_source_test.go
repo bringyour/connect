@@ -337,20 +337,20 @@ func startDatagramProviderReturn(
 	producerReturned := make(chan struct{})
 	go func() {
 		defer close(producerReturned)
-		// borrowed for the call; see the TCP helper this mirrors
-		defer MessagePoolReturn(packet)
-		provider.receiveTransferWithRecovery(
-			SourceId(peerId),
-			TransferKey{
-				ForceStream:         true,
-				EncryptionRole:      protocol.SequenceRole_SequenceRoleServer,
-				EncryptionCompanion: false,
-			},
-			protocol.ProvideMode_Public,
-			receiveRecoveryModeNonblocking,
-			ipPath,
-			packet,
-		)
+		withBorrowedMessage(packet, func(packet []byte) {
+			provider.receiveTransferWithRecovery(
+				SourceId(peerId),
+				TransferKey{
+					ForceStream:         true,
+					EncryptionRole:      protocol.SequenceRole_SequenceRoleServer,
+					EncryptionCompanion: false,
+				},
+				protocol.ProvideMode_Public,
+				receiveRecoveryModeNonblocking,
+				ipPath,
+				packet,
+			)
+		})
 	}()
 	return producerReturned
 }

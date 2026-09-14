@@ -1060,6 +1060,8 @@ func (self *LocalUserNat) stopSending() {
 }
 
 // `SendPacketFunction`
+// Takes the packet on success only: a true return transfers ownership, and on
+// false the caller still owns it and must return it.
 func (self *LocalUserNat) SendPacket(source TransferPath, provideMode protocol.ProvideMode, packet []byte, timeout time.Duration) bool {
 	return self.SendPacketWithTimeout(source, provideMode, packet, timeout)
 }
@@ -4708,6 +4710,9 @@ func (self *TcpSequence) initializeSynWithLock(tcp *parsedTcp) {
 }
 
 // Delivers one packet with its explicit recovery owner and current reply key.
+//
+// Takes the packet: it is returned here after the callback, so a caller must
+// not return it and must not use it afterwards.
 func (self *TcpSequence) receivePacket(packet []byte, recoveryMode receiveRecoveryMode) {
 	source, transferKey := self.transferState.get()
 	self.receiveCallback(
@@ -8500,6 +8505,8 @@ func (self *RemoteUserNatProvider) receiveTransferBatchWithRecovery(
 	self.enqueueReturnItem(item)
 }
 
+// Borrows the packet: it is valid for this call, a share is kept where the
+// frame needs one, and the caller still owns the original afterwards.
 func (self *RemoteUserNatProvider) Receive(
 	source TransferPath,
 	provideMode protocol.ProvideMode,
@@ -8510,6 +8517,8 @@ func (self *RemoteUserNatProvider) Receive(
 }
 
 // Returns one public/shared packet with a nonblocking disposition.
+//
+// Borrows the packet, as Receive does.
 func (self *RemoteUserNatProvider) receiveTransfer(
 	source TransferPath,
 	transferKey TransferKey,
@@ -8534,6 +8543,11 @@ func (self *RemoteUserNatProvider) receiveTransfer(
 }
 
 // Returns one keyed NAT packet without dropping its explicit recovery owner.
+//
+// Borrows the packet. A fixture that builds its own must return it after the
+// call; `MessagePoolCopy` into this entry and no return is a leak of one root
+// per call, which is how two test cells and one adopted helper leaked before
+// the contract was written down.
 func (self *RemoteUserNatProvider) receiveTransferWithRecovery(
 	source TransferPath,
 	transferKey TransferKey,
