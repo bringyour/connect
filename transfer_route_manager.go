@@ -1477,12 +1477,31 @@ type MultiRouteSelector struct {
 
 	transportUpdate *Monitor
 
-	mutex               sync.Mutex
-	transportRoutes     map[Transport][]Route
-	transportProperties map[Transport]TransferCarrierProperties
-	routeStats          map[Route]*RouteStats
-	routeActive         map[Route]bool
-	routeWeight         map[Route]float32
+	mutex sync.Mutex
+	// How long each packet waited in this shared writer before a route took
+	// it, accumulated under `mutex` beside the send counters so a reader
+	// cannot describe a different instant than the counts next to it.
+	//
+	// A wait rather than a queue depth, because the question it answers is
+	// round-trip inflation: a live flow's throughput is its window over its
+	// effective acknowledgement round trip, and that round trip includes its
+	// own acknowledgements waiting here behind other traffic. A wait is
+	// already in those units and compares against the round trip directly.
+	//
+	// Every successful write records its wait, including the non-blocking fast
+	// path at about zero. That distinction is the point: a writer that was
+	// never near saturation reads many samples with a mean near zero, which is
+	// a different fact from a writer nothing wrote to, and those two support
+	// opposite conclusions about a flat round trip.
+	writeWaitTotal       time.Duration
+	writeWaitMin         time.Duration
+	writeWaitCount       int
+	writeWaitNewestNanos int64
+	transportRoutes      map[Transport][]Route
+	transportProperties  map[Transport]TransferCarrierProperties
+	routeStats           map[Route]*RouteStats
+	routeActive          map[Route]bool
+	routeWeight          map[Route]float32
 	// preferredDirectRoute keeps one destination-keyed Transfer sequence on
 	// the first healthy equal-priority H1/H3 carrier. Both transports remain
 	// registered, but transient queue pressure is backpressure rather than
@@ -2644,9 +2663,24 @@ func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	}
 }
 
-func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, sendByteCount ByteCount) {
+func (self *MultiRouteSelector) updateSendStats(
+	route Route,
+	sendCount int,
+	sendByteCount ByteCount,
+	writeWait time.Duration,
+) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
+
+	// the wait is this writer's, not the route's: a retired route's late
+	// accounting still describes time a packet spent here
+	writeWait = max(0, writeWait)
+	if self.writeWaitCount == 0 || writeWait < self.writeWaitMin {
+		self.writeWaitMin = writeWait
+	}
+	self.writeWaitTotal += writeWait
+	self.writeWaitCount += 1
+	self.writeWaitNewestNanos = time.Now().UnixNano()
 
 	stats, ok := self.routeStats[route]
 	if !ok {
@@ -2657,6 +2691,49 @@ func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, send
 	}
 	stats.sendCount += sendCount
 	stats.sendByteCount += sendByteCount
+}
+
+// An estimate of the time a packet spends waiting in a shared writer, carried
+// with its own evidence for the same reason the round-trip estimate is: a zero
+// mean over no samples means nothing was written and a zero mean over samples
+// means the writer was never near saturation, and a flat round trip means
+// opposite things under each.
+type WriteWaitEstimate struct {
+	Mean time.Duration
+	// The smallest wait of the live samples. Mean above Min is queueing in the
+	// writer; both near zero is a writer with room.
+	Min             time.Duration
+	SampleCount     int
+	NewestSampleAge time.Duration
+}
+
+// Sampled reports whether any packet has been written through this writer.
+func (self WriteWaitEstimate) Sampled() bool {
+	return 0 < self.SampleCount
+}
+
+// A writer that reports how long its packets waited in it. The production
+// writer implements it; the interface exists so a caller holding a
+// MultiRouteWriter can ask without depending on the concrete type.
+type WriteWaitReporter interface {
+	WriteWaitEstimate() WriteWaitEstimate
+}
+
+// WriteWaitEstimate is how long packets have waited in this writer, read under
+// the same lock that accumulates it.
+func (self *MultiRouteSelector) WriteWaitEstimate() WriteWaitEstimate {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	if self.writeWaitCount == 0 {
+		return WriteWaitEstimate{}
+	}
+	return WriteWaitEstimate{
+		Mean:            self.writeWaitTotal / time.Duration(self.writeWaitCount),
+		Min:             self.writeWaitMin,
+		SampleCount:     self.writeWaitCount,
+		NewestSampleAge: max(0, time.Since(time.Unix(0, self.writeWaitNewestNanos))),
+	}
 }
 
 func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int, receiveByteCount ByteCount) {
@@ -2740,7 +2817,8 @@ func (self *MultiRouteSelector) tryWriteH1AckPriorityWithCarrierPreference(
 		}
 		select {
 		case priorityRoute <- transferFrameBytes:
-			self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
+			// the priority lane never waits
+			self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)), 0)
 			snapshot.observeDirectAffinityWrite(route)
 			disposition := snapshot.writeDisposition(route, transferFrameBytes)
 			snapshot.releaseWriter()
@@ -2858,7 +2936,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 	for _, route := range initialRoutes {
 		select {
 		case route <- transferFrameBytes:
-			self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
+			self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)), time.Since(enterTime))
 			initialSnapshot.observeDirectAffinityWrite(route)
 			initialSnapshot.releaseWriter()
 			if self.log.V(2).Enabled() {
@@ -2912,7 +2990,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 		for _, route := range activeRoutes {
 			select {
 			case route <- transferFrameBytes:
-				self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
+				self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)), time.Since(enterTime))
 				snapshot.observeDirectAffinityWrite(route)
 				snapshot.releaseWriter()
 				if self.log.V(2).Enabled() {
@@ -2970,7 +3048,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 				snapshot.releaseWriter()
 				return false, transferWriteDisposition{}, nil
 			}
-			self.updateSendStats(selectedRoute, 1, ByteCount(len(transferFrameBytes)))
+			self.updateSendStats(selectedRoute, 1, ByteCount(len(transferFrameBytes)), time.Since(enterTime))
 			snapshot.observeDirectAffinityWrite(selectedRoute)
 			snapshot.releaseWriter()
 			return true, snapshot.blockedWriteDisposition(
@@ -3060,7 +3138,7 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 				// a route
 				routeIndex := chosenIndex - routeStartIndex
 				route := activeRoutes[routeIndex]
-				self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)))
+				self.updateSendStats(route, 1, ByteCount(len(transferFrameBytes)), time.Since(enterTime))
 				snapshot.observeDirectAffinityWrite(route)
 				snapshot.releaseWriter()
 				if self.log.V(2).Enabled() {
