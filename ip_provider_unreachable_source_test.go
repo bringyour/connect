@@ -126,10 +126,36 @@ func closedProviderTestChannel(channel <-chan struct{}) bool {
 	}
 }
 
+// returnSendTestClock stands in for the wall clock that times an unadmitted
+// return. The provider's first retry moves it far past any abandon timeout, so
+// every later abandon check sees an expired stall without the test waiting.
+type returnSendTestClock struct {
+	now          atomic.Int64
+	retryCount   atomic.Int64
+	expiredRetry chan struct{}
+	expiredOnce  sync.Once
+}
+
+func (self *returnSendTestClock) Now() time.Time {
+	return time.Unix(0, self.now.Load())
+}
+
+// retried runs before each retry, i.e. only after an abandon check declined to
+// release. The first call expires the stall; the second proves that an abandon
+// check has already seen the expired stall and still declined.
+func (self *returnSendTestClock) retried() {
+	switch self.retryCount.Add(1) {
+	case 1:
+		self.now.Add(int64(1000 * time.Hour))
+	case 2:
+		self.expiredOnce.Do(func() { close(self.expiredRetry) })
+	}
+}
+
 func newUnreachableSourceTestProvider(
 	t *testing.T,
 	abandonTimeout time.Duration,
-) (*RemoteUserNatProvider, *LocalUserNat, *Client) {
+) (*RemoteUserNatProvider, *LocalUserNat, *Client, *returnSendTestClock) {
 	provider, localUserNat, client := newProviderSourceLifecycleTestFixture(t, func(settings *RemoteUserNatProviderSettings) {
 		settings.WriteTimeout = 0
 		settings.ReturnSendRetryTimeout = time.Millisecond
@@ -138,7 +164,11 @@ func newUnreachableSourceTestProvider(
 	// the backend state is process-wide and other tests' clients trip it;
 	// these tests decide it explicitly
 	provider.backendDegradedForTest = func() bool { return false }
-	return provider, localUserNat, client
+	clock := &returnSendTestClock{expiredRetry: make(chan struct{})}
+	clock.now.Store(time.Now().UnixNano())
+	provider.returnSendNowForTest = clock.Now
+	provider.beforeTcpReturnSendRetryForTest = clock.retried
+	return provider, localUserNat, client, clock
 }
 
 // A socket-owned TCP return retries past an ordinary Ack timeout because the
@@ -150,7 +180,7 @@ func newUnreachableSourceTestProvider(
 // as during terminal retirement; afterwards it is readmitted, because a client
 // that reconnects keeps its id.
 func TestRemoteUserNatProviderReleasesUnreachableTcpReturnSource(t *testing.T) {
-	provider, localUserNat, client := newUnreachableSourceTestProvider(t, 50*time.Millisecond)
+	provider, localUserNat, client, _ := newUnreachableSourceTestProvider(t, time.Hour)
 	peerId := NewId()
 	installUnreachableProviderReturnSequence(t, provider, client, peerId)
 	nat := observeUnreachableSourceNat(t, localUserNat, peerId)
@@ -195,7 +225,7 @@ func TestRemoteUserNatProviderReleasesUnreachableTcpReturnSource(t *testing.T) {
 // terminal. The release's transient owner must not readmit it: the provider
 // keeps the tombstone for the rest of its generation.
 func TestRemoteUserNatProviderReliabilityDuringUnreachableReleaseStaysTerminal(t *testing.T) {
-	provider, localUserNat, client := newUnreachableSourceTestProvider(t, 50*time.Millisecond)
+	provider, localUserNat, client, _ := newUnreachableSourceTestProvider(t, time.Hour)
 	peerId := NewId()
 	installUnreachableProviderReturnSequence(t, provider, client, peerId)
 	nat := observeUnreachableSourceNat(t, localUserNat, peerId)
@@ -234,14 +264,23 @@ func TestRemoteUserNatProviderReliabilityDuringUnreachableReleaseStaysTerminal(t
 // cancellation ends that wait: the release must not run its Transfer
 // cancellation on a client that can outlive this provider generation.
 func TestRemoteUserNatProviderCloseJoinsUnreachableRelease(t *testing.T) {
-	provider, localUserNat, client := newUnreachableSourceTestProvider(t, 50*time.Millisecond)
+	provider, localUserNat, client, _ := newUnreachableSourceTestProvider(t, time.Hour)
 	peerId := NewId()
 	installUnreachableProviderReturnSequence(t, provider, client, peerId)
 	nat := observeUnreachableSourceNat(t, localUserNat, peerId)
-	provider.afterUnreachableSourceReleaseForTest = func(Id) {}
+	released := make(chan struct{})
+	var releasedOnce sync.Once
+	provider.afterUnreachableSourceReleaseForTest = func(sourceId Id) {
+		if sourceId == peerId {
+			releasedOnce.Do(func() { close(released) })
+		}
+	}
 
 	startUnreachableProviderReturn(t, provider, peerId)
 	waitProviderSourceLifecycleBarrier(t, nat.retired, "NAT flow retirement for the unreachable source")
+	if closedProviderTestChannel(released) {
+		t.Fatal("release finished while its flow was still live")
+	}
 
 	closeReturned := make(chan struct{})
 	go func() {
@@ -249,6 +288,14 @@ func TestRemoteUserNatProviderCloseJoinsUnreachableRelease(t *testing.T) {
 		close(closeReturned)
 	}()
 	waitProviderSourceLifecycleBarrier(t, closeReturned, "provider close joining the release")
+	// Close returns only after the release worker has run to completion, so the
+	// worker can never touch the client after this provider generation ends.
+	// This states the contract; it does not guard it: a Close that stopped
+	// joining the worker still passed 50/50 runs, because the worker finishes
+	// during Close's other joins (PROVIDERFIXES.md, known test gaps).
+	if !closedProviderTestChannel(released) {
+		t.Fatal("provider close returned before the in-flight release finished")
+	}
 }
 
 // While the backend is degraded no destination can get a contract, so every
@@ -256,7 +303,7 @@ func TestRemoteUserNatProviderCloseJoinsUnreachableRelease(t *testing.T) {
 // destination. The provider must keep retrying and release only once the
 // backend recovers.
 func TestRemoteUserNatProviderDoesNotReleaseSourceWhileBackendDegraded(t *testing.T) {
-	provider, localUserNat, client := newUnreachableSourceTestProvider(t, 20*time.Millisecond)
+	provider, localUserNat, client, clock := newUnreachableSourceTestProvider(t, time.Hour)
 	var degraded atomic.Bool
 	degraded.Store(true)
 	provider.backendDegradedForTest = degraded.Load
@@ -266,10 +313,9 @@ func TestRemoteUserNatProviderDoesNotReleaseSourceWhileBackendDegraded(t *testin
 	nat.finishFlow()
 
 	producerReturned := startUnreachableProviderReturn(t, provider, peerId)
-	select {
-	case <-producerReturned:
+	waitProviderSourceLifecycleBarrier(t, clock.expiredRetry, "retry after an expired stall while degraded")
+	if closedProviderTestChannel(producerReturned) || closedProviderTestChannel(nat.retired) {
 		t.Fatal("TCP return abandoned while the backend was degraded")
-	case <-time.After(250 * time.Millisecond):
 	}
 
 	degraded.Store(false)
@@ -281,7 +327,7 @@ func TestRemoteUserNatProviderDoesNotReleaseSourceWhileBackendDegraded(t *testin
 // reader keeps its consumed bytes and retries until the source or provider
 // closes.
 func TestRemoteUserNatProviderUnboundedTcpReturnRetryWhenAbandonDisabled(t *testing.T) {
-	provider, _, client := newUnreachableSourceTestProvider(t, 0)
+	provider, _, client, clock := newUnreachableSourceTestProvider(t, 0)
 	peerId := NewId()
 	installUnreachableProviderReturnSequence(t, provider, client, peerId)
 	provider.afterUnreachableSourceReleaseForTest = func(sourceId Id) {
@@ -289,10 +335,9 @@ func TestRemoteUserNatProviderUnboundedTcpReturnRetryWhenAbandonDisabled(t *test
 	}
 
 	producerReturned := startUnreachableProviderReturn(t, provider, peerId)
-	select {
-	case <-producerReturned:
+	waitProviderSourceLifecycleBarrier(t, clock.expiredRetry, "retry after a 1000 h stall with abandon disabled")
+	if closedProviderTestChannel(producerReturned) {
 		t.Fatal("TCP return abandoned with the abandon timeout disabled")
-	case <-time.After(250 * time.Millisecond):
 	}
 	// closing the provider is the only release
 	provider.Close()
