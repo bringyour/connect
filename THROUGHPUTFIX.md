@@ -6630,3 +6630,129 @@ write and none elsewhere; with client-side keying, a control Pack
 waiting on capacity no longer delays data; and if offered still
 exceeds written with both, the loss is at item 8's wait and the bypass
 is the fix.
+
+### 38.8 The client-side IP layer: keying, the no-acknowledgement decision, and the contract window
+
+The user's proposal is an `ip_client.go` that handles client-side
+packet sending, wrapping a `Client` that sends the actual message, as
+the mirror of what the provider has. Designed here, with one
+correction to the diagnosis that changes the shape from a new package
+to two decisions in an existing one.
+
+What exists. The client does have an IP layer on the send side:
+`RemoteUserNatClient` (`ip.go:9137–9340`) wraps a `*Client`, reassembles
+fragments, parses the packet into an `IpPath`
+(`parseIpPathWithPayloadBorrowed`), runs the egress security policy on
+it, selects the destination through the path table, builds the
+`IpPacketToProvider` frame, and calls `SendMultiHopWithTimeout(frame,
+destination, callback, timeout)` with no options at all. So the client
+parses IP for policy and routing and tells the transfer layer nothing
+about what it parsed: no flow key, no acknowledgement decision. The
+provider's return path does both (`scheduleIpFlow(ipPath)` at
+`ip.go:8093,8124,8214`; the return options). The asymmetry is not a
+missing layer but a layer that keeps what it knows to itself, and the
+fix is two options on one call, not a wrapper around it. If the user
+wants the file, `RemoteUserNatClient` and its send path move to
+`ip_client.go`, which is hygiene for a thirteen-thousand-line file and
+not the fix; a new wrapper in front of it would be a third IP layer
+ahead of the two that already delegate to it, `IpMux` and `UpgradeMux`.
+
+Reuse. The flow key is `scheduleIpFlow(ipPath)`
+(`transfer_send_scheduler.go:13–24`), the derivation the provider uses,
+and the client has the `IpPath` in hand at the call. Keys never cross
+the wire, so the two ends need not agree; reuse buys one set of edge
+cases, fragments and ICMP and unknown protocols resolving to an invalid
+key and the unkeyed flow, rather than two.
+
+What it wraps and what moves. The `UserNatClient` interface
+(`ip.go:176`) and its `SendPacket(source, provideMode, packet, timeout)`
+are unchanged; `IpMux`, `UpgradeMux`, `RemoteUserNatMultiClient` and the
+SDK's device layer call it as they do. The change is inside
+`RemoteUserNatClient.SendPacket` and its fragment path
+`sendReassembledUdpFragments`, which also sends. Nothing forces it
+deeper. The batch path sends packet by packet (`SendPacketBatch`,
+`ip.go:9322`), and full-size packets never coalesce into one Pack
+(`sendPackBatchMaxMessageByteCount`), so keying per packet is keying
+per Pack; two small packets of different flows may share a Pack under
+the first's key, which is acceptable. The provider's return sender is
+the other half of the same change, adding the acknowledgement decision
+its flow keying already lacks.
+
+The no-acknowledgement decision, designed with the keying because it
+lives on the same line. The option exists: `NoAck()`
+(`transfer.go:1396–1402`) sets `TransferOptions.Ack` false, documented
+as "items can choose to not be acked; the ack callback is called on
+send, and no retry is done" (`:1370–1373`). The IP layer applies it to
+every IP packet it sends and to nothing else: the split is by path,
+not by caller flag. IP data from the tun, including DNS and ICMP, is
+externally controlled and goes without acknowledgement; every send
+that does not pass through this layer, contracts, handshakes, pings,
+control, keeps its default and the forced `opts.Ack = true` of the
+control path (`:5628`). The layer is what separates them, and a
+reviewer can see which is which by which function sent it.
+
+The carrier condition is the sequence's, not the layer's. A
+no-acknowledgement frame on an unreliable carrier exposes the inner
+TCP to the carrier's loss, which is the case Transfer's reliability
+exists for. The sequence already promotes a no-acknowledgement Pack
+to acknowledged when its contract is not yet acknowledged
+(`:8596–8604`); the same promotion applies when no reliable route is
+available, and when one is, the frame is written reliable-only, which
+`writeMaybeWrappedBytes` already supports for flight overflow
+(`reliableOnly`, `:9764–9772`). The rule, at build time in the
+sequence: acknowledged if the caller asked for it, or the contract is
+unacknowledged, or no reliable route is available; otherwise
+unacknowledged and reliable-only. The IP layer states what the traffic
+is; the sequence decides what the carrier needs.
+
+The contract window, and whether its frequency matters: it does, and
+at the design point it is the largest remaining cost. Contracts are
+`StandardContractTransferByteCount`, 128 MiB
+(`transfer_contract_manager.go:321`), times `ContractFillFraction`. At
+exhaustion the sequence takes the next from the manager's queue
+(`TakeContract(..., timeout)`) or requests one from the platform
+(`CreateContract`) and waits, and then sends the new contract's head;
+until that head is acknowledged by the peer every no-acknowledgement
+Pack is promoted and travels the reliable path, retained, numbered and
+resend-gated. At one gigabit a contract lasts about 1.1 s, so at 200
+to 400 ms of round trip the promoted window is twenty to forty per cent
+of every contract's life, plus a platform round trip of stalled data
+whenever no spare is queued. The mode would deliver a third less than
+it should and put the data back through everything §37 built for that
+fraction of the time.
+
+The fix is contract pipelining, and it is control traffic doing what
+control traffic is for: when the current contract's remaining bytes
+fall under a threshold, the next contract is taken from the queue, or
+requested, and its contract frame is sent ahead on a reliable control
+Pack, so that by the switch `sendContractAcked` is already true for it
+and no data is ever promoted. The receiver holds several open
+contracts (`openReceiveContracts`, `:11373`) and Packs carry their
+contract id, so the next contract can be active beside the current;
+`setContract` (`:13290–13294`) both stores and switches
+`receiveContract`, so registering ahead must store without switching
+until the sender's first Pack under the new id arrives, which is the
+one receive-side change. The manager keeps one spare queued ahead by
+the same threshold, so the platform round trip never sits on the data
+path. The threshold is a setting the campaign picks, in bytes derived
+from the sequence's rate and minimum round trip, twice their product
+being the obvious candidate.
+
+Is it the prerequisite for one reliable layer per hop on the client
+side: yes. Nothing on the client can mark a Pack as externally
+controlled unless something on the client knows it is carrying IP, and
+this layer is the one place that does. Built with the keying, it is
+two options and a promotion rule; built later it would touch the same
+call and the same sequence code twice.
+
+Tests, for the implementation stream to write: a reliable control Pack
+at the head of the client's unkeyed flow, waiting on resend capacity,
+no longer delays IP data behind it, offered against written on a
+deterministic sequence; an IP packet leaves the client as `Nack: true`
+with the contract acknowledged and a reliable route present, `Nack:
+false` on an unreliable-only route and during the contract window, and
+control sends never carry `Nack`; across a contract renewal at a
+simulated 200 ms round trip with pipelining, zero promoted IP Packs
+after the first contract, and zero platform waits on the data path;
+and the write-failure counter of §38.7, so that a no-acknowledgement
+Pack dropped at the carrier is a number.
