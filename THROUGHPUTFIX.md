@@ -2077,3 +2077,99 @@ roll out alone, the count left at zero for a campaign. The ordering
 analysis of 20.3 is therefore the whole of what a lane rollout can get
 wrong, and rows L2 and L3 are the ones to run before the one, four and
 eight lane campaign reads a number.
+
+### 20.5 What a zero floor means for a lane under contention
+
+The floor is not a reservation the pool holds back for a lane; it is the
+part of a sequence's queue that is admitted without consulting the pool
+at all. `transferQueue.CanAddWithQueueByteCount` admits when
+`borrowTarget − borrowed ≤ budget.Available()` with
+`borrowTarget = max(0, queued − minByteCount)`: the first `minByteCount`
+bytes of a queue are the sequence's own, everything above them is
+borrowed from the shared pool. Lane zero, and every sequence to a
+distinct destination on an sdk-hosted provider, keeps
+`ResendQueueMinByteCount` (256 KiB) that way; a nonzero lane has
+`minByteCount = 0`, so every byte it holds is borrowed.
+
+Under contention that is exactly the coordinator's shape. The shared
+lane pool is one `ResendQueueMaxByteCount`, and each lane's own cap is
+the same number, so one bulk flow's lane can hold the entire pool. The
+other lanes are not deadlocked, because `CanAdd` always admits one item
+into an empty queue, so a light lane keeps one Pack in flight; that is
+its floor in practice, one Pack per acknowledgement round trip, 24 KiB
+over 50 ms is 3.9 Mb/s, against the whole pool for the heavy lane. When
+the heavy lane releases bytes the pool notifies every waiting sequence
+(`CapacityNotify` is a broadcast; the FIFO grant list in
+`notifyEligibleCapacityWaiters` that scans past a large request so a
+smaller one cannot starve is used by the WebRTC managers, not by
+sequences), and the sequence whose goroutine runs first borrows them;
+the heavy lane has a Pack ready more often, so it wins more often. Lane
+zero today has neither the head-of-line cost nor this one: a light
+flow's Pack waits its FIFO turn in the single queue and is never held to
+one in flight. So lanes as built trade cross-flow head-of-line blocking
+for cross-flow unfairness that appears only under load and only with a
+heavy flow, which a clean campaign would not reach and which would not
+generalise past what it measured. The code prevents the deadlock and
+nothing else.
+
+What prevents it, and the design already contains the idea: the same
+floor semantics the sequences to different destinations have. A data
+lane with `minByteCount` of the pool divided by the lane count keeps its
+first share without borrowing, and the pool then needs to be sized as
+the sum of floors plus one cap so that borrowing still exists: for eight
+lanes at the shipping bound, seven floors of 256 KiB plus 2 MiB is under
+4 MiB per client on the bare provider, which is where the download
+sequences live, and on an sdk-hosted provider the device budget already
+carries the floors for every sequence. The alternative, sequences
+taking their grants from the FIFO list instead of the broadcast, gives
+fairness without reserved bytes but changes an admission path that every
+sequence shares and is the larger change. Either is a design decision
+the campaign must precede with row L4, because without it a lane count
+chosen on clean cells ships the unfairness.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| L4 | `TestLightLaneKeepsItsShareBesideASaturatingLane` | eight lanes, one bulk flow saturating its lane and one light flow on another; the light flow's Packs in flight stay above one and its delivery rate stays within a bound of its lane-zero rate | lanes as built, by 20.5; holds once floors or fair grants exist | in-process, contended |
+
+## 23. The race suite's one failure per run: the tests, not the shipped code
+
+Two full runs on the final tree, 1,457 and 1,456 s, zero data-race
+reports, every subpackage green, and in each run one different row
+failed under full load and passed three of three alone. The judgement
+the coordinator asked for, from the rows' own output.
+
+`TestWebRtcFastPathFitsIpv6MinimumMtuOnActualWire` failed at
+`WaitFastPathReady(pair.ctx, 10*time.Second)`: a fixed ten-second
+deadline on ICE, DTLS and SCTP establishment over pion's virtual network,
+before the behaviour under test, whether the fast path fits the IPv6
+minimum MTU on the wire, is exercised at all. Under the race detector on
+a saturated host the establishment took longer than ten seconds and the
+row failed on setup. That is the test asserting on elapsed time for a
+step it does not test; the code under test was never reached. Fix: bound
+the readiness wait by the test's own deadline (`t.Deadline`, the package
+timeout) and assert that readiness arrives, not when.
+
+`TestReceiverBudgetDropsDoNotWedgeEitherArm` failed at its comparability
+guard: "the receiver dropped nothing on one arm". Its output reads
+`rule off: 1.334s, 0 dropped` and `rule on: 18.727s, 13 dropped`. The
+shipped configuration (the lane rule off) completed in 1.3 seconds and
+the receiver dropped nothing, which is the receiver keeping up under a
+schedule that let it; the row needs the receiver's budget to overflow to
+reach the shape §34.2 names, and it induces that by sending faster than
+the receiver drains, which is scheduling luck under load and exactly
+what CODESTYLE's test rule says a proof must not rest on. The eighteen
+seconds on the rule-on arm are the known behaviour of the mechanism that
+ships off (§36.10), and the row's own comment records that this arm
+exceeded a flat twenty seconds at 20.07 s inside the whole suite before
+the bound was made derived. Fix: force the overflow with a hook or
+barrier, holding delivery until the queue is full and then releasing, so
+the drop is a fact of the fixture rather than of the schedule.
+
+So: the tests are timing-sensitive under contention, in setup and in
+fixture shape, and the shipped code is not shown to be. What would
+distinguish the other case is simple and neither row needed it: rerun
+under the same load with the setup deadline derived and the drop forced;
+a transfer that completes is a test problem, a transfer that stops is a
+code problem, and the shipped arm here completed in 1.3 seconds. The
+follow-up is the two fixture changes above, named so the habit of
+re-running does not set in.
