@@ -456,6 +456,55 @@ The advertisement does reach UDP (same sequence, lane zero), but it bounds the
 receiver's MEMORY, not latency. The only latency bound is the delivery term,
 which drops the excess at admission.
 
+### 3.8d-bis UDP is flat too, and no window has ever been filled
+
+48/48 valid, ~97 Mb/s offered into a 20 Mb/s drain:
+
+  arm                   predicted added delay   measured
+  2 MiB                 840 ms                  1.7 ms
+  16 MiB                6.7 s                   1.8 ms
+  rule as built         never below 600 ms      1.6 ms
+  old clamping, 3.6 MB  ~1.4 s                  1.6 ms
+
+86.7% loss in every arm; peak queue 0.016-0.020 MiB regardless of a 2, 3.6 or
+16 MiB window. **Every drop is at ReturnSend** -- the downstream client send
+buffer refusing admission -- with zero at the ingress handoff and zero at the
+return queue.
+
+That confirms the source reading and refutes the prediction drawn from it. "A
+non-blocking admit with a zero write timeout" is precisely a mechanism that
+**cannot build a queue**: the excess becomes loss, not delay and not occupancy.
+
+So both protocols are flat for different reasons -- TCP because the origin is
+backed off before the transfer layer sees anything, UDP because the excess
+arrives and is discarded. **No configuration measured has ever handed a 16 MiB
+window 16 MiB.**
+
+CONSEQUENCE FOR THE FIX: the budget, the advertisement and the delivery term
+are not demonstrated to protect anything in any cell run. Their justification
+is structural, not measured, and this report says so rather than carrying rows
+of predicted harms that have all been falsified.
+
+WHAT SURVIVES: the throughput result, which was measured rather than predicted
+-- 1.7x to 2.3x at long round trips -- and the interval defect, which is real
+and whose correction converges to a sufficient window instead of ramping toward
+an excessive one.
+
+The initial-size clamping defect (3.7b) is real by reading and now
+**unconfirmable by measurement**, since nothing fills a queue in either
+protocol.
+
+### 3.8d-ter The inference error, twice, in the same direction
+
+Both falsified prediction sets came from accurate source readings. On TCP the
+step assumed a sender fills its window; on UDP it assumed the excess queues.
+Each time the code had just been read correctly and the step from mechanism to
+consequence **added a queue the mechanism excludes**.
+
+The form worth carrying: before predicting delay or occupancy, identify where
+the bytes would have to wait, and check that the code has somewhere for them to
+wait.
+
 ### 3.8e One direction still owed a reading
 
 The mechanism that closed the TCP concern is the RECEIVE side's, on download:
@@ -468,8 +517,13 @@ beside a congestion window that grows without loss on a reliable carrier. So
 either something bounds it that source reading has not found, or upload at a
 slow drain fills the client's queue to min(window, the 4 MiB tun send buffer).
 
-Being checked. Until then the falsification stands for download and is
-unproven for upload.
+**The cell cannot test it.** `pumpEgress` reads the source's tun and calls the
+provider's receive path directly: there is no client send buffer, no send
+sequence and no resend queue on the source side, and source packets never cross
+the paced carrier. Measuring upload needs the source rebuilt as a real client,
+which is a structural change rather than a knob.
+
+So every result in this sequence is **download only, both protocols**.
 
 ### 3.8f A sixth layer the enumeration missed
 
@@ -478,9 +532,10 @@ increase between 8 KiB and 256 KiB. At 25 ms that is **84 Mb/s -- the tightest
 ceiling in the whole chain** -- and it is the same defect shape as every other
 constant, a fixed pair with no term from the path.
 
-It also bounds any UDP cell run above 84 Mb/s, so a cell that hits that figure
-when it expected more would read as the window failing to matter when an
-unenumerated ceiling was binding.
+It did NOT bind the UDP cell: that cell reached 99-100 Mb/s at an unlimited
+drain, above the 84 Mb/s an 8-256 KiB controller allows at 25 ms, because its
+carrier is in-process gateway transports rather than an unreliable carrier. It
+would matter for a cell with a real unreliable carrier.
 
 ### 3.8c Three instrument faults, two of which would have inverted the result
 
