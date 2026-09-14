@@ -4443,6 +4443,10 @@ type TcpSequence struct {
 	// Tests may hold a pool-owned pure acknowledgement after construction to force
 	// cancellation at its ownership boundary. Nil is a production no-op.
 	afterPureAckBuildForTest func([]byte)
+	// Counts the acknowledgement goroutine's timer wakes, so a row can show
+	// the burst-end trigger wakes on the quiescence cadence rather than per
+	// arrival (THROUGHPUTFIX §26.10). Nil is a production no-op.
+	afterAckWaitWakeForTest func()
 	// Tests join the pure-acknowledgement worker before inspecting ownership. Nil is a
 	// production no-op.
 	afterPureAckWorkerStopForTest func()
@@ -4953,10 +4957,6 @@ func (self *TcpSequence) Run() {
 
 	// signals the ack pipeline to send a coalesced ack now
 	ackSignal := make(chan struct{}, 1)
-	// signals that an arrival moved the burst-end deadline, so a waiting
-	// acknowledgement recomputes it rather than firing mid-burst. Filled only
-	// inside the recovery phase (THROUGHPUTFIX §26.9).
-	arrivalSignal := make(chan struct{}, 1)
 
 	var ackedSendSeq uint32
 	func() {
@@ -4980,6 +4980,8 @@ func (self *TcpSequence) Run() {
 	quiescentNanos := monotonicNanos()
 	// the first segments after entry, acknowledged one each
 	recoveryImmediateSegmentCount := 0
+	// in-order segments carrying payload since the last acknowledgement
+	recoverySegmentCount := 0
 	// when the last in-order segment arrived, which is what the burst-end
 	// trigger asks about; zero means the trigger is disarmed
 	lastArrivalNanos := int64(0)
@@ -4989,8 +4991,17 @@ func (self *TcpSequence) Run() {
 	// an exit starts fresh counters, so a peer that loses on every window pays
 	// the bound each time, which is the right outcome for a path that needs
 	// its acknowledgements.
-	enterRecoveryWithLock := func() {
+	// `freshEvidence` is a new loss, which restarts the budget and re-arms the
+	// immediate segments because the peer's window has just collapsed again.
+	// Connection start and resumption after idle are conditions rather than
+	// events: while the phase already runs they add nothing, and re-entering
+	// on each of them would reset the segment count on every arrival and the
+	// counting rule would never reach its spacing.
+	enterRecoveryWithLock := func(freshEvidence bool) {
 		if quickackEverySegments <= 0 {
+			return
+		}
+		if recovering && !freshEvidence {
 			return
 		}
 		recovering = true
@@ -4999,6 +5010,7 @@ func (self *TcpSequence) Run() {
 			0,
 			self.tcpBufferSettings.QuickackImmediateSegmentCount,
 		)
+		recoverySegmentCount = 0
 	}
 
 	// pipelines
@@ -5408,43 +5420,50 @@ func (self *TcpSequence) Run() {
 				// QuiescenceBound (THROUGHPUTFIX §26.9). The deadline moves
 				// with every arrival, so a wake that finds it has not passed
 				// waits again rather than acknowledging mid-burst.
+				// The wait is capped at QuiescenceBound while the phase is
+				// active, so it wakes on that cadence rather than on arrivals:
+				// over a recovery at a 50 ms round trip that is about a hundred
+				// wakes against a wake per segment. Each firing re-reads the
+				// last-arrival timestamp the send loop stores under the mutex
+				// and either acknowledges or re-arms at the moved deadline.
+				compressDeadlineNanos := monotonicNanos() +
+					int64(self.tcpBufferSettings.AckCompressTimeout)
 				for {
-					waitTimeout := self.tcpBufferSettings.AckCompressTimeout
-					quiescenceRemaining := func() time.Duration {
+					remaining := time.Duration(compressDeadlineNanos - monotonicNanos())
+					if remaining <= 0 {
+						break
+					}
+					waitTimeout := remaining
+					burstEndArmed := 0 < self.tcpBufferSettings.QuiescenceBound && func() bool {
 						self.mutex.Lock()
 						defer self.mutex.Unlock()
-						if !recovering ||
-							self.tcpBufferSettings.QuiescenceBound <= 0 ||
-							lastArrivalNanos == 0 ||
-							self.sendSeq == ackedSendSeq {
-							return 0
-						}
-						return self.tcpBufferSettings.QuiescenceBound -
-							time.Duration(monotonicNanos()-lastArrivalNanos)
+						return recovering
 					}()
-					if 0 < quiescenceRemaining && quiescenceRemaining < waitTimeout {
-						waitTimeout = quiescenceRemaining
+					if burstEndArmed && self.tcpBufferSettings.QuiescenceBound < waitTimeout {
+						waitTimeout = self.tcpBufferSettings.QuiescenceBound
 					}
 					ackCompressTimer.Reset(waitTimeout)
 					select {
 					case <-ackCompressTimer.C:
-						if 0 < quiescenceRemaining && quiescenceRemaining < self.tcpBufferSettings.AckCompressTimeout {
-							// woken for the burst-end deadline: acknowledge
-							// only if no arrival has moved it since
-							stillQuiet := func() bool {
+						if self.afterAckWaitWakeForTest != nil {
+							self.afterAckWaitWakeForTest()
+						}
+						if burstEndArmed && waitTimeout < remaining {
+							// woken on the burst-end cadence: acknowledge only
+							// once a burst with bytes outstanding has been
+							// silent for the whole bound
+							burstEnded := func() bool {
 								self.mutex.Lock()
 								defer self.mutex.Unlock()
-								return lastArrivalNanos != 0 &&
+								return self.sendSeq != ackedSendSeq &&
+									lastArrivalNanos != 0 &&
 									self.tcpBufferSettings.QuiescenceBound <=
 										time.Duration(monotonicNanos()-lastArrivalNanos)
 							}()
-							if !stillQuiet {
+							if !burstEnded {
 								continue
 							}
 						}
-					case <-arrivalSignal:
-						// the deadline moved; recompute rather than acknowledge
-						continue
 					case <-ackSignal:
 					case <-self.ctx.Done():
 						return
@@ -5679,7 +5698,7 @@ func (self *TcpSequence) Run() {
 				func() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
-					enterRecoveryWithLock()
+					enterRecoveryWithLock(true)
 				}()
 				return true
 			}
@@ -5695,7 +5714,7 @@ func (self *TcpSequence) Run() {
 				func() {
 					self.mutex.Lock()
 					defer self.mutex.Unlock()
-					enterRecoveryWithLock()
+					enterRecoveryWithLock(true)
 				}()
 				return true
 			}
@@ -5805,7 +5824,7 @@ func (self *TcpSequence) Run() {
 						// slow start with no loss involved.
 						if self.tcpBufferSettings.AckCompressTimeout <
 							time.Duration(nowNanos-quiescentNanos) {
-							enterRecoveryWithLock()
+							enterRecoveryWithLock(false)
 						}
 					}
 					// E2: a new connection's window is ten segments against an
@@ -5813,37 +5832,42 @@ func (self *TcpSequence) Run() {
 					if 0 < self.tcpBufferSettings.StartQuickackByteCount &&
 						ByteCount(self.sendSeq-self.initialSynSeq-1) <
 							self.tcpBufferSettings.StartQuickackByteCount {
-						enterRecoveryWithLock()
+						enterRecoveryWithLock(false)
 					}
 					// The counting rule, which is the remedy: inside the phase,
 					// acknowledge every k in-order segments. It is the RFC 1122
 					// receiver, applied only where the peer's window is small.
 					if recovering {
 						// arms the burst-end trigger, and re-arms it on every
-						// arrival while anything is outstanding
+						// arrival while anything is outstanding. The
+						// acknowledgement goroutine reads this timestamp under
+						// the same mutex and re-arms its own timer from it, so
+						// an arrival costs a store rather than a wake
+						// (THROUGHPUTFIX §26.10).
 						lastArrivalNanos = nowNanos
-						if 0 < self.tcpBufferSettings.QuiescenceBound {
-							select {
-							case arrivalSignal <- struct{}{}:
-							default:
-							}
-						}
 						if 0 < recoveryImmediateSegmentCount {
 							// the critical path of a recovery is its first
 							// round, a single segment that no counting rule can
 							// reach; it waits on nothing
 							recoveryImmediateSegmentCount -= 1
+							recoverySegmentCount = 0
 							select {
 							case ackSignal <- struct{}{}:
 							default:
 							}
 						} else {
-							segmentByteCount := uint32(self.peerMss)
-							if segmentByteCount == 0 {
-								segmentByteCount = uint32(self.tcpBufferSettings.Mtu)
-							}
-							spacingByteCount := uint32(quickackEverySegments) * segmentByteCount
-							if spacingByteCount <= self.sendSeq-ackedSendSeq {
+							// Segments, not bytes. What the rule clocks is the
+							// peer's acknowledgement-counted growth, one step
+							// per acknowledgement received, so the quantity is
+							// acknowledgements per segment received; a byte
+							// rule against peerMss under-acknowledges a peer
+							// whose segments are small. The phase's own exits
+							// bound the cost of a run of tiny segments, since
+							// such a flow is application limited and leaves by
+							// the quiet exit.
+							recoverySegmentCount += 1
+							if quickackEverySegments <= recoverySegmentCount {
+								recoverySegmentCount = 0
 								select {
 								case ackSignal <- struct{}{}:
 								default:

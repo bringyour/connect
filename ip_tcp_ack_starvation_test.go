@@ -51,8 +51,8 @@ func TestAckCompressionIsTheOnlyClockBelowHalfAWindowRung(t *testing.T) {
 		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
 		sequence.tcpBufferSettings.StartQuickackByteCount = startQuickackByteCount
 		sequence.tcpBufferSettings.RecoveryQuickackByteBound = startQuickackByteCount
-		// the peer's segment size, which the spacing is counted in; the
-		// harness's SYN carries no MSS option
+		// the counting rule counts segments, so the peer's segment size is
+		// not an input to it; kept because the sequence's own sizing reads it
 		sequence.peerMss = segmentByteCount
 	})
 	// the upstream is a pipe: nothing may block the send loop behind it
@@ -254,8 +254,17 @@ func TestBurstEndTriggerArmsOnFirstArrivalAndRearms(t *testing.T) {
 }
 
 // THROUGHPUTFIX §26.8 row Q6, the row that guards steady state while the
-// others guard recovery. The entry condition must be evidence that the peer's
-// window is small — loss, connection start, resumption after idle — and never
+// others guard recovery.
+//
+// Its lineage, because a guard whose reason is invisible gets removed: the
+// designer wrote §26.8 as an implementer's note telling the implementation not
+// to reach for the obvious entry condition, and specified this row because the
+// recovery rows cannot catch that mistake. An implementation gated on a byte
+// count passes every one of them and wrecks steady-state throughput. Measured
+// here at 21 acknowledgements against 29 allowed, where the counting rule
+// without its entry predicate gives 52.
+//
+// The entry condition must be evidence that the peer's window is small — loss, connection start, resumption after idle — and never
 // a byte count. "Bytes since the last acknowledgement are under half the rung"
 // is true at the start of every interval of every flow: it would satisfy every
 // recovery row and acknowledge every k segments of a saturated upload for
@@ -335,4 +344,140 @@ func TestSteadyStateUploadEmitsNoQuickacks(t *testing.T) {
 		startAckCount,
 		countingRuleAckCount,
 	)
+}
+
+// THROUGHPUTFIX §26.10 row Q9. The rule counts in-order segments that carry
+// payload, one each, not bytes against the peer's maximum segment size. What
+// it clocks is the peer's acknowledgement-counted growth, one step per
+// acknowledgement received, so the quantity is acknowledgements per segment;
+// a byte rule under-acknowledges a peer whose segments are small, at exactly
+// the moment its window is smallest.
+func TestCountingRuleCountsSegmentsNotBytes(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const ackCompressTimeout = 50 * time.Millisecond
+	const peerMss = 1400
+	// a quarter of a full segment: a byte rule would need four times as many
+	const segmentByteCount = peerMss / 4
+	const segmentInterval = 5 * time.Millisecond
+	const observationWindow = 600 * time.Millisecond
+	const quickackEverySegments = 2
+
+	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 32, 0, func(sequence *TcpSequence) {
+		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
+		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 0
+		sequence.tcpBufferSettings.StartQuickackByteCount = ByteCount(1024 * 1024)
+		sequence.tcpBufferSettings.RecoveryQuickackByteBound = ByteCount(1024 * 1024)
+		sequence.tcpBufferSettings.QuiescenceBound = 0
+		sequence.peerMss = peerMss
+	})
+	go io.Copy(io.Discard, harness.upstreamSocket)
+
+	var ackCount atomic.Int64
+	acksDrained := make(chan struct{})
+	go func() {
+		defer close(acksDrained)
+		for range harness.acks {
+			ackCount.Add(1)
+		}
+	}()
+
+	payload := string(make([]byte, segmentByteCount))
+	seq := harness.nextSeq
+	segmentCount := 0
+	started := time.Now()
+	for time.Since(started) < observationWindow {
+		harness.sendPayload(seq, payload, false)
+		seq += segmentByteCount
+		segmentCount += 1
+		time.Sleep(segmentInterval)
+	}
+	elapsed := time.Since(started)
+
+	// what a byte rule against peerMss would give, and what a segment rule does
+	byteRuleAckCount := segmentCount * segmentByteCount / (quickackEverySegments * peerMss)
+	segmentRuleAckCount := segmentCount / quickackEverySegments
+	if int(ackCount.Load()) <= 2*byteRuleAckCount {
+		t.Errorf(
+			"%d segments of %d bytes, a quarter of the %d byte peer segment, drew %d acknowledgements in %s; a byte rule gives about %d and a segment rule about %d, so the spacing is still being counted in bytes",
+			segmentCount,
+			segmentByteCount,
+			peerMss,
+			ackCount.Load(),
+			elapsed,
+			byteRuleAckCount,
+			segmentRuleAckCount,
+		)
+	}
+	t.Logf(
+		"%d quarter-segments drew %d acknowledgements: a segment rule gives about %d, a byte rule about %d",
+		segmentCount,
+		ackCount.Load(),
+		segmentRuleAckCount,
+		byteRuleAckCount,
+	)
+}
+
+// §26.10 row Q10. The burst-end deadline is a timestamp the send loop stores
+// under the connection mutex, and the acknowledgement goroutine arms its own
+// timer from it; a firing that finds the timestamp has moved re-arms rather
+// than acknowledging. So the goroutine wakes on the quiescence cadence rather
+// than once per arrival, which is what compression was for in the first place:
+// the alternative, waking the goroutine from the send loop on every arrival,
+// would reintroduce a wake per segment on exactly the flows this is fixing.
+func TestBurstEndWakesPerIntervalNotPerArrival(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const ackCompressTimeout = 2 * time.Second
+	const quiescenceBound = 50 * time.Millisecond
+	const segmentByteCount = 1400
+	const arrivalInterval = 5 * time.Millisecond
+	const burstWindow = 500 * time.Millisecond
+
+	var wakeCount atomic.Int64
+	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 32, 0, func(sequence *TcpSequence) {
+		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
+		// nothing but the burst-end trigger may end a wait
+		sequence.tcpBufferSettings.QuickackEverySegments = 4096
+		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 0
+		sequence.tcpBufferSettings.StartQuickackByteCount = ByteCount(16 * 1024 * 1024)
+		sequence.tcpBufferSettings.QuiescenceBound = quiescenceBound
+		sequence.peerMss = segmentByteCount
+		sequence.afterAckWaitWakeForTest = func() { wakeCount.Add(1) }
+	})
+	go io.Copy(io.Discard, harness.upstreamSocket)
+
+	payload := string(make([]byte, segmentByteCount))
+	seq := harness.nextSeq
+	harness.sendPayload(seq, payload, false)
+	seq += segmentByteCount
+	waitHarnessAck(harness, 5*time.Second)
+	drainHarnessAcks(harness)
+
+	wakeCount.Store(0)
+	arrivalCount := 0
+	started := time.Now()
+	for time.Since(started) < burstWindow {
+		harness.sendPayload(seq, payload, false)
+		seq += segmentByteCount
+		arrivalCount += 1
+		time.Sleep(arrivalInterval)
+	}
+	elapsed := time.Since(started)
+	wakes := wakeCount.Load()
+
+	// one per bound, plus one for the firing that ends the burst
+	allowedWakes := int64(elapsed/quiescenceBound) + 2
+	if allowedWakes < wakes {
+		t.Errorf(
+			"the acknowledgement goroutine woke %d times over %d arrivals in %s, above the %d a %s quiescence cadence allows; a deadline that wakes per arrival puts a wake back on every segment of a recovering flow",
+			wakes,
+			arrivalCount,
+			elapsed,
+			allowedWakes,
+			quiescenceBound,
+		)
+	}
+	t.Logf("%d arrivals in %s woke the acknowledgement goroutine %d times, against %d allowed", arrivalCount, elapsed, wakes, allowedWakes)
 }

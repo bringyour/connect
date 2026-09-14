@@ -19,8 +19,22 @@ import (
 // The bound turns out to derive the report's own figure: at the shipped
 // 2 MiB queue and 2 s minimum interval the ceiling is 8.4 Mb/s per dead
 // destination, which is the 8 Mb/s the report measured. So that figure is this
-// bound saturated, forty zombies can put at most about 336 Mb/s on the wire,
-// and the remainder of the 460 Mb/s loss is something other than their egress.
+// bound saturated rather than an independent observation.
+//
+// Both ends of a recorded disagreement belong here, because a reader who sees
+// one will think the question was settled. The queue over the 2 s
+// `MinResendInterval` floor gives 8.4 Mb/s per zombie and about 336 Mb/s at
+// forty. The same queue over the 8 s `MaxResendInterval` that an exponential
+// backoff reaches after six rewrites gives 2.1 Mb/s and about 84. §13.1
+// predicted the ceiling; the report measured the floor. Either the reporter
+// measured inside the first twenty seconds after the kill, before the backoff
+// had climbed, or a destination that never acknowledges anything never backs
+// off at all. Row Z1 decides it by reading the interval directly.
+//
+// What both readings agree on is the contribution: against a measured loss of
+// about 460 Mb/s, zombie egress accounts for 336 at most and possibly only 84,
+// so the remainder of 124 to 376 Mb/s is a quantified gap rather than an
+// unexplained one.
 //
 // A destination that never acknowledges holds at most
 // `ResendQueueMaxByteCount` of unacknowledged items, and the sequence rewrites
