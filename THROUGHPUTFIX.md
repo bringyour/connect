@@ -2173,3 +2173,79 @@ a transfer that completes is a test problem, a transfer that stops is a
 code problem, and the shipped arm here completed in 1.3 seconds. The
 follow-up is the two fixture changes above, named so the habit of
 re-running does not set in.
+
+## 24. The ladder's dynamics: an equilibrium band, a backlog collapse, and a fast climb
+
+From the two rules in `handleSendItem` (§19.1): an evaluation happens
+once `blocking + nonBlocking ≥ W` bytes have been offered; it doubles
+only if `nonBlocking ≥ W`, which at that instant means no byte blocked;
+it halves if `blocking ≥ W/2`; otherwise it holds; both counters reset.
+A payload blocks when `writePayloads` (`SequenceBufferSize` payloads,
+1,024 unbudgeted, about 1.4 MB at the client's segment size) is full at
+the offer, which is when the socket writer is behind the offers.
+
+Steady state, with the client sending at its window W per round trip
+and the writer draining at the origin path's rate D: the channel fills
+only if `W/RTT > D`, and then the fraction of bytes that block is about
+`1 − D·RTT/W`. Halving needs that fraction at or above one half, that is
+`W ≥ 2·D·RTT`; doubling needs it at zero, that is `W < D·RTT`. Between
+the two the window holds. So the ladder settles in the band
+`[D·RTT, 2·D·RTT)`: one to two bandwidth-delay products of the origin
+path, which is the equilibrium reading of the earlier brief, and the
+measurement stream's six megabyte fit at 50 ms puts D near 480 to
+960 Mb/s, bracketing the measured upload. No runaway in this regime.
+
+The collapse regime is a backlog, not a rate. While the writer is fully
+stalled the send loop is parked inside a blocking offer and the counters
+do not advance, so nothing halves during the stall itself. When the
+writer resumes, every parked and queued byte completes as a blocking
+byte, and a backlog of B bytes supplies B/2 halvings' worth in a row:
+the first evaluation needs W/2 blocked bytes, the next W/4, and the sum
+of the whole descent to the 64 KiB floor is about W. So a backlog of at
+least one window, which a stall of one round trip on a saturated upload
+produces (the channel plus the client's in-flight data), can drive the
+ladder from its equilibrium to the floor in one drain. This is a
+feedback in the sense the brief asks about: each halving shortens the
+window the next halving needs, so the descent accelerates as it goes,
+and a burst of blocking of roughly one window is enough to reach the
+bottom. The same arithmetic applies to a bursty client: a source whose
+acknowledgements arrive every T sends its window as one burst, and if
+the burst exceeds what the channel holds plus what the writer drains
+during it, half of it blocks and the window halves, every burst, until
+the burst fits. That is a candidate for the 200 ms cliff whose
+retransmission explanation died, and the rung readout decides it: if
+the advertised window at 200 ms sits at the floor or one rung above,
+the ladder collapsed under burst blocking; if the window is still large
+while the implied in-flight is 128 KiB, the collapse is the client's
+congestion window, not ours.
+
+Recovery: a climb needs one evaluation window with no blocking at all,
+and at the floor that is 64 KiB of client data with the channel already
+drained, which a working writer absorbs without a single block; each
+doubling then needs about one round trip of client data, so the climb
+from 64 KiB to a six megabyte equilibrium is about seven evaluations,
+roughly seven round trips, 350 ms at 50 ms. A transient, not a latch,
+with two conditions: the backlog must have drained first, since any
+residual blocked byte holds the window, and the client must be sending,
+since an idle client's ladder stays where it fell until its next data,
+which is harmless because it climbs in the first seven round trips of
+the next transfer. The one way it latches is a writer that stays behind,
+and then the floor is the honest reading of an origin path that cannot
+absorb more.
+
+What the collapse mis-measures is the thing to name, without a remedy:
+bytes that block because a backlog is draining are counted as if the
+current window exceeded the path, so a single stall is charged as many
+windows' worth of evidence. A production provider whose upload ladder
+has just collapsed advertises 64 KiB to that client for the next several
+round trips, about 10 Mb/s on a 50 ms path, which is the same order and
+nearly the same number as the reporter's original download symptom, on
+the opposite side of the provider and in the opposite direction; they
+share nothing but a 64 KB window on a 50 ms path, and should not be
+conflated. Rows for the record: `TestUploadWindowSettlesBetweenOneAndTwoBdps`
+(pure, a modelled writer at rate D), `TestBacklogDrainCollapsesTheWindowToTheFloor`
+(a writer held for one round trip then released, the window descends
+to `MinWindowSize` within that drain) and
+`TestCollapsedWindowClimbsInLogRoundTrips` (after the drain, the window
+regains its equilibrium within eight evaluations), all in process with
+the socket writer stubbed.
