@@ -931,3 +931,92 @@ func TestSendWindowStatsAreSafeToReadWhileTheSequenceRuns(t *testing.T) {
 		)
 	}
 }
+
+// The one result in this program confirmed by measurement rather than by
+// argument (THROUGHPUTFIX §37.15): the 2 MiB send window binds throughput at a
+// long round trip, and a larger permission lifts it. The campaign measured 1.7
+// to 2.3 times on a real carrier at 200 ms. Here the wire is not the limit and
+// the round trip is, so throughput is the window over the round trip and the
+// ratio is the ratio of the windows.
+//
+// The third arm is why step two is coupled to this result rather than
+// independent of it. A sender with no advertisement from its peer cannot know
+// the peer's hold, so it assumes the shipped 2.5 MiB and clamps there; a
+// ceiling raised above that moves nothing until either the peer advertises or
+// the hold itself rises. 2.5 MiB over 200 ms is 105 Mb/s framed, 89 goodput,
+// which is within a few per cent of the 109 Mb/s the H3 stream window binds at,
+// so on the production path the two ceilings arrive together or neither does.
+//
+// Predictions, recorded before the run: the constant 2 MiB arm delivers about
+// the window over the round trip; the sized arm with a 16 MiB hold advertised
+// delivers at least 1.7 times that; and the sized arm with no advertisement
+// lands between them and below 1.5 times, held by the assumed hold.
+//
+// All three met, four runs: the constant arm 9.8 to 10.1 MB/s against the
+// 10.5 MB/s its window over the round trip predicts; the advertised arm 2.46 to
+// 2.73 times, above the campaign's 1.7 to 2.3 because nothing else binds here;
+// the assumed arm 1.21 to 1.24 times with its ceiling at 2,621,440 exactly.
+func TestALargerWindowIsFasterAtALongRoundTrip(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const propagation = 200 * time.Millisecond
+	const ceiling = ByteCount(16 * 1024 * 1024)
+	const offerWindow = 6 * time.Second
+
+	goodput := func(sized bool, advertise bool) (float64, SendWindowEstimate) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		harness := newSendWindowHarness(t, ctx, propagation, func(settings *SendBufferSettings) {
+			if sized {
+				settings.DeliverySizedWindowScale = 2
+				settings.DeliverySizedWindowCeilingByteCount = ceiling
+				settings.ResendQueueBudget = NewTransferMemoryBudget(ceiling)
+			}
+		})
+		if advertise {
+			harness.receiveHold(ceiling)
+		}
+		start := time.Now()
+		harness.offer(t, 4*1024, offerWindow)
+		elapsed := time.Since(start)
+		stats := harness.sender.DestinationSendStats(harness.receiverId)
+		delivered := stats.WriteByteCount - stats.ResendWriteByteCount
+		return float64(delivered) / elapsed.Seconds(), stats.SendWindow
+	}
+
+	constantRate, constantEstimate := goodput(false, false)
+	assumedRate, assumedEstimate := goodput(true, false)
+	advertisedRate, advertisedEstimate := goodput(true, true)
+
+	t.Logf(
+		"constant window %d: %.1f MB/s; sized with no advertisement, ceiling %d: window %d, %.1f MB/s (%.2fx); sized with a %d hold advertised, ceiling %d: window %d, %.1f MB/s (%.2fx)",
+		constantEstimate.Window, constantRate/1e6,
+		assumedEstimate.Ceiling, assumedEstimate.Window, assumedRate/1e6, assumedRate/constantRate,
+		ceiling, advertisedEstimate.Ceiling, advertisedEstimate.Window,
+		advertisedRate/1e6, advertisedRate/constantRate,
+	)
+
+	if !advertisedEstimate.Sized {
+		t.Fatalf("the window rule did not engage, so this cell does not test it: %+v", advertisedEstimate)
+	}
+	if advertisedRate < 1.7*constantRate {
+		t.Errorf(
+			"a %d byte window delivered %.1f MB/s against %.1f MB/s at the %d byte constant, %.2f times; at a %s round trip the window is what binds throughput and a larger permission is the whole of the measured result",
+			advertisedEstimate.Window, advertisedRate/1e6, constantRate/1e6,
+			constantEstimate.Window, advertisedRate/constantRate, propagation,
+		)
+	}
+	if assumedEstimate.Ceiling != receiveHoldShippingByteCount() {
+		t.Errorf(
+			"a sender with no advertisement took a ceiling of %d rather than the %d byte shipped hold it has to assume",
+			assumedEstimate.Ceiling,
+			receiveHoldShippingByteCount(),
+		)
+	}
+	if assumedRate >= 1.5*constantRate {
+		t.Errorf(
+			"without an advertisement the sized arm reached %.2f times the constant; it is supposed to be held near it by the hold it must assume, which is why raising a ceiling alone moves nothing",
+			assumedRate/constantRate,
+		)
+	}
+}
