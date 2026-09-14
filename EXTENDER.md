@@ -1244,6 +1244,79 @@ test style: the row hidden when unsupported, every state's color and
 text, the toggle writing the setting through the device, the read-only
 row on the stats screens.
 
+### O. Extender statistics series
+
+O1. Counters. The extender server keeps cumulative counters of the
+traffic it relays, summed over every carrier: bytes and reads in each
+direction, operator-centric. Ingress is what moves toward the operator
+(from a client into the network) and egress is what moves back toward
+the client. A read is one chunk the relay moved, counted at the relay
+copy on either side, because a byte stream has no packet boundary in
+userspace; the extender chart is therefore labeled reads per second
+where the provider chart says packets. The decoy reverse proxy and the
+DNS forwarder that answer probers are not extender traffic and are not
+counted. `ExtenderServer.Stats()` returns `ExtenderStats` with
+`IngressByteCount`, `IngressReadCount`, `EgressByteCount` and
+`EgressReadCount`, cumulative for the life of the server like the packet
+stats of a device.
+
+O2. Device surface. `Device.GetExtenderStats() *ExtenderStats` on
+`DeviceLocal` reads the running role's server and is nil whenever the role
+is not running (unsupported, off, not providing), which is what tells an
+app there is no series to show. `DeviceRemote` reads it through the rpc
+exactly as `GetProviderPacketStats`, nil when the service lacks the method
+or is unreachable. Bindings regenerate.
+
+O3. Series. `ContractViewController` gains an extender series sampled
+beside the provider series on the same one second tick, with the same
+hold and gap rules, exposed as `GetExtenderThroughputPoints()` and
+notified through the existing throughput listener. Its points carry the
+extender sample in the `Remote` route only, egress and ingress as O1
+defines them, the reads riding in the packet count fields of
+`ThroughputSample` and the bit rates computed from the bytes as for every
+other series; `Local` and `Block` are empty samples. The series is empty
+while the device reports no extender stats, so a role that stops mid
+window ends its series as a provider that stops ends its own.
+
+O4. App sections. An Extender statistics section directly above the
+provider statistics section, on every screen that shows the provider
+one, visible only while the provider statistics are visible and the
+device reports extender stats; hidden otherwise, with no placeholder,
+since the settings row of N1 already explains the state. Contents: the
+extender row of N1 without the toggle, then the transfer chart of the
+extender series over the `Remote` route with the title Extender, the
+same 60 second window as the provider chart, bytes per second and reads
+per second. On macOS that screen is the earnings screen, where the
+provider section lives; Android has no role and gets nothing.
+
+O5. Linux and Windows catch-up. Neither app has a provider statistics
+section, so this phase brings the macOS one to both, with the extender
+section above it: the title, the existing provide mode glyph row, the
+Local chart of the provider series, the provider transport distribution
+bar opening the provider transport settings (the client bar and the sdk
+distribution math already exist on both), the Blocked chart at half
+height, and the "providing is disabled" line otherwise, placed on the
+earnings page on Linux and the wallet page on Windows where the provide
+mode row already is. The sdk hosts of both read the provider and the
+extender point lists on the throughput listener as they read the client
+list today. Tapping the provider section opens the provider contracts
+where the app has that screen and does nothing where it does not.
+
+O6. Strings. `extender_statistics` (the section title), `reads_per_second`
+for the chart unit, and, where Linux and Windows lack them, the strings
+of the provider section: `provider_statistics` and the existing
+`providing_disabled`; platforms apple, linux and windows as N5.
+
+O7. Tests. Connect: the counters over a relayed session on each carrier,
+both directions, bytes and reads, with the decoy proxy and the DNS
+forwarder proven not to count. Sdk: `GetExtenderStats` nil while the role
+is not running and live while it is, the rpc mirror including the
+missing method, the extender series sampling (deltas, holds, an emptied
+series) in the existing series test style, bindings. Apps: the section's
+visibility rule and its chart binding in each app's test style; on Linux
+and Windows the provider section's own visibility and bindings the same
+way.
+
 ### I. Tests
 
 Every phase ships tests with it. In-process fixtures only: the extender
@@ -1293,6 +1366,10 @@ with the database.
 | `sdk.ExtenderProvideStatus` | `Supported`, `State`, `Reason` added |
 | `sdk.Device` | `GetExtenderProvideStatus`, `AddExtenderProvideStatusChangeListener`, `GetProvideExtender`, `SetProvideExtender` added; mirrored on `DeviceRemote` |
 | localization keys | the extender row strings of N5 |
+| `extender.ExtenderServer` | `Stats()` and `ExtenderStats` (O1) |
+| `sdk.Device` | `GetExtenderStats` added; mirrored on `DeviceRemote` |
+| `sdk.ContractViewController` | `GetExtenderThroughputPoints` added |
+| localization keys | the statistics strings of O6 |
 
 Old clients keep working: the header's new fields are optional, the hello
 field is additive, the tables are new, and a v1 extender client still
@@ -1419,6 +1496,16 @@ Phase 5b follows 4 because both touch the server.
    local status and setting and an old service reports unsupported; each
    desktop app renders every state with its color and text, hides the row
    when unsupported, and writes the setting through the device.
+12. Extender statistics: O1 to O7. 12a (connect): the counters and their
+   tests. 12b (sdk, after 11a and 12a): the device surface, the rpc
+   mirror, the series, bindings; concurrently (localizations): the keys
+   of O6. 12c (one agent per desktop app, after 12b, carrying 11b as well
+   so each app tree is edited once): the extender section, and on Linux
+   and Windows the provider section it sits above. Acceptance: a relayed
+   byte is counted once in the right direction with its read; the series
+   follows the counters and empties when the role stops; each desktop app
+   shows the extender section only with the provider one and a running
+   role, and Linux and Windows show the provider section as macOS does.
 
 ## 6. Known limitations
 
