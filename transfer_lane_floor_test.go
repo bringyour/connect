@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -415,4 +416,218 @@ func laneResendBudget(client *Client) *TransferMemoryBudget {
 	client.sendBuffer.mutex.Lock()
 	defer client.sendBuffer.mutex.Unlock()
 	return client.sendBuffer.logicalLaneResendBudget
+}
+
+// THROUGHPUTFIX §27 row F5, the in-process mirror of the lane campaign's
+// question. F1 asks what a light lane may hold with nothing acknowledged,
+// which is the starvation in its static form. This asks the thing a campaign
+// measures: with acknowledgements flowing and a heavy lane offering as fast as
+// it is admitted, what does a light lane actually deliver.
+//
+// The loop is two clients and two pumps, with a delay on the acknowledgement
+// pump so the resend queues hold about a round trip of data and the shared
+// pool is the binding constraint rather than the wire. Without a floor the
+// light lane's share of that pool is whatever the heavy lane leaves, which is
+// the one item an empty queue guarantees; with a floor it is at least the
+// floor.
+func TestLightLaneDeliveryBesideASaturatingLane(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	assertMessagePoolOwnership(t)
+
+	const laneResendQueueMaxByteCount = ByteCount(64 * 1024)
+	const laneFloorByteCount = ByteCount(8 * 1024)
+	const payloadByteCount = 1024
+	const ackDelay = 20 * time.Millisecond
+	const observationWindow = 2 * time.Second
+
+	newSettings := func() *ClientSettings {
+		settings := DefaultClientSettings()
+		settings.EncryptionSettings.Mode = EncryptionModeOff
+		settings.SendBufferSettings.LogicalDataLaneCount = 2
+		settings.SendBufferSettings.ResendQueueMaxByteCount = laneResendQueueMaxByteCount
+		settings.SendBufferSettings.LaneFloorByteCount = laneFloorByteCount
+		settings.SendBufferSettings.AckTimeout = 60 * time.Second
+		settings.SendBufferSettings.IdleTimeout = 60 * time.Second
+		settings.ReceiveBufferSettings.GapTimeout = 60 * time.Second
+		settings.ReceiveBufferSettings.IdleTimeout = 60 * time.Second
+		return settings
+	}
+	senderId := NewId()
+	receiverId := NewId()
+	sender := NewClient(ctx, senderId, NewNoContractClientOob(), newSettings())
+	receiver := NewClient(ctx, receiverId, NewNoContractClientOob(), newSettings())
+	sender.ContractManager().AddNoContractPeer(receiverId)
+	receiver.ContractManager().AddNoContractPeer(senderId)
+
+	senderOut := make(Route, 64)
+	senderIn := make(Route, 64)
+	receiverIn := make(Route, 64)
+	receiverOut := make(Route, 64)
+	sender.RouteManager().UpdateTransport(NewSendGatewayTransport(), []Route{senderOut})
+	sender.RouteManager().UpdateTransport(NewReceiveGatewayTransport(), []Route{senderIn})
+	receiver.RouteManager().UpdateTransport(NewReceiveGatewayTransport(), []Route{receiverIn})
+	receiver.RouteManager().UpdateTransport(NewSendGatewayTransport(), []Route{receiverOut})
+
+	// delivered payload bytes per lane, read from the receiver-visible lane
+	var laneDeliveredByteCounts sync.Map
+	receiver.AddReceiveCallback(func(_ TransferPath, frames []*protocol.Frame, peer Peer) {
+		deliveredByteCount := 0
+		for _, frame := range frames {
+			deliveredByteCount += len(frame.MessageBytes)
+		}
+		delivered, _ := laneDeliveredByteCounts.LoadOrStore(peer.TransferKey.LogicalLane, &atomic.Int64{})
+		delivered.(*atomic.Int64).Add(int64(deliveredByteCount))
+	})
+
+	// the wire, with a round trip on the acknowledgement half
+	pumpsDone := []chan struct{}{}
+	pump := func(from Route, to Route, delay time.Duration) {
+		done := make(chan struct{})
+		pumpsDone = append(pumpsDone, done)
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case transferFrameBytes := <-from:
+					if 0 < delay {
+						time.Sleep(delay)
+					}
+					select {
+					case to <- transferFrameBytes:
+					case <-ctx.Done():
+						MessagePoolReturn(transferFrameBytes)
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	pump(senderOut, receiverIn, 0)
+	pump(receiverOut, senderIn, ackDelay)
+	t.Cleanup(func() {
+		cancel()
+		for _, done := range pumpsDone {
+			<-done
+		}
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		if err := sender.CloseAndWait(closeCtx); err != nil {
+			t.Errorf("close the sender: %v", err)
+		}
+		if err := receiver.CloseAndWait(closeCtx); err != nil {
+			t.Errorf("close the receiver: %v", err)
+		}
+		for _, route := range []Route{senderOut, senderIn, receiverIn, receiverOut} {
+			draining := true
+			for draining {
+				select {
+				case transferFrameBytes := <-route:
+					MessagePoolReturn(transferFrameBytes)
+				default:
+					draining = false
+				}
+			}
+		}
+	})
+
+	payload := string(make([]byte, payloadByteCount))
+	offer := func(logicalLane uint32, timeout time.Duration) bool {
+		frame := RequireToFrameWithDefaultProtocolVersion(
+			&protocol.SimpleMessage{Content: payload},
+		)
+		admitted, _ := sender.SendWithTimeoutDetailed(
+			frame,
+			receiverId,
+			nil,
+			timeout,
+			TransferKey{LogicalLane: logicalLane},
+		)
+		if !admitted {
+			MessagePoolReturn(frame.MessageBytes)
+		}
+		return admitted
+	}
+
+	// the heavy lane offers as fast as it is admitted; the light lane offers
+	// steadily and modestly, which is what a light flow looks like
+	offering := make(chan struct{})
+	heavyDone := make(chan struct{})
+	lightDone := make(chan struct{})
+	go func() {
+		defer close(heavyDone)
+		for {
+			select {
+			case <-offering:
+				return
+			default:
+			}
+			offer(1, 20*time.Millisecond)
+		}
+	}()
+	go func() {
+		defer close(lightDone)
+		for {
+			select {
+			case <-offering:
+				return
+			default:
+			}
+			offer(2, 20*time.Millisecond)
+			// a light flow offers steadily and modestly rather than filling
+			// its queue; the starvation needs that asymmetry, and two lanes
+			// both offering flat out split the pool evenly with or without a
+			// floor
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	time.Sleep(observationWindow)
+	close(offering)
+	<-heavyDone
+	<-lightDone
+	time.Sleep(2 * ackDelay)
+
+	laneDelivered := func(logicalLane uint32) ByteCount {
+		delivered, ok := laneDeliveredByteCounts.Load(logicalLane)
+		if !ok {
+			return 0
+		}
+		return ByteCount(delivered.(*atomic.Int64).Load())
+	}
+	heavyByteCount := laneDelivered(1)
+	lightByteCount := laneDelivered(2)
+
+	// Per acknowledgement round trip, which is the rate a lane's in-flight
+	// allowance converts into delivery. Measured populations on this rig, so a
+	// later reader can see the margin the threshold sits in: with the floor,
+	// 873 to 1,027 bytes per round trip; without it, 103 to 195. Half a Pack
+	// separates them and is what a lane reduced to the single item an empty
+	// queue guarantees cannot reach.
+	roundTripCount := ByteCount(observationWindow / ackDelay)
+	lightByteCountPerRoundTrip := lightByteCount / roundTripCount
+	heavyByteCountPerRoundTrip := heavyByteCount / roundTripCount
+	if lightByteCountPerRoundTrip < payloadByteCount/2 {
+		t.Errorf(
+			"the light lane delivered %d bytes per %s round trip (%d in %s) beside a lane delivering %d per round trip, under half of one %d byte Pack; a lane whose floor is zero keeps the single item an empty queue guarantees and delivers about that per round trip",
+			lightByteCountPerRoundTrip,
+			ackDelay,
+			lightByteCount,
+			observationWindow,
+			heavyByteCountPerRoundTrip,
+			payloadByteCount,
+		)
+	}
+	t.Logf(
+		"over %s (%d round trips) the heavy lane delivered %d bytes (%d per round trip) and the light lane %d (%d per round trip), against a %d byte floor and a %d byte pool",
+		observationWindow,
+		roundTripCount,
+		heavyByteCount,
+		heavyByteCountPerRoundTrip,
+		lightByteCount,
+		lightByteCountPerRoundTrip,
+		laneFloorByteCount,
+		laneResendQueueMaxByteCount,
+	)
 }
