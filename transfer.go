@@ -2959,6 +2959,9 @@ func (self *Client) Forward(transferFrameBytes []byte, opts ...any) bool {
 
 // Enqueues one direct frame within a bounded wait. A TransferKey option
 // reproduces a received lane and encryption session on the reply.
+//
+// Takes the frame's pool buffer on success only: a true return transfers
+// ownership, and on false the caller still owns it and must return it.
 func (self *Client) SendWithTimeout(
 	frame *protocol.Frame,
 	destinationId Id,
@@ -2971,6 +2974,12 @@ func (self *Client) SendWithTimeout(
 }
 
 // Returns the enqueue error as well as the bounded-send result.
+//
+// Takes the frame's pool buffer on success only, where success is a true
+// result AND a nil error — which is the predicate `SendWithTimeout` collapses
+// to its single boolean and the one the no-ack refusal counter reads. A caller
+// that reads only the boolean, or only the error, still owns the buffer in a
+// case it thinks it does not.
 func (self *Client) SendWithTimeoutDetailed(
 	frame *protocol.Frame,
 	destinationId Id,

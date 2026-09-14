@@ -181,7 +181,10 @@ Adjacent entry points a layer apart differ, and nothing in their names says
 which. Three test cells and one adopted helper leaked or over-returned before
 this was written down, each by calling one of these as if it were another.
 Every new entry point goes under one of these headings, and its doc comment
-says which in those words.
+says which in those words. `TestEveryPoolBufferEntryPointDeclaresItsOwnership`
+(`pool_ownership_heading_test.go`) reads this list against the package source,
+so an entry point added here without the word in its own doc comment, or
+renamed out from under the list, fails rather than waiting to be noticed.
 
 **Borrows** — valid for the call, a share kept where the callee needs one, and
 the caller still owns the original afterwards. A caller that built the buffer

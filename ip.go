@@ -71,6 +71,8 @@ type SendPacketFunction func(provideMode protocol.ProvideMode, packet []byte, ti
 // retains packet must call MessagePoolShareReadOnly; a callee that needs a
 // mutable path must clone it. The callback runs inline and must not block,
 // except when it is the documented final device-TUN injection boundary.
+//
+// Borrows the packet: the caller still owns it after the callback returns.
 type ReceivePacketFunction func(source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte)
 
 // receive a batch of packets from one flow (same source, provideMode, ipPath)
@@ -929,6 +931,8 @@ func (self *LocalUserNat) SecurityPolicyStats(reset bool) SecurityPolicyStats {
 	return SecurityPolicyStats{}
 }
 
+// Takes the packet on success only: a true return transfers ownership, and on
+// false the caller still owns it and must return it.
 func (self *LocalUserNat) SendPacketWithTimeout(source TransferPath, provideMode protocol.ProvideMode,
 	packet []byte, timeout time.Duration) bool {
 	return self.SendPacketsWithTimeout(source, provideMode, [][]byte{packet}, timeout)
@@ -1069,6 +1073,11 @@ func (self *LocalUserNat) SendPacket(source TransferPath, provideMode protocol.P
 }
 
 // `SendPackets` for a batch of packets from one source. see `SendPacketsWithTimeout`.
+//
+// Takes every packet on success only: a true return transfers ownership of all
+// of them, and on false the caller still owns all of them and must return
+// them. The batch is all-or-nothing, so the boolean is not a per-packet
+// result.
 func (self *LocalUserNat) SendPackets(source TransferPath, provideMode protocol.ProvideMode, packets [][]byte, timeout time.Duration) bool {
 	return self.SendPacketsWithTimeout(source, provideMode, packets, timeout)
 }
@@ -4783,6 +4792,10 @@ func (self *TcpSequence) receivePacket(packet []byte, recoveryMode receiveRecove
 }
 
 // Delivers a drained batch with one stable reply-key and recovery snapshot.
+//
+// Takes every packet in the batch, as receivePacket takes one: they are
+// returned here after the callback, so a caller must not return them and must
+// not use them afterwards.
 func (self *TcpSequence) receiveBatch(packets [][]byte, recoveryMode receiveRecoveryMode) {
 	source, transferKey := self.transferState.get()
 	if self.receiveTransferPacketsCallback != nil &&
@@ -8382,6 +8395,9 @@ func (self *RemoteUserNatProvider) sendReturnBatchWithLimits(
 // source/ipPath, so the egress policy is evaluated once. Ownership mirrors
 // the per-packet Receive: each packet is shared read-only into a frame; the
 // share/marshal buffers are freed on the same raw/wrapped rules.
+//
+// Borrows every packet in the batch, as Receive borrows one: a caller that
+// built them still owns them after the call and must return them.
 func (self *RemoteUserNatProvider) ReceiveBatch(
 	source TransferPath,
 	provideMode protocol.ProvideMode,
@@ -8392,6 +8408,8 @@ func (self *RemoteUserNatProvider) ReceiveBatch(
 }
 
 // Returns a public/shared batch with one nonblocking disposition.
+//
+// Borrows every packet in the batch, as receiveTransfer borrows one.
 func (self *RemoteUserNatProvider) receiveTransferBatch(
 	source TransferPath,
 	transferKey TransferKey,
