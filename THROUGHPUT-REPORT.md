@@ -904,6 +904,58 @@ stall guard 2 mitigates.
 **So turning the rule on is one change rather than three that must agree.**
 Three knobs that must agree is how the present defect arrived.
 
+### 3.14 The underlying issue: a memory budget that can only scale DOWN
+
+The goal is symmetric window resizing in both directions, and a solution that
+works in only one direction has an underlying issue. Tested against the design,
+that turned out to be exactly right.
+
+**The mechanism is symmetric by construction.** Every direction is a send
+sequence at one end and a receive sequence at the other, running the same code.
+Nothing in the rule knows which end is the phone.
+
+**What is not symmetric is the configuration, and the cause is structural.**
+`memoryTargetScale` returns 1 at or above the 64 MiB reference and a fraction
+below it. Every window and hold in the enumeration -- transfer window and hold,
+tun buffers, H3 windows, ladder maximum -- is `MemoryScaledByteCount` of a
+constant. **So all were sized for the reference host and can only shrink. A
+provider with eight gigabytes runs a 64 MiB device's window.**
+
+That explains this whole program. Every constant we unpicked was chosen for a
+small host, and no amount of memory could ever raise it. The two configuration
+asymmetries follow: an unbudgeted provider sits exactly at the reference, a
+24 MiB client below it, and the download-only inversion is **the two ends
+differing, not the rule differing**.
+
+**The surface removes it on one condition.** The share must be a draw on the
+budget, proportional to it, and **never `MemoryScaledByteCount` of anything** --
+otherwise the property survives under a new name. The pools must be built from
+the budget and a fraction rather than from the scaled constants they use today.
+That is easy to violate by accident, because every adjacent line does the wrong
+thing, so it is asserted rather than documented.
+
+**The receive hold derives from the surface too**, or it becomes the binder at
+2.5 MiB -- 90 Mb/s at 200 ms -- and the raise is inert above it. Between
+advertising peers the window-under-hold relationship then holds at every pair of
+budgets by construction.
+
+**A trap this creates, and the guard against it.** Under the new scheme a share
+is a fraction of a budget, and a provider is unbudgeted today. If an unbudgeted
+process has no budget to draw on it falls to the floor -- a large regression
+from its present 2 MiB. So the no-budget path must preserve **today's
+behaviour**, not the floor. The earlier no-budget-means-floor policy was right
+when the floor was a safety property; it is wrong once the share is the sizing
+mechanism itself.
+
+**What the budget honestly cannot do**, stated rather than hidden. A phone
+cannot reach a 1 Gb/s target on a long path within its budget, by arithmetic:
+one window at the target on a 200 ms path is 29 MB framed against 25.2 MB for
+the whole process. At an 8 MiB receive share the plateau is 290 Mb/s at 200 ms,
+which is the target at 58 ms and below; 145 Mb/s at a 4 MiB share. **It fails
+visibly** -- the window equals the advertised capacity and the estimate names
+the binding term -- rather than silently at a constant. That visibility is the
+whole difference between this and what it replaces.
+
 ## 4. What is still open
 
 | Question | State |
