@@ -175,11 +175,12 @@ func TestOneLaneClientPaysNoFloor(t *testing.T) {
 	defer cancel()
 	assertMessagePoolOwnership(t)
 
+	const laneFloorByteCount = ByteCount(8 * 1024)
 	settings := DefaultClientSettings()
 	settings.EncryptionSettings.Mode = EncryptionModeOff
 	settings.SendBufferSettings.LogicalDataLaneCount = 8
 	settings.SendBufferSettings.ResendQueueMaxByteCount = ByteCount(64 * 1024)
-	settings.SendBufferSettings.LaneFloorByteCount = ByteCount(8 * 1024)
+	settings.SendBufferSettings.LaneFloorByteCount = laneFloorByteCount
 	settings.SendBufferSettings.AckTimeout = time.Minute
 	settings.SendBufferSettings.IdleTimeout = time.Minute
 	settings.SendBufferSettings.MinResendInterval = time.Minute
@@ -253,17 +254,34 @@ func TestOneLaneClientPaysNoFloor(t *testing.T) {
 	if budget == nil {
 		t.Fatal("a nonzero lane sent and no pool was materialised")
 	}
-	// the seven lanes this client never opened must hold nothing: an exemption
-	// is unused headroom, a reservation would be charged here
+
+	// The property, stated so it holds at any floor and any lane count rather
+	// than at the numbers this row happens to use: a lane borrows from the
+	// pool only what it holds above its own floor, so the pool's used bytes
+	// are the one active lane's queued bytes less its floor, and the seven
+	// lanes never opened contribute nothing. A reservation implementation
+	// charges the pool for every lane's floor whether it is used or not, and
+	// an assertion merely comparing used against total would let that pass
+	// wherever the floors happen not to sum past the pool.
 	usedByteCount := budget.UsedByteCount()
-	if budget.TotalByteCount() <= usedByteCount {
+	queuedByteCount := laneQueuedByteCount(client)
+	wantUsedByteCount := max(0, queuedByteCount-laneFloorByteCount)
+	if usedByteCount != wantUsedByteCount {
 		t.Errorf(
-			"the lane pool holds %d of %d bytes after one lane sent 16 KiB; seven unopened lanes must contribute nothing to it",
+			"the lane pool holds %d bytes with one lane of eight holding %d against a %d byte floor; it must hold what that lane borrows above its floor, %d, and nothing for the seven lanes never opened",
 			usedByteCount,
-			budget.TotalByteCount(),
+			queuedByteCount,
+			laneFloorByteCount,
+			wantUsedByteCount,
 		)
 	}
-	t.Logf("one lane of eight sent: pool holds %d of %d bytes", usedByteCount, budget.TotalByteCount())
+	t.Logf(
+		"one lane of eight holds %d bytes against a %d byte floor: the pool holds %d of %d",
+		queuedByteCount,
+		laneFloorByteCount,
+		usedByteCount,
+		budget.TotalByteCount(),
+	)
 }
 
 // §27 row F3. The floors do not partition the pool: with the other lanes idle,
@@ -367,6 +385,28 @@ func TestLaneFloorsAreExemptionsNotReservations(t *testing.T) {
 		)
 	}
 	t.Logf("one active lane of eight wrote %d Packs, about %d bytes of a %d byte pool", writeCount.Load(), heldByteCount, laneResendQueueMaxByteCount)
+}
+
+// what every nonzero lane currently holds queued, which is what it borrows
+// from the pool above its floor
+func laneQueuedByteCount(client *Client) ByteCount {
+	sequences := func() []*SendSequence {
+		client.sendBuffer.mutex.Lock()
+		defer client.sendBuffer.mutex.Unlock()
+		sequences := []*SendSequence{}
+		for id, sequence := range client.sendBuffer.sendSequences {
+			if id.LogicalLane != 0 {
+				sequences = append(sequences, sequence)
+			}
+		}
+		return sequences
+	}()
+	queuedByteCount := ByteCount(0)
+	for _, sequence := range sequences {
+		_, sequenceByteCount := sequence.resendQueue.QueueSize()
+		queuedByteCount += sequenceByteCount
+	}
+	return queuedByteCount
 }
 
 // the lazily materialised pool every nonzero lane shares, or nil before the
