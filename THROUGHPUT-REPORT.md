@@ -731,12 +731,55 @@ notice alone, completion at every window with one round trip per eviction
 generation instead of a minute. The second isolates which field does which job
 and shows what a legacy sender gets when only the receiver is upgraded.
 
-OPEN, and it decides the severity: the hold is memory-scaled and the send
-ceiling is not, so they diverge as the budget falls. If some shipped budget
-puts the hold below the window -- a well-provisioned provider talking to a
-constrained phone is the obvious shape -- then a route death stalls a mobile
-transfer for 60 s **on main today**, with none of this program's changes. Being
-checked.
+### 3.11d The ordering inverts asymmetrically, and that is ordinary production
+
+**Symmetrically it never inverts.** Both shipping constants scale by the same
+factor from the same 64 MiB reference, so on one host the hold is 1.25x the
+window at every budget, floors included. (My earlier claim that they diverge
+was wrong; it was about the delivery-sized rule's ceiling, not the shipping
+constant.)
+
+**Between hosts it does.** A provider runs unbudgeted, so its window is 2 MiB.
+A client at budget B holds `max(320 KiB, 2.5 MiB x B/64 MiB)`. So the hold is
+below the peer's window whenever **B < 51.2 MiB**:
+
+  client budget 24 MiB   hold 960 KiB against a 2 MiB window   2.1x over
+  client budget 32 MiB   hold 1.25 MiB                         1.6x over
+  at or below 8.2 MiB    hold at its 320 KiB floor             6.4x over
+
+The general condition is a receiver budget below 0.8 of the sender's. Upload is
+safe. **Every mobile budget this program has discussed is inverted**, so the
+60-second reneging is reachable on main today with none of our changes.
+
+**The trigger is ordinary.** Under the production Auto policy the second
+carrier is dialed 2 s after the first regardless of the first's health, its
+routes register beside the first's with no standby guard, and ordered streams
+are offered to reliable routes in shuffled order taking the first that accepts
+-- striping. Two live routes is the default steady state. A route death is a
+handover, an extender rotation, an idle drain, or a middlebox closing the
+second carrier.
+
+A second candidate needs no second route at all: on hybrid carriers, download
+frames below a size threshold ride the datagram lane while the excess above the
+flight limit takes the stream lane, so one datagram loss opens a hole the
+stream lane runs ahead of.
+
+**STATUS: a source argument, not yet a demonstrated defect.** A cell on
+unmodified main at a 24 MiB client budget with one of two routes killed is
+being built, against the same cell at 52 MiB which should complete. That pair
+is what separates the two, and the second arm is what stops it being a
+demonstration.
+
+### 3.11e Guards, in landing order
+
+1. **Receiver-side, no wire change**: the hold's floor becomes the peer's
+   unscaled window. Removes the inversion at its source and is the only guard
+   that protects a client whose peer is not upgraded. Lands first, separably.
+2. **Sender-side, deployable on providers alone** to protect phones already in
+   the field: a carrier change voids selective acknowledgements, so the
+   carrier-change resend covers evicted items and a minute becomes a round trip.
+3. **The two fields of 3.11c** -- the complete fix, and the precondition for
+   any window above the hold.
 
 ### 3.12 The landing, sized to the evidence
 
