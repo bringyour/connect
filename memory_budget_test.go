@@ -102,7 +102,10 @@ func TestMemoryBudgetScaledSettings(t *testing.T) {
 	tunSettings := DefaultTunSettings()
 	AssertEqual(t, tunSettings.UdpReceiveBufferByteCount, int(kib(512)))
 	AssertEqual(t, tunSettings.TcpReceiveBuffer.Default, int(kib(512)))
-	AssertEqual(t, tunSettings.TcpReceiveBuffer.Max, int(mib(2)))
+	// the maximum is a draw on the budget rather than a scaled constant
+	// (THROUGHPUTFIX §43.1), so it is one eighth of it here
+	AssertEqual(t, tunSettings.TcpReceiveBuffer.Max, int(mib(4)))
+	AssertEqual(t, tunSettings.TcpSendBuffer.Max, int(mib(4)))
 }
 
 func TestMemoryBudgetFloors(t *testing.T) {

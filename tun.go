@@ -52,6 +52,60 @@ import (
 
 // const DefaultChannelSize = 64
 
+// The divisor of the process memory budget that gives one of the tun's gVisor
+// TCP buffer maxima. One eighth: 8 MiB at the 64 MiB reference, 32 MiB at 256.
+//
+// THROUGHPUTFIX §43.1, the `tun reservation` row of §44.1's share table, and
+// the third ceiling of §39.2. The receive maximum and the send maximum each
+// draw the share rather than splitting one, because they bind opposite
+// directions: receive is the download binder, reached by gVisor's receive
+// moderation, and send is the upload binder together with the inner
+// acknowledgement clock.
+const tunBudgetShareDivisor = 8
+
+// tunBudgetShareByteCount is the largest a single gVisor TCP receive or send
+// buffer under this tun may auto-tune to: a draw on the process memory budget,
+// proportional to it.
+//
+// It must never be a `MemoryScaledByteCount`, and that distinction is the
+// whole finding rather than a detail of style. That helper's scale returns one
+// at or above the 64 MiB reference and a fraction below, so it can only shrink
+// its argument: every constant written in the local idiom was sized for a
+// reference host, and a provider with eight gigabytes ran a 64 MiB device's
+// buffers. Raising the budget bought nothing here. Since the adjacent lines in
+// this file all scale a constant, copying one is the natural way to write this
+// and `TestTheTunsMaximaAreADrawOnTheBudget` is what holds it: substitute the
+// idiom and it fails at the first budget step above the reference.
+//
+// Whose ceiling this is, because it bounds what the change can reach. Only a
+// client whose inner TCP stack is this tree's gVisor: the hosted, simulated
+// and probe modes. A shipped native desktop, phone or extension creates no
+// gVisor tun at all — its OS tun hands packets to `DeviceLocal.SendPacket` —
+// so the equivalent ceiling there is the operating system's own autotuning
+// maximum, which is the same order (about 4 MiB on macOS, 6 on Linux and
+// Android, up to 16 on Windows) and is not this tree's to set.
+//
+// The floor is this buffer's own working minimum, deliberately not the 4 MiB
+// of §43.1's first form. A floor there is an admission floor rather than a
+// buffer floor, and taking a fraction of a floored reservation inflates small
+// hosts: at an 8 MiB budget it would ask 4 MiB of each maximum, 8 MiB of the
+// two beside the transport total's 3 MiB floor, against the whole budget
+// (§44.2's third constraint). Keeping today's floor makes the draw
+// bit-identical to today's value at every budget where the floor binds, and
+// never below it at any budget.
+//
+// A zero budget is the absence of the surface rather than a small share: an
+// unbudgeted process keeps today's constant, because falling to the floor here
+// would make every unbudgeted host eight times slower at this layer the moment
+// the rule was turned on.
+func tunBudgetShareByteCount() ByteCount {
+	budget := MemoryBudget()
+	if budget <= 0 {
+		return mib(4)
+	}
+	return max(kib(512), budget/tunBudgetShareDivisor)
+}
+
 func DefaultTunSettings() *TunSettings {
 	return DefaultTunSettingsWithBufferSize(1024)
 }
@@ -85,7 +139,10 @@ func DefaultTunSettingsWithBufferSize(bufferSize int) *TunSettings {
 		// tcp buffer auto-tuning ranges for the server/proxy data plane (the shared
 		// stack). Max applies per connection, so it caps per-connection memory; a
 		// memory-constrained IpMux on a private stack shrinks these much further.
-		// default and max are per connection, so scaled by the memory budget.
+		// Default is per connection and scaled by the memory budget; Max is per
+		// connection and a draw on it (`tunBudgetShareByteCount`), so a larger
+		// budget raises the ceiling a single stream can auto-tune to instead of
+		// leaving every host at a 64 MiB device's 4 MiB.
 		// The tunnel path's effective ack rtt runs orders of magnitude above
 		// loopback (userspace relay hops + ack coalescing), so the throughput
 		// of a single stream is window/rtt-bound: the former 256KiB default
@@ -95,12 +152,12 @@ func DefaultTunSettingsWithBufferSize(bufferSize int) *TunSettings {
 		TcpReceiveBuffer: TcpBufferRange{
 			Min:     4 * 1024,
 			Default: int(MemoryScaledByteCount(mib(1), kib(128))),
-			Max:     int(MemoryScaledByteCount(mib(4), kib(512))),
+			Max:     int(tunBudgetShareByteCount()),
 		},
 		TcpSendBuffer: TcpBufferRange{
 			Min:     4 * 1024,
 			Default: int(MemoryScaledByteCount(mib(1), kib(128))),
-			Max:     int(MemoryScaledByteCount(mib(4), kib(512))),
+			Max:     int(tunBudgetShareByteCount()),
 		},
 
 		// cap rto backoff well below the gvisor default (120s). The path under
