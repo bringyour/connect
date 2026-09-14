@@ -6282,9 +6282,11 @@ type receiveAckMessage struct {
 	contractMissing                  bool
 	compactContractRecoverySupported bool
 	// what the receiver said it can still hold out of order; unset is a
-	// legacy peer, and zero is a receiver that is currently full
-	receiveWindowByteCount uint64
+	// legacy peer, and zero is a receiver that is currently full. A receive
+	// hold is never near four gibibytes, so this is the narrow type and packs
+	// against the tail rather than adding a word of its own.
 	receiveWindowSet       bool
+	receiveWindowByteCount uint32
 }
 
 type receiveAckHandoffResult uint8
@@ -6319,7 +6321,7 @@ func receiveAckMessageFromProtocol(ack *protocol.Ack) (receiveAckMessage, error)
 		compactContractRecoverySupported: ack.CompactContractRecovery,
 	}
 	if ack.ReceiveWindowByteCount != nil {
-		receiveAck.receiveWindowByteCount = *ack.ReceiveWindowByteCount
+		receiveAck.receiveWindowByteCount = uint32(min(*ack.ReceiveWindowByteCount, math.MaxUint32))
 		receiveAck.receiveWindowSet = true
 	}
 	if 0 < len(ack.MissingContractId) {
@@ -8868,7 +8870,7 @@ func (self *SendSequence) observeReceiveWindowAdvertisement(ack receiveAckMessag
 	if !ack.receiveWindowSet {
 		return
 	}
-	self.receiveWindowByteCount.Store(ack.receiveWindowByteCount)
+	self.receiveWindowByteCount.Store(uint64(ack.receiveWindowByteCount))
 	self.receiveWindowSet.Store(true)
 }
 
@@ -8949,7 +8951,10 @@ type SendWindowEstimate struct {
 	Interval           time.Duration
 	RoundTrip          time.Duration
 	SampleCount        int
-	// the bounds the rule clamped between
+	// the bounds the rule clamped between. Initial is the pre-sample value
+	// and is not a lower clamp: once sampled the rule may shrink below it, to
+	// Floor, which is a working minimum of a few packets.
+	Initial ByteCount
 	Floor   ByteCount
 	Ceiling ByteCount
 }
@@ -8983,9 +8988,21 @@ type SendWindowEstimate struct {
 // estimate with samples for the round trip. That makes the safe configuration
 // the default and the unsafe one unreachable, rather than documented.
 func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
-	// until §37.4's surface lands, the initial size is the shipping constant
+	// The initial size is the value before the estimate has samples, and
+	// nothing after it. It is a bet, and a bet that cannot be walked back is
+	// not a bet: as the rule's lower clamp a wide-area initial would stand as
+	// a second of queue on a slow last mile for the life of the sequence
+	// (THROUGHPUTFIX §37.13). Once sampled the rule may shrink to what the
+	// path shows, and the only floor under it is the working minimum that
+	// reliable admission already uses.
+	//
+	// Until §37.4's surface lands, the initial size is the shipping constant.
 	initial := self.sendBufferSettings.ResendQueueMaxByteCount
-	estimate := SendWindowEstimate{Window: initial, Floor: initial}
+	floor := self.sendBufferSettings.ResendQueueMinByteCount
+	if floor <= 0 {
+		floor = initial
+	}
+	estimate := SendWindowEstimate{Window: initial, Initial: initial, Floor: floor}
 	scale := self.sendBufferSettings.DeliverySizedWindowScale
 	if scale <= 0 || self.deliveredBytes == nil {
 		estimate.Reason = "the rule is off"
@@ -9005,6 +9022,7 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	if ceiling <= 0 {
 		ceiling = initial
 	}
+	ceiling = max(ceiling, floor)
 	ceiling = min(ceiling, budget.TotalByteCount())
 
 	// The receiver it can see: absent an advertisement this is a legacy peer,
@@ -9044,7 +9062,7 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	estimate.Sized = true
 	estimate.Reason = "sized"
 	perRoundTrip := ByteCount(int64(delivered) * roundTrip.Min.Nanoseconds() / span.Nanoseconds())
-	estimate.Window = min(max(ByteCount(scale)*perRoundTrip, initial), ceiling)
+	estimate.Window = min(max(ByteCount(scale)*perRoundTrip, floor), ceiling)
 	return estimate
 }
 

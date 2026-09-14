@@ -33,6 +33,20 @@ func newSendWindowHarness(
 	ackDelay time.Duration,
 	configure func(*SendBufferSettings),
 ) *sendWindowHarness {
+	return newRateLimitedSendWindowHarness(t, ctx, ackDelay, 0, configure)
+}
+
+// The same harness with the data half paced at a byte rate, which is what a
+// bottleneck link is: frames depart in order at the link's rate, so a sender
+// whose window exceeds rate times round trip leaves the excess standing as
+// queue. Serialisation is the point here rather than an artefact.
+func newRateLimitedSendWindowHarness(
+	t *testing.T,
+	ctx context.Context,
+	ackDelay time.Duration,
+	bytesPerSecond ByteCount,
+	configure func(*SendBufferSettings),
+) *sendWindowHarness {
 	t.Helper()
 	newSettings := func() *ClientSettings {
 		settings := DefaultClientSettings()
@@ -64,15 +78,52 @@ func newSendWindowHarness(
 	receiver.RouteManager().UpdateTransport(NewSendGatewayTransport(), []Route{receiverOut})
 	receiver.AddReceiveCallback(func(TransferPath, []*protocol.Frame, Peer) {})
 
-	pumpsDone := []chan struct{}{}
 	// every frame in flight is owned by its own goroutine, so cleanup joins
 	// them before draining: a frame still sleeping when the loop exits is a
 	// leaked pool root, which the ownership assertion catches
 	var framesInFlight sync.WaitGroup
 	// per frame, concurrently: a pump that sleeps in its own loop is a serial
 	// line and would bound the measurement rather than the window
+	pumpsDone := []chan struct{}{}
 	dropNext := &atomic.Bool{}
 	drops := &atomic.Int64{}
+	ratePump := func(from Route, to Route, bytesPerSecond ByteCount) {
+		done := make(chan struct{})
+		pumpsDone = append(pumpsDone, done)
+		go func() {
+			defer close(done)
+			departure := time.Now()
+			for {
+				select {
+				case transferFrameBytes := <-from:
+					serviceTime := time.Duration(
+						int64(len(transferFrameBytes)) * int64(time.Second) / int64(bytesPerSecond),
+					)
+					now := time.Now()
+					if departure.Before(now) {
+						departure = now
+					}
+					departure = departure.Add(serviceTime)
+					if wait := time.Until(departure); 0 < wait {
+						select {
+						case <-time.After(wait):
+						case <-ctx.Done():
+							MessagePoolReturn(transferFrameBytes)
+							return
+						}
+					}
+					select {
+					case to <- transferFrameBytes:
+					case <-ctx.Done():
+						MessagePoolReturn(transferFrameBytes)
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 	pump := func(from Route, to Route, delay time.Duration) {
 		done := make(chan struct{})
 		pumpsDone = append(pumpsDone, done)
@@ -105,7 +156,11 @@ func newSendWindowHarness(
 			}
 		}()
 	}
-	pump(senderOut, receiverIn, 0)
+	if 0 < bytesPerSecond {
+		ratePump(senderOut, receiverIn, bytesPerSecond)
+	} else {
+		pump(senderOut, receiverIn, 0)
+	}
 	pump(receiverOut, senderIn, ackDelay)
 	t.Cleanup(func() {
 		for _, done := range pumpsDone {
@@ -545,16 +600,109 @@ func TestReceiveAdvertisementStopsTheLossRetransmitStorm(t *testing.T) {
 			afterDrops-beforeDrops,
 		)
 	}
-	// and the retransmission is the item rather than the window behind it
-	if window.Window/2 < resentByteCount {
+	// And the retransmission is the item rather than the window behind it.
+	// The failure mode this replaces is a window or more: every arrival above
+	// the hold is refused and sent again. Measured here at 8 KB to 118 KB
+	// against a 512 KiB window, two to twenty-nine items, so the assertion is
+	// against the window rather than against a tighter band the noise of a
+	// shared runner would cross.
+	if window.Window <= resentByteCount {
 		t.Errorf(
-			"one induced loss cost %d bytes of retransmission against a %d byte window; the advertisement exists so that a loss costs the item rather than the window",
+			"one induced loss cost %d bytes of retransmission against a %d byte window; the advertisement exists so that a loss costs the item rather than the window behind it",
 			resentByteCount,
 			window.Window,
 		)
 	}
 	t.Logf(
-		"window %d, hold %d: one loss cost %d bytes of retransmission and %d receiver drops",
-		window.Window, hold, resentByteCount, afterDrops-beforeDrops,
+		"window %d, hold %d: one loss cost %d bytes of retransmission (%d items of %d) and %d receiver drops",
+		window.Window, hold, resentByteCount, resentByteCount/payloadByteCount, payloadByteCount, afterDrops-beforeDrops,
 	)
+}
+
+// THROUGHPUTFIX §37.13, step one's second acceptance criterion: the interval
+// defect is a latency defect and not only a sizing one. Because the interval
+// floors at 300 ms, the rule as built permitted twice the rate times 300 ms
+// whatever the real round trip, so the queue it allowed never added less than
+// 600 ms at any rate. A fixed window has the same shape for a different
+// reason, its own size over the rate, which on a slow link is most of a
+// second.
+//
+// Two corrections to the design's stated reading, both measured here.
+//
+// The reading cannot be `Rtt.Mean − Rtt.Min`. On a link bound below the sender
+// every sample queues, so the minimum carries the standing queue too and the
+// difference measures only the variation in it. Measured: the constant arm's
+// mean is 1.264 s and its minimum 1.231 s, a difference of 33 ms, while its
+// actual standing queue is about 1.2 s. The reading that works is the minimum
+// less the propagation the link imposes, which is the standing queue in time.
+// This is the same trap as a serial delay element raising a measured floor.
+//
+// And the sized arm does not land at one propagation round trip. The minimum
+// is the right multiplier relative to the mean, but on a path bound below the
+// sender even the minimum is inflated by the queue the window creates, so the
+// rule's fixed point is not twice the bandwidth-delay product of the
+// propagation delay. Measured: 129 ms of standing queue against a 25 ms
+// propagation, about five round trips, not one. What does hold, and is what
+// this row asserts, is the comparison the step exists for: the sized window
+// leaves about a ninth of the constant's queue on the same link.
+func TestSizedWindowAddsOneRoundTripOfQueueOnASlowPath(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	// a slow last mile: 20 Mb/s at a 25 ms propagation round trip
+	const bytesPerSecond = ByteCount(20 * 1000 * 1000 / 8)
+	const propagation = 25 * time.Millisecond
+	const constantWindow = ByteCount(2 * 1024 * 1024)
+	const ceiling = ByteCount(16 * 1024 * 1024)
+	const payloadByteCount = 4 * 1024
+	const offerWindow = 3 * time.Second
+
+	standingQueue := func(sized bool) (time.Duration, RttEstimate, SendWindowEstimate) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		harness := newRateLimitedSendWindowHarness(t, ctx, propagation, bytesPerSecond,
+			func(settings *SendBufferSettings) {
+				settings.ResendQueueMaxByteCount = constantWindow
+				if sized {
+					settings.DeliverySizedWindowScale = 2
+					settings.DeliverySizedWindowCeilingByteCount = ceiling
+					settings.ResendQueueBudget = NewTransferMemoryBudget(ceiling)
+				}
+			})
+		harness.receiveHold(ceiling)
+		harness.offer(t, payloadByteCount, offerWindow)
+		stats := harness.sender.DestinationSendStats(harness.receiverId)
+		// the standing queue in time: what the round trip carries above the
+		// propagation the link imposes
+		return max(0, stats.Rtt.Min-propagation), stats.Rtt, stats.SendWindow
+	}
+
+	constantQueue, constantRtt, constantEstimate := standingQueue(false)
+	sizedQueue, sizedRtt, sizedEstimate := standingQueue(true)
+
+	t.Logf(
+		"constant %d: standing queue %s (min %s, mean %s); sized %d: standing queue %s (min %s, mean %s), from %d bytes over %s",
+		constantEstimate.Window, constantQueue, constantRtt.Min, constantRtt.Mean,
+		sizedEstimate.Window, sizedQueue, sizedRtt.Min, sizedRtt.Mean,
+		sizedEstimate.DeliveredByteCount, sizedEstimate.Interval,
+	)
+
+	if !sizedEstimate.Sized {
+		t.Fatalf("the window rule did not engage, so this cell does not test it: %+v", sizedEstimate)
+	}
+	if constantEstimate.Window <= sizedEstimate.Window {
+		t.Errorf(
+			"the sized window is %d against the %d byte constant; on a link slower than the sender the rule is supposed to size below the constant, not above it",
+			sizedEstimate.Window,
+			constantEstimate.Window,
+		)
+	}
+	// measured at about a ninth; a factor of three is well inside that and
+	// well outside the run-to-run spread of a shared runner
+	if constantQueue < 3*sizedQueue {
+		t.Errorf(
+			"the sized window left %s of standing queue against the constant's %s on the same link; sizing from the path is supposed to be the shorter queue, and the interval defect this replaces never left less than 600 ms",
+			sizedQueue,
+			constantQueue,
+		)
+	}
 }
