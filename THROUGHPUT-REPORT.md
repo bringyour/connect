@@ -645,13 +645,57 @@ safe**.
 If the first row shows no eviction, the advertisement has no measured
 justification and should not land.
 
+### 3.11a MEASURED: the harm is real, and past the threshold the transfer stalls
+
+Two real clients, two routes, 50 ms, one route killed halfway through a 20,000
+message transfer so its in-flight frames are lost as a scattered subset. 15/15
+valid. Hold capacity 2.500 MiB.
+
+  send window        delivered    peak hold   % of cap   drops    resend
+  2 MiB (shipping)   20000/20000  0.216 MiB   8.6%       0        759 KB
+  3 MiB              20000/20000  2.500 MiB   100%       804      2,042 KB
+  4 MiB              20000/20000  2.500 MiB   100%       7,729    12,810 KB
+  8 MiB              13,526       2.500 MiB   100%       16,183   454 KB
+  16 MiB             11,295       2.500 MiB   100%       44,831   690 KB
+
+**Past the threshold the transfer does not complete.** The resend column falls
+at 8 and 16 MiB because the stream stalled early and less was ever sent, not
+because less was lost.
+
+The shipping window is safe **by ordering**: it sits below the hold, so the
+hold cannot be overrun. The threshold falls between 2 and 3 MiB, exactly where
+a 2.5 MiB hold says it should. That is now measured rather than argued.
+
+**THE RULE CONVERGES TOWARD 16 MiB -- the worst arm here.** As built it would
+move a client from the safe configuration into one where a single route death
+costs a stalled transfer. So a bound keeping the send window under the peer's
+hold is a **precondition** for raising the window, not a refinement: the
+ceiling raise and the advertisement land together or neither lands.
+
+### 3.11b The tree cannot count the thing that matters
+
+`receiveQueueDropCount` counts arrivals the hold could not admit. **Eviction --
+removing an already-held later item to fit an earlier arrival -- has no
+counter.** So drops are a lower bound on hold pressure, and retransmission
+cannot separate the two because both end in a resend.
+
+That is why this harm was invisible in every campaign until a cell measured
+peak occupancy against capacity directly. The counter is being added.
+
+Two structural facts established while building that cell, both limiting
+earlier results: the zombie cell's peer is **synthetic** -- it unmarshals a
+pack, delivers the packet and calls `sendAck` itself, with no receive sequence
+and no hold -- so that cell could never have shown this. And its source side
+calls the provider's receive path directly, so the upload arm is a rebuild
+rather than a knob and remains untested.
+
 ### 3.12 The landing, sized to the evidence
 
 | Group | Contents |
 |---|---|
 | **Measured, lands** | Raise the transfer, tun and H3 ceilings consistently (H3 pending the namespace cell). The 1.7-2.3x throughput result |
 | **Structural and cheap, lands** | The interval and floor correction; the mandatory budget (no-budget-means-floor). A rule that measures a resend timer instead of a round trip is wrong on its own terms, whatever its consequences |
-| **Structural, measure first** | The receive advertisement, conditional on the two-route cell |
+| **PRECONDITION, lands with the ceiling raise** | The receive advertisement. The two-route cell measured a stalled transfer past 3 MiB, and the rule converges toward 16 |
 | **Deferred** | Proportional occupancy division and pooling, until a regime produces the need |
 
 ## 4. What is still open
