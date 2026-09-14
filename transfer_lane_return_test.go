@@ -63,7 +63,7 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 		recordedVersion uint32
 		versionRecorded bool
 	}
-	observeLane := func(clientLane uint32) laneGateReading {
+	observeLane := func(clientLane uint32, advertised bool) laneGateReading {
 		provider, _, client := newProviderSourceLifecycleTestFixture(t, nil)
 		// the provider's own count, which is the setting a rollout turns on
 		client.sendBuffer.sendBufferSettings.LogicalDataLaneCount = 8
@@ -145,6 +145,52 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 		// the origin's data comes back through the NAT and out as returns
 		time.Sleep(time.Second)
 
+		if advertised {
+			// The destination's lane-zero class advertised support. In the
+			// field this is recorded from an acknowledgement that matched an
+			// outstanding item; here it is set directly for the exact base the
+			// gate reported consulting, so the row isolates the gate under
+			// test rather than the negotiation in front of it, and a second
+			// flow then meets an advertised destination.
+			observationLock.Lock()
+			base := sendSequenceId{}
+			if 0 < len(observations) {
+				base = observations[len(observations)-1].base
+			}
+			observations = nil
+			observationLock.Unlock()
+			client.sendBuffer.mutex.Lock()
+			client.sendBuffer.logicalLaneVersions[base] = transferLogicalLaneVersion
+			client.sendBuffer.publishLogicalLaneVersionsWithLock()
+			client.sendBuffer.mutex.Unlock()
+
+			secondSyn := MessagePoolCopy(craftSecurityPacket(
+				IpProtocolTcp,
+				net.ParseIP("10.11.12.13"),
+				54322,
+				net.ParseIP("127.0.0.1"),
+				originPort,
+				true,
+				nil,
+			))
+			secondIpPath, err := ParseIpPath(secondSyn)
+			if err != nil {
+				MessagePoolReturn(secondSyn)
+				t.Fatalf("parse the second client SYN: %v", err)
+			}
+			withBorrowedMessage(secondSyn, func(secondSyn []byte) {
+				provider.receiveTransferWithRecovery(
+					SourceId(peerId),
+					clientKey,
+					protocol.ProvideMode_Public,
+					receiveRecoveryModeTcpSocket,
+					secondIpPath,
+					secondSyn,
+				)
+			})
+			time.Sleep(time.Second)
+		}
+
 		lanes := map[uint32]int{}
 		func() {
 			client.sendBuffer.mutex.Lock()
@@ -181,8 +227,9 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 		}
 	}
 
-	zeroReading := observeLane(0)
-	dataReading := observeLane(3)
+	zeroReading := observeLane(0, false)
+	dataReading := observeLane(3, false)
+	advertisedReading := observeLane(0, true)
 	zeroLanes, zeroObservations := zeroReading.lanes, zeroReading.observations
 	dataLanes, dataObservations := dataReading.lanes, dataReading.observations
 
@@ -248,6 +295,28 @@ func TestProviderReturnsRideTheClientsLane(t *testing.T) {
 		if observation.bindingGate == "no scheduling key" && observation.schedulingValid {
 			t.Errorf("a return was refused a lane for want of a scheduling key it had")
 		}
+	}
+
+	// The purpose of dropping the lane from the reply key, asserted rather
+	// than inferred from the pin's absence: with the destination's support
+	// advertised, the provider's own gate reaches its hash. Which lane it
+	// picks is the hash's business, so the gate is what this asserts.
+	hashedCount := 0
+	for _, observation := range advertisedReading.observations {
+		if observation.bindingGate == "hashed" {
+			hashedCount += 1
+		}
+	}
+	t.Logf(
+		"an advertised destination: provider return sequences by lane %v, gates %v",
+		advertisedReading.lanes,
+		summarise(advertisedReading.observations),
+	)
+	if hashedCount <= 0 {
+		t.Errorf(
+			"no return reached the provider's hash with the destination's support advertised; gates were %v, so dropping the lane from the reply key has not made the provider's own count reachable on the download direction",
+			summarise(advertisedReading.observations),
+		)
 	}
 }
 

@@ -761,6 +761,10 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// borrow cap and the min as the guaranteed floor.
 		ResendQueueMaxByteCount: MemoryScaledByteCount(mib(2), kib(256)),
 		ResendQueueMinByteCount: kib(256),
+		// zero keeps the constant window of every tree before THROUGHPUTFIX
+		// §32.5; a campaign sets the scale and the ceiling together
+		DeliverySizedWindowScale:            0,
+		DeliverySizedWindowCeilingByteCount: 0,
 		// zero preserves the behavior of every tree before THROUGHPUTFIX §27;
 		// the lane campaign sets it
 		LaneFloorByteCount: 0,
@@ -3185,11 +3189,22 @@ func (self *Client) resolveSendOptions(opts []any) resolvedSendOptions {
 				resolved.encryptionRole = role
 			}
 			resolved.encryptionCompanion = v.EncryptionCompanion
-			resolved.logicalLaneExplicit = true
-			if v.LogicalLane <= maxLogicalDataLaneCount {
-				resolved.logicalLane = v.LogicalLane
-			} else {
-				resolved.logicalLane = 0
+			// A key that states a lane reproduces it; a key that states none
+			// leaves the lane to this sender's own gate. Zero is the legacy
+			// and control lane and is also the value a key carries when it
+			// says nothing about lanes, and the two cannot be told apart in
+			// the field, so a stated zero is read as unstated: the gate's own
+			// answer when it decides nothing is lane zero anyway, so the only
+			// behaviour this changes is that a sender whose count and
+			// capability allow hashing is no longer pinned by a key that never
+			// meant to pin it (THROUGHPUTFIX §30.2).
+			if 0 < v.LogicalLane {
+				resolved.logicalLaneExplicit = true
+				if v.LogicalLane <= maxLogicalDataLaneCount {
+					resolved.logicalLane = v.LogicalLane
+				} else {
+					resolved.logicalLane = 0
+				}
 			}
 		case transferCtx:
 			resolved.ctx = v.Ctx
@@ -4491,6 +4506,37 @@ type SendBufferSettings struct {
 	// `ResendQueueBudget` is set: below it admission never consults the
 	// shared budget, so every sequence progresses on floor capacity alone
 	ResendQueueMinByteCount ByteCount
+	// DeliverySizedWindowScale turns the send window from a constant into a
+	// measurement of the path: the window becomes what this lane delivered
+	// over the last acknowledgement round trip, multiplied by this, clamped
+	// between `ResendQueueMaxByteCount` as the floor and the ceiling below.
+	//
+	// Why a multiple of delivery. A window-limited flow delivers exactly its
+	// window per round trip by definition, so a scale of two doubles the
+	// window each round trip until the flow is no longer window-limited and
+	// then holds. From a 2 MiB floor to a 16 MiB ceiling is three round trips,
+	// under a tenth of a second at 25 ms, and the converging phase is never
+	// worse than today's constant because the floor is today's constant.
+	//
+	// The estimate's errors are asymmetric and both bounded. Too short a round
+	// trip shrinks the delivered count and the window, which is today's
+	// behaviour. Too long grows it toward the ceiling, costing memory and at
+	// most one round trip of extra queueing for the client's other flows,
+	// which is why the scale should not exceed two.
+	//
+	// Zero, the shipping default, keeps the constant. The before and after are
+	// then the same binary with one field changed, which is what measuring a
+	// multiple on one cell needs.
+	DeliverySizedWindowScale int
+	// The ceiling for the rule above. It is a share of a budget rather than a
+	// per-sequence constant: forty simultaneous downloaders at 16 MiB would
+	// retain over a gigabyte on one provider, so a constant that works in a
+	// one-client cell is exactly what fails in production. When
+	// `ResendQueueBudget` is set the effective ceiling is the smaller of this
+	// and what that budget will lend, and the queue's existing floor-and-
+	// borrow admission does the sharing; a deployment that turns the scale on
+	// sets a budget in the same change.
+	DeliverySizedWindowCeilingByteCount ByteCount
 	// LaneFloorByteCount is that floor for a nonzero logical data lane, whose
 	// queue is otherwise given none: every byte it holds is borrowed from one
 	// shared pool the size of a single `ResendQueueMaxByteCount`, and each
@@ -4883,9 +4929,11 @@ func NewSendBuffer(ctx context.Context,
 // IP traffic hashes only after this exact lane-zero class has acknowledged
 // support.
 func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
+	observedBase := sendSequenceId{}
 	observe := func(gate string, version uint32, lane uint32) uint32 {
 		if self.logicalLaneGateObserverForTest != nil {
 			self.logicalLaneGateObserverForTest(logicalLaneGateObservation{
+				base:            observedBase,
 				explicit:        sendPack.logicalLaneExplicit,
 				explicitLane:    sendPack.logicalLane,
 				schedulingValid: sendPack.schedulingKey.valid,
@@ -4932,6 +4980,7 @@ func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
 		EncryptionRole:      sendPack.EncryptionRole,
 		EncryptionCompanion: sendPack.EncryptionCompanion,
 	}
+	observedBase = base
 	// A lock-free read of the published snapshot. Taking the buffer mutex here
 	// would put a client-wide acquisition on every Pack of every sequence.
 	version := uint32(0)
@@ -4947,6 +4996,8 @@ func (self *SendBuffer) selectLogicalLane(sendPack *SendPack) uint32 {
 // What the lane gate saw and which of its gates decided, for the rows that ask
 // whether a provider's returns can ride a data lane at all. Test only.
 type logicalLaneGateObservation struct {
+	// the lane-zero class whose advertised version the gate consults
+	base            sendSequenceId
 	explicit        bool
 	explicitLane    uint32
 	schedulingValid bool
@@ -5392,6 +5443,11 @@ type SendDestinationStats struct {
 	WriteByteCount       uint64
 	ResendWriteCount     uint64
 	ResendWriteByteCount uint64
+	// SendWindow is what the sequences to this destination may hold
+	// unacknowledged, and the evidence the rule derived it from. `Sized` is
+	// false when the rule is off or had no samples, which a campaign needs in
+	// order to tell a setting that engaged from one that silently did nothing.
+	SendWindow SendWindowEstimate
 	// Rtt is the acknowledgement round trip over the sequences to this
 	// destination, carried with its evidence: an unsampled estimate and a
 	// measured sub-millisecond one are different facts and the type keeps them
@@ -5432,6 +5488,7 @@ func (self *SendBuffer) DestinationSendStats(destinationId Id) SendDestinationSt
 	meanRttTotal := time.Duration(0)
 	newestSampleAge := time.Duration(0)
 	minimumRtt := time.Duration(0)
+	now := time.Now()
 	for sequence := range sequences {
 		stats.WriteCount += sequence.writeCount.Load()
 		stats.WriteByteCount += sequence.writeByteCount.Load()
@@ -5439,6 +5496,11 @@ func (self *SendBuffer) DestinationSendStats(destinationId Id) SendDestinationSt
 		stats.ResendWriteByteCount += sequence.resendWriteByteCount.Load()
 		// the window's own lock is a leaf, and the buffer lock above is
 		// already released
+		// the largest window any of them computed, with its evidence
+		if windowEstimate := sequence.sendWindowEstimate(now); stats.SendWindow.Window < windowEstimate.Window ||
+			(windowEstimate.Sized && !stats.SendWindow.Sized) {
+			stats.SendWindow = windowEstimate
+		}
 		if estimate := sequence.rttWindow.Estimate(); estimate.Sampled() {
 			meanRttTotal += estimate.Mean
 			stats.Rtt.SampleCount += estimate.SampleCount
@@ -5829,7 +5891,11 @@ func newSendSequenceWithLogicalLane(
 	)
 
 	var deliveredBytes []deliveredBytesSample
-	if sendBufferSettings.ReliableAdmissionBoundedByDelivery {
+	if sendBufferSettings.ReliableAdmissionBoundedByDelivery ||
+		0 < sendBufferSettings.DeliverySizedWindowScale {
+		// the ring is the instrument both rules read, in opposite directions:
+		// one bounds admission below the queue, the other raises the queue
+		// above its constant
 		deliveredBytes = make([]deliveredBytesSample, deliveredBytesRingSize)
 	}
 
@@ -7333,7 +7399,7 @@ sendSequenceLoop:
 
 		resendCapacity := self.resendQueue.CanAdd(
 			0,
-			self.sendBufferSettings.ResendQueueMaxByteCount,
+			self.sendWindowEstimate(sendTime).Window,
 		)
 		self.observeRouteStall(sendTime)
 		// FLIGHTGATEFIX §22: a reliable lane may hold what it has shown it
@@ -8752,6 +8818,58 @@ func (self *SendSequence) deliveredBytesOver(d time.Duration, now time.Time) Byt
 		base = self.deliveredBytes[oldest].total
 	}
 	return max(0, self.deliveredByteTotal-base)
+}
+
+// What the window rule computed and the evidence it computed it from, carried
+// together for the same reason the round-trip estimate is: a campaign has to
+// confirm the rule engaged, and this program has twice run campaigns against
+// settings that silently did nothing.
+type SendWindowEstimate struct {
+	// what the sequence may hold unacknowledged, which is the floor when the
+	// rule is off
+	Window ByteCount
+	// Sized is whether the rule is on and had evidence. False means Window is
+	// the constant floor, which is a different fact from a measured window
+	// that happens to equal it.
+	Sized bool
+	// what the lane delivered over Interval, and how many samples back it
+	DeliveredByteCount ByteCount
+	Interval           time.Duration
+	SampleCount        int
+	// the bounds the rule clamped between
+	Floor   ByteCount
+	Ceiling ByteCount
+}
+
+// sendWindowEstimate is the window this sequence may hold unacknowledged, and
+// the evidence behind it. With the scale off it is the configured constant.
+func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
+	floor := self.sendBufferSettings.ResendQueueMaxByteCount
+	estimate := SendWindowEstimate{Window: floor, Floor: floor}
+	scale := self.sendBufferSettings.DeliverySizedWindowScale
+	if scale <= 0 || self.deliveredBytes == nil {
+		return estimate
+	}
+	ceiling := self.sendBufferSettings.DeliverySizedWindowCeilingByteCount
+	if ceiling <= 0 {
+		ceiling = floor
+	}
+	// a share of a budget rather than a constant: what the shared budget will
+	// lend bounds the ceiling, and the queue's floor-and-borrow admission
+	// shares it among the sequences that want it
+	if budget := self.resendQueue.Budget(); budget != nil {
+		ceiling = min(ceiling, budget.TotalByteCount())
+	}
+	estimate.Ceiling = ceiling
+	estimate.Interval = self.rttWindow.ScaledRtt()
+	estimate.DeliveredByteCount = self.deliveredBytesOver(estimate.Interval, now)
+	estimate.SampleCount = self.deliveredBytesCount
+	if estimate.SampleCount == 0 {
+		return estimate
+	}
+	estimate.Sized = true
+	estimate.Window = min(max(ByteCount(scale)*estimate.DeliveredByteCount, floor), ceiling)
+	return estimate
 }
 
 // reliableAdmissionByteLimit is what this sequence may hold unacknowledged

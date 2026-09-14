@@ -7913,13 +7913,29 @@ func (self *RemoteUserNatProvider) sourceReturnProvideMode(sourceId Id, fallback
 	return fallback
 }
 
-// Derives the provider's return contract while retaining the receiver-visible
-// lane and encryption session. The authenticated source remains separate.
+// Derives the provider's return contract, reproducing the session the client
+// opened and not the lane it opened on. The authenticated source remains
+// separate.
+//
+// Session identity is the force-stream flag, the encryption role and the
+// encryption companion, all carried through unchanged, plus the contract
+// policy set here from the provide mode. The lane is not part of that
+// identity: it is a receiver-visible ordering domain, and reproducing it made
+// a client at lane zero pin every return to lane zero whatever the provider's
+// own count was, so the count was inert on the download direction — the
+// direction lanes exist for (THROUGHPUTFIX §30.2, measured).
+//
+// Dropping it leaves the return's lane to the provider's own gate, which hashes
+// under the existing capability gate using the flow key the isolation logic
+// already computes, or answers lane zero when the destination has not
+// advertised support or the Pack carries no scheduling key. A control reply
+// with no scheduling key is therefore unaffected and stays on lane zero.
 func providerReplyTransferKey(
 	transferKey TransferKey,
 	provideMode protocol.ProvideMode,
 ) TransferKey {
 	transferKey.CompanionContract = provideMode != protocol.ProvideMode_Network
+	transferKey.LogicalLane = 0
 	return transferKey
 }
 
