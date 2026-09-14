@@ -764,17 +764,56 @@ frames below a size threshold ride the datagram lane while the excess above the
 flight limit takes the stream lane, so one datagram loss opens a hole the
 stream lane runs ahead of.
 
-**STATUS: a source argument, not yet a demonstrated defect.** A cell on
-unmodified main at a 24 MiB client budget with one of two routes killed is
-being built, against the same cell at 52 MiB which should complete. That pair
-is what separates the two, and the second arm is what stops it being a
-demonstration.
+**REPRODUCED ON UNMODIFIED MAIN.** Connect main, none of this program's
+changes, provider unbudgeted at a 2.000 MiB window, client budget as the axis,
+both values recorded RESOLVED per run:
+
+  client budget   resolved hold   inverted   hold saturated   completed
+  8 MiB           0.312 (floor)   6.40x      2/2              0/2
+  24 MiB          0.938 MiB       2.13x      4/4              0/4
+  52 MiB          2.031 MiB       no         0/2              2/2
+
+At 24 MiB: 13,111-18,199 arrivals the hold could not admit, 11,780-15,068 of
+20,000 delivered before progress stopped. At 8 MiB, about a quarter delivered.
+
+**The 52 MiB control is what makes this a defect rather than a demonstration.**
+Its hold still reaches 84-90% of capacity -- the path is working it hard -- and
+it takes zero drops and completes. The only variable is whether the hold
+exceeds the peer's window.
+
+**The trigger is small.** The dying route took 20, 71, 215 and 355 frames in
+the four failing runs. What fills the hold is not the loss; it is everything
+the peer sends after the gap, and the peer is entitled to its whole window.
+
+A variance on the record: in a campaign running all three budgets sequentially
+in one process, the 24 MiB arm completed 2/2, where alone it failed 4/4. The
+budget is restored between scenarios and each builds fresh clients, so this is
+process state and timing -- the 8 MiB scenario ahead of it stalls for a minute
+and leaves a loaded runtime, so less is in flight at the kill. **Incidence is
+quoted from isolated runs only.**
+
+Two instrument facts: the perfvar package cannot compile against main, since it
+uses instruments this program added, so the failover cell now lives in its own
+self-contained package with a driver flag -- a reusable capability for any cell
+that must run on both trees. And the send-stats reader does not exist on main,
+so peak hold against resolved capacity is the reading and the resend columns
+were corroboration on the branch only.
 
 ### 3.11e Guards, in landing order
 
 1. **Receiver-side, no wire change**: the hold's floor becomes the peer's
-   unscaled window. Removes the inversion at its source and is the only guard
-   that protects a client whose peer is not upgraded. Lands first, separably.
+   unscaled window. Removes the inversion at its source. **Memory cost on the
+   constrained side**: a phone at 24 MiB goes from 938 KiB to 2 MiB, +1.1 MiB
+   against a ceiling this program deferred.
+
+   1a. **A possible zero-cost alternative, under assessment.** On the branch
+   cell the 3 MiB arm completed with 800 drops, because refused items were
+   never held and so resend on the ordinary path. **Refusal recovers;
+   eviction reneges silently.** So a receiver that NEVER EVICTS -- refusing the
+   arriving item rather than removing a held one -- keeps its memory unchanged,
+   needs no wire field, keeps the sender's selective acks truthful, and
+   recovers on the path that already works. The objection to test is
+   head-of-line blocking.
 2. **Sender-side, deployable on providers alone** to protect phones already in
    the field: a carrier change voids selective acknowledgements, so the
    carrier-change resend covers evicted items and a minute becomes a round trip.
