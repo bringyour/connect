@@ -330,7 +330,9 @@ func (self *messagePool) release(poolMessage []byte) bool {
 		// Double-return: log unconditionally so production sees it, but do the
 		// stack capture/log write outside the hot pool lock.
 		err := fmt.Errorf("[mp]return message[%d] not taken", id)
-		DefaultLogger().Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
+		stack := debug.Stack()
+		DefaultLogger().Errorf("[mp]%s", ErrorJson(err, stack))
+		messagePoolViolation(err, stack)
 		return false
 	}
 	if 1 < count {
@@ -726,6 +728,105 @@ func messagePoolPacketOutstandingSnapshot(fast bool) (uint64, ByteCount) {
 		}
 	}
 	return outstandingCount, outstandingBytes
+}
+
+// A pool ownership violation is a buffer returned or shared that no owner
+// held. Production only logs these, because a pool cannot tell a stale return
+// from a bug without knowing which owner was supposed to return the buffer.
+// The violating call, though, is the one point where the offending call site is
+// still on the stack, so a test may install a handler that fails there.
+//
+// The handler is consulted only inside the branches that already capture a
+// stack and write an error log, so nothing on the take or return hot path
+// changes and a nil handler leaves production byte identical.
+//
+// A leak has no such point: it is the absence of a return, and only
+// reconciliation at a boundary can see it. MessagePoolOutstandingByteCount is
+// that instrument.
+var messagePoolViolationHandler atomic.Pointer[messagePoolViolationFunction]
+var messagePoolViolationCount atomic.Uint64
+
+type messagePoolViolationFunction func(err error, stack []byte)
+
+// SetMessagePoolViolationHandler installs the handler called at each ownership
+// violation, or removes it when nil, and returns the previous one. Test only:
+// production installs none and keeps the log-and-continue behavior.
+func SetMessagePoolViolationHandler(
+	handler messagePoolViolationFunction,
+) messagePoolViolationFunction {
+	var previous messagePoolViolationFunction
+	if previousHandler := messagePoolViolationHandler.Swap(handlerPointer(handler)); previousHandler != nil {
+		previous = *previousHandler
+	}
+	return previous
+}
+
+func handlerPointer(handler messagePoolViolationFunction) *messagePoolViolationFunction {
+	if handler == nil {
+		return nil
+	}
+	return &handler
+}
+
+// MessagePoolViolationCount is how many ownership violations this process has
+// detected since it started. Test only; production reads the log.
+func MessagePoolViolationCount() uint64 {
+	return messagePoolViolationCount.Load()
+}
+
+// Called outside every pool lock, from the branches that already log.
+func messagePoolViolation(err error, stack []byte) {
+	messagePoolViolationCount.Add(1)
+	if handler := messagePoolViolationHandler.Load(); handler != nil {
+		(*handler)(err, stack)
+	}
+}
+
+// Outstanding roots over every size class, not only the packet classes: a
+// large-object leak is invisible to the packet-only counter, and the leak that
+// motivated this instrument was 1,504 buffers of one non-packet class. Always
+// computed from the cumulative take and return tags, which every pool keeps
+// unconditionally on every platform, so it adds nothing to the hot path.
+//
+// It is a reconciliation, not an ownership record: a buffer whose return is
+// still in flight on another goroutine reads as outstanding, so a consumer
+// must allow a bounded settle before calling a nonzero delta a leak.
+func messagePoolOutstandingSnapshot() (uint64, ByteCount) {
+	var outstandingCount uint64
+	var outstandingBytes ByteCount
+	for _, pool := range orderedMessagePools() {
+		for shardIndex := range messagePoolShardCount {
+			shard := &pool.shards[shardIndex]
+			var taken uint64
+			var returned uint64
+			shard.stateLock.Lock()
+			for tag := range 256 {
+				taken += shard.takenTags[tag]
+				returned += shard.returnedTags[tag]
+			}
+			shard.stateLock.Unlock()
+			if returned < taken {
+				owned := taken - returned
+				outstandingCount += owned
+				outstandingBytes += ByteCount(owned) * ByteCount(pool.size)
+			}
+		}
+	}
+	return outstandingCount, outstandingBytes
+}
+
+// MessagePoolOutstandingCount counts roots held over every size class.
+func MessagePoolOutstandingCount() uint64 {
+	outstandingCount, _ := messagePoolOutstandingSnapshot()
+	return outstandingCount
+}
+
+// MessagePoolOutstandingByteCount charges each held root its full size class,
+// over every size class. See messagePoolOutstandingSnapshot for what it can
+// and cannot see.
+func MessagePoolOutstandingByteCount() ByteCount {
+	_, outstandingBytes := messagePoolOutstandingSnapshot()
+	return outstandingBytes
 }
 
 func MessagePoolPacketOutstandingCount() uint64 {
@@ -1135,18 +1236,26 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 			poolMessage := message[:c]
 			shard, id := pool.shardFor(poolMessage)
 
-			func() {
+			notTaken := func() bool {
 				shard.stateLock.Lock()
 				defer shard.stateLock.Unlock()
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if count == 0 {
-					DefaultLogger().Warningf("[mp]share message[%d] not taken", id)
-				} else {
-					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
-					poolMessage[pool.size+9] |= MessagePoolFlagShared
+					return true
 				}
+				binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
+				poolMessage[pool.size+9] |= MessagePoolFlagShared
+				return false
 			}()
+			if notTaken {
+				// the stack capture and the log write stay outside the shard
+				// lock, as the return path's do
+				err := fmt.Errorf("[mp]share message[%d] not taken", id)
+				stack := debug.Stack()
+				DefaultLogger().Warningf("[mp]%s", ErrorJson(err, stack))
+				messagePoolViolation(err, stack)
+			}
 
 			return message
 		}
