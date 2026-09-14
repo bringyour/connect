@@ -2640,3 +2640,83 @@ The same invariant, read from the counters after any campaign run: on a
 lossless steady-state upload the acknowledgement count on this tree
 equals the count on main within the timer's jitter. If it does not, the
 gate is wrong, whatever the recovery rows say.
+
+### 26.9 Designer's answers: the quiescence bound's lower end, and arming without history
+
+Two questions from the implementation stream, answered as design.
+
+First, what the burst-end wait is for once the counting rule exists,
+because that decides how much its bound matters. With acknowledgements
+every `QuickackEverySegments`, a burst of W segments leaves at most
+k − 1 unacknowledged at its end, and the peer is not stalled by them:
+it has W − (k − 1) acknowledged segments, its window has grown, and the
+next round's first counting acknowledgement covers the odd tail
+cumulatively. The only stall is a burst smaller than k, which is the
+first round after a timeout, when the window is one segment: no
+counting acknowledgement can fire and the peer waits on us. That round
+is the critical path of the whole recovery, and it should not wait on a
+timer at all. So the phase gets a fourth rule, Linux's quickack: the
+first `QuickackImmediateSegmentCount` in-order segments after entry are
+acknowledged at once, one acknowledgement each, before the every-k rule
+takes over. With that, the burst-end wait is a safety net for a burst
+that ends short of k later in the phase, or a peer that stops with data
+outstanding, and its latency is off the critical path.
+
+That settles the lower bound. `QuiescenceBound` must exceed the gap
+between segments of one burst as the tunnel delivers them, which is the
+reliable carrier's Pack spacing rather than the peer's wire spacing,
+because a burst crosses Transfer in Packs and arrives in clumps; below
+that gap the trigger fires mid-burst and the cost is one extra
+acknowledgement per false firing, a cost rather than a fault. Above the
+derived upper bound of 26.7 it fires the spurious timeout. Because it is
+now a safety net, the campaign should choose from the upper part of that
+interval, not the lower: the measurement that sets it is the
+distribution of intra-burst Pack inter-arrival on the reliable carrier
+(the receive side already timestamps every Pack) against the
+acknowledgement count on a paused stream, and the bound sits several
+multiples above the distribution's tail.
+
+Second, arming with no history. The trigger arms on the first arrival
+after the phase is entered and re-arms on every subsequent arrival while
+`outstanding > 0`, and disarms when an acknowledgement leaves that covers
+everything outstanding. It needs no inter-arrival estimate, because it
+asks only whether the last arrival was more than `QuiescenceBound` ago,
+and a flow that has never been measured has nothing to estimate: the
+bound is the same for every flow at entry. One timer per flow, reset per
+arrival, only inside the phase, so the per-arrival cost is bounded by
+the phase the way the acknowledgements are. The coordinator's reading is
+right; it is the rule.
+
+The parameter table of 26.5 gains `QuickackImmediateSegmentCount`,
+set by acknowledgements per loss event against recovery time at one,
+two and four, on a device.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| Q7 | `TestFirstSegmentAfterATimeoutIsAckedAtOnce` | after a `Stale` arrival, a single in-order segment is acknowledged without waiting for the every-k spacing or the burst-end bound | a remedy with the counting rule alone, where the first round waits on the burst-end timer | in-process |
+| Q8 | `TestBurstEndTriggerArmsOnFirstArrivalAndRearms` | in the phase, arrivals spaced under the bound produce no burst-end acknowledgement; the first gap over the bound with bytes outstanding produces exactly one; with nothing outstanding none | an arming rule that waits for an estimate | in-process |
+
+### 13.6 The reporter's zombie figure is a bound saturated at the floor, and my prediction was at the ceiling
+
+The implementation stream derives, from the shipped queue bound and the
+minimum resend interval, that one dead destination can put at most
+2 MiB per 2 s, 8.4 Mb/s, on the wire, and the report measured about 8.
+§13.1 predicted 2.1 Mb/s, the same queue over the 8 s `MaxResendInterval`
+that the backoff reaches after six rewrites. The two readings differ in
+which interval a dead destination's items sit at, and the report's
+number says the floor, not the ceiling. Either the reporter measured
+inside the first twenty seconds after the kill, before the backoff had
+climbed, or the backoff does not climb for a dead destination, which
+would be a transfer-layer fact worth having on its own: `sendCount`
+advances only on the `sendRecoveryNone` path, and a path that rewrites
+without advancing it (a promoted head, a deferred item re-queued) would
+hold the interval at its floor. Row Z1 decides it by reading the
+interval directly, and the design records the disagreement rather than
+adjusting either figure to the other.
+
+What both readings agree on is the contribution to the reporter's open
+question: forty zombies put at most 336 Mb/s on the wire at the floor
+and 84 at the ceiling, against a measured loss of about 460. The
+remainder, 124 to 376 Mb/s, is now a quantified gap rather than an
+unexplained one, and it is what §13.3's other candidates and §13.4's
+matrix are for.
