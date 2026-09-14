@@ -11,6 +11,32 @@ import (
 // built on four branches; this is the first place they are one object, and the
 // three constraints of §44.2 are assertions over it rather than prose.
 //
+// CHANGING A DIVISOR, which is what most readers are here for. The fractions
+// are not tuning knobs with a shape to be searched. Each encodes a ratio
+// between layers, and the ratio is set by the round trip each layer's loop
+// closes: a layer's need is the target throughput times its own loop's round
+// trip, divided by the goodput factor where it counts framed bytes, so the
+// needs stand in the ratio of the loops and the draws have to stand in the
+// ratio of the needs. The fractions supply the shape and the budget supplies
+// the scale. Three things follow, and the rows below hold all three:
+//
+//   - The reciprocals of the divisors, per surface, sum to at most one. A
+//     divisor lowered is memory taken from every other row, not memory found.
+//   - A fraction changes when the architecture changes — a copy eliminated, one
+//     reliable layer per hop, a loop that stops closing where it closes today —
+//     and never with a deployment. A deployment changes the budget, and a role
+//     profile (phone, desktop, provider) is a different budget with the same
+//     fractions. If you are about to move a fraction because one host behaves
+//     badly, move that host's budget instead.
+//   - A fraction moved in one layer alone fails the shape row rather than
+//     passing everywhere, because the layers are in series on one download and
+//     the smallest of them binds. Move the row and the record together.
+//
+// THROUGHPUTFIX §51 is this table as built: every row with its divisor,
+// numerator, floor and site, which surface each reads and why that differs by
+// row, the values at the targets that ship, and each constraint against the row
+// that tests it. Read it before moving a number here.
+//
 // WHICH SURFACE EACH ROW READS, because §44 is written as though there is one M
 // and the tree has two. The question was put to the record and answered in
 // §48.4: M is the process budget and the only number a host sets, a device's
