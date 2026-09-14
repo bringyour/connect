@@ -6269,3 +6269,226 @@ gigabit to 29 ms and the kernel socket named; with all four, gigabit at
 50 and at 100 ms with the shares above. If the transfer unit alone
 reaches gigabit at 50 ms, a layer in this table is not binding where
 it says, and the estimate's named binding term is the field to read.
+
+## 38. The design point: 200 to 400 ms of round trip
+
+The user has set the common path at 200 to 400 ms of round trip. That
+is the design point, and it changes what the surface is for, what the
+product claim is, where copy elimination sits, and whether per-flow
+window sizing is the right architecture at all. Each consequence is
+worked through below; the reach figures of §37.23 stand as arithmetic
+and describe a regime almost nobody is in.
+
+### 38.1 The arithmetic at the design point
+
+One gigabit at 200 ms is 25 MB of goodput in flight, 28.9 MB per framed
+layer; at 400 ms, 50 and 57.8. A sender holds three copies, one per
+reliable layer, each for its own loop's round trip (§37.23's loops:
+about P/2, P + 5 ms, P + 10 ms on download), so the send side of one
+flow at the target is roughly
+
+    200 ms:   T × (0.2/0.865 + 0.205/0.865 + 0.21)  =  84 MB
+    400 ms:   T × (0.4/0.865 + 0.405/0.865 + 0.41)  = 168 MB
+
+per flow, per client, on the provider for download and on the client
+for upload. No phone can hold that and a desktop only if it is asked to.
+
+### 38.2 The target is not operative here
+
+Confirmed. At these path lengths every platform is budget-limited: the
+window is `min(T × rtt, share)` and the share is always the smaller,
+so the target never binds and the budget share always does. What the
+target still earns its place for is narrower than the surface implied:
+it is the reference the shortfall is reported against, the achieved
+rate against the intended one in the estimate, and it is the planning
+constant that turns a budget into an expected rate at a path length,
+which is how the numbers in §38.3 are produced. It binds only on short
+paths, where a window at the full share would be permission a path
+cannot use, and even there permission is not occupancy. So the target
+stays as a statement of intent and a reporting reference, the record
+says plainly that it never binds at 200 to 400 ms, and the substance of
+the surface at the design point is the budget: how large it is, how it
+is divided across layers and clients, and how many copies it has to
+pay for.
+
+### 38.3 The product claim: throughput at 200 and 400 ms within a real ceiling
+
+Download to a client, the rate bounded by the smallest of the client's
+receive credits over its loop and the provider's send memory over the
+sum of its loops. Framed layers at 0.865. Estimates that pace; the
+cells decide.
+
+Today, no changes, any client: the 2 MiB transfer window, 71 Mb/s at
+200 ms and 35 at 400. A phone at 24 MiB overruns its 938 KiB hold and
+stalls under reordering (§37.17); a desktop is safe by ordering.
+
+The transfer unit alone, phone, with the hold share left at today's
+938 KiB: the advertisement clamps the provider's window to the hold,
+32 Mb/s at 200 ms and 16 at 400. Safe and slower than today. This must
+be said before anything lands: the advertisement without a raised hold
+share is a throughput regression for every budgeted client at the
+design point, and the hold's share must rise with the landing, to at
+least the peer's 2 MiB to keep today's rate and to the pooled credit
+below to gain.
+
+The transfer unit alone, any client with a hold share of 8 MiB or more:
+the reference constants of the layers above cap phone and desktop
+alike, the H3 stream window at 109 Mb/s (one hop carrying the path) to
+218 (even split) and the tun at 160 at 200 ms; 55 to 80 at 400 ms.
+
+The full composite, phone at 24 MiB, download. The phone is the
+receiver, so what it must hold is credit, empty on an in-order path and
+backed under reordering or a stalled application, and the number
+depends on §37.13's pooling decision, which the design point makes
+undeferrable: with the three receive layers each given a separate
+8 MiB, the transfer credit gives 283 Mb/s at 200 ms and the tun 320,
+so about 280 and 140 at 400; with the pools' 20 MB as one credit that
+any of the three may draw, since a byte is in one of them at a time
+and the pool refuses at its bound, about 675 at 200 ms and 337 at 400,
+bounded then by the provider's memory rather than the phone's.
+
+The full composite, phone at 24 MiB, upload. The phone is the sender
+and holds the copies: with 20 MB across three, 236 Mb/s at 200 ms and
+118 at 400; with the tun's held segment and the frame as one buffer,
+342 and 171.
+
+The full composite, desktop. Its own memory is not the binder on
+download; the provider's per-client send memory is: 84 MB per client at
+200 ms and 168 at 400 for gigabit, 56 and 112 with two copies, and
+forty such clients are 3.4 to 6.7 GB. On upload a desktop with a
+256 MiB budget reaches 1.6 Gb/s at 400 ms and the gigabit at both
+lengths, if the provider's receive credit is there to be filled.
+
+So the phone's realistic ceiling at the design point, stated for the
+product decision: about 250 to 350 Mb/s at 200 ms and 125 to 170 at 400
+under the composite as designed, roughly doubled by pooling the receive
+credits and by copy elimination, and about 750 and 375 under §38.5.
+Mobile and desktop diverge permanently, by memory and not by
+configuration; the divergence is visible in the estimate as the share
+binding, and the achieved rate is the most the budget allows.
+
+### 38.4 Copy elimination is first-class
+
+Reassessed: at 22 ms it was an optimisation; at 400 ms, where memory is
+the only binding constraint, a third of the memory is a third of the
+throughput, so it moves to the second position in the landing order,
+directly after the transfer unit. The change is local to this tree: the
+NAT's held segment and the Transfer frame that carries it become one
+pooled buffer, the packetizer writing the packet at the frame's payload
+offset and the sequence framing in place, released when the later of
+the two acknowledgements arrives. Memory per flow goes from
+T × (rtt_D + rtt_C + rtt_B) to T × (rtt_D + max(rtt_C, rtt_B)), 84 to
+56 MB at 200 ms and 168 to 112 at 400. The carrier's copy cannot be
+removed from this tree: quic-go copies stream data into its own
+buffers and the kernel into socket buffers; a kernel zero-copy send
+would pin our pages for the carrier's round trip instead of copying
+them, one physical copy shared by all three holds, but it exists on
+Linux only and not for quic-go, so two copies is the floor here and one
+is a kernel-and-library project.
+
+### 38.5 Whether per-flow window sizing is still the right architecture
+
+Per-flow sizing is right for every layer that is reliable, and the
+copies are the cost of reliability at that layer. The question the
+design point actually asks is why three layers are reliable when one
+suffices per hop, and the answer is that they were built independently
+and each holds its own retransmission copy of the same bytes.
+
+The inner TCP already provides end-to-end reliability with copies that
+exist regardless: gVisor's send buffer on the client and the NAT's
+held `DataPackets` on the provider. The carrier is reliable per hop, H1
+and the H3 stream lane, with its own copy. Transfer's reliability
+between them is redundant on a reliable carrier; its work is route
+failover, which it hides from the inner TCP, and resequencing across
+striped routes, and unreliable carriers, where it is the only
+reliability there is. And the protocol already has the mode that drops
+it: `Pack.nack`, "deliver out of sequence with no acks and no retry;
+use true when there is an external transfer control"
+(`transfer.proto`), accepted by default (`AllowLegacyNack: true`,
+`transfer.go:833`) with a receive path (`receiveNack`). The external
+transfer control it was written for is the inner TCP.
+
+So the fundamental change is one reliable layer per hop: IP data rides
+no-acknowledgement Packs on a reliable carrier and acknowledged Packs
+on an unreliable one, which the route manager already distinguishes
+(`routeCarrierProperties[...].Unreliable`). What that removes at the
+design point: the Transfer resend queue for data, and with it the
+Transfer window as a throughput ceiling, the hold as a
+bandwidth-delay-sized buffer, the advertisement for data, and the
+eviction and reneging of §37.16 to §37.20; and one of the three copies.
+What remains are two layers, the inner TCP and the carrier, both of
+which already have receiver-advertised windows, autotuning and single
+copies of their own, sized from the surface by their ceilings. Memory
+per flow becomes T × (rtt_B + rtt_D), about 39 MB at 200 ms and 78 at
+400 for the provider on download, and the phone's ceiling, bounded by
+its tun buffer alone, rises to about 750 Mb/s at 200 ms and 375 at
+400 within the same 20 MB.
+
+What it costs, stated so it is chosen and not discovered:
+
+- Failover becomes inner loss. A route death loses the frames in
+  flight on it, and the inner TCP recovers them by retransmission
+  after duplicate acknowledgements or a timeout, with its congestion
+  window halved; today Transfer hides the death entirely. The glitch
+  is bounded by the dead route's in-flight and is what every tunnel
+  without its own reliability accepts.
+- Striping across live routes must stop or be resequenced. TCP treats
+  reordering beyond three segments as loss, and an ordered stream
+  striped across two routes of unequal latency would draw spurious
+  retransmissions. Either the sequence uses one route at a time with
+  the others standby, or Transfer keeps resequencing without
+  retransmission: a hold sized by route skew times rate, a few
+  megabytes at the target, with a gap older than the skew bound
+  delivered as a hole for the inner TCP to recover. The second keeps
+  the multi-route gain and needs the hold, but a skew-sized one and no
+  sender copy, which is the shape that avoids holding the product at
+  every layer.
+- The NAT's TCP carries loss recovery on download. Transfer's
+  reliability has been masking it; the NAT has no round-trip estimate
+  of its own (§37.6) and its retransmission behaviour under loss has
+  not been measured in this program. It is the audit this change
+  depends on.
+- Unreliable carriers keep Transfer's reliability, bounded by the
+  flight controller, as today.
+- Contract accounting on no-acknowledgement Packs is counted at the
+  receiver, as the legacy path does, and must be checked.
+
+My answer to the question as asked: per-flow sizing is correct and the
+copies are its cost, but at the design point the cost is a third of the
+throughput per copy, and the change that avoids paying it at every
+layer is not a shared retransmission buffer, which still holds the
+product, but reliability at one layer per hop, which the protocol
+already provides for. Copy elimination is the certain, local step and
+lands second. One reliable layer per hop is the larger prize, it needs
+the NAT's TCP audited and a resequencing hold designed, and it is the
+change I would put in front of the user as the design-point
+architecture, with the cell that decides it: IP data as
+no-acknowledgement Packs on a single reliable route at 200 and 400 ms
+against the composite, measuring throughput, memory per flow, and the
+cost of a route death as the inner TCP's recovery time.
+
+### 38.6 The landing order at the design point
+
+1. The transfer unit, with the hold's share raised with it, never
+   below the peer's 2 MiB, and the receive credits pooled (§37.13),
+   because at 200 ms the advertisement without those is a regression
+   and with them the phone roughly doubles.
+2. Copy elimination, the NAT's segment and the frame as one buffer.
+3. The H3 windows on both ends and the tun's ceilings from the
+   surface, since the reference constants cap phone and desktop alike
+   at 109 to 218 Mb/s at 200 ms until they move.
+4. The audit of the NAT's TCP under loss, and the one-reliable-layer
+   cell of §38.5; if it holds, it replaces most of what §37 built for
+   data and keeps it for control and unreliable carriers.
+
+Predictions for the design-point cells, stated first: a phone at 24 MiB
+on download at 200 ms reaches about 280 Mb/s with separate 8 MiB
+credits and about 675 with a pooled 20 MB credit against a provider with
+memory to spare, and half of each at 400; on upload about 236 and 342
+before and after copy elimination; a desktop at gigabit on download
+costs the provider 84 MB per client at 200 ms and 168 at 400, 56 and 112
+after copy elimination; and under one reliable layer per hop the same
+phone reaches about 750 at 200 ms with the provider at 39 MB per client.
+If a phone reaches more than its share over its loop allows, a credit is
+being advertised that is not backed, and the pool's refusal counter is
+the field to read.
