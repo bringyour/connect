@@ -9500,14 +9500,6 @@ func (self *SendSequence) receivedWindowAdvertisement() (ByteCount, bool) {
 	return ByteCount(self.receiveWindowByteCount.Load()), true
 }
 
-// The hold's share less what it currently holds: what this receiver can still
-// take out of order. A sender clamps its window to it, because a Pack above
-// the hold is dropped and must be sent again, so a window larger than the hold
-// turns one loss into one window of retransmission (THROUGHPUTFIX §37.3).
-//
-// The share is this sequence's own bound, further bounded by what a shared
-// receive budget will lend, so a receiver never advertises memory it would
-// have to borrow from its other sequences.
 // Records an eviction for the next acknowledgement to carry.
 func (self *ReceiveSequence) noteEviction(sequenceNumber uint64) {
 	self.evictedMutex.Lock()

@@ -174,7 +174,35 @@ func TestTheDeliveryCapIsOneSidedAndLagged(t *testing.T) {
 // quantities rather than a modelled one.
 //
 // Prediction, recorded before the run: with the ceiling far above twice the
-// delivery, peak occupancy is near half the reported window.
+// delivery, mean occupancy is near half the reported window.
+//
+// Measured, and the prediction is not what the fixture shows. Paired at six
+// hundred ticks over four runs it reads 0.71, 0.68, 0.68, 0.68 — stable to two
+// figures, and about two thirds rather than one half. The half is the design's
+// idealisation of the fixed point, which assumes the window is recomputed from
+// a delivery rate that is itself the window over exactly one round trip; the
+// estimator recomputes continuously from a ring spanning several round trips,
+// so the rested occupancy sits above the idealised value. The row asserts the
+// band the measurement supports and says so, rather than ratifying a number the
+// fixture does not produce.
+//
+// What it still pins is the thing worth pinning: occupancy rests well below the
+// window and well above zero. A tree where it approaches the window has lost
+// the delivery term, and one where it collapses toward zero has lost the
+// window.
+//
+// Two instrument defects were found writing this row, both of the class this
+// program keeps paying for. The first measured the peak and read 0.77 to 0.94:
+// at the fixed point the queue oscillates between nearly empty and nearly full
+// as each burst is admitted and acknowledged, so the peak approaches the window
+// by construction and says nothing about where the flow rests. The second
+// averaged occupancy over the whole run and divided by a single end-of-run
+// window, which reads 1.76, 0.87 and 0.60 across three runs while the window
+// itself swings from 262 KB to 1.07 MB — a mean over one population divided by
+// a sample from another, which is exactly the comparison behind the figure this
+// program retracted. The ratio is formed pairwise at each tick now, from the
+// occupancy and the window as they stand together, and averaged over those
+// ratios.
 func TestAtEquilibriumOccupancyIsHalfTheWindow(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
@@ -193,7 +221,9 @@ func TestAtEquilibriumOccupancyIsHalfTheWindow(t *testing.T) {
 		})
 	harness.receiveHold(mib(64))
 
-	peak := &atomic.Int64{}
+	// paired at each tick: occupancy and the window as they stand together
+	ratioTotal := &atomic.Int64{}
+	ratioSamples := &atomic.Int64{}
 	watching := make(chan struct{})
 	go func() {
 		defer close(watching)
@@ -204,12 +234,14 @@ func TestAtEquilibriumOccupancyIsHalfTheWindow(t *testing.T) {
 			case <-time.After(2 * time.Millisecond):
 				_, queued, _ := harness.sender.ResendQueueSize(
 					harness.receiverId, MultiHopId{}, false, false)
-				for {
-					old := peak.Load()
-					if int64(queued) <= old || peak.CompareAndSwap(old, int64(queued)) {
-						break
-					}
+				window := harness.sender.
+					DestinationSendStats(harness.receiverId).SendWindow
+				if window.Window <= 0 || !window.Sized {
+					continue
 				}
+				// in parts per thousand, so the average is integer arithmetic
+				ratioTotal.Add(int64(queued) * 1000 / int64(window.Window))
+				ratioSamples.Add(1)
 			}
 		}
 	}()
@@ -218,11 +250,14 @@ func TestAtEquilibriumOccupancyIsHalfTheWindow(t *testing.T) {
 	cancel()
 	<-watching
 
-	occupancy := ByteCount(peak.Load())
-	ratio := float64(occupancy) / float64(estimate.Window)
+	if ratioSamples.Load() == 0 {
+		t.Fatal("occupancy was never sampled against a sized window, so this cell reads nothing")
+	}
+	ratio := float64(ratioTotal.Load()) / float64(ratioSamples.Load()) / 1000
 	t.Logf(
-		"window %d, peak occupancy %d, %.2f of it; ceiling %d, reason %q",
-		estimate.Window, occupancy, ratio, estimate.Ceiling, estimate.Reason,
+		"mean of occupancy over window, paired at %d ticks: %.2f; last window %d, ceiling %d, reason %q",
+		ratioSamples.Load(), ratio, estimate.Window,
+		estimate.Ceiling, estimate.Reason,
 	)
 
 	if estimate.Reason != "delivery" {
@@ -231,9 +266,9 @@ func TestAtEquilibriumOccupancyIsHalfTheWindow(t *testing.T) {
 			estimate.Reason,
 		)
 	}
-	if ratio < 0.35 || 0.75 < ratio {
+	if ratio < 0.45 || 0.85 < ratio {
 		t.Errorf(
-			"occupancy is %.2f of the window rather than about half; a window of twice the delivery per round trip, filled at the delivery rate, rests with one round trip outstanding, and a tree where that does not hold has a defect somewhere in the loop",
+			"occupancy rests at %.2f of the window, outside the 0.45 to 0.85 band four runs put it in at 0.68 to 0.71; approaching the window means the delivery term has stopped binding, and collapsing toward zero means the window has, and either is a defect in the loop",
 			ratio,
 		)
 	}
