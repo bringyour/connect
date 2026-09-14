@@ -17,9 +17,11 @@ import "testing"
 //
 // The ratio is fixed by the fractions, not chosen here: the H3 carrier draws an
 // eighth of the budget and its stream window takes three eighths of that draw,
-// which is 3M/64, against the tun's M/8. So the stream window is three eighths
-// of the tun's maximum at every budget where neither floor binds — above 8 MiB,
-// where the H3 window's 384 KiB floor releases last.
+// which after §43.2's landing is 6M/64, against the tun's M/8. So the stream
+// window is three quarters of the tun's maximum at every budget where neither
+// floor binds. The ratio is read from the fraction constants rather than
+// written as a number here, so that a campaign sweeping the table moves this
+// row with the table and a fraction moved in one layer alone still fails it.
 //
 // This row is a DEFECT ROW rather than a guard, and on this branch it fails.
 // The tun's maxima are a draw here; the H3 windows are still memory-scaled
@@ -54,12 +56,17 @@ func TestTheH3AndTunCeilingsMoveTogether(t *testing.T) {
 		)
 	}
 
-	// the ratio the two fractions fix, at every budget
+	// the ratio the two fractions fix, at every budget. The H3 stream window is
+	// `M/h3BudgetShareDivisor × num/den` and the tun's maximum `M/tunBudgetShareDivisor`,
+	// so the ratio is the fractions cross-multiplied and nothing is written twice.
+	streamMultiple := ByteCount(h3ReceiveWindowShareDenominator * h3BudgetShareDivisor)
+	tunMultiple := ByteCount(tunBudgetShareDivisor * h3StreamReceiveWindowShareNumerator)
 	for _, s := range samples {
-		if 8*s.h3Stream != 3*s.tunMax {
+		if streamMultiple*s.h3Stream != tunMultiple*s.tunMax {
 			t.Errorf(
-				"at a %d byte budget the H3 stream window is %d against a tun maximum of %d, a ratio of %.3f rather than the 0.375 the fractions fix. These two ceilings are in series on the download path, so the smaller binds: if one is a draw on the budget and the other is still a memory-scaled constant, the raise on the drawn side is inert and the reach arithmetic of §42 and §43 does not hold",
+				"at a %d byte budget the H3 stream window is %d against a tun maximum of %d, a ratio of %.3f rather than the %.3f the fractions fix. These two ceilings are in series on the download path, so the smaller binds: if one is a draw on the budget and the other is still a memory-scaled constant, the raise on the drawn side is inert and the reach arithmetic of §42 and §43 does not hold",
 				s.budget, s.h3Stream, s.tunMax, float64(s.h3Stream)/float64(s.tunMax),
+				float64(tunMultiple)/float64(streamMultiple),
 			)
 		}
 	}
@@ -95,13 +102,22 @@ func TestTheH3AndTunCeilingsMoveTogether(t *testing.T) {
 // generator passes `settings.MemoryTargetByteCount` to
 // `DefaultPlatformTransportSettingsWithMemoryTarget`). The device target is
 // 20 MiB on desktop and 24 MiB on mobile, so the shipped stream window is
-// 3M/64 of those, about 960 KiB and 1.125 MiB, and not the 384 KiB floor.
+// 6T/64 of those after §43.2's landing, 1.875 and 2.25 MiB, and not the
+// 384 KiB floor.
 //
-// Below the reference the draw and the scaled constant it replaces are the same
-// number by construction (three eighths of M/8 is 3M/64), so this is a guard
-// that passes on both forms. It fails if the carrier is resized from the
-// platform share, if the floor starts binding at a shipped target, or if the
-// process budget leaks into the per-device surface.
+// This row is where §43.2 is read on a shipped client rather than at the
+// 256 MiB budget its reach arithmetic is computed at. Before the landing the
+// fractions made the draw bit-identical to the scaled constant at and below the
+// reference — three eighths of T/8 is 3T/64, exactly
+// `MemoryTargetScaledByteCount(T, 3 MiB, 384 KiB)` — and since no shipped
+// target reaches the reference (§48.2), the H3 ceiling work was inert on every
+// shipped device. Six eighths is what makes it not inert: these two numbers
+// double, 34 to 68 Mb/s of stream goodput at 200 ms on Apple's target and 40 to
+// 80 on Android's.
+//
+// It still fails if the carrier is resized from the platform share, if a floor
+// starts binding at a shipped target, or if the process budget leaks into the
+// per-device surface, which is what it was written for.
 func TestTheH3WindowsAtTheShippedDeviceTargets(t *testing.T) {
 	restore := MemoryBudget()
 	t.Cleanup(func() { SetMemoryBudget(restore) })
@@ -112,8 +128,8 @@ func TestTheH3WindowsAtTheShippedDeviceTargets(t *testing.T) {
 		stream     ByteCount
 		connection ByteCount
 	}{
-		{"the 20 MiB desktop device target", mib(20), kib(960), kib(1280)},
-		{"the 24 MiB mobile device target", mib(24), kib(1152), kib(1536)},
+		{"the 20 MiB desktop device target", mib(20), kib(1920), kib(2560)},
+		{"the 24 MiB mobile device target", mib(24), kib(2304), kib(3072)},
 	} {
 		// the process budget must not reach the per-device surface: read the
 		// same target under a small and a large process budget

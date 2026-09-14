@@ -111,9 +111,11 @@ func TestTheH3ReceiveWindowsAreADrawOnTheBudget(t *testing.T) {
 		}
 	}
 
-	// No host regresses: at the reference the draw reproduces today's shipping
-	// values exactly. These three equalities are what make the change safe to
-	// land without a migration.
+	// The figures at the reference, which §43.2 moved. The stream window takes
+	// six eighths of the reservation and the connection window the whole of it,
+	// so at the reference they read 6 and 8 MiB against the 3 and 4 that shipped
+	// before. The reservation itself does not move, at the reference or anywhere:
+	// only the fractions inside it do.
 	SetMemoryBudget(mib(64))
 	referenceSettings := DefaultPlatformTransportSettings()
 	referenceStream, referenceConnection := resolved(referenceSettings)
@@ -124,14 +126,44 @@ func TestTheH3ReceiveWindowsAreADrawOnTheBudget(t *testing.T) {
 		shape string
 	}{
 		{"H3 reservation", referenceSettings.H3BudgetByteCount, mib(8), "one eighth of the reference budget"},
-		{"stream receive window", referenceStream, mib(3), "three eighths of the reservation"},
-		{"connection receive window", referenceConnection, mib(4), "four eighths of the reservation"},
+		{"stream receive window", referenceStream, mib(6), "six eighths of the reservation (§43.2)"},
+		{"connection receive window", referenceConnection, mib(8), "the whole reservation (§43.2)"},
 	} {
 		if expected.got != expected.want {
 			t.Errorf(
-				"at the 64 MiB reference the %s is %d rather than today's %d (%s); the draw has to reproduce the shipping value at the reference or every host at or below it regresses",
+				"at the 64 MiB reference the %s is %d rather than %d (%s); these are the figures §43.2's landing is computed from, and a fraction moved without the design fails here rather than in a campaign's plateau",
 				expected.name, expected.got, expected.want, expected.shape,
 			)
+		}
+	}
+
+	// No host regresses, which is the constraint the equalities above used to
+	// carry and now cannot, since §43.2 deliberately raises both windows. Stated
+	// directly instead: at every budget the resolved window is at least the
+	// memory-scaled constant it replaced. This is the assertion that makes the
+	// change safe to land without a migration, and it is strictly stronger than
+	// the three equalities, because it holds at every budget rather than at one.
+	for _, budget := range []ByteCount{
+		mib(1), mib(4), mib(8), mib(16), mib(20), mib(24), mib(32), mib(48),
+		mib(64), mib(128), mib(256), mib(1024),
+	} {
+		SetMemoryBudget(budget)
+		budgetSettings := DefaultPlatformTransportSettings()
+		budgetStream, budgetConnection := resolved(budgetSettings)
+		for _, expected := range []struct {
+			name    string
+			got     ByteCount
+			replace ByteCount
+		}{
+			{"stream receive window", budgetStream, MemoryTargetScaledByteCount(budget, mib(3), kib(384))},
+			{"connection receive window", budgetConnection, MemoryTargetScaledByteCount(budget, mib(4), kib(512))},
+		} {
+			if expected.got < expected.replace {
+				t.Errorf(
+					"at a %d byte budget the %s is %d against the %d the memory-scaled constant gave; the raise has to be a raise at every budget, or some host is slower the day it lands",
+					budget, expected.name, expected.got, expected.replace,
+				)
+			}
 		}
 	}
 
@@ -164,15 +196,21 @@ func TestTheH3ReceiveWindowsAreADrawOnTheBudget(t *testing.T) {
 	// admission minimum — it exists so one explicitly selected H3 carrier fits
 	// the 8 MiB legacy total (`newDefaultPlatformTransportBudget`) — and it is
 	// deliberately not inherited by the windows, which have their own working
-	// floors. Taking three eighths of the floored reservation would advertise
-	// 1.125 MiB of stream credit on a host whose whole budget is 8 MiB, and
-	// more than the entire budget at 1 MiB.
+	// floors. Taking six eighths of the floored reservation would advertise
+	// 2.25 MiB of stream credit on a host whose whole budget is 8 MiB, and more
+	// than twice the entire budget at 1 MiB.
+	//
+	// §43.2 moved where the floors release rather than what they are: at 4 MiB
+	// the draw's six and eight eighths land exactly on the two floors, above it
+	// the draw carries both windows, and below it the floors hold them where
+	// they have always been.
 	for _, floor := range []struct {
 		budget     ByteCount
 		stream     ByteCount
 		connection ByteCount
 	}{
-		{mib(8), kib(384), kib(512)},
+		{mib(8), kib(768), mib(1)},
+		{mib(4), kib(384), kib(512)},
 		{mib(1), kib(384), kib(512)},
 	} {
 		SetMemoryBudget(floor.budget)
@@ -180,7 +218,7 @@ func TestTheH3ReceiveWindowsAreADrawOnTheBudget(t *testing.T) {
 		floorStream, floorConnection := resolved(floorSettings)
 		if floorStream != floor.stream || floorConnection != floor.connection {
 			t.Errorf(
-				"at a %d byte budget the windows are stream %d and connection %d rather than their working floors %d and %d; the reservation's floor is an admission minimum, and inheriting it into the windows grants a small host more credit than it can back",
+				"at a %d byte budget the windows are stream %d and connection %d rather than %d and %d; the reservation's floor is an admission minimum, and inheriting it into the windows grants a small host more credit than it can back",
 				floor.budget, floorStream, floorConnection, floor.stream, floor.connection,
 			)
 		}

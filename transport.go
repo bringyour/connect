@@ -742,10 +742,26 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 // that draw its stream and connection receive windows take.
 //
 // One eighth, which is 8 MiB at the 64 MiB reference: exactly what the carrier
-// reserved there before this was a draw, so no host at or below the reference
-// moves. The stream window takes three eighths of the draw and the connection
-// window four, the ratio they have always had -- 3 MiB against 4 at the
-// reference.
+// reserved there before this was a draw, so the reservation moves on no host.
+// The stream window takes six eighths of that draw and the connection window
+// the whole of it, keeping the 3:4 ratio the two have always had.
+//
+// The windows' fractions are §43.2's landing, the third of the download path's
+// four ceilings and the only one that is a row of §44's share table rather than
+// a new constant. What they replace is three eighths and four eighths, under
+// which the carrier's reservation was half idle by construction: a QUIC
+// connection may hold at most its connection receive window, so a reservation
+// of twice that was memory claimed against the aggregate that no connection
+// could ever occupy. The connection window at the whole draw is the tight form
+// of §44.2's second constraint -- what can be occupied at once is exactly what
+// was reserved -- and the stream window at three quarters keeps a stream under
+// the connection that carries it. That is a 6 MiB stream window at the 64 MiB
+// reference against 3, 1.875 MiB at a 20 MiB device target against 960 KiB,
+// and 24 MiB at 256 against 12: §43.2's 830 Mb/s at 200 ms against 415.
+//
+// Each window keeps its own floor rather than inheriting the reservation's, so
+// the raise reaches no small host (§44.2's third constraint, and the floor case
+// of `TestTheH3ReceiveWindowsAreADrawOnTheBudget`).
 //
 // It must never be a memory-scaled constant, and that distinction is the whole
 // finding (THROUGHPUTFIX §37.22, §42.1, §44.2 constraint 1). `memoryTargetScale`
@@ -762,8 +778,8 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 const h3BudgetShareDivisor = 8
 
 const (
-	h3StreamReceiveWindowShareNumerator     = 3
-	h3ConnectionReceiveWindowShareNumerator = 4
+	h3StreamReceiveWindowShareNumerator     = 6
+	h3ConnectionReceiveWindowShareNumerator = 8
 	h3ReceiveWindowShareDenominator         = 8
 )
 
@@ -806,15 +822,19 @@ func defaultH3BudgetByteCount() ByteCount {
 // working floor, and deliberately not fractions of the floored reservation
 // above. The reservation's 3 MiB floor is an admission minimum -- it exists so
 // one explicitly selected H3 carrier fits the 8 MiB legacy host's aggregate
-// budget -- and inheriting it into the windows would advertise 1.125 MiB of
+// budget -- and inheriting it into the windows would advertise 2.25 MiB of
 // stream credit on a host whose whole budget is 8 MiB, and more than the entire
 // budget at 1 MiB (§44.2, constraint 3: the floors are the one place the table
 // can lie).
 //
-// Below the reference the fraction of the draw and the scaled constant it
-// replaces are the same number by construction, so nothing there moves:
-// `MemoryScaledByteCount(mib(3), kib(384))` is `max(384 KiB, 3M/64)`, and three
-// eighths of `M/8` is `3M/64`.
+// Until §43.2 these fractions made the draw bit-identical to the scaled
+// constant it replaced at and below the reference -- three eighths of `M/8` is
+// `3M/64`, which is `MemoryScaledByteCount(mib(3), kib(384))` exactly -- and
+// the change was inert on every shipped device, all of whose targets are below
+// the reference (§48.2). At six eighths the window is twice that constant at
+// every budget above its floor, which is the point: the landing has to reach
+// the 20 and 24 MiB targets that ship, not only the 256 MiB budget the reach
+// arithmetic is computed at.
 func h3MaxStreamReceiveWindowByteCountForMemoryTarget(
 	memoryTargetByteCount ByteCount,
 ) ByteCount {
