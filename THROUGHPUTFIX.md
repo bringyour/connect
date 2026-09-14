@@ -5459,3 +5459,121 @@ regime. The prediction that remains open and is the program's, since
 it is the one the user's framing turns on: on a real carrier at 200 ms
 the sized arm's multiple over the shipping constant holds until the H3
 window binds at 109 Mb/s, and raising that window moves it.
+
+### 37.16 Multi-route failover measured: eviction is silent reneging against a sixty-second lease, and what the receiver must advertise
+
+Two real clients, two routes, 50 ms, one route killed halfway through a
+20,000-message transfer so its in-flight frames are lost as a scattered
+subset; fifteen of fifteen valid. At the shipping 2 MiB window the hold
+peaks at 0.216 MiB, 8.6 per cent of capacity, zero drops, everything
+delivered. At 3 MiB the hold is full with 800 drops. At 4 MiB
+retransmission rises seventeen-fold. At 8 and 16 MiB the transfer does
+not complete: 13,500 and 11,300 of 20,000. The threshold sits between 2
+and 3 MiB, where a 2.5 MiB hold says it should; the shipping
+configuration is safe by ordering, measured now rather than argued.
+This is the one prediction in the sequence that held, and it held for
+the reason §37.15 named: the buffer the bytes wait in was named first.
+What lies past the threshold is a stall, not a retransmission cost,
+and the reason is in the sender's treatment of a selective
+acknowledgement.
+
+The mechanism, from source. A selective acknowledgement does not
+release the item: `receiveAck` removes it from the resend queue, marks
+it `selectiveAcked`, sets its resend time to its send time plus
+`SelectiveAckTimeout`, 60 s, and adds it back (`transfer.go:9230–9270`,
+default at `:720`). So a held item stays charged to the sender's window,
+which is right, and it is skipped by every resend path: the paced
+resend (`:6743`), the gap recovery (`:6581–6605`) and the carrier-change
+resend that fires when a route dies (`:2310,2439`). The only place
+`selectiveAcked` is cleared is the timeout resend (`:7296`), when the
+60 s deadline passes, at which point the sequence's own `AckTimeout`,
+also 60 s from the same refreshed send time, is due as well. On the
+receive side, when an arrival does not fit, later held items are
+removed to admit it, or the arrival is refused if it is itself the
+latest (`:11789–11800`), and the removal sends nothing: the item's
+selective acknowledgement stands at the sender as a sixty-second
+lease on data the receiver no longer has. That is silent reneging.
+After a route death the dead route's items are resent promptly by the
+carrier-change path; each of them is earlier than what the hold has
+accumulated beyond the hole, so each admission evicts a held item;
+every evicted item is invisible to every resend path for a minute;
+and the transfer stalls at whatever the evictions leave. At 3 MiB the
+arrivals refused were the latest and never held, so they were resent
+on the ordinary path, slowly, with the gap recovery limited to
+`SelectiveAckGapBurstSize` 4 items per scan above a threshold of 3
+proving acknowledgements (`:724–727`): 800 drops and a completed
+transfer. At 8 and 16 MiB the evictions dominate and nothing completes
+inside the cell.
+
+Two things for the record, carried. The tree cannot count the thing
+that matters: `ReceiveQueueDropCount` counts refused arrivals and
+eviction has no counter, so drops are a lower bound on hold pressure
+and retransmission cannot separate the two. The implementation stream
+is adding the counter, and the counter alone does not remove the
+stall; the sender has to be told. And the zombie cell's peer is
+synthetic, with no receive sequence and no hold, so that cell could
+never have shown this whatever was asked of it; any claim drawn from
+it carries that.
+
+The question: is remaining capacity the right quantity, or does a
+receiver under scattered loss need to advertise its gap structure?
+Capacity is the right quantity, for a reason the source settles:
+because a selective acknowledgement does not release the item, the
+sender's outstanding bytes measured from the delivered point include
+everything the receiver holds. Held bytes are at most outstanding
+bytes. So a sender that keeps outstanding-from-delivered at or below
+the receiver's advertised hold capacity can never force an eviction,
+whatever the gap structure, one gap or a thousand, because the hold
+would have to contain more than the sender has outstanding. That is
+TCP's rule exactly: SACKed data stays in the sender's retransmission
+queue until cumulatively acknowledged, and the window is measured from
+the cumulative point, so out-of-order data never exceeds the window.
+Gap structure does not need advertising because the sender already has
+it, item by item, from the selective acknowledgements; that is its
+scoreboard. What the measurement says hurts is not the gap count as
+such but two sender-side limits under it: the four-per-scan recovery
+burst, which turns a thousand proven gaps into hundreds of rounds, and
+the sixty-second lease, which turns each eviction into a minute.
+
+One correction to the quantity as I first wrote it. §37.3 had the
+advertisement as the hold's share less what it holds. That double
+counts: held bytes are already inside the sender's outstanding, so
+subtracting them from the capacity the sender may have outstanding
+shrinks the window by the held amount for nothing and, as the hold
+fills after a route death, pulls the right edge of the window inward,
+which TCP forbids for the same reason. The advertised figure is the
+hold's capacity, measured from the delivered point, monotone except by
+budget; the sender's rule is outstanding-from-delivered at most that.
+
+So the advertisement is one of two fields, and both are preconditions
+for any window above 2.5 MiB, which is where the rule converges:
+
+- `Ack.receive_window_byte_count`: the hold's capacity from the
+  delivered point. A compliant sender never overruns it; the hold never
+  evicts; the stall cannot begin.
+- An eviction notice, for the case the first cannot cover, a legacy
+  sender or a receiver whose budget shrank under it: the ids of items
+  the receiver removed, carried on the next acknowledgement. The
+  sender clears `selectiveAcked` on each and hands it to the
+  carrier-change or gap path at once. Eviction becomes a resend
+  instead of a lease, and the sixty-second lease itself should be read
+  as what it is, a bound on how long a receiver may hold without
+  delivering, not a promise the receiver keeps the bytes.
+
+And the recovery rate: after a route death the proven gaps are bounded
+by what was in flight on the dead route, and the burst of four per
+scan is sized for a few late packets, not for that; the carrier-change
+path already resends the dead route's items without that bound, and
+once notified evictions should ride the same path rather than the
+gap recovery's burst.
+
+Prediction for the cell rerun with both fields: at 8 and 16 MiB with
+two routes and one killed, zero evictions, zero refusals, the transfer
+completes, and the throughput dip is one round trip's worth of the dead
+route's in-flight resent on the other. With the capacity field alone
+between compliant peers the same; with the eviction notice alone, the
+transfer completes at every window with retransmission of the evicted
+bytes, one round per eviction generation rather than a minute. If the
+transfer still stalls with both fields, the lease is being taken by a
+path this section did not read, and the item's `resendTime` after the
+notice is the field to inspect.
