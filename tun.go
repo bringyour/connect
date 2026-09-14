@@ -159,6 +159,12 @@ type TunSettings struct {
 	// (the default cap is 120s). See DefaultTunSettings for why the tun uses
 	// a small cap.
 	TcpMaxRto time.Duration
+	// TcpMinRto, when positive, sets the floor of the gVisor TCP
+	// retransmission timeout (the stack default is 200ms). The floor bounds
+	// the peer's acknowledgement compression from above: an acknowledgement
+	// held longer than a sender's floor is a spurious retransmission
+	// (THROUGHPUTFIX §22). Zero leaves the stack default.
+	TcpMinRto time.Duration
 
 	// TcpGro enables generic receive offload for Tun.WriteBatch: the tcp
 	// packets of one batch coalesce into super-segments before delivery,
@@ -178,7 +184,12 @@ type TcpBufferRange struct {
 // (header.IPv6MinimumMTU, 1280). A tun below it is IPv4 only.
 const tunIpv6MinimumMtu = int(header.IPv6MinimumMTU)
 
-func newTunStack(tcpReceive TcpBufferRange, tcpSend TcpBufferRange, tcpMaxRto time.Duration) *stack.Stack {
+func newTunStack(
+	tcpReceive TcpBufferRange,
+	tcpSend TcpBufferRange,
+	tcpMaxRto time.Duration,
+	tcpMinRto time.Duration,
+) *stack.Stack {
 	opts := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocolWithOptions(ipv4.Options{AllowExternalLoopbackTraffic: true}),
@@ -224,6 +235,10 @@ func newTunStack(tcpReceive TcpBufferRange, tcpSend TcpBufferRange, tcpMaxRto ti
 	}
 	if 0 < tcpMaxRto {
 		opt := tcpip.TCPMaxRTOOption(tcpMaxRto)
+		s.SetTransportProtocolOption(tcp.ProtocolNumber, &opt)
+	}
+	if 0 < tcpMinRto {
+		opt := tcpip.TCPMinRTOOption(tcpMinRto)
 		s.SetTransportProtocolOption(tcp.ProtocolNumber, &opt)
 	}
 
@@ -809,7 +824,12 @@ func CreateTunWithResolver(ctx context.Context, settings *TunSettings, dnsResolv
 	// each Tun owns a private gVisor stack, destroyed on Close() so all of its
 	// endpoints are reclaimed. (There is no shared stack: it could not reclaim a
 	// closed Tun's connection endpoints, leaking them under Tun churn.)
-	tunStackInstance := newTunStack(settings.TcpReceiveBuffer, settings.TcpSendBuffer, settings.TcpMaxRto)
+	tunStackInstance := newTunStack(
+		settings.TcpReceiveBuffer,
+		settings.TcpSendBuffer,
+		settings.TcpMaxRto,
+		settings.TcpMinRto,
+	)
 
 	// v4 first: consumers that predate dual stack read the tun's address
 	// from the head of this list
