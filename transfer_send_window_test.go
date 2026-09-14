@@ -134,6 +134,20 @@ func newPacedSendWindowHarness(
 	configure func(*SendBufferSettings),
 ) *sendWindowHarness {
 	t.Helper()
+	return newPacedSendWindowHarnessWithClient(
+		t, ctx, ackDelay, bytesPerSecond, carrierFrameCapacity, configure, nil)
+}
+
+func newPacedSendWindowHarnessWithClient(
+	t *testing.T,
+	ctx context.Context,
+	ackDelay time.Duration,
+	bytesPerSecond ByteCount,
+	carrierFrameCapacity int,
+	configure func(*SendBufferSettings),
+	configureClient func(*ClientSettings),
+) *sendWindowHarness {
+	t.Helper()
 	newSettings := func() *ClientSettings {
 		settings := DefaultClientSettings()
 		settings.EncryptionSettings.Mode = EncryptionModeOff
@@ -144,6 +158,9 @@ func newPacedSendWindowHarness(
 		settings.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(64)
 		if configure != nil {
 			configure(settings.SendBufferSettings)
+		}
+		if configureClient != nil {
+			configureClient(settings)
 		}
 		return settings
 	}
@@ -1057,4 +1074,18 @@ func TestALargerWindowIsFasterAtALongRoundTrip(t *testing.T) {
 			assumedRate/constantRate,
 		)
 	}
+}
+
+// The unpaced harness with the client's own settings configurable, for a cell
+// that needs to vary the buffers rather than the window.
+func newSendWindowHarnessWithClient(
+	t *testing.T,
+	ctx context.Context,
+	ackDelay time.Duration,
+	configure func(*SendBufferSettings),
+	configureClient func(*ClientSettings),
+) *sendWindowHarness {
+	t.Helper()
+	return newPacedSendWindowHarnessWithClient(
+		t, ctx, ackDelay, 0, deepCarrierFrameCapacity, configure, configureClient)
 }
