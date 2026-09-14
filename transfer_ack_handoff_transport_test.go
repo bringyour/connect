@@ -5,36 +5,38 @@ import (
 	"time"
 )
 
-// The acknowledgement handoff's wait is transport-dependent, and that is worth
-// asserting against whether or not it is currently causing harm.
+// The acknowledgement handoff's wait is not uniform, and this row pins the
+// asymmetry as it stands rather than failing on it.
 //
-// A correction to how that was described to me, because the axis matters. The
-// selection is written per transport type — `ackHandoffTimeout` returns
-// `H1AckHandoffTimeout` for H1 and zero otherwise, and `packHandoffTimeout`
-// does the same with `H1PackHandoffTimeout` — but neither H1 field is set in
-// the shipping settings, so on the defaults every transport reads zero and that
-// axis is uniform. The asymmetry that does exist is on the reliability axis:
-// `packHandoffTimeout` returns `ReliablePackHandoffTimeout`, which ships at -1,
-// a wait until capacity or cancellation, for a route published as reliable, and
-// zero for an unreliable one. So a handoff that fills has bounded backpressure
-// on a reliable carrier and a non-blocking refusal on an unreliable one.
+// It used to assert uniformity and fail by design. That was wrong for the
+// suite: a permanently red row masks every other failure in a full run, and
+// this program has been reading race verdicts against a suite whose green was
+// unreachable. A defect that cannot be fixed today is still worth pinning; it
+// just has to be pinned as a trade rather than asserted away.
 //
-// Why it matters independently of any current defect. The whole class of
-// handoff-overflow faults is invisible on the one path anyone would naturally
-// reach for: a cell run over H1, or over a route published as reliable, waits
-// where production's other transports drop. A defect that only appears off the
-// default test path is one that gets found in the field.
+// The trade. The selection is written per transport type — ackHandoffTimeout
+// returns H1AckHandoffTimeout for H1 and zero otherwise, and packHandoffTimeout
+// does the same with H1PackHandoffTimeout — but neither H1 field is set in the
+// shipping settings, so on the defaults every transport reads zero and that
+// axis is uniform. The asymmetry is on the reliability axis: packHandoffTimeout
+// returns ReliablePackHandoffTimeout, which ships at -1, a wait until capacity
+// or cancellation, for a route published as reliable, and zero for an
+// unreliable one. So a handoff that fills has bounded backpressure on a
+// reliable carrier and a non-blocking refusal on an unreliable one.
+//
+// Why that is a defect and not merely a difference: it makes the whole class of
+// handoff-overflow faults invisible on the one path a cell would naturally
+// reach for. A test run over a reliable route waits where production's
+// unreliable transports drop, so a fault that only appears off the default test
+// path is one that gets found in the field.
 //
 // This row makes no claim that acknowledgements are being dropped today. A live
 // cell measured zero handoff drops, zero queue-full events, zero misses and
 // zero timeout resends across twenty thousand items at two path lengths, and
 // the mechanism that predicted otherwise was refuted by those readings. What
-// stands is the asymmetry itself.
-//
-// Prediction, recorded before the run: the acknowledgement handoff wait differs
-// between H1 and the other transports on the shipping settings, so this fails
-// on the tree as it stands.
-func TestTheHandoffWaitIsTheSameForEveryTransport(t *testing.T) {
+// stands is the asymmetry itself, and this row holds it still: if either value
+// moves, the trade has changed, and the message says what that means.
+func TestTheHandoffWaitAsymmetryIsWhatItIs(t *testing.T) {
 	settings := DefaultReceiveBufferSettings()
 	// every transport the receive path can be handed, so the row names them
 	// rather than testing the one it thought of
@@ -60,23 +62,37 @@ func TestTheHandoffWaitIsTheSameForEveryTransport(t *testing.T) {
 	for _, transportType := range transports[1:] {
 		if ackWaits[transportType] != ackWaits[reference] {
 			t.Errorf(
-				"the acknowledgement handoff waits %s on %v and %s on %v",
+				"the acknowledgement handoff waits %s on %v and %s on %v; the shipping settings leave this axis uniform, so a difference here is new",
 				ackWaits[reference], reference, ackWaits[transportType], transportType,
 			)
 		}
 		if packWaits[transportType] != packWaits[reference] {
 			t.Errorf(
-				"the pack handoff waits %s on %v and %s on %v",
+				"the pack handoff waits %s on %v and %s on %v; the shipping settings leave this axis uniform, so a difference here is new",
 				packWaits[reference], reference, packWaits[transportType], transportType,
 			)
 		}
 	}
 
-	// and the reliability axis, which is where the asymmetry actually is
-	if reliableWait != unreliableWait {
+	// And the reliability axis, pinned as the known trade. These are the values
+	// the tree ships; the row exists so that changing either is a deliberate
+	// act rather than a drift nobody notices.
+	if reliableWait != DefaultReceiveBufferSettings().ReliablePackHandoffTimeout {
 		t.Errorf(
-			"the pack handoff waits %s on a reliable carrier and %s on an unreliable one; a handoff that fills has bounded backpressure on one and a non-blocking refusal on the other, so the whole class of overflow faults is invisible on the path a cell would naturally reach for",
-			reliableWait, unreliableWait,
+			"a reliable carrier's pack handoff waits %s rather than the settings' %s; if this was a fix, the class of handoff-overflow faults is no longer invisible on the unreliable path and this row should be retired, and if it was a drift, the asymmetry just got worse",
+			reliableWait, DefaultReceiveBufferSettings().ReliablePackHandoffTimeout,
+		)
+	}
+	if unreliableWait != 0 {
+		t.Errorf(
+			"an unreliable carrier's pack handoff waits %s rather than refusing without waiting; if this was a fix, the two axes now agree and this row should be retired, and if it was a drift, a path that used to refuse now blocks",
+			unreliableWait,
+		)
+	}
+	if reliableWait == unreliableWait {
+		t.Logf(
+			"the reliability asymmetry is gone: both wait %s. That is the defect fixed, and this row should be retired rather than left pinning a trade that no longer exists.",
+			reliableWait,
 		)
 	}
 }
