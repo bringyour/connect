@@ -858,6 +858,52 @@ were corroboration on the branch only.
 | **PRECONDITION, lands with the ceiling raise** | The receive advertisement. The two-route cell measured a stalled transfer past 3 MiB, and the rule converges toward 16 |
 | **Deferred** | Proportional occupancy division and pooling, until a regime produces the need |
 
+### 3.13 The configuration surface is two elements, not three
+
+The assumed round trip was the last configured constant, and it is gone.
+
+The harness measured it and found it is **not a property of the path**. It is
+bounded by the peer's hold over the target: 21 ms against an unbudgeted
+provider, 7.9 against a phone at 24 MiB, 2.6 against a phone at the floor. A
+blind sender must assume the worst peer and take 2.6 -- the expensive end of a
+startup curve where a 1 ms bet costs 5.64 s against 0.30 s on a 100 ms path.
+
+**But a sender need only be blind for one round trip.** Before the first ack it
+assumes its peer holds at least the receive hold's floor, 320 KiB, which every
+receiver already ships -- a constant the RECEIVER owns, not one configured on
+the sender. After the first ack it knows the peer's hold exactly, and that is
+the largest harmless window, because permission is not occupancy and the one
+harm of an oversized window is the overrun the advertisement bounds.
+
+Two mechanism changes make the jump possible:
+
+  - the initial becomes the advertised capacity **the moment it is learned**,
+    as a step rather than a target to climb toward;
+  - the delivery cap becomes **one-sided and lagged** -- it may lower the
+    window, never raise it, and acts only on delivery measured over a full
+    interval at the CURRENT window. Without the lag, the small delivery
+    measured during the blind round trip would drag the window straight back
+    down and reimpose the ramp.
+
+**The blind round trip ordinarily costs nothing.** The encryption handshake
+rides the same sequence and its control pack is sent acknowledged, so the
+advertisement returns before the first data pack. Where data does come first, a
+TCP flow's slow start needs 4-5 round trips to reach 320 KiB of congestion
+window, so the transfer window is not the binder anyway. Only a UDP source at
+full rate on a fresh sequence pays it -- one round trip, once per sequence,
+never a ramp.
+
+One bet, the floor, not one per role: a role-specific bet would be a constant
+again.
+
+A legacy peer gets **today's window at the sender's own scale** -- not the
+2.5 MiB hold constant, which would be a raise on no evidence, and not the
+floor, which would regress every peer not yet updated. The status quo, whose
+stall guard 2 mitigates.
+
+**So turning the rule on is one change rather than three that must agree.**
+Three knobs that must agree is how the present defect arrived.
+
 ## 4. What is still open
 
 | Question | State |
