@@ -6756,3 +6756,201 @@ simulated 200 ms round trip with pipelining, zero promoted IP Packs
 after the first contract, and zero platform waits on the data path;
 and the write-failure counter of §38.7, so that a no-acknowledgement
 Pack dropped at the carrier is a number.
+
+### 38.9 Obtainable, share and ceiling: the intended relationship, and the expression
+
+Measured through the single switch, the fix gives no gain at the common
+path: 65.7 Mb/s against the constant's 68.7 at 200 ms. The interval is
+fixed (404 ms against a 200 ms round trip) and the rule sizes from
+delivery, about 8 MB, and is clamped straight back to 2 MiB, which is
+the initial. The resolved ceiling reads 2 MiB at process budgets of 16,
+64, 256 and 1024 MiB alike, and the harness established it reads the
+resend queue budget the switch builds from the process budget, and that
+both scaling helpers cap at one. So the question is one term, and it
+is answered from the design and from the lines as they stand.
+
+The four quantities, and which is which:
+
+- The floor is the working minimum, a few packets, guaranteed to the
+  sequence by the pool: `ResendQueueMinByteCount`, 256 KiB
+  (`transfer.go:911`). Not a bound on the window from above.
+- The initial is the pre-sample bet, `defaultInitialWindowByteCount`,
+  320 KiB, then the peer's advertised hold (§37.21). It is a starting
+  value the rule climbs away from and never a clamp. The estimate as
+  it stands takes `initial := ResendQueueMaxByteCount`, today's 2 MiB,
+  which is acceptable as the legacy bet but is not what the design
+  said and is exactly the number the ceiling fell back to.
+- The share is the static permission ceiling: what the budget would
+  lend this sequence at full demand, read from the queue's own budget
+  at estimate time. For a lone sequence it is the pool; with others
+  attached it is the pool less the floors guaranteed to them, so it
+  never claims bytes another sequence is promised and never reads what
+  they happen to hold. It changes when queues attach or the budget is
+  resized, not when bytes are borrowed.
+- Obtainable is dynamic: floor plus borrowed plus the pool's unreserved
+  remainder (`transferQueue.ObtainableByteCount`,
+  `transfer_queue.go:128–137`). It is the admission's quantity, what
+  `CanAdd` will let in now, and it belongs in the estimate as a
+  reported field for diagnosis. It is not the ceiling. Used as the
+  ceiling it reads a transient as a limit, shrinking one sequence's
+  permission as its neighbours borrow, which is the occupancy
+  mechanism's job at admission and not the window's; and whenever
+  `Available()` reads zero, because the pool is reserved elsewhere, it
+  pins the window at the floor, which is what the sweep saw.
+
+So the relationship is: ceiling is the share, window is clamped between
+floor and ceiling, obtainable bounds admission, initial is where the
+window starts. The lines that break it are in `sendWindowEstimate`
+(`transfer.go:9540–9556`):
+
+    ceiling := DeliverySizedWindowCeilingByteCount
+    if ceiling <= 0 { ceiling = initial }
+    ceiling = max(ceiling, floor)
+    if obtainable > 0 { ceiling = min(ceiling, max(obtainable, floor)) }
+    else               { ceiling = min(ceiling, budget.TotalByteCount()) }
+
+Two faults, either sufficient. The configured ceiling defaults to the
+initial, so wherever the setting is zero at estimate time the ceiling
+is 2 MiB before anything is read from the budget, and every later term
+is a minimum with it. `ApplyWindowSizing` (`:769–795`) fills the setting
+from the budget's total only at apply time and only if a budget is
+attached then; a budget attached afterwards, which is how the sweep
+attached its four, leaves the setting at zero. And the obtainable clamp
+pins to the floor whenever the pool reads no headroom. The expression
+the design intends:
+
+    share := budget.TotalByteCount() − floors guaranteed to other queues
+    ceiling := share
+    if configured > 0 { ceiling = min(ceiling, configured) }
+    ceiling = max(ceiling, floor)
+    window  = min(advertised, initial)                       until sampled
+    window  = min(advertised, clamp(min(T × rtt_min,
+                                        k × achieved × rtt_min),
+                                    floor, ceiling))         once sampled
+    estimate.Obtainable = obtainable                         reported only
+
+with the share read from `self.resendQueue.Budget()` at estimate time
+rather than frozen into a setting, the configured ceiling an optional
+operator cap and nothing else, and `ApplyWindowSizing` no longer
+writing the budget's total into it. The budget grows a method that
+returns the floors it guarantees to queues other than the caller,
+which it can, since every queue attaches through `setBudget` with its
+floor. A test that attaches the budget after `ApplyWindowSizing` and
+asserts the ceiling moves 2, 8, 32, 128 MiB with it is the one that
+would have caught this.
+
+The consequence, stated as asked: with the ceiling at the initial none
+of the convergence behaviour has run. Every single-switch measurement
+so far is a measurement of the constant, and the earlier 1.7 at 200 ms
+was the hand-wired 16 MiB ceiling reached through the 300 ms interval
+(§37.15). The first measurement of the rule as designed, sizing from
+delivery and stopping where delivery stops, is still ahead of us, and
+the prediction for it stands: at 200 ms the window settles near twice
+the path's delivery per round trip and the transfer-average throughput
+sits within the null band of the 8 MiB constant arm.
+
+### 38.10 Android's reclaim loop: what to sample, what to compare, and why the mirror is wrong
+
+The finding, confirmed from source. The idle trimmer (`sdk/idle_memory.go`)
+has two arming inputs: the Go runtime's total, from `runtime/metrics`,
+against the steady target, which is a measurement on every platform;
+and the physical footprint, `mobilePhysicalFootprintCurrent`, against
+`mobilePhysicalPressureByteCount`, whose initial value is
+`mobilePhysicalFootprintReclaimByteCount`, 40 MiB (`:34,61`). Apple's
+extension feeds the physical side every five seconds
+(`ExtensionMemoryMonitor.swift`, a `DispatchSourceTimer` at five
+seconds calling `SdkRecordExtensionMemorySample` with
+`task_info`'s `phys_footprint`) and sets the threshold through
+`SetExtensionMemoryPressureByteCount`
+(`memory_stats_ios_extension.go`, built only under `ios_extension`).
+Android calls nothing on that side: the app's `onLowMemory` is
+commented out (`MainService.kt:1153`) and `onTrimMemory` appears only in
+an instrumentation test. So on Android the current footprint is never
+recorded and reads zero, the crossing `threshold < current` never
+occurs, and the physical loop does not reclaim against a constant; it
+never reclaims at all. Only the Go-total input runs there. That is the
+opposite failure from the one a straight mirror would create, and the
+mirror would be worse: feeding the process's 353 MiB into a 40 MiB
+threshold arms the trimmer permanently and it reclaims on every
+cooldown for nothing.
+
+Why an absolute per-process threshold is the wrong model on Android at
+all. The low-memory killer does not score an app by its own size
+against a per-app number; it kills by system-wide free memory
+watermarks and by the process's importance, and in its modern mode by
+the kernel's pressure stall accounting. An app's per-process ceiling
+in its memory cgroup reads as unlimited in the tier a foreground VPN
+occupies, as the research found, so a ratio against it is undefined
+exactly in the foreground. On Apple the extension is its own process
+with a jetsam limit, and phys_footprint against that limit is the
+right model; on Android the same shape measures the wrong thing
+against a number that does not exist.
+
+What Android should sample, in order of what predicts pressure rather
+than what measures size, all readable from Go without a platform
+callback except the last:
+
+1. The platform's pressure accounting: the memory cgroup's
+   `memory.pressure` for the app's own group when it is readable, else
+   `/proc/pressure/memory`, the same stall figures the killer's PSI
+   mode uses; sampled every five seconds like Apple. `some avg10` is
+   the leading indicator. Where neither file is readable under the
+   device's policy, the probe fails at start and the sampler says so
+   in its stats rather than reading zero as calm.
+2. System free memory: `/proc/meminfo`'s `MemAvailable` against
+   `MemTotal`, world-readable, the basis of the killer's legacy
+   watermark mode.
+3. The process's own memory group, current against max, for reporting
+   and for the ratio when max is finite: `/proc/self/cgroup` gives the
+   path, v2 `memory.current` and `memory.max` or v1
+   `memory.usage_in_bytes` and `memory.limit_in_bytes` under
+   `/dev/memcg`. When max reads unlimited the ratio is not computed
+   and the physical arming is disabled, with the pressure inputs above
+   carrying the loop; when it is finite, which is the background tiers
+   where reclaim matters most, a calibrated fraction arms it. The
+   current figure includes the Java heap, code and file cache and is
+   fed to `mobilePhysicalFootprintCurrent` for the record, never
+   compared to an Apple-sized constant.
+4. The framework's own trim signal, `ComponentCallbacks2.onTrimMemory`,
+   which is the platform stating the app's tier: relayed by one line
+   in `MainService` to a new SDK entry, `ReportMemoryTrimLevel(level)`,
+   the only piece that needs the host, and the only input guaranteed
+   on every device. `RUNNING_LOW` and above, and every background
+   level, arm a pass.
+
+Not resident set size, which is the whole application with the
+interface open; and not the native heap alone, which at 23.8 MiB is
+close to the Go total the trimmer already measures and adds nothing
+the pressure inputs do not.
+
+What it compares against, and why that is a measurement. The trimmer's
+purpose is to release before pressure, so its inputs are the signals
+that precede a kill, and its thresholds on them are calibrated, not
+chosen: a campaign on the test devices records, under a memory load
+that ends in the killer acting, the PSI and `MemAvailable` values at
+which the framework delivers `onTrimMemory(RUNNING_LOW)` and at which
+the kill follows, and the arming levels are set a margin ahead of the
+framework's own signal. Until calibrated, the framework's signal alone
+arms the loop, which is a measurement made by the platform. The pass
+itself is gated as today on there being something to release: the Go
+total above its idle floor, and the pool rebuild dropping a material
+amount, with the minute cooldown and the hysteresis of
+`mobilePhysicalPressureTransition` unchanged.
+
+The build shape: `memory_stats_android.go` under an `android` build tag,
+a sampler goroutine at Apple's five seconds started by `SetMemoryLimit`
+as the trimmer is, reading the files above, feeding
+`recordMobilePhysicalFootprint` for the record and a new
+`recordMobileSystemPressure(psiSomeAvg10, memAvailableFraction,
+cgroupRatioOrNone)` for the arming; the arming rule per input, each
+with its own hysteresis; the `ReportMemoryTrimLevel` entry and its
+relay. The Apple path is untouched. Tests: the sampler parses fixture
+files for v1, v2, a missing group and an unlimited max; arming never
+fires on an unlimited ratio; each pressure input arms at its level and
+disarms below it; the relay is idempotent; and a sample with every file
+unreadable reports the probe's failure rather than calm.
+
+What to carry: the calibration is the work. The defect here was a
+trimmer acting on a number nobody measured, and the two ways to
+reproduce it are to feed the wrong number into the old threshold, or to
+replace the old threshold with a new one nobody has measured either.
