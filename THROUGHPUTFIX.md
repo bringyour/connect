@@ -8905,3 +8905,258 @@ them, so both bind their share, and the two items together are one
 opening in the server repository with two parts; the quic windows are
 the part to do first only because they are the smaller change with the
 clearer test, not because H1 matters less.
+
+## 47. Shipping summary
+
+This section states the current position for a reader with none of
+the program's context: what is built and measured, what is built and
+unmeasured, what is specified and unbuilt, what is deliberately not
+being done, the landing order across both repositories, and what is
+still unknown. Every figure carries its provenance. "Measured,
+in-process" means the fixture in this tree, `transfer_send_window_test.go`
+and its siblings, which pumps frames between two sequences through Go
+channels with an imposed delay and no kernel, no tunnel device and no
+carrier; "measured, cell" names a specific cell; "derived" means
+arithmetic from source and from measured constants, not a reading. No
+cell this program has run uses a native operating-system stack; that
+is the first item under what is unknown.
+
+### 47.1 What the problem is
+
+A tunnel flow's throughput is bounded, at every layer that keeps a
+retransmission copy, by that layer's window over its own round trip.
+This tree's transfer layer shipped a fixed 2 MiB window per destination
+that could only shrink with the memory budget and never grow, so at the
+round trips the product runs on, 200 to 400 ms, one flow was bounded at
+about 70 Mb/s and 35 regardless of the link (measured, in-process:
+68.6 Mb/s at 200 ms). Above that window sit four more ceilings of the
+same kind, each a constant sized for a 64 MiB reference host: the
+carrier's H3 stream window at 3 MiB, the hosted tunnel's TCP buffers at
+4 MiB, the platform's H3 windows at the library default of 6 MiB, and
+the carriers' kernel sockets at the hosts' defaults.
+
+### 47.2 The approach, in one paragraph
+
+Every window becomes a draw on a memory budget rather than a constant:
+`max(floor, M × fraction)`, where M is the process budget a deployment
+already sets and the floor is a working minimum. Each layer keeps the
+growth mechanism it already has; only its ceiling changes. The transfer
+layer, which had no growth mechanism, gets one that sizes from
+delivery over the minimum round trip and is clamped by its share and
+by what the receiver advertises it can hold. What makes this different
+from bigger constants is that the fractions encode ratios between
+layers, set by the round trips each layer's loop closes, while the
+budget supplies the scale; a change of budget moves every window
+together, and a fraction changes only when the architecture does. A
+reader who takes the share table as a new set of magic numbers has
+missed that, and §44 is the place it is argued.
+
+### 47.3 Built and measured
+
+- The transfer window rule sizes from the path. Its growth factor is
+  2.000 and its divisor is the measured minimum round trip; it
+  converges to twice the delivery per round trip, which is its designed
+  fixed point (measured, in-process, §38.13). Two defects found on the
+  way are fixed: the interval was a resend timer floored at 300 ms
+  rather than the round trip (measured overshoot of 2.9 to 44.8 times,
+  fixed), and the ceiling was frozen at the initial size when the budget
+  was attached later (fixed, unit-tested to move with the budget).
+- The receiver advertises its hold's capacity on the acknowledgement,
+  and the sender's window, including its pre-sample bet, never exceeds
+  it. Without it a raised window gains 1.21 to 1.24 times; with it 2.46
+  to 2.73 (measured, in-process, §37.19). This is a precondition for
+  any window above 2.5 MiB, not a refinement.
+- The receiver keeps its hold sequence-earliest and acknowledges only
+  what can no longer be evicted (committed-prefix, §37.20), replacing
+  silent eviction, which was measured to stall transfers (§37.16), and
+  pure refusal, which was measured to be worse at high overrun
+  (§37.20). Built; its acceptance cell at the 8 MiB floor has not been
+  reported to this record.
+- The initial size is derived, the hold's floor before the first
+  acknowledgement and the advertised capacity after, so the surface is
+  the budget and a target (§37.21). Built.
+- The transfer send and receive shares are draws on the budget at one
+  eighth, unit-tested to double when the budget doubles (built; the
+  unit test is the measurement).
+- TCP through the tunnel bounds itself: a sender is handed only what
+  the inner protocol's flow control offers, so no window setting
+  produced queueing or memory in any slow-drain cell (measured,
+  in-process, §37.14). UDP through the tunnel is refused at admission
+  when the path is slower than the source, never queued (measured,
+  in-process, §37.15).
+- The constant-queue sweep at 200 and 400 ms scales throughput with the
+  window up to the hosted tunnel's 4 MiB send buffer, 164 Mb/s at 200 ms
+  (measured, in-process, cell C, §36.4), which is the first ceiling
+  above the transfer window on that fixture.
+
+### 47.4 Built and unmeasured
+
+- The window rule's gain on a fixture that is not rate-bound. The
+  in-process fixture delivers about 50 Mb/s at 200 ms whatever the
+  window, for a reason in the fixture or in the send loop's fill
+  dynamics that the record has narrowed but not closed (§38.15, §40.2),
+  so the sized arm reads inside the constant arm's null band there and
+  no in-process cell can show the rule's throughput value. The
+  namespace cell, with a native stack and a real carrier, is the first
+  that can; its prediction is 109 Mb/s at 200 ms against 71 (§40.1).
+- Per-flow keying of the client's IP traffic, the no-acknowledgement
+  write-failure counter, and the eviction counter: built, no cell yet.
+
+### 47.5 Specified and unbuilt, in landing order across both trees
+
+Each step names its repository and what it is worth. The throughput
+figures below are derived from source constants and measured factors
+unless marked otherwise; the reach figure is the longest path at which
+one flow can still carry a gigabit, derived the same way.
+
+Download, delay on the client's hop, H3 carrier, a desktop with a
+256 MiB budget:
+
+1. The transfer unit: window, hold, advertisement, committed-prefix, and
+   the contract acknowledged ahead (§39.1). This tree; built except the
+   last. Worth 71 → 109 Mb/s at 200 ms, reach 9.5 → 21.8 ms.
+2. The client's H3 stream and connection windows, one constant at
+   `transport.go:685` and its repeats, becoming a draw on the transport
+   budget (§42.1). This tree. Worth 109 → 160, reach 21.8 → 23.5 ms.
+3. The tunnel's TCP buffer maxima, `tun.go:93–106`, becoming a draw
+   (§43.1). This tree, and only where the client's inner stack is this
+   tree's gVisor: the hosted, simulated and probe modes. On a native
+   desktop the same layer is the operating system's own TCP ceiling and
+   is not ours. Worth 160 → 415 at a 12 MiB carrier reservation, reach to
+   about 83 ms, on hosted clients.
+4. The share table (§44): the carrier reservation's stream fraction, and
+   the floors constraint. This tree. Worth 415 → about 830 at 200 ms,
+   with the reach set by the shares rather than by any constant.
+5. The platform's H3 windows with an aggregate grant (§46). The server
+   repository. Needed whenever the provider's hop carries the delay, and
+   for every upload. Worth 218 → the shares.
+
+The sentence that makes this legible: no single ceiling extends the
+reach, because the four sit within a few milliseconds of one another
+and each lifts the rate only by its ratio to the next. Landing the
+first alone moves the common path by 1.47 times and the reach by two
+milliseconds. That is not a small win to stop at; it is the first of
+three in this tree.
+
+Upload, delay on the client's hop:
+
+1. The transfer unit. Worth 71 → 129 at 200 ms. Reach: none, at any
+   budget, because the inner acknowledgement clock is the provider's
+   50 ms compression timer and a 4 MiB send buffer over the path plus
+   60 ms never reaches a gigabit.
+2. A steady-state acknowledgement cadence at the provider's NAT,
+   `ip.go:5842–5860`, one setting beside `AckCompressTimeout` (§45.2).
+   This tree. Worth 129 → 156; reach from none to 18.5 ms. The step that
+   gives upload any reach at all. Not to be confused with §26's
+   recovery quickack, which is built, shipped off, and a defaults
+   change worth the first round after a timeout.
+3. The hosted client's send maximum (item 3 above). Worth 156 → 218,
+   reach 44 ms, hosted clients only.
+4. The platform's H3 windows (item 5 above). Server repository. Worth
+   218 → the shares. The accept-side socket buffers for H1 are a
+   separate part of the same opening (§46.7).
+
+Also specified and unbuilt, outside the throughput path: the Android
+memory-reclaim entry point and sampler (§38.10, §39.3); the
+no-acknowledgement fast path with capacity moved in front of admission
+(§38.11, §38.12); `TcpUploadNoAck`, the upload half of one reliable
+layer per hop, gated off until the failover cell prices a single-route
+disconnect at a predicted 2.4 s (§39.4, §40.4).
+
+### 47.6 Deliberately not being done
+
+- Relocating download's reliability into the provider's NAT. It would
+  buy no memory, since the provider holds two copies either way, and it
+  is a TCP loss-recovery implementation inside the NAT (§39.4). Closed.
+- Advertising credit above the hold's capacity (§37.22), eviction with a
+  notice as the receiver policy (§37.20), stopping acknowledgement
+  compression (§38.15): each considered and not chosen, for the reasons
+  at those sections.
+- Reasoning from the original reporter's hardware. Every claim is a
+  ratio against a local baseline; the four readings that would connect
+  or disconnect their figure are specified in advance (§41.2) and wait
+  on the namespace cell.
+- The socket-carrier substitute for the namespace cell hangs and is
+  abandoned; it is not to be rebuilt.
+
+### 47.7 Defects found that stand on their own
+
+These are worth landing whatever happens to the rest, and they are not
+performance arguments.
+
+- A budgeted client below 51.2 MiB downloading through an unbudgeted
+  provider has a receive hold smaller than its peer's window, because
+  the hold is memory-scaled and the provider's window is not; with two
+  live routes, which the production Auto policy runs by default, a
+  route death makes the hold evict, an evicted item is acknowledged data
+  the sender treats as a sixty-second lease or a serialised probe, and
+  the transfer stalls. Reproduced on unmodified main at 8 and 24 MiB
+  with a control at 52 MiB that completed (measured, cell, §37.17–37.18).
+  Fixed by the advertisement and committed-prefix above; the provider-side
+  mitigation for clients not yet updated, voiding selective
+  acknowledgements on a carrier change, is specified (§37.17) and its
+  build status is not in this record.
+- The sender's acknowledgement handoff is transport-dependent: it waits
+  on H1 and refuses at once on every other transport when its 32-slot
+  channel is full, dropping the acknowledgement with a counter
+  (`ackHandoffTimeout`, §38.14's code reading). No cell has caught it
+  dropping; the counters read zero in the fixture. The fix is the wait
+  H1 already has.
+- The floors do not fit the smallest supported host: a hosted client's
+  H3 floor of 3 MiB and tunnel floor of 4 MiB exceed the 8 MiB legacy
+  target that the transport budget already special-cases (§44.2). A
+  finding to act on, not a test to loosen.
+- The binding-term diagnostic names the smallest window term rather than
+  the throughput binder: when a flow delivers at least half the target
+  the reason reads "target" even though throughput is set below it by
+  something else (§41.1). Twenty-five of ninety-eight measured arms read
+  that way.
+- A no-acknowledgement Pack behind a full retransmit buffer was refused
+  at admission entirely, twenty offered and none written (measured, the
+  deterministic test, §38.11), and one dropped after a failed carrier
+  write was uncounted (§38.7, now counted).
+- The mobile idle trimmer's physical-pressure input is fed only by the
+  Apple extension; on Android it reads zero and that loop never reclaims
+  (§38.10).
+
+### 47.8 What is still unknown
+
+- Whether any measurement in this record describes a native desktop.
+  Every cell has used the hosted shape, this tree's gVisor tunnel or the
+  in-process fixture, and on a native device the inner TCP stack is the
+  operating system's. The reach and rate arithmetic carries over at
+  about the same values, because the OS ceilings are of the same order,
+  but no reading has been taken there. The namespace cell is the first
+  in the native shape.
+- What sets the in-process fixture's rate at about 50 Mb/s at 200 ms
+  independent of the window (§40.2), and whether the send loop's fill
+  dynamics that hold occupancy at half the window there are the tree's
+  or the fixture's (§38.15, §40.1). The namespace cell separates them;
+  a doubling of `SequenceBufferSize` tests one candidate without it.
+- Whether the original report's ceiling is what this program found.
+  Decided in advance by four readings (§41.2); prediction, download yes
+  and upload the acknowledgement clock.
+- The values a campaign picks: the acknowledgement cadence's k, the
+  share table's divisors, the contract announce threshold. Each has a
+  derivation and a starting candidate in the record and none is chosen
+  here.
+
+### 47.9 The numbers a reader may rely on
+
+Measured: 68.6 Mb/s at 200 ms and 34.7 at 400 for one flow at the
+shipping 2 MiB window; a plateau of 164 at 200 ms at the hosted tunnel's
+4 MiB; the advertisement's 2.46 to 2.73 against 1.21 to 1.24 without;
+the stall on main below 51.2 MiB and its control; the fixed point of the
+rule at twice its delivery. All in-process unless named as a cell, and
+all ratios, not absolutes to be compared with other hardware.
+
+Derived: every reach figure; the 109, 160, 415 and 830 for the
+download landings; the 129, 156 and 218 for upload; the 218 the
+platform's default imposes; the 51.2 MiB inversion point, which the
+cell then confirmed between 24 and 52. Each is arithmetic from a
+constant read at a line and a factor measured once, and each is stated
+with the constant that produces it so that a reader can recompute it.
+
+Predicted and pending: the namespace cell's 109 at 200 ms, the
+reporter-regime readings, the cadence's 156, the upload cell's 2.4 s.
+Each is written down with the value that would refute it.
