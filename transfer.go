@@ -671,12 +671,109 @@ func DefaultClientSettingsNoNetworkEvents() *ClientSettings {
 	return clientSettings
 }
 
+// THROUGHPUTFIX §37.4's configuration surface, as one switch.
+//
+// Three knobs that must agree is how the defect this program exists to fix
+// arrived, so a deployment sets one thing and everything else is derived from
+// it and from machinery the hosts already set.
+type WindowSizingPolicyKind int
+
+const (
+	// A constant send window, no memory budget and no rule: today's behaviour
+	// exactly, byte for byte, which is what makes turning the rule on
+	// reversible by one change.
+	WindowSizingConstant WindowSizingPolicyKind = iota
+	// Size the send window from what the path delivers, with the scale, the
+	// ceiling, the shared budget and the initial bet all derived.
+	WindowSizingFromDelivery
+)
+
+// The target throughput, in goodput bytes per second. One gigabit per second,
+// settled. It is per client on a provider and per process on a phone
+// (§37.4), and it is what turns a round trip into a window.
+const targetGoodputByteRate = ByteCount(1000 * 1000 * 1000 / 8)
+
+// Framed bytes per goodput byte, derived rather than fitted in §36.3, so that
+// a goodput target means the same bytes at every layer.
+const goodputFactor = 0.845
+
+// The rule's scale: a window of k times what the path delivered per round
+// trip, k = 2, so a window-limited flow doubles each round trip until it is no
+// longer window-limited (§36.7).
+const deliverySizedWindowScale = 2
+
+// The shared byte budget the send queues draw on when the rule is on.
+//
+// Derived from the process memory budget the hosts already set rather than
+// being a new number. The fraction is the one quantity chosen here rather than
+// derived: a quarter of the reference budget, which is the share the platform
+// carriers already take (`newDefaultPlatformTransportBudget`), and it bounds
+// the aggregate the way §37.7 asks — permissions may sum above it, occupancy
+// may not.
+func defaultResendQueueBudgetByteCount() ByteCount {
+	return MemoryScaledByteCount(mib(16), mib(1))
+}
+
+// The initial bet: what a sender may have outstanding before it has heard
+// anything from its peer.
+//
+// Derived rather than chosen. A blind sender must assume the worst peer it
+// could be talking to, and the worst peer is the one with the smallest hold,
+// which is a client at the memory floor holding 320 KiB. Expressed as the
+// assumed round trip the surface asks for, that is hold over target, 2.6 ms;
+// expressed as a window it is the hold itself, because T x (hold/T) = hold.
+// The blind period is one round trip rather than the life of the sequence,
+// because the peer's real hold arrives on the first acknowledgement (§37.3).
+func defaultInitialWindowByteCount() ByteCount {
+	return kib(320)
+}
+
+// The process-wide send window policy. Set once by the host at start, the way
+// the memory budget already is, so that turning the rule on is one change.
+var defaultWindowSizing atomic.Int32
+
+// SetWindowSizing chooses how every send window in this process is sized.
+// Constant is today's behaviour exactly; from-delivery turns on the rule with
+// the scale, the ceiling, the shared budget and the target all derived.
+func SetWindowSizing(policy WindowSizingPolicyKind) {
+	defaultWindowSizing.Store(int32(policy))
+}
+
+func DefaultWindowSizing() WindowSizingPolicyKind {
+	return WindowSizingPolicyKind(defaultWindowSizing.Load())
+}
+
+// ApplyWindowSizing derives everything the rule needs from the policy, so a
+// deployment sets one thing rather than three that must agree. Constant leaves
+// the settings exactly as a tree without this program would build them.
+func (self *SendBufferSettings) ApplyWindowSizing() {
+	switch self.WindowSizing {
+	case WindowSizingFromDelivery:
+		self.DeliverySizedWindowScale = deliverySizedWindowScale
+		self.TargetGoodputByteRate = targetGoodputByteRate
+		if self.ResendQueueBudget == nil {
+			self.ResendQueueBudget = NewTransferMemoryBudget(
+				defaultResendQueueBudgetByteCount(),
+			)
+		}
+		if self.DeliverySizedWindowCeilingByteCount <= 0 {
+			self.DeliverySizedWindowCeilingByteCount =
+				self.ResendQueueBudget.TotalByteCount()
+		}
+	default:
+		self.DeliverySizedWindowScale = 0
+		self.DeliverySizedWindowCeilingByteCount = 0
+		self.TargetGoodputByteRate = 0
+		self.ResendQueueBudget = nil
+	}
+}
+
 func DefaultSendBufferSettings() *SendBufferSettings {
 	return DefaultSendBufferSettingsWithBufferSize(defaultTransferBufferSize)
 }
 
 func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings {
-	return &SendBufferSettings{
+	settings := &SendBufferSettings{
 		CreateContractTimeout: 30 * time.Second,
 		// Retry a failed/absent contract promptly. A same-network peer connect can
 		// briefly return NoPermission while the target's provide registration is
@@ -767,8 +864,7 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// stands for a minute. Off is the pre-guard behaviour and exists so a
 		// cell can measure the difference in one binary.
 		CarrierChangeVoidsSelectiveAck: true,
-		// zero keeps the constant window of every tree before THROUGHPUTFIX
-		// §32.5; a campaign sets the scale and the ceiling together
+		// derived from WindowSizing below; a cell may still set them directly
 		DeliverySizedWindowScale:            0,
 		DeliverySizedWindowCeilingByteCount: 0,
 		// zero preserves the behavior of every tree before THROUGHPUTFIX §27;
@@ -794,6 +890,9 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		LogicalDataLaneCount: 0,
 		ProtocolVersion:      DefaultProtocolVersion,
 	}
+	settings.WindowSizing = DefaultWindowSizing()
+	settings.ApplyWindowSizing()
+	return settings
 }
 
 func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
@@ -4588,6 +4687,14 @@ type SendBufferSettings struct {
 	// CarrierChangeVoidsSelectiveAck lets the retired-carrier recovery move
 	// selectively acknowledged items too (THROUGHPUTFIX §37.17 guard two).
 	CarrierChangeVoidsSelectiveAck bool
+	// WindowSizing is the one switch: constant is today's behaviour exactly,
+	// from-delivery derives the scale, the ceiling, the budget and the initial
+	// bet and turns the rule on (THROUGHPUTFIX §37.4).
+	WindowSizing WindowSizingPolicyKind
+	// TargetGoodputByteRate caps the window at the target's bandwidth-delay
+	// product, so a path faster than the target does not take more than the
+	// target. Zero leaves the target term out.
+	TargetGoodputByteRate ByteCount
 	// The ceiling for the rule above. It is a share of a budget rather than a
 	// per-sequence constant: forty simultaneous downloaders at 16 MiB would
 	// retain over a gigabyte on one provider, so a constant that works in a
@@ -5858,6 +5965,15 @@ type SendSequence struct {
 	// the receiver's latest advertised hold (THROUGHPUTFIX §37.3)
 	receiveWindowByteCount atomic.Uint64
 	receiveWindowSet       atomic.Bool
+	// When the first advertisement arrived, which is when the window steps
+	// from the blind bet to the peer's capacity. The delivery cap is lagged
+	// against it: delivery measured before the step was measured at the
+	// smaller window and must not be allowed to drag the window back down
+	// (THROUGHPUTFIX §37.21).
+	receiveWindowSetAtNanos atomic.Int64
+	// whether any acknowledgement has arrived at all, which is what separates
+	// a sender that is still blind from one whose peer does not advertise
+	ackSeen atomic.Bool
 	// Sequence numbers the receiver says it evicted, handed over from the ack
 	// worker for the sequence goroutine to act on. The item state an eviction
 	// changes belongs to the sequence goroutine, so the notice crosses here
@@ -8969,14 +9085,14 @@ func (self *SendSequence) deliveredBytesSampleInterval() time.Duration {
 // older than the horizon, between one and twelve times a short round trip's
 // worth depending on where the ring happened to sit (THROUGHPUTFIX §36.6).
 // Dividing by the span it measured removes that dependence.
-func (self *SendSequence) deliveredRate(minSpan time.Duration) (ByteCount, time.Duration, bool) {
+func (self *SendSequence) deliveredRate(minSpan time.Duration) (ByteCount, time.Duration, int64, bool) {
 	if self.deliveredBytes == nil {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	self.deliveredBytesMutex.Lock()
 	defer self.deliveredBytesMutex.Unlock()
 	if self.deliveredBytesCount < 2 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
 	newest := self.deliveredBytes[self.deliveredBytesHead]
 	horizon := newest.atNanos - max(0, minSpan).Nanoseconds()
@@ -8991,17 +9107,26 @@ func (self *SendSequence) deliveredRate(minSpan time.Duration) (ByteCount, time.
 	}
 	span := time.Duration(newest.atNanos - older.atNanos)
 	if span <= 0 {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	return max(0, newest.total-older.total), span, true
+	return max(0, newest.total-older.total), span, older.atNanos, true
 }
 
 // Records the receiver's latest advertised hold. Stored atomically because it
 // is written from the acknowledgement worker and read by the send loop when it
 // sizes its window.
 func (self *SendSequence) observeReceiveWindowAdvertisement(ack receiveAckMessage) {
+	// Every acknowledgement, advertised or not: a sender that has heard
+	// nothing is blind and takes the floor bet, while one whose peer answers
+	// without the field has a peer that does not advertise and takes its own
+	// constant. Those are different facts and the window is different for
+	// each (THROUGHPUTFIX §37.21).
+	self.ackSeen.Store(true)
 	if !ack.receiveWindowSet {
 		return
+	}
+	if !self.receiveWindowSet.Load() {
+		self.receiveWindowSetAtNanos.Store(time.Now().UnixNano())
 	}
 	self.receiveWindowByteCount.Store(uint64(ack.receiveWindowByteCount))
 	self.receiveWindowSet.Store(true)
@@ -9242,7 +9367,9 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	// path shows, and the only floor under it is the working minimum that
 	// reliable admission already uses.
 	//
-	// Until §37.4's surface lands, the initial size is the shipping constant.
+	// `initial` here is this sender's own constant window, which is what a
+	// peer that answers without the advertisement gets. The blind bet is the
+	// receive hold's floor and is applied below.
 	initial := self.sendBufferSettings.ResendQueueMaxByteCount
 	floor := self.sendBufferSettings.ResendQueueMinByteCount
 	if floor <= 0 {
@@ -9271,14 +9398,41 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	ceiling = max(ceiling, floor)
 	ceiling = min(ceiling, budget.TotalByteCount())
 
-	// The receiver it can see: absent an advertisement this is a legacy peer,
-	// and the most one is known to hold is the shipping receive hold. The rule
-	// is then inert against old peers and engages fully only between peers that
-	// both carry the field.
+	// The receiver it can see, and the three cases are different facts
+	// (THROUGHPUTFIX §37.21).
+	//
+	// Advertised: the peer's capacity is the largest harmless window, because
+	// permission is not occupancy and the one harm of an oversized window is
+	// the overrun the advertisement bounds. The window steps to it the moment
+	// it is learned rather than climbing toward it, or the derivation buys
+	// nothing.
+	//
+	// Answered without the field: a peer that does not advertise gets today's
+	// window at this sender's own scale. Not the shipping hold constant, which
+	// would be a raise on no evidence, and not the blind floor, which would be
+	// a regression for every peer not yet updated. The status quo, whose stall
+	// guard two mitigates.
+	//
+	// Silent: still blind, and a blind sender may assume only what every
+	// receiver already ships, the receive hold's floor. That is a constant the
+	// receiver owns rather than one configured here, which is the distinction
+	// that removes the third knob: the surface is a target and a budget, and
+	// the initial size is read rather than chosen. The blind period is one
+	// round trip, not the life of the sequence, and it is ordinarily free: the
+	// encryption handshake rides this sequence and is sent acknowledged, so
+	// the advertisement returns before the first data pack, and where data
+	// does come first a TCP flow needs four or five round trips of slow start
+	// to reach 320 KiB of congestion window, so this window is not the binder
+	// meanwhile. Only a datagram source at full rate on a fresh sequence pays
+	// it, once per sequence, and it pays one round trip rather than a ramp.
+	stepAtNanos := int64(0)
 	if advertised, ok := self.receivedWindowAdvertisement(); ok {
 		ceiling = min(ceiling, advertised)
+		stepAtNanos = self.receiveWindowSetAtNanos.Load()
+	} else if self.ackSeen.Load() {
+		ceiling = min(ceiling, initial)
 	} else {
-		ceiling = min(ceiling, receiveHoldShippingByteCount())
+		ceiling = min(ceiling, defaultInitialWindowByteCount())
 	}
 	estimate.Ceiling = ceiling
 	// The rule, stated here because the next layer to gain an initial size
@@ -9301,7 +9455,7 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	// §37.4's configuration surface: the bet is what a layer believes about a
 	// path it has not measured, and a bound its peer has stated is not a
 	// belief. Clamp the bet, not only the estimate.
-	estimate.Window = min(max(initial, floor), ceiling)
+	estimate.Window = max(min(initial, ceiling), floor)
 
 	// The round trip it can see.
 	roundTrip := self.rttWindow.Estimate()
@@ -9312,13 +9466,26 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	estimate.RoundTrip = roundTrip.Min
 	estimate.SampleCount = self.deliveredSampleCount()
 
+	// The target's own bandwidth-delay product, so a path faster than the
+	// target does not take more than the target (§37.4). Framed bytes, so the
+	// goodput target divides by the factor §36.3 derives.
+	if 0 < self.sendBufferSettings.TargetGoodputByteRate {
+		targetWindow := ByteCount(
+			float64(self.sendBufferSettings.TargetGoodputByteRate) *
+				roundTrip.Min.Seconds() / goodputFactor,
+		)
+		ceiling = min(ceiling, max(targetWindow, floor))
+		estimate.Ceiling = ceiling
+		estimate.Window = max(min(initial, ceiling), floor)
+	}
+
 	// the rate must span several acknowledgement bursts, and at least a couple
 	// of round trips where those are long
 	minSpan := max(
 		2*roundTrip.Min,
 		4*self.deliveredBytesSampleInterval(),
 	)
-	delivered, span, ok := self.deliveredRate(minSpan)
+	delivered, span, spanStartNanos, ok := self.deliveredRate(minSpan)
 	if !ok {
 		estimate.Reason = "no delivery rate samples"
 		return estimate
@@ -9326,10 +9493,28 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	estimate.DeliveredByteCount = delivered
 	estimate.Interval = span
 
+	// The delivery term, one-sided and lagged.
+	//
+	// One-sided: it may lower the window below the peer's capacity but never
+	// raise it above what the peer said it can hold. Lagged: it acts only on
+	// delivery measured wholly after the window stepped to that capacity.
+	// Both are needed together. After the step, the delivery measured during
+	// the blind round trip is small, and a two-sided cap reading it would drag
+	// the window straight back down and reimpose the ramp the step exists to
+	// remove. With the lag, a path carrying the full capacity per round trip
+	// reads twice that and the cap does not bind, while a path carrying less
+	// comes down on its own evidence. The protection against oversizing is
+	// intact and it only ever acts downward.
+	if spanStartNanos < stepAtNanos {
+		estimate.Reason = "delivery measured before the window stepped"
+		return estimate
+	}
 	estimate.Sized = true
 	estimate.Reason = "sized"
 	perRoundTrip := ByteCount(int64(delivered) * roundTrip.Min.Nanoseconds() / span.Nanoseconds())
-	estimate.Window = min(max(ByteCount(scale)*perRoundTrip, floor), ceiling)
+	if capped := ByteCount(scale) * perRoundTrip; capped < estimate.Window {
+		estimate.Window = max(capped, floor)
+	}
 	return estimate
 }
 
