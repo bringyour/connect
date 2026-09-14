@@ -9,14 +9,22 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-// THROUGHPUTFIX §37.16, the eviction notice: a receiver that removes an item it
-// has already acknowledged tells the sender, and the sender resends it.
+// THROUGHPUTFIX §37.16's eviction notice, which is compatibility rather than
+// part of the fix, and this row exists to keep it from being deleted as dead.
 //
-// Where this stands after §37.17's guard one. An updated receiver refuses
-// rather than evicting, so it never sends a notice at all; this row turns
-// eviction back on to exercise the field. What it still covers is a receiver
-// whose budget shrank under a hold it had already filled, and any deployment
-// carrying the old behaviour.
+// Read this before concluding the field is unused. Preventing the overrun is
+// what fixes the defect, and that is the advertisement; §37.17's guard one then
+// makes the receiver policy never-evict without exception, so an updated
+// receiver emits no notice ever, and with the advertisement in force the hold
+// can only be full when everything outstanding is already held, which leaves
+// eviction no occasion at all. **A capture between two updated peers containing
+// no evicted_sequence_numbers is the expected reading, not a failure, and not
+// evidence the field is dead.** What the field protects is the sender's side of
+// a contract that any receiver still evicting may invoke, which is every
+// unupdated receiver in the field — and those are exactly the ones we cannot
+// observe from here. It is removed only when no such receiver remains.
+//
+// So this row turns eviction back on to exercise the sender's half.
 //
 // The defect, from source, which exists without any window change. A selective
 // acknowledgement does not release the item at the sender: receiveAck removes
@@ -26,19 +34,23 @@ import (
 // removed to admit it and the removal sends nothing. So the sender holds a
 // lease on bytes the receiver no longer has.
 //
-// A correction to §37.16's mechanism, found by this cell and stated here
-// because it changes the size of the harm rather than its existence. The
-// section says every resend path skips a marked item and only the timeout
-// resend clears the mark. There is a fourth path it did not read: when the
-// oldest outstanding item is selectively acknowledged and no gap is scheduled,
-// scheduleSelectiveAckRecovery reschedules that item as a cumulative probe one
-// probe round trip out, without clearing the mark, and does so again every
-// pass. So an evicted item is recovered once it reaches the head of the
-// sequence, at one probe round trip each, serially. The harm is therefore
-// proportional to the eviction count rather than a flat minute: a handful of
-// evictions costs a handful of round trips, and the thousands an eviction
-// generation produces at a 16 MiB window cost more than any cell will wait for,
-// which is the stall the failover cell measured.
+// A correction to §37.16's mechanism, found by this cell and confirmed from
+// source by the designer, because it changes the size of the harm rather than
+// its existence. The section says every resend path skips a marked item and
+// only the timeout resend clears the mark. There is a fourth: when the oldest
+// outstanding item is selectively acknowledged, scheduleSelectiveAckRecovery
+// reschedules it as an acknowledgement-tail probe at its send time plus twice
+// the window's minimum round trip, clamped between the 300 ms resend floor and
+// 8 s, on every pass and with the mark intact. The probe is a full write of the
+// frame, so an evicted item that has reached the head is admitted by it. But
+// AckTailProbeLimit is 2, so after two probes the minute applies.
+//
+// So the harm is one probe interval per evicted item that reaches the head,
+// serialised, plus the minute for any item that exhausts its probes first. A
+// few intervals for a small generation and hundreds for a large one. That is
+// why the branch cell at a 3 MiB window completed and the main cell at a 24 MiB
+// client budget did not, and it is the eighty seconds this cell measured at a
+// hold far under its peer's window.
 //
 // What this row does not assert, and why. The end-to-end benefit — completion
 // time with the notice against without — is not separable in this fixture. Four
@@ -72,7 +84,7 @@ import (
 // Predictions, recorded before the run: both arms evict; with the notice the
 // sender resends items a notice named and without it that count is zero; the
 // drop counter alone does not see the evictions.
-func TestAnEvictionIsCountedAndToldToTheSender(t *testing.T) {
+func TestTheEvictionNoticeStillServesAReceiverThatEvicts(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
 	const messageCount = 400

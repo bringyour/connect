@@ -9264,13 +9264,26 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 		ceiling = min(ceiling, receiveHoldShippingByteCount())
 	}
 	estimate.Ceiling = ceiling
-	// The ceiling binds the bet as well as the sized value. A receiver's
-	// capacity does not depend on the sender having round-trip samples, and
+	// The rule, stated here because the next layer to gain an initial size
+	// will need it and because omitting it is what this implementation got
+	// wrong first.
+	//
+	// A peer's advertised bound is the outermost clamp. It applies to the
+	// initial bet before there are samples and to the sized window after, from
+	// the first Pack rather than from the first sample. A receiver's capacity
+	// does not depend on the sender having measured a round trip, and
 	// §37.16's rule — outstanding-from-delivered at most the advertised
 	// capacity — has to hold from the first Pack or the opening burst is
 	// exactly what overruns the hold. Measured before this clamp existed: a
 	// 4 MiB initial against a 256 KiB advertised hold gave 35 evictions and
-	// 330 refused arrivals while the sized window was reporting 64 KiB.
+	// 330 refused arrivals while the sized window was reporting 64 KiB, which
+	// is a window rule that looks correct in its own fields and overruns the
+	// receiver anyway.
+	//
+	// The same applies to every layer that later takes its initial bet from
+	// §37.4's configuration surface: the bet is what a layer believes about a
+	// path it has not measured, and a bound its peer has stated is not a
+	// belief. Clamp the bet, not only the estimate.
 	estimate.Window = min(max(initial, floor), ceiling)
 
 	// The round trip it can see.
