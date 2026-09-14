@@ -3724,6 +3724,12 @@ type TcpBufferSettings struct {
 	// Tests may hold a newly admitted sequence before it can consume its first
 	// pooled packet. Nil is a production no-op.
 	beforeSequenceRunForTest func()
+	// Tests read the upstream socket the provider proxies through, once it is
+	// connected and configured: which buffers it has and what the kernel says
+	// about its window are only decidable on the real socket, and the flow
+	// owns it for its whole life. Called on the sequence's own goroutine, so
+	// an implementation must not block. Nil is a production no-op.
+	afterUpstreamConnectForTest func(*net.TCPConn)
 
 	ConnectSettings
 }
@@ -4846,6 +4852,9 @@ func (self *TcpSequence) Run() {
 			defaultSocketBufferPolicy(),
 			self.tcpBufferSettings.DialContextSettings == nil,
 		)
+		if self.tcpBufferSettings.afterUpstreamConnectForTest != nil {
+			self.tcpBufferSettings.afterUpstreamConnectForTest(tcpConn)
+		}
 	}
 
 	self.log.V(2).Infof("[init]receive SYN+ACK\n")

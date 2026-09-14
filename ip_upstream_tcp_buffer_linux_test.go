@@ -24,6 +24,15 @@ import (
 //
 // Linux only: macOS rejects an oversized SO_RCVBUF with ENOBUFS and keeps
 // autotuning, so there the explicit set is a silent no-op, not a lock.
+// Structural concession, recorded rather than left blank: what the buffer does
+// to a flow's *rate* has no in-process assertion. The invariant these rows can
+// hold is a state — which buffer the socket has and whether the kernel may
+// still change it — and that is decidable on one host in one run. The rate is
+// window over round trip on a path, so it needs a path, a real origin and
+// repetitions against a null band (§7); no arrangement of loopback and netem
+// makes it an assertion a single run can decide, and this file's own
+// measurements produced both signs on one kernel. The provider-upstream
+// download and upload cells own it.
 func TestUpstreamTcpConnLeavesReceiveBufferToAutotuning(t *testing.T) {
 	tcpConn := dialUpstreamTestTcpConn(t)
 

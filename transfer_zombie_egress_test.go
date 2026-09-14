@@ -34,6 +34,18 @@ import (
 // The assertion is one-sided on purpose. The observed rate moves with
 // scheduling; the ceiling does not, and a change that removed the queue's byte
 // bound or the backoff would cross it.
+// Two structural concessions belong beside this row. The aggregate coupling
+// (H5), a provider falling from 639 to 180 Mb/s with forty zombies, is a rate
+// summed over every flow of a real provider with real sockets and real peers;
+// in process there is no such quantity to read, only this per-destination
+// bound, and no arrangement of one client and one route produces the
+// contention that the loss is made of. The threshold shape (H6), 8 flows at
+// 719, 16 at 587, 40 at 180, is the same quantity swept, and deciding whether
+// it is a resource being crossed needs that resource instrumented on the
+// provider under load rather than a bound computed from settings. The
+// 40-zombie provider cell owns both. What this row removes from them is the
+// arithmetic: the per-zombie figure is no longer a measurement to be explained
+// but a bound to be computed.
 func TestZombieFlowEgressIsBoundedByItsResendQueueAndInterval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

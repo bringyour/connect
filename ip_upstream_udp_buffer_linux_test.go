@@ -34,6 +34,14 @@ import (
 // about three fifths at an MTU-sized datagram and about a fourteenth at a DNS
 // query. A sizing read off the reported number is out by between two and
 // fourteen.
+// Structural concession beside this row: whether UDP through a provider hits
+// the same ceiling TCP does (H10) is a comparison of two rates, and its value
+// is exactly that it is measured end to end — a difference between the two
+// paths localises the cause below or above them, which no in-process
+// invariant can stand in for. The measurement stream has since established
+// that its provider-upstream cell contains no Transfer layer at all, so the
+// gap sits below Transfer and the cell that owns it is the TCP-versus-UDP
+// sweep, not this package.
 func TestUpstreamUdpBufferSizing(t *testing.T) {
 	defer SetMemoryBudget(0)
 
