@@ -41,7 +41,16 @@ func receiverBudgetRun(
 	})
 	start := time.Now()
 	stats := harness.run(t, messageCount)
-	return time.Since(start), stats, harness.receiver.ReceiveStats().ReceiveQueueDropCount
+	// Drops and tentative evictions are complementary readings of the same
+	// hold pressure since THROUGHPUTFIX §37.20. Under committed-prefix
+	// acknowledgement a full hold keeps the sequence-earliest items and
+	// removes the latest while it is still tentative, so pressure that used to
+	// appear entirely as a refused arrival now appears partly as a tentative
+	// eviction. Reading only one of them made this arm look as though nothing
+	// happened.
+	receiveStats := harness.receiver.ReceiveStats()
+	return time.Since(start), stats,
+		receiveStats.ReceiveQueueDropCount + receiveStats.ReceiveQueueTentativeEvictionCount
 }
 
 // The precondition §34.2 names, made observable: a receiver blocked at a

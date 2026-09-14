@@ -316,6 +316,20 @@ func newMixedLaneHarnessWithOptions(
 		if 0 < options.receiveQueueMaxByteCount {
 			settings.ReceiveBufferSettings.ReceiveQueueMaxByteCount =
 				options.receiveQueueMaxByteCount
+			// These cells were written against the receive policy that
+			// evicted a held item to admit an earlier one, and the shape they
+			// need is a receiver that fills its hold and then refuses.
+			// THROUGHPUTFIX §37.20's committed-prefix acknowledgement changes
+			// that: at a hold this small the commit boundary commits nothing —
+			// one item plus the gap below it already exceeds the capacity, so
+			// no held item can be acknowledged without the lie the policy
+			// exists to remove — and the sender is throttled for want of
+			// selective acknowledgements instead of the receiver dropping. The
+			// arms then complete in a second and a half with nothing dropped
+			// on either, which is the policy behaving and the cell no longer
+			// reaching its precondition. Pin the old policy so these keep
+			// testing the flight gate rather than the hold.
+			settings.ReceiveBufferSettings.ReceiveHoldPolicy = ReceiveHoldEvict
 		}
 		if 0 < options.resendBudget {
 			settings.SendBufferSettings.ResendQueueMaxByteCount = options.resendBudget
