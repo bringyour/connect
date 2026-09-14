@@ -1,5 +1,19 @@
 //go:build linux
 
+// Two rules this program earned, recorded here because they are conditions on
+// how any row in it is read, not only on the campaign's ledger.
+//
+// Record the resolved value of every setting, and read it before any result.
+// A memory policy, a kernel maximum and a shipping default each silently
+// decide what a row measures; several claims in this program were wrong
+// because a value was assumed rather than read, and the rows below read every
+// one of them at runtime and print them beside the number.
+//
+// Read per-run values before pooling them. A pooled retransmission count read
+// as noise across arms while the per-run values were a perfect binary
+// indicator: five of five collapsed runs had exactly one timeout and ten of
+// ten healthy runs had none. Pooling first destroys that.
+
 package connect
 
 import (
