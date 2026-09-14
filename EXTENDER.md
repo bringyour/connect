@@ -1209,7 +1209,15 @@ provide mode, the queued or last value read standing meanwhile (on
 before any read), so a toggle never snaps back during a daemon restart;
 a write the device process cannot take (the call answers a missing
 method) is dropped rather than queued, or it would replay on every
-reconnect. The wire version does not change: a device process without
+reconnect. On the device the listener is fed by a watch that wakes on
+any change of the setting, the provide state or the role and pushes
+at most one status a second; the watch arms its first wake before
+its goroutine starts, as the network space's extender status watch
+does (sdk 776c19d), since a change landing before the goroutine first
+ran, such as a daemon applying its persisted provide mode right
+after constructing the device, would otherwise go unpushed until the
+next provide or setting change whenever no running role wakes the
+watch. The wire version does not change: a device process without
 the setter also lacks the status method, reports the role unsupported,
 and the row is hidden (N1), so a settable value gated by a read-only
 capability flag shipped in the same version may use the missing-method
@@ -1287,26 +1295,29 @@ the cached last value, a service without the method answering unsupported
 even after a cached value, the setting round trip, the queued setting
 replayed at sync and the last-known value read while unreachable, a
 listener added while unreachable registered and replayed at sync, the
-listener firing on a change with `ErrorCase` and `Reason` intact); the
+listener firing on a change with `ErrorCase` and `Reason` intact,
+including a change made before the device's watch first runs); the
 start error over a space with no directory and over an unusable
 identity; the setting cache; the mobile stub answering unsupported;
 bindings. Each desktop app, in its existing view test style: the row
-hidden when unsupported, every state's color and text, the toggle
-writing the setting through the device, the read-only row on the stats
-screens.
+hidden when unsupported, with no setting read for it; the mapping from
+the sdk's status to the row, tested over the real status fields; every
+state's color and text; the toggle writing the setting through the
+device; the read-only row on the stats screens.
 
 N7. Layout of the extender row. One rule for the three desktop apps, then
 the components of each, so 11b and 12c make no layout choice of their own.
 
 The reading. Every app derives what it draws from `ExtenderProvideStatus`
-and the setting in one pure function with no view behind it, and reads
-only `Supported`, `State`, `ErrorCase`, `Reason`, `ActivatedV4`,
-`ActivatedV6` and `LastActivationRefused` from the status: `visible` is
-`Supported`; the dot is grey for `off` and `not_providing`, yellow for
-`setting_up`, green for `active` and red for `error`; the text is one
-string built from the keys of N5, chosen by `State` and, in the error
-state, by `ErrorCase`, so an app never re-derives the rule of N3 and
-never names a case the sdk did not pick:
+and the setting in pure functions with no view behind them, reads only
+`Supported`, `State`, `ErrorCase`, `Reason`, `ActivatedV4`, `ActivatedV6`
+and `LastActivationRefused` from the status, and reads the setting only
+for a status whose `Supported` holds, so a hidden row never reads it:
+`visible` is `Supported`; the dot is grey for `off` and `not_providing`,
+yellow for `setting_up`, green for `active` and red for `error`; the text
+is one string built from the keys of N5, chosen by `State` and, in the
+error state, by `ErrorCase`, so an app never re-derives the rule of N3
+and never names a case the sdk did not pick:
 
 - `off`: `off`.
 - `not_providing`: `extender_not_providing` (apple: the catalog entry
@@ -1331,7 +1342,9 @@ the refused and failed distinction: a refusal and a failure both land in
 `LastActivationError` as plain text, so without them the two labels of N5
 could not be told apart. `RevokedTime`, `Listening`, `ListenError`,
 `StartError` and `LastActivationError` are not read by the apps; the
-state rule reads them once.
+state rule reads them once. Each app tests its mapping from the sdk's
+status over the real status fields: each field it reads moves what it
+draws, and the others change nothing.
 
 The dot is the platform's provide mode indicator without its public ring:
 the same size, the same drawing, one more color. Grey is the theme's muted
@@ -1358,15 +1371,16 @@ the row locally before the listener answers: off gives grey `Off`; on
 gives yellow `Setting up` when the device is providing and grey `Not
 providing` when it is not. The next status from the listener replaces
 that guess. The toggle's position is the setting read through
-`GetProvideExtender` beside every status, which answers the queued or
-last-known value while the device process is out of contact (N2), so the
+`GetProvideExtender` beside every status that reports the
+role supported, which answers the queued or last-known value
+while the device process is out of contact (N2), so the
 toggle never snaps back during a daemon restart; no status arrives
 meanwhile, the guess stands until the sync replays the fresh status, and
 an app that tracks the connection (`GetRemoteConnected`) may grey the dot
 in the meantime, which is not required. The toggle is enabled in every
 state and hidden with the row while `Supported` is false, never merely
-disabled, and `SetProvideExtender` is never called while the row is
-hidden; the description hides with it.
+disabled, and while the row is hidden the app neither reads the setting
+nor calls `SetProvideExtender`; the description hides with it.
 
 The read-only row is the settings row with the provide mode row's chevron
 in place of the toggle. It opens the screen where the toggle lives, which
@@ -1374,10 +1388,12 @@ is the screen the provide mode row beside it opens, and shows no
 description. On the stats screens it sits directly under the provide mode
 row (N1); O8 says where that row is.
 
-Accessibility: the toggle is named "Extender" (`extender`) and carries the
-state text as its value; the read-only row is one element named
-"Extender: <state text>" with the button trait; the dot is decorative
-everywhere.
+Accessibility: the toggle is named "Extender" (`extender`) and carries
+the state text on itself, never on a container that takes no focus: as
+its VoiceOver value on macOS, its accessible description on Linux and its
+help text on Windows. The read-only row is one element announced as a
+button, reading "Extender: <state text>" (on macOS the label "Extender"
+with the state text as its value). The dot is decorative everywhere.
 
 macOS.
 
@@ -1401,8 +1417,13 @@ macOS.
   description, `secondaryBodyFont`, `textMutedColor`,
   `fixedSize(horizontal: false, vertical: true)`, the same leading padding.
 - Toggle: SwiftUI `Toggle(isOn: $deviceManager.provideExtender)` whose
-  label is line one, the kill switch row's shape in the same card (the
-  default macOS switch; the macOS form does not use `UrSwitchToggleStyle`).
+  label is line one, with `.toggleStyle(.switch)`. An unstyled toggle
+  in this card draws as a leading checkbox, which would put the control
+  before the dot and move the dot off the picker's x, so the switch style
+  is explicit and the switch trails the row as the mockup draws. The
+  kill switch row is not restyled and still draws as a checkbox, so an
+  unsupported device shows the card exactly as today. The macOS form does
+  not use `UrSwitchToggleStyle`.
 - Indicator: `ExtenderProvideIndicator`, `Circle().fill(color)` 8 pt wide,
   the dot `ProvideModeIndicator` draws. In the settings card it stands
   bare like the picker's own 8 pt `Circle()`, so both titles start on one
@@ -1418,27 +1439,47 @@ macOS.
   "Could not start: %@", "Could not listen: %@", "Activation refused: %@",
   "Activation failed: %@", and the description sentence;
   `String(localized:)` with `%@` filled by `String(format:)`.
-- Source: `DeviceManager` gains `@Published private(set) var extenderProvideStatus: ExtenderProvideStatusModel`
-  (`.unsupported` until a device reports) fed by
-  `device.add(ExtenderProvideStatusChangeListener …)` beside the provide
-  listeners and seeded from `getExtenderProvideStatus()`, and
-  `@Published var provideExtender: Bool` whose `didSet` calls
-  `device.setProvideExtender(_:)` under `DeviceSettingWritePolicy.shouldPropagate`,
-  as `provideControlMode` does; both reset with the device, and
-  `provideExtender` is re-read from `getProvideExtender()` under the echo
-  guard on every pushed status. The model and the reading are
+- Source: `DeviceManager` gains
+  `@Published private(set) var extenderProvideStatus: ExtenderProvideStatusModel`
+  (`.unsupported` until a device reports) and
+  `@Published var provideExtender: Bool`, both fed through
+  `ExtenderProvideSource`, a protocol in `DeviceManager.swift` in
+  the shape of `DeviceAuthCallbackSource` (read the status, read the
+  setting, write the setting, observe the status) that `SdkDeviceRemote`
+  conforms to and a test replaces. `setupExtenderProvide(source:)`,
+  called beside the provide listeners, registers the status listener
+  and then seeds from `readExtenderProvideStatus()`; each pushed status
+  is applied on the main queue through an injectable dispatch, and one
+  still queued from a replaced source is dropped by an owner token.
+  `resetExtenderProvide()`, called when the device's listeners are
+  cleaned up, closes the listener and restores `.unsupported` with the
+  setting on, without writing. `provideExtender`'s `didSet` writes
+  through the source under `DeviceSettingWritePolicy.shouldPropagate`,
+  as `provideControlMode` does, and only while the status is supported
+  and a source is set; the setting is read from the source under
+  the echo guard when a supported status is applied, and not for
+  a status that is not supported. The model and the reading are
   `ExtenderProvideStatusModel` (`supported`, `state`, `errorCase`,
   `reason`, `activatedV4`, `activatedV6`, `lastActivationRefused` and
   `enabled`, the last being what O8 reads) and `ExtenderProvideDisplay`
   in `Shared/ViewModels/ExtenderProvideModel.swift`, plain values in the
   shape of `ExtenderStatusModel`; `ExtenderProvideDisplay.of(status:)`
   returns the dot color case, the text and `visible`, and
-  `ExtenderProvideDisplay.guess(on:providing:)` the toggle's local repaint.
+  `ExtenderProvideDisplay.guess(on:providing:)` the toggle's local
+  repaint, which `DeviceManager.extenderProvideGuess` holds for both
+  rows, the settings row and the earnings row, until the next status or
+  the reset clears it.
 - Accessibility: the `Toggle` label names the control "Extender";
-  `.accessibilityValue(Text(stateText))` on the toggle; the indicator
+  `.accessibilityValue(Text(stateText))` on the toggle, which
+  keeps the switch's on and off value and gives VoiceOver
+  the state text as that value's description; the indicator
   `.accessibilityHidden(true)`. The read-only row is a `Button` with
   `.buttonStyle(.plain)`, `.accessibilityElement(children: .ignore)`,
-  `.accessibilityLabel("Extender")` and `.accessibilityValue(stateText)`.
+  `.accessibilityLabel("Extender")`, `.accessibilityValue(stateText)` and
+  `.accessibilityAddTraits(.isButton)`: on macOS the element modifier
+  alone rebuilds the element without the button's role, so VoiceOver
+  would not say the row opens anything and its buttons rotor would skip
+  it, and the trait puts the role back.
 - Read-only row: `ProviderStatsSection.swift`, directly under
   `ProvideModeRow(action: { navigate(.settings) })`: `Spacer().frame(height: 8)`
   then `ExtenderProvideRow(kind: .readOnly(action: { navigate(.settings) }))`,
@@ -1475,8 +1516,12 @@ Linux.
   always the solid "●", `kit::MarkDecorative`, as `provideDot_` beside it.
   Colors through `HexForMarkup`: grey `kUrTextMuted` (#989898), green
   `kUrGreen`, yellow `kUrAmber` (#F5C242), red `kUrCoral`.
-- State line colors: `ur-row-note` (11 px, #989898) as built; the error
-  state adds `ur-error-text` (#FF6C58) and removes it on the way back.
+- State line colors: `ur-row-note` (11 px, #989898) as built; the
+  error state adds `ur-error-text` and removes it on the way back, and
+  `UrTheme.cpp` gains `.ur-row-note.ur-error-text { color: #FF6C58; }`,
+  since the two classes have equal specificity and `.ur-row-note`, later
+  in the sheet, would keep the line grey; the two-class rule keeps the
+  note's 11 px size.
 - Strings: `T_("extender", "Extender")`, `T_("off", "Off")`,
   `T_("extender_not_providing", "Not providing")`,
   `T_("extender_setting_up", "Setting up")`,
@@ -1494,18 +1539,30 @@ Linux.
   the shape of `GetExtenderStatus`), `GetProvideExtender()`,
   `SetProvideExtender(bool)`, and `DrawerEvent::ExtenderProvideStatus`,
   emitted from `device_->addExtenderProvideStatusChangeListener` subscribed
-  beside the extender status listener in `SubscribeDrawer`. The reading is
-  `extender::ProvideRowFor(...)` in `ExtenderProvidePresentation.hpp` (new,
-  header-only and SDK-free like `ExtenderStatusPresentation.hpp`), taking
-  `haveStatus, supported, state, errorCase, reason, activatedV4,
-  activatedV6, refused, provideExtender` and returning
-  `ProvideRow{visible, dot (Grey, Green, Yellow, Red), textKey,
-  textEnglish, argument, on}`; `provideExtender` is `GetProvideExtender()`
-  read beside each status; the widget only draws it, and drops a push
-  that changes nothing.
-- Accessibility: the switch's label as above; the row root gets
-  `update_property(Gtk::Accessible::Property::DESCRIPTION, stateText)`;
-  the dot is decorative.
+  beside the extender status listener in `SubscribeDrawer`.
+  The reading is in `ExtenderProvidePresentation.hpp` (new,
+  header-only and SDK-free like `ExtenderStatusPresentation.hpp`).
+  `extender::ProvideRowFor(haveStatus, supported, state, errorCase,
+  reason, activatedV4, activatedV6, refused, provideExtender)`
+  returns `ProvideRow{visible, dot (Grey, Green, Yellow, Red),
+  textKey, textEnglish, argument, familiesKey, familiesEnglish,
+  detailKey, detailEnglish, detailArgument, errorText, on}` with
+  equality: the families fill the active line's `{}`, and the detail
+  is the other family's refusal or failure after " · ", which a bare
+  `{textKey, argument}` could not carry without the widget re-deriving
+  which key follows. `StateTextFor(row, lookup, format)` composes the
+  one line, and `ProvideRowGuess(on, providing)` is the toggle's local
+  repaint. `ProvideRowOf(status, readSetting)`, generic over the status
+  type, holds the one call into `ProvideRowFor`: it takes the optional
+  status as the widgets hold it and calls the setting reader only for a
+  supported status, so a hidden row reads no setting; the connect page
+  passes `GetProvideExtender()`, and the earnings page, which has no
+  switch, a reader answering false. The widget only draws the row, and
+  drops a push that changes nothing.
+- Accessibility: the switch's label as above, and the switch itself gets
+  `update_property(Gtk::Accessible::Property::DESCRIPTION, stateText)` on
+  every repaint, not the row box, which has the generic role and never
+  takes focus; the dot is decorative.
 - Read-only row: `EarningsPage::BuildNetworkPane`, directly under
   `provideModeRow_`, which O8 moves into the Provider statistics group; the
   extender row moves with it. `extenderRow_` is a flat `Gtk::Button` built
@@ -1558,20 +1615,30 @@ Windows.
   `Loc("extender_setting_description")`; every key is in
   `Strings/en/Resources.resw` since 11a, with the placeholder lowered to
   `{}`.
-- Source: `SdkHost` gains `ExtenderProvideStatusView` (`supported, state,
+- Source: `ExtenderProvideStatusView` (`supported, state,
   errorCase, reason, activatedV4, activatedV6, refused, enabled,
-  provideExtender`, with equality; `provideExtender` is
-  `GetProvideExtender()` read beside each status, and `enabled` is what
-  O8 reads), `SetExtenderProvideStatusHandler`,
-  `PublishExtenderProvideStatus` (dedup by value, the shape of
-  `PublishExtenderStatus`, subscribed beside it), `CurrentExtenderProvideStatus()`
-  and `SetProvideExtender(bool)`. `MainWindow` hands each view to
-  `connect().ApplyExtenderProvideState(view)` and
-  `wallet().ApplyExtenderProvideState(view)` on the UI queue, as
-  `OnStatsChanged` hands `LiveStats` to both. The reading is
+  provideExtender`, with equality; `enabled` is what O8 reads) lives
+  in `ExtenderPresentation.h`, which `SdkHost.h` includes, so the host
+  tests reach it, and `ExtenderProvideStatusViewOf(status, readSetting)`,
+  generic over the status type, maps the sdk's optional status
+  to it and calls the setting reader, `GetProvideExtender()`,
+  only for a supported status, so a device that reports the role
+  unsupported is never asked for the setting. `SdkHost` gains
+  `SetExtenderProvideStatusHandler`, `PublishExtenderProvideStatus`
+  (the view from `ExtenderProvideStatusViewOf`, dedup by
+  value, the shape of `PublishExtenderStatus`, subscribed
+  beside it), `CurrentExtenderProvideStatus()` and
+  `SetProvideExtender(bool)`. `MainWindow` hands each
+  view to `connect().ApplyExtenderProvideState(view)` and
+  `wallet().ApplyExtenderProvideState(view)` on the UI queue,
+  as `OnStatsChanged` hands `LiveStats` to both. The reading is
   `ExtenderProvideRowModelFor(view)` in `ExtenderPresentation.h`
   (`ExtenderProvideRowModel{visible, tone (Grey, Green, Yellow, Red),
-  textKey, argument, on}`), pure and covered by `tools/extender-tests.cpp`.
+  textKey, argument, argumentKind, suffixKey, suffixArgument, on}`,
+  the suffix being the other family's refusal or failure on the active
+  line), composed into the one line by `ComposeExtenderProvideText`, with
+  `ExtenderProvideGuessFor` for the toggle's local repaint; all pure and
+  covered by `tools/extender-tests.cpp`.
 - Accessibility: `AutomationProperties::SetName(toggle, Loc("extender"))`,
   `AutomationProperties::SetHelpText(toggle, stateText)`; the dot is
   `IsHitTestVisible(false)` with `AccessibilityView` Raw.
@@ -1588,8 +1655,8 @@ Windows.
   `AutomationProperties::SetName(button, Loc("extender") + L": " + stateText)`.
 
 Mockups. The dot's color is written at the right; `(o)` is a switch off,
-`(•)` on; a state text longer than the row is cut with `…` and carried by
-the tooltip.
+`(•)` on, `☐` a checkbox; a state text longer than the row is cut with
+`…` and carried by the tooltip.
 
 ```
 macOS, Settings > Connections card (bodyFont 14, secondaryBodyFont 12)
@@ -1614,7 +1681,7 @@ macOS, Settings > Connections card (bodyFont 14, secondaryBodyFont 12)
    Could not listen: tcp 443: bind: permission denied; udp 443…   coral text
    While you are providing, …
  ────────────────────────────────────────────────────────────────
- ⓘ Kill switch                                               (•)
+ ☐ Kill switch ⓘ
 
  (grey with the switch on reads "Not providing")
 ```
@@ -1665,32 +1732,54 @@ Checklist and tests.
 
 - apple (`app/network`): new `Shared/ViewModels/ExtenderProvideModel.swift`,
   new `Shared/Views/ExtenderProvideRow.swift`; change
-  `Shared/ViewModels/DeviceManager.swift` (the status, the setting, the
-  listener, the reset), `Main/Account/Settings/SettingsForm-macOS.swift`,
+  `Shared/ViewModels/DeviceManager.swift` (the status, the
+  setting, the listener, the reset, `ExtenderProvideSource`),
+  `Main/Account/Settings/SettingsForm-macOS.swift`,
   `Main/Account/Earnings/ProviderStatsSection.swift`. Tests: new
   `networkTests/ExtenderProvideRowTests.swift` in the style of
   `ExtenderPanelTests.swift` (Swift Testing, `@Test`, `#expect`, values
   not views): unsupported is hidden; every N3 case gives its color case
   and its text, each error case by `ErrorCase` alone; the three family
   texts; the active line with the other family's refusal and with its
-  failure; an unknown error case renders the reason bare; the toggle guess
-  for on while providing, on while not, and off.
+  failure; an unknown error case renders the reason bare; the
+  toggle guess for on while providing, on while not, and off;
+  the model read from the sdk's status, field by field. New
+  `networkTests/ExtenderProvideSettingTests.swift` tests `DeviceManager`
+  against a recording `ExtenderProvideSource` with a held dispatch: a
+  toggle writes the setting through the source at once and repaints with
+  the guess, and the seed writes nothing; while the role is unsupported
+  nothing is written, no guess is set and no setting is read; a pushed
+  status replaces the guess and moves the switch without writing it back;
+  a status queued from a replaced source changes nothing; the reset hides
+  the row without writing.
 - linux (`app`): new `src/ExtenderProvidePresentation.hpp`, new
   `tests/ExtenderProvidePresentationTest.cpp` added to the test source
   list in `meson.build`; change `src/SdkHost.hpp`, `src/SdkHost.cpp`,
   `src/ConnectPage.hpp`, `src/ConnectPage.cpp`, `src/EarningsPage.hpp`,
-  `src/EarningsPage.cpp`, `src/MainWindow.cpp`. The test file pins the same
-  cases as apple's through `ProvideRowFor`, in the style of
-  `ExtenderStatusPresentationTest.cpp` (`UR_TEST`, `UR_EXPECT_TRUE`).
+  `src/EarningsPage.cpp`, `src/MainWindow.cpp`, `src/UrTheme.cpp`. The
+  test file pins the same cases as apple's through `ProvideRowFor` and
+  `StateTextFor`, in the style of `ExtenderStatusPresentationTest.cpp`
+  (`UR_TEST`, `UR_EXPECT_TRUE`), and `ProvideRowOf` over a status struct
+  carrying every field of `urnet::ExtenderProvideStatus` under the sdk's
+  names: the eleven fields the row does not read change nothing when set
+  to noise, each field it reads moves the row on its own, and a hidden
+  row, with no status or an unsupported one, never calls the setting
+  reader.
 - windows (`app`): change `src/App/ExtenderPresentation.h`,
   `src/App/ExtenderPresentation.cpp`, `src/App/SdkHost.h`,
   `src/App/SdkHost.cpp`, `src/App/MainWindow.xaml`,
   `src/App/MainWindow.xaml.h`, `src/App/MainWindow.xaml.cpp`,
   `src/App/ConnectPage.h`, `src/App/ConnectPage.cpp`,
-  `src/App/WalletPage.h`, `src/App/WalletPage.cpp`; the same cases through
-  `ExtenderProvideRowModelFor` in `tools/extender-tests.cpp`, built with the
-  command in that file's header, which is the only test the windows tree
-  can run on the build host.
+  `src/App/WalletPage.h`, `src/App/WalletPage.cpp`; the same cases
+  through `ExtenderProvideRowModelFor` and `ComposeExtenderProvideText`
+  in `tools/extender-tests.cpp`, built with the command in that file's
+  header, which is the only test the windows tree can run on the build
+  host, and `ExtenderProvideStatusViewOf` over a status struct carrying
+  every field of `urnet::ExtenderProvideStatus` under the sdk's names:
+  the ten fields the view does not read change nothing, each field it
+  reads, `Enabled` among them, changes the view on its own, and a hidden
+  row, with no status or an unsupported one, never calls the setting
+  reader.
 
 ### O. Extender statistics series
 
@@ -1749,7 +1838,13 @@ holds at zero when providing stops. A restarted role reports counters
 from zero, which the series takes as a gap (a zero point and a rebase,
 deltas resuming the next tick), and a restart within one interval clamps
 its negative deltas to zero. The section's presence is therefore never
-read from the points (O4).
+read from the points (O4). The throughput listener is notified on every
+tick while any series has an active point in its window, and once when
+a series goes quiet or starts. Every series is evaluated whenever
+any series appends, so another series can spend a series' one idle
+notification before its own stats exist; a series whose stats appear
+or vanish re-arms it, so the change notifies once even inside an idle
+window, and the idle ticks after it stay silent (sdk e035c92).
 
 O4. App sections. An Extender statistics section directly above the
 provider statistics section, on every screen that shows the provider
@@ -1760,9 +1855,9 @@ already explains the state. The role is running while
 through the status listener of N2 within a second of a change, and which
 is `GetExtenderStats() != nil` on the device (the controller's
 `GetExtenderStats()` of O3 is the same fact one tick late, for a consumer
-with no status listener); the throughput listener is silent when a role
-stops inside an idle window, so the section's visibility follows the
-pushed status and never the throughput tick or the point count.
+with no status listener); the points outlive the role, held
+at zero (O3), so the section's visibility follows the pushed
+status and never the throughput tick or the point count.
 Contents: the title and the transfer chart of the extender series over
 the `Remote` route with the title Extender, the same 60 second window as
 the provider chart, bytes per second and reads per second. The read-only
@@ -1798,8 +1893,9 @@ of the provider section: `provider_statistics` and the existing
 
 O7. Tests. Connect: the counters over a relayed session on each carrier,
 both directions, bytes and reads, with the decoy proxy and the DNS
-forwarder proven not to count. Sdk: `GetExtenderStats` nil while the role
-is not running (off, not providing, hosted, closed) and live while it
+forwarder proven not to count. Sdk: `GetExtenderStats` nil
+while the role is not running (off, not providing, a role
+that could not start, hosted, closed) and live while it
 is, equal to the server's own counters after a relayed session and zero
 again after a restart; the rpc mirror, including the missing method
 keeping the session and the unreachable device answering nil with
@@ -1807,10 +1903,16 @@ nothing cached; the extender series sampling (deltas in the `Remote`
 route with empty `Local` and `Block`, holds, the series held at zero
 after the stats go nil, the gap and the clamp on a restart, the first
 point one tick after the first stats) in the existing series test style,
-and the poll loop against a device whose stats come and go; bindings.
-Apps: the section's visibility rule as a pure function over every
-combination and its chart binding in each app's test style; on Linux and
-Windows the provider section's own visibility and bindings the same way.
+and the poll loop against a device whose stats come and go; a series
+notifying once when its stats appear or vanish after another series spent
+its idle notification; bindings. Apps: the section's visibility rule
+as a pure function over every combination, in each app's test style,
+with the expected rows written out rather than computed from the rule's
+own expressions, and on Linux and Windows the provider section's own
+visibility in the same table; the chart binding where an app's tests
+reach views as values (apple, through the section's chart factory), while
+on Linux and Windows, whose tests are pure presentation code with no
+widget behind them, the chart bindings are reviewed.
 
 O8. Layout of the statistics sections. The extender section of O4 and,
 on Linux and Windows, the provider section of O5 it sits above, mapped
@@ -1820,8 +1922,21 @@ The rule. On every screen the provider statistics are visible while the
 provide control mode is not never and the device reports provider packet
 stats, the gate `ProviderStatsSection` already applies on macOS
 (`deviceManager.provideControlMode != .Never && throughputStore.hasProviderStats`);
-otherwise the provider section shows its title, the provide mode row, the
-extender row and the `providing_disabled` line, and nothing else. The
+otherwise the provider section shows its title, the provide mode row,
+the extender row and the `providing_disabled` line, and nothing else.
+Whether the device reports provider packet stats is read from the view
+controller on the throughput tick, except right after a controller
+opens, which an app does whenever its window is shown or a device
+arrives: a new controller reports no provider stats until its first
+sample and notifies only after its second, so reading it then would
+collapse the provider and extender statistics under `providing_disabled`
+for about two seconds on a device that is providing. At those moments
+the app asks the device whether `GetProviderPacketStats()` answers
+stats, one rpc, never on a UI thread where the app forbids rpcs; the
+ticks after it read the controller, which has sampled by then, and
+a later change of that presence reaches a tick (O3). No hold timer
+stands in for the read, since a timer cannot tell a device that
+stopped providing from a controller that has not sampled yet. The
 extender section is visible while the provider statistics are visible and
 the role is running, the `enabled` of the status model the row of N7
 already keeps (O4), which changes on the pushed status and not on the
@@ -1872,17 +1987,25 @@ macOS.
 - Placement: `EarningsView.providerCard`, between the reliability block
   and `ProviderStatsSection(navigate:)`: `if extenderStatsVisible {
   ExtenderStatsSection(); Spacer().frame(height: 12); Divider();
-  Spacer().frame(height: 12) }`, where `extenderStatsVisible` is the
-  provider gate above and `deviceManager.extenderProvideStatus.enabled`
-  (N7's model, fed by the pushed status). The card then reads
-  reliability, divider, extender statistics, divider, provider
-  statistics, each divider with its 12 pt below as today.
+  Spacer().frame(height: 12) }`, where
+  `extenderStatsVisible` is the provider gate above,
+  `providerStatisticsVisible(provideControlMode:hasProviderStats:)`
+  in `ProviderStatsSection.swift`, which the reliability
+  block and `ProviderStatsSection` read as well, and
+  `deviceManager.extenderProvideStatus.enabled` (N7's model, fed by the
+  pushed status). The card then reads reliability, divider, extender
+  statistics, divider, provider statistics, each divider with its 12 pt
+  below as today.
 - Store: `ThroughputStore` gains `@Published private(set) var extenderPoints: [ThroughputPoint]`
   from `contractViewController.getExtenderThroughputPoints()`, read in
   `update()` on the same tick as the provider points and published only
-  when changed, cleared in `reset()`. The store reads no extender stats:
-  the section's presence is the status's `enabled`, and the sdk polls
-  `getExtenderStats()` itself for the series.
+  when changed, cleared in `reset()`. `setup(_:)`, which opens a new
+  controller whenever the window shows again or the device changes, seeds
+  `hasProviderStats` from `device.getProviderPacketStats()` through
+  `update(hasProviderStats:)`, one rpc on the main queue, and every tick
+  after it reads the controller (the rule above). The store reads no
+  extender stats: the section's presence is the status's `enabled`, and
+  the sdk polls `getExtenderStats()` itself for the series.
 - Provider section: unchanged but for the read-only row of N7 under
   `ProvideModeRow`; the section's tap still opens `.providerContracts`.
 
@@ -1892,20 +2015,31 @@ The provide mode row moves from above the reliability group into the new
 Provider statistics group, where macOS keeps it; reliability stays above
 both new groups, as it is above the provider section on macOS. The
 network pane then reads, top to bottom: the ranking block, the
-leaderboard switch and note, the points block, the snackbar surface, the
+leaderboard switch and note, the points block, the snackbar surface,
+on Windows the earning multipliers group, which stays in place, the
 Network reliability group, the Extender statistics group, the Provider
 statistics group. The provider section's disabled state is the reliability
 group's mechanism, the group header's meta label, rather than a body line:
 `providing_disabled` shows there while the provider statistics are not
 visible, and the chart rows collapse. The provider transport bar opens the
-existing `TransportSheet` (linux) or `TransportSettingsSheet` (windows) in
-its provider kind, which both already support. Neither app has a provider
+existing `TransportSheet` (linux) or `TransportSettingsSheet`
+(windows) in its provider kind, which both already support. The sheet
+closes when the window hides to the tray, since a sheet may not
+outlive the surface that feeds it: left open, it would float alone
+over the desktop on Linux and come back on Windows holding a draft
+and a transport status read before the hide. A minimize on Windows
+keeps the sheet, as it keeps the window. Neither app has a provider
 contracts screen fed by provider data: `ContractsSheet` and
 `ClientContractsSheet` accept `ContractDetailsMode::Provider` but read the
 client feed, and neither `SdkHost` opens
 `openProviderContractDetailsViewController`; so the group header is
 static until both have a provider contracts feed, the deferral O5
-records. Charts are the pane's 132 px rows, the Blocked chart at 66.
+records. Charts are the pane's 132 px rows and the Blocked chart is
+66 px, where macOS draws it at 64 pt; all three apps keep these heights.
+The chart's 30 px stats band and two 13 px peak label bands leave that
+height a plot of about 10 px, which the chart's 8 px floor on each half
+of the plot draws 16 px tall, legible as the secondary series it is; a
+change to the half height layout changes the three apps together.
 
 Linux.
 
@@ -1925,23 +2059,40 @@ Linux.
   margins 10 top and bottom, exactly pane B's bar) whose `on_activate`
   opens `providerTransportSheet_`, a `TransportSheet(*parent, host_, TransportSheet::Kind::Provider)`
   created on first use as `ConnectPage::OpenTransportSheet` does;
-  `blockedChartRow_` (66, `TransferChart(T_("blocked", "Blocked"), Route::Block, kUrCoral, kUrMutedCoral)`).
-  The extender header and chart row `set_visible(extenderVisible)`; the
-  three provider rows `set_visible(providerVisible)`; the bar gets
-  `BeginLoading()` when its row becomes visible before a distribution and
-  `SettleEmpty()` when hidden.
+  `blockedChartRow_` (66,
+  `TransferChart(T_("blocked", "Blocked"), Route::Block, kUrCoral, kUrMutedCoral)`
+  with `set_content_height(kBlockedChartHeight - 1)`: a
+  `Gtk::DrawingArea`'s content height is also its minimum, so
+  the chart's default 128 would grow the row to 129, and 65 with
+  the row's 1 px hairline is 66). The extender header and chart
+  row `set_visible(extenderVisible)`; the three provider rows
+  `set_visible(providerVisible)`; the bar gets `BeginLoading()` when its
+  row becomes visible before a distribution and `SettleEmpty()` when
+  hidden.
 - Feed: `SdkHost` gains `ProviderThroughputPoints()`,
-  `ExtenderThroughputPoints()` (each `std::optional<urnet::ThroughputPointList>`,
-  the shape of `ThroughputPoints`) and `HasProviderStats()`
-  (`contractVc_->getProviderPacketStats().has_value()`), all nullopt or
-  false with no session; the running state of the role is the `enabled`
-  of the `GetExtenderProvideStatus()` the N7 drawer event already
-  carries, so the host reads no extender stats. `MainWindow` forwards
-  `DrawerEvent`s to `earningsPage_->OnHostEvent(event)` under the same
-  visibility gate as `connectPage_`; on `DrawerEvent::Throughput` the page
-  pulls the two point lists, the window, `ProviderTransportDistribution()`
-  and the provider flag, in one `PullProviderThroughput` that mirrors
-  `ConnectPage::PullThroughput`, and applies the visibility rule from
+  `ExtenderThroughputPoints()` (each
+  `std::optional<urnet::ThroughputPointList>`, the
+  shape of `ThroughputPoints`), `HasProviderStats()`
+  (`contractVc_->getProviderPacketStats().has_value()`)
+  and `DeviceHasProviderStats()`
+  (`device_->getProviderPacketStats().has_value()` under the host mutex,
+  one rpc), all nullopt or false with no session; the running state
+  of the role is the `enabled` of the `GetExtenderProvideStatus()`
+  the N7 drawer event already carries, so the host reads no
+  extender stats. `MainWindow` forwards `DrawerEvent`s to
+  `earningsPage_->OnHostEvent(event)` under the same visibility
+  gate as `connectPage_`, and its `reconcilePresentation` calls
+  `earningsPage_->SetPresentationActive(windowVisible_)` beside the
+  connect page's: hiding to the tray hides `providerTransportSheet_`,
+  and showing re-reads as a device lifecycle does, since every
+  drawer event was dropped while hidden. The page pulls the two
+  point lists, the window, `ProviderTransportDistribution()` and
+  the provider flag in one `PullProviderThroughput(bool forced)`
+  that mirrors `ConnectPage::PullThroughput`: forced at
+  build, on `DrawerEvent::DeviceLifecycle` and on show, when
+  the host may just have opened a new controller, it asks
+  `DeviceHasProviderStats()`, and on `DrawerEvent::Throughput` it
+  reads `HasProviderStats()`. It applies the visibility rule from
   `extender::StatsSectionsFor(providingEnabled, hasProviderStats, extenderRunning)`
   in `ExtenderProvidePresentation.hpp`, which returns `{providerVisible,
   extenderVisible, disabledMeta}`. `ApplyProvideState` keeps the
@@ -1958,17 +2109,24 @@ Windows.
 - Markup: `MainWindow.xaml`, `WalletPaneC`, after `ReliabilityCard`:
   `WalletExtenderStatsHeader` (`Border` on `UrGroupHeaderStyle` with
   `TextBlock x:Name="WalletExtenderStatsHeading"` on `UrGroupHeaderTextStyle`),
-  `WalletExtenderChartRow` (`Border` on `UrPaneRowStyle`, `MinHeight="0"`,
-  `Padding="0"`, holding `<Grid x:Name="WalletExtenderChartHost" Height="132" />`);
+  `WalletExtenderChartRow` (`Border` on `UrPaneRowStyle`,
+  `MinHeight="0"`, `Padding="12,0"`, the inset of
+  every chart row on the Connect page, holding
+  `<Grid x:Name="WalletExtenderChartHost" Height="132" />`);
   `WalletProviderStatsHeader` (the same header with
   `WalletProviderStatsHeading` and, right aligned on `UrPaneMetaStyle`,
   `WalletProviderStatsStatus` for `providing_disabled`); the moved
   `WalletProvideModeButton` row; `WalletExtenderRow` (N7);
   `WalletProviderLocalChartRow` with `<Grid x:Name="WalletProviderLocalChartHost" Height="132" />`;
-  `WalletProviderTransportBarRow` with `<Grid x:Name="WalletProviderTransportBarHost" />`;
-  `WalletProviderBlockedChartRow` with `<Grid x:Name="WalletProviderBlockedChartHost" Height="66" />`.
-  Every chart host is clipped as `ConnectPage::BuildCharts` clips its
-  three. `WalletPage::ApplyStrings` sets the two headings.
+  `WalletProviderTransportBarRow`, a plain `Border` that exists only to
+  be collapsed, with `<Grid x:Name="WalletProviderTransportBarHost" />`,
+  since the `TransportBar` root is its own pane row button
+  with its hairline and padding, as the Connect page's bare
+  `TransportBarHost` is; `WalletProviderBlockedChartRow` with
+  `<Grid x:Name="WalletProviderBlockedChartHost" Height="66" />`, the two
+  chart rows shaped as the extender's. Every chart host is clipped as
+  `ConnectPage::BuildCharts` clips its three. `WalletPage::ApplyStrings`
+  sets the two headings.
 - Charts: `WalletPage::BuildCharts`, called from `Initialize`, creates
   `extenderChart_` (`TransferChart(host, Localized("extender"), ThroughputRoute::Remote, colors::kUrLightBlue, colors::kUrPink, CountUnit::Reads)`),
   `providerLocalChart_` (`Localized("local")`, `Local`, `kUrGreen`, `kUrPink`),
@@ -1980,22 +2138,45 @@ Windows.
   `providerBlockedChart_` (`Localized("blocked")`, `Block`, `kUrCoral`,
   `kUrMutedCoral`). `chartTimer_`, a `DispatcherQueueTimer` at `ConnectPage`'s
   interval, ticks the three charts and the bar in `OnChartTick` only while
-  `WalletView()` is visible, the gate `ConnectPage::OnChartTick` applies to
-  `ConnectView()`.
+  `WalletView()` is visible, the gate `ConnectPage::OnChartTick`
+  applies to `ConnectView()`. `AppController::HideWindow`
+  closes the provider transport sheet before the window hides
+  to the tray, through `MainWindow::CloseSheetsForHide()` and
+  `WalletPage::CloseProviderTransportSheet()`, whose `Dialog().Hide()`
+  ends the sheet's `ShowAsync` and clears the `sheetOpen` gate as any
+  dismissal does; a minimize, which also stops the presentation, keeps
+  the sheet.
 - Feed: `SdkHost` gains `ProviderThroughputSnapshot{providerPoints,
-  extenderPoints, windowSeconds, hasProviderStats, providerDistribution}`,
-  a `ProviderThroughputHandler` set by `SetProviderThroughputHandler`, and
-  `CurrentProviderThroughput()` for the seed when the wallet view shows.
-  `PublishThroughput` fills it on the same tick from
+  extenderPoints, windowSeconds, hasProviderStats,
+  providerDistribution}`, the last two `std::optional`
+  and engaged when a publish carries a reading, a
+  `ProviderThroughputHandler` set by `SetProviderThroughputHandler`,
+  and `CurrentProviderThroughput()` for the seed when the wallet
+  view shows, which `WalletPage::Initialize` also takes through
+  `ResyncProviderStats()` before its first `ApplyStatsSections`.
+  `PublishThroughput` fills the snapshot on the same tick from
   `getProviderThroughputPoints()`, `getExtenderThroughputPoints()`,
-  `getProviderPacketStats().has_value()` and
-  `MapTransportDistribution(getProviderTransportDistribution())`, and
-  publishes the provider distribution only when it changed, as the client
-  one; the host reads no extender stats, since the running state of the
-  role is the `enabled` of the `ExtenderProvideStatusView` of N7.
-  `WalletPage::ApplyProviderThroughput` sets the points on the charts,
-  the distribution on the bar (`BeginLoading` before the first, `SettleEmpty`
-  when hidden), and the visibility of the two groups from
+  the controller's `getProviderPacketStats().has_value()` and
+  `MapTransportDistribution(getProviderTransportDistribution())`,
+  and publishes the provider distribution only when it changed, as
+  the client one. The moments that open a controller ask the device
+  instead through `DeviceHasProviderStatsLocked()`, one rpc on the
+  host's worker with its mutex held, since the UI thread takes no host
+  lock and makes no rpc: the initial publish of `SubscribeDrawer()`
+  when a presentation opens, and a `BootstrapSession()` with no
+  presentation, which caches the answer for the seed. A hide to the tray
+  keeps what the host knew: `ClosePresentationLocked(sessionEnding)`
+  and `ClearDrawer(sessionEnding)` forget the extender provide
+  status and the provider flag, and push the empty status and
+  `hasProviderStats` false, only when the session ends; a hide pushes
+  `hasProviderStats` disengaged, so a window shown again keeps
+  its rows and groups until the new presentation's reads confirm
+  them. The host reads no extender stats, since the running state
+  of the role is the `enabled` of the `ExtenderProvideStatusView`
+  of N7. `WalletPage::ApplyProviderThroughput` sets the points on
+  the charts, the distribution on the bar (`BeginLoading` before
+  the first, `SettleEmpty` when hidden), the provider flag when the
+  snapshot carries one, and the visibility of the two groups from
   `ExtenderStatsSectionsFor(providingEnabled, hasProviderStats, extenderRunning)`
   in `ExtenderPresentation.h`, the same shape as linux's;
   `ApplyProvideState` keeps `providingEnabled_` and
@@ -2062,32 +2243,40 @@ Checklist and tests.
 
 - apple (`app/network`): new `Main/Account/Earnings/ExtenderStatsSection.swift`;
   change `Main/Account/Earnings/EarningsView.swift`,
-  `Shared/ViewModels/ThroughputStore.swift`, `Shared/Views/Stats/TransferChart.swift`
-  (`countUnit`), `Shared/Utilities/RateFormatUtils.swift` (`formatReadRate`).
+  `Main/Account/Earnings/ProviderStatsSection.swift`
+  (`providerStatisticsVisible`),
+  `Shared/ViewModels/ThroughputStore.swift`,
+  `Shared/Views/Stats/TransferChart.swift` (`countUnit`),
+  `Shared/Utilities/RateFormatUtils.swift` (`formatReadRate`).
   Tests: new `networkTests/ExtenderStatsSectionTests.swift` in the style of
   `TransportStatsTests.swift`: the visibility rule as a pure function
   (`extenderStatsSectionVisible(provideControlMode:hasProviderStats:extenderRunning:)`,
-  every combination), `formatReadRate(340) == "340 reads/s"` and the
-  compact forms, the store's mapping of an extender point list and of an
-  empty one.
+  every combination) and its following `providerStatisticsVisible`
+  for every mode and stats flag, the chart binding through
+  `ExtenderStatsSection.chart(points:window:)` (route, title, colors,
+  unit, height and window), `formatReadRate(340) == "340 reads/s"` and
+  the compact forms, the store's mapping of an extender point list and of
+  an empty one.
 - linux (`app`): change `src/SdkHost.hpp`, `src/SdkHost.cpp`,
   `src/EarningsPage.hpp`, `src/EarningsPage.cpp`, `src/MainWindow.cpp`,
   `src/TransferChart.hpp`, `src/TransferChart.cpp`, `src/Formatters.hpp`,
   `src/Formatters.cpp`, `src/ExtenderProvidePresentation.hpp`
   (`StatsSectionsFor`). Tests: `StatsSectionsFor` over every combination
-  in `tests/ExtenderProvidePresentationTest.cpp`, and `FormatCountRate` in
-  a new `tests/FormattersTest.cpp` if `Formatters.cpp` links into the test
-  binary without GTK (it depends only on the standard library), otherwise
-  the label composition stays a pure helper in the presentation header and
-  is tested there.
+  in `tests/ExtenderProvidePresentationTest.cpp`, as a literal table; the
+  reads label composed by a pure helper in a header free of the sdk and
+  GTK and tested in the unit binary, since `Formatters.cpp` includes the
+  sdk header and glib and does not link into it; the chart bindings are
+  reviewed (O7).
 - windows (`app`): change `src/App/SdkHost.h`, `src/App/SdkHost.cpp`,
-  `src/App/MainWindow.xaml`, `src/App/MainWindow.xaml.cpp`,
+  `src/App/AppController.cpp`, `src/App/MainWindow.xaml`,
+  `src/App/MainWindow.xaml.h`, `src/App/MainWindow.xaml.cpp`,
   `src/App/WalletPage.h`, `src/App/WalletPage.cpp`, `src/App/TransferChart.h`,
   `src/App/TransferChart.cpp`, `src/App/StatsFormat.h`, `src/App/StatsFormat.cpp`,
   `src/App/ExtenderPresentation.h`, `src/App/ExtenderPresentation.cpp`
-  (`ExtenderStatsSectionsFor`). Tests: `ExtenderStatsSectionsFor` over every
-  combination in `tools/extender-tests.cpp`; the rest is reviewed, not
-  compiled, on the macOS build host, as the windows tree has been.
+  (`ExtenderStatsSectionsFor`). Tests: `ExtenderStatsSectionsFor` over
+  every combination in `tools/extender-tests.cpp`, as a literal table;
+  the chart bindings and the rest are reviewed, not compiled, on the
+  macOS build host, as the windows tree has been.
 
 ### I. Tests
 
@@ -2276,9 +2465,9 @@ Phase 5b follows 4 because both touch the server.
    a setting written while the device process is down is read back at
    once and applied at the next sync; each desktop app renders every
    state with its color and text from `State` and `ErrorCase` alone,
-   hides the row (never disables it) when unsupported and never calls
-   the setter while it is hidden, and writes the setting through the
-   device.
+   hides the row (never disables it) when unsupported, neither reads
+   the setting nor calls the setter while it is hidden, and writes the
+   setting through the device.
 12. Extender statistics: O1 to O8. 12a (connect): the counters and their
    tests. 12b (sdk, after 11a and 12a): the device surface, the rpc
    mirror, the series with the controller's latest stats beside it,
@@ -2290,7 +2479,10 @@ Phase 5b follows 4 because both touch the server.
    the series follows the counters, holds at zero when the role stops and
    takes a restart as a gap; each desktop app shows the extender section
    only with the provider one and a running role, keyed off the pushed
-   status, and Linux and Windows show the provider section as macOS does.
+   status, keeps both sections when its window shows again or a device
+   arrives instead of collapsing them while a new controller takes its
+   first samples, and Linux and Windows show the provider section as
+   macOS does.
 
 ## 6. Known limitations
 
