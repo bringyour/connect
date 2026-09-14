@@ -8900,7 +8900,17 @@ stops there, because its first hop's receiver is this listener, and so
 does every download whose provider is 200 ms away, for the same reason
 on the other hop. Raising the per-connection maximum to 32 MiB moves
 that ceiling to about 1.3 Gb/s at 200 ms, and the endpoints' own buffers
-become the limit again, which is where the limit belongs.
+become the limit again, which is where the limit belongs. Amended in
+place (§50.5): the maximum is a ceiling and not a rate. With the initial
+windows left at the library's defaults, which the build rightly did, a
+stream reaches the maximum only by quic-go's ramp, about half a round
+trip per doubling in the protocol when the receiving application
+drains, six doublings to 6 MiB and eight to 32; the build measured the
+climb as neither fast nor reliable at 200 ms. Scaling the initial
+window with the maximum is the knob and trades directly against the
+safety argument above; the record does not pick it, and the reading
+that names the fault when the ceiling is not reached is the window
+trace against the protocol's ramp.
 
 ### 46.4 What the windows become, and the budget the server does not have
 
@@ -8974,6 +8984,13 @@ added delay, one stream, the sender writing as fast as the receiver
 consumes; at the default the stream delivers about 31 MB/s and at a
 32 MiB maximum about 160 MB/s, the window over the round trip in both
 cases, and the second figure does not appear on the tree as it stands.
+Amended in place (§50.2, §50.4): the builder was right to refuse those
+absolutes, because the harness's own ceiling on that path sits at 30 to
+40 MB/s and both figures lie at or above it. The assertion is the ratio
+between the two arms with the receiver's window trace showing the
+second arm climbing past 6 MiB, on an instrument whose ceiling has
+first been measured above the higher arm with the windows seeded away;
+the absolutes are §50.2's prediction for such an instrument.
 
 ### 46.7 The accept-side socket request: separate, and second
 
@@ -9265,6 +9282,11 @@ platform's default imposes; the 51.2 MiB inversion point, which the
 cell then confirmed between 24 and 52. Each is arithmetic from a
 constant read at a line and a factor measured once, and each is stated
 with the constant that produces it so that a reader can recompute it.
+Each is a steady-state bound, window over the round trip, met in this
+record's own readings at 0.88 to 0.97 of the figure; §50.3 states the
+two deductions the protocol contains and the band a measurement should
+land in, and §50.1 derives why the one-and-a-half factor a server-tree
+reading suggested is not in the protocol.
 
 Predicted and pending: the namespace cell's 109 at 200 ms, the
 reporter-regime readings, the cadence's 156, the upload cell's 2.4 s.
@@ -9745,3 +9767,160 @@ the ledger: the loop pays one full iteration per Pack, with
 round trip and the only such cost on the loop's path; it is real, it is
 small against the pipeline bound, and it is the first thing to look at
 if a native cell ever shows a per-Pack cost that grows with the path.
+
+## 50. The bound, the ramp and the instrument's ceiling: what the derived figures are
+
+The server build returned a correction that would touch every derived
+figure in the record: that a window-limited stream delivers not its
+window over the round trip but its window over about one and a half
+round trips, because the sender stalls for part of each round trip
+waiting on the window update, measured as 18 to 23 MB/s against a 6 MiB
+window where the bound gives 31. The coordinator asked for the factor
+to be derived from the protocol before anything is restated. Derived,
+it is not there; what is there is a bound met in steady state within
+two deductions the protocol does contain, and a measurement taken where
+the instrument's own ceiling sits. The figures stand as bounds and are
+restated below as bounds with their deductions, not divided by a factor
+the protocol does not produce.
+
+### 50.1 The bound, from quic-go's flow controller
+
+The receiver grants credit in steps. `hasWindowUpdate` is true when the
+credit remaining, `receiveWindow − bytesRead`, has fallen to three
+quarters of the window size, that is when a quarter of the window has
+been read since the last grant (`flow_controller_base.go:35–38`,
+`WindowUpdateThreshold` = 0.25, `internal/protocol/params.go:37`); the
+grant then sets `receiveWindow = bytesRead + receiveWindowSize`
+(`:43–51`). `bytesRead` advances only when the application reads
+(`addBytesRead`, `:31–33`, called from the stream's `Read`). So, with d
+the one-way delay and the application draining as data arrives, the
+sender's limit at time t is the read offset one round trip ago, rounded
+down to the last quarter, plus the window:
+
+    S(t) ≤ ⌊S(t − RTT)⌋_quarter + W
+
+The sender fills its credit in a burst of a quarter window when each
+grant arrives and then waits. The grant that lets it send the quarter
+ending at base + W is triggered when the receiver reads byte base, and
+byte base was the last byte allowed by the grant three before; that
+byte was sent when its grant arrived and is read half a round trip
+later, so the new grant arrives one round trip after the burst it
+follows. Four grants per round trip, a quarter window each: the bound
+is W over one round trip exactly, the sender idle between bursts and
+never short of credit. The stall the correction describes is real, a
+sender at rest three quarters of each round trip in bursts of a quarter
+window, and it costs nothing, because the bursts are timed by the
+grants and the grants by the reads one round trip earlier. The
+transfer layer's own window has the same shape and the record has its
+tightness measured: 68.6 Mb/s at 200 ms against 71 derived at the
+shipping 2 MiB (§47.9), 0.97 of the bound, and 0.88 to 0.91 across a
+fourfold sweep of window and round trip together in
+`TestAFlowDeliversWhatItsWindowPermits`.
+
+Two deductions the protocol does contain. The grant is a frame that
+rides the receiver's next packet, and a pure receiver's next packet is
+its next acknowledgement, at most `MaxAckDelay` = 25 ms after the read
+(`internal/protocol/params.go:150`): a fraction 25/RTT of the bound at
+worst, 12 per cent at 200 ms and half that in the mean. And the ramp:
+the window doubles when the last half window was read in under
+4 × fraction × SmoothedRTT (`flow_controller_base.go:55–72`), which a
+window-limited flow satisfies, since it reads a window per round trip
+and so half a window in half of one; each doubling therefore takes
+about half a round trip of reading, and the six from 512 KiB to 6 MiB
+about three round trips, 0.6 s at 200 ms, provided the application
+drains. A run averaged over its whole length pays the ramp as a
+fraction of the run; a steady-state reading after it pays nothing. So a
+6 s run at 200 ms sits near 0.9 of the bound from the ramp and 0.94
+from the grant delay, about 0.85 together; 0.67 is not reachable from
+the protocol.
+
+What would produce 0.67. The application not draining, so that
+`bytesRead` and with it every grant lags the arrivals; in this tree the
+H3 transport's reader hands stream bytes to a channel of
+`TransportBufferSize` = 32 (`transport.go:2044`) that the route reader
+drains into the transfer path, so a receiver whose transfer path is
+busy holds grants back. Or the ramp not completing, which the same lag
+causes, since the doubling condition is a read rate. Or the instrument.
+The reading that separates them is the window trace, `receiveWindowSize`
+over time on the receiving end, which the connection window exposes
+through `AllowConnectionWindowIncrease` and the stream window through
+qlog or a test-only read: a trace at 6 MiB with throughput at 0.67 names
+a grant delay the model does not have, and the next reading is the
+MAX_STREAM_DATA timing against the reads; a trace still climbing names
+the ramp.
+
+### 50.2 The measurement, placed
+
+The builder's own readings put the 18 to 23 inside the instrument's
+band. With the initial windows seeded to 32 MiB, which removes flow
+control as a limit, the path gave 29.3 MB/s against 37.0 auto-tuned;
+identical configurations gave 14, 28 and 56 MB/s across runs; and the
+6 MiB bound's 31 MB/s sits inside the 30 to 40 where that path's own
+ceiling lies. A reading of 18 to 23 against 31 taken there is a reading
+of the instrument and of the ramp, not of the protocol. The
+coordinator's judgement that the throughput band should not be
+asserted was right, and §46.6 is amended so that its assertion is the
+ratio between the two arms with the window trace, not the absolute.
+
+Prediction, so that the factor is settled by a cell and not by two
+readings: two quic-go endpoints with the receiver's application
+draining at once, 200 ms, the default 6 MiB maximum, run for at least
+twenty round trips and read after the ramp, on an instrument whose own
+ceiling has first been measured above 60 MB/s with the windows seeded
+away, read 26 to 30 MB/s, 0.85 to 0.95 of the bound. Refuted by a
+steady-state reading at or below 21 with the window trace at 6 MiB and
+the ceiling proven, which would mean the grant path delays what the
+model says it does not, and the record would then carry the factor as
+measured.
+
+### 50.3 What the figures in the record are, restated
+
+Every derived figure in this record, the 109, 160, 415 and 830 for
+download, the 129, 156 and 218 for upload and the 218 the platform's
+default imposes, is window × goodput factor over the round trip: the
+protocol's steady-state bound at the layer that binds. Each carries the
+two deductions above: the ramp, a fraction of a run and zero in steady
+state, and the grant delay, at most `MaxAckDelay` over the round trip at
+the carrier and at most `AckCompressTimeout`, 10 ms (`transfer.go:1016`),
+over it at the transfer layer, 12 and 5 per cent at 200 ms at the
+worst. A reader should expect a steady-state measurement to land at
+0.85 to 0.97 of the figure, as the record's own two transfer-layer
+readings did, and should read anything against a figure that sits
+inside the instrument's band as the instrument. The figures are not
+divided by 1.5, and the record does not carry a false precision either:
+the band is stated here once and §47.9 points to it. If §50.2's cell
+refutes the derivation, the figures are restated then, by the measured
+factor and in place.
+
+### 50.4 The rule
+
+Two instruments hit their own ceilings on the same day from different
+trees: the in-process fixture's frame pump (§49.4) and the server
+harness's 30 to 40 MB/s band. The rule, so that it is a rule and not
+two anecdotes: a throughput assertion is meaningful only below the
+instrument's own ceiling, and the ceiling is measured before the
+assertion is written, by running the instrument with the constraint
+under test removed, the window seeded past any bound, the payload
+swept, the delay element at zero, and reading what it delivers then.
+An assertion is written only against values under a margin of that
+ceiling, the campaign's margin, and a cell whose prediction lies above
+it is re-arranged, window and round trip together as §47.4 now says,
+until the prediction lies below. Every cell in §41 to §47 that states a
+band is read under this rule from here on.
+
+### 50.5 What the server change buys, corrected in §46
+
+The builder left the initial windows at quic-go's defaults, which is
+the safe choice and the one §37.21 argues for: an initial window is
+credit granted before any evidence and memory the sender commits per
+connection at once. It means the raised maximum is a ceiling and not a
+rate: reaching it needs the ramp, six doublings at about half a round
+trip each in the protocol when the application drains, and the
+builder's measurements found the climb neither fast nor reliable on a
+200 ms path. Scaling the initial window with the maximum is the knob,
+and it trades against the safety argument directly; the record does not
+pick it. What the record adds is the reading that says which of the
+two is at fault when the ceiling is not reached: the window trace
+against the protocol's half-round-trip-per-doubling, with a slow trace
+naming the drain at the application, not the maximum. §46.3 and §46.6
+are amended in place to say that the ceiling is a ceiling.
