@@ -4731,14 +4731,16 @@ NAT's download side has no share, and every ceiling is a constant.
 
 ### 37.7 Memory: the compounding, and the composite bound
 
-The same bytes are held in more than one place because there are three
-reliable layers, each keeping a retransmission copy: on a provider
-serving a download, the NAT's `DataPackets` until the inner
-acknowledgement, the Transfer frame until the Transfer acknowledgement,
-and the carrier's copy until the carrier's, quic-go's stream data or
-the kernel's socket buffer. Three copies at the sender; at the
-receiver, one, the tun's receive buffer until the application reads,
-plus the Transfer hold under loss. And a fourth on loop A, the upstream
+The same bytes are held in more than one place because more than one
+layer is reliable, each keeping a retransmission copy. On a client
+sending an upload there are three: gVisor's send buffer until the
+inner acknowledgement, the Transfer frame until the Transfer
+acknowledgement, and the carrier's copy until the carrier's, quic-go's
+stream data or the kernel's socket buffer. On a provider sending a
+download there are two, the Transfer frame and the carrier's: the NAT
+holds no segment after handing it to Transfer, because it does not
+retransmit (§38.11). At the receiver, one, the tun's receive buffer
+until the application reads, plus the Transfer hold under loss. And a fourth on loop A, the upstream
 socket's kernel buffer, which is the kernel's memory but the provider's
 host.
 
@@ -4900,9 +4902,10 @@ one hop's round trip; Transfer holds it until the far sequence
 acknowledges it, both hops plus our delays; the NAT or the tun holds it
 until the inner acknowledgement returns, the whole tunnel both ways. At
 one rate the three holds are T × rtt_D, T × rtt_C and T × rtt_B, and
-in production those stand roughly as 1 : 2 : 4, with the innermost
-layer the largest. In the cell, one wire, they are equal, which is why
-the cell could not have shown this.
+in production those stand about as P/2 : P + 5 ms : P + 10 ms on
+download, near 1 : 2 : 2 at the design point (§37.23), with the
+innermost layer the largest. In the cell, one wire, they are equal,
+which is why the cell could not have shown this.
 
 So the division rule is the one that makes the arithmetic come out and
 needs no knowledge of the binding order: each layer's share is its own
@@ -4941,8 +4944,8 @@ The phone under that rule. A 24 MiB budget is 25.2 MB. The achieved
 rate on a long path is `M / Σ rtt_L` over the copies, so in the cell's
 regime, where the three round trips are equal, the target holds to a
 67 ms wire and falls to 670 Mb/s at 100 ms and 335 at 200; in the
-production ratio the sum is 1.75 × the tunnel round trip, the target
-holds to a 115 ms tunnel and falls to 576 Mb/s at 200 ms. The layers
+production ratio the sum is 2.5 × the path plus 15 ms, the target
+holds to about 74 ms of path and falls to about 390 Mb/s at 200 ms. The layers
 that get less than they asked for lose nothing in consistency, since
 all sit at the same window over round trip; what falls is the rate,
 visibly, which is the intended failure mode. Two levers move the knee:
@@ -5140,10 +5143,10 @@ failure mode moves accordingly: not a window shrunk in advance for a
 path that might have needed it, but admission refused at the pool
 when the held bytes reach it, counted and visible.
 
-The advertisement does two jobs. A receiver that advertises remaining
-capacity, its share less what it holds (§37.3), is telling the sender
-about occupancy, not permission, and that is the quantity that turned
-out to matter. Its first job was loss recovery: a sender's window may
+The advertisement does two jobs. A receiver that advertises its hold's
+capacity from the delivered point (§37.3, §37.16) is telling the
+sender what it can hold, which bounds the sender's occupancy at the
+receiver, and that is the quantity that turned out to matter. Its first job was loss recovery: a sender's window may
 never exceed what the receiver can buffer around a hole. Its second is
 memory: a receiver at its budget throttles its senders instead of
 dropping, which is what TCP's window has always been, an occupancy
@@ -5326,9 +5329,10 @@ three are the shape this program has now seen seven times, something
 accurate standing in for the record that decides, and the fixture's
 wire capacity now belongs in every cell's record as a field.
 
-Predictions for the UDP cell, stated before it runs, at a 20 Mb/s
-drain with a UDP source above it: added delay 840 ms for the shipping
-constant, 6.7 s for a 16 MiB constant, not less than 600 ms for the
+Predictions for the UDP cell, stated before it runs (falsified by
+the cell, §37.15: the excess is refused at admission and never waits,
+so every arm added under 2 ms), at a 20 Mb/s drain with a UDP source
+above it: added delay 840 ms for the shipping constant, 6.7 s for a 16 MiB constant, not less than 600 ms for the
 rule as built, and tens of milliseconds for the corrected rule; a
 concurrent TCP flow's `Rtt.Mean − Rtt.Min` equal to that delay in each
 arm; the old-clamping arm with a 3.6 MB bet at 1.4 s against the
@@ -6163,7 +6167,7 @@ from §37.1 and the measured delays:
 So the loops stand near P/2 : P + 5 : P + 10 on download, not the
 1 : 2 : 4 §37.11 assumed, which overstated the inner loop; the phone's
 knee in §37.11 moves out accordingly, to about 74 ms of P at 24 MiB on
-download, and the memory ratio of §37.7 to about 1 : 2 : 2.
+download, and the memory ratio of §37.7 to about 1 : 2 : 2, as amended there.
 
 Today, at or above the reference budget, which is where a desktop sits,
 download, in binding order by P:
@@ -6372,13 +6376,16 @@ binding, and the achieved rate is the most the budget allows.
 Reassessed: at 22 ms it was an optimisation; at 400 ms, where memory is
 the only binding constraint, a third of the memory is a third of the
 throughput, so it moves to the second position in the landing order,
-directly after the transfer unit. The change is local to this tree: the
-NAT's held segment and the Transfer frame that carries it become one
-pooled buffer, the packetizer writing the packet at the frame's payload
-offset and the sequence framing in place, released when the later of
-the two acknowledgements arrives. Memory per flow goes from
+directly after the transfer unit. The change is local to this tree and
+applies on upload, in the client, where the three copies are: gVisor's
+held segment and the Transfer frame that carries it become one pooled
+buffer, the segment written at the frame's payload offset and the
+sequence framing in place, released when the later of the two
+acknowledgements arrives. Memory per upload flow goes from
 T × (rtt_D + rtt_C + rtt_B) to T × (rtt_D + max(rtt_C, rtt_B)), 84 to
-56 MB at 200 ms and 168 to 112 at 400. The carrier's copy cannot be
+56 MB at 200 ms and 168 to 112 at 400. On download the provider already
+holds two, since the NAT retains nothing (§38.11), and there is nothing
+to merge. The carrier's copy cannot be
 removed from this tree: quic-go copies stream data into its own
 buffers and the kernel into socket buffers; a kernel zero-copy send
 would pin our pages for the carrier's round trip instead of copying
@@ -7290,6 +7297,13 @@ sender's queue on the unpaced fixture, delivers at 55 to 107 Mb/s.
 
 ### 38.14 The half: not a units error, and not the scale; acknowledgements dropped at the sender's own handoff
 
+Refuted by measurement (§38.15): the handoff drop counters, the
+queue-full counters and the resend counters all read zero at both path
+lengths, and the residence inference below compared a whole-transfer
+population against a fixed ring of 128 samples. The units check in the
+first half of this section stands; the mechanism in the second half
+does not, and it is kept as the record of an inference and its flaw.
+
 Established by readings chosen in advance: growth factor 2.000, the
 divisor the measured minimum round trip exactly, the formula
 reproducing the window to three figures, reason "delivery", ceiling and
@@ -7613,3 +7627,285 @@ and the rule do not coexist as they stand. The first fails today only
 if the clamp is not where the source says it is, and it is; it is kept
 because it cannot pass by accident and because the design point is the
 regime it covers.
+
+## 39. Resolution of the open questions
+
+Each item below is buildable from this section without further design
+input, or names the measurement that resolves what source cannot.
+
+### 39.1 The contract acknowledged ahead
+
+Measured: 23 per cent of a contract's life promoted at 200 ms and 47 at
+400, about 45 over the first 200 MiB because the early contracts are
+interpolated from 1 MiB. The prefetch half exists: the destination
+contract queue retains the prefetched successor of every live send
+contract, so the platform round trip is off the data path. What
+remains is the acknowledged-ahead half, from source.
+
+The sender (`SendSequence`). `setContract` (`transfer.go`, the sender's
+`setContract`) stores the successor in `openSendContracts`, makes it
+`sendContract`, and clears `sendContractAcked`; `contractOpenAckCallback`
+sets it when the Pack carrying the contract frame is acknowledged; and
+the build promotes every no-acknowledgement Pack while it is clear
+(`:8596–8604`). The change: `sequenceContract` gains
+`acknowledgedAhead bool` beside `ackedByteCount` and `unackedByteCount`
+(`:14001–14014`). When the current contract's remaining bytes fall
+under the announce threshold, or at set time when the contract is
+smaller than that threshold, which the 1 MiB first contract is, the
+sequence takes the successor from the manager's queue
+(`TakeContract`, non-blocking; the queue keeps a spare by the same
+threshold), builds it with `newSequenceContract`, adds it to
+`openSendContracts` without touching `sendContract`, and sends one
+reliable control Pack: sequence-numbered, acknowledged, no data frames,
+`contract_frame` set, and a new `bool contract_ahead = 13` on `Pack`.
+Its `AckCallback` is `contractOpenAckCallback` for the successor,
+which now sets `acknowledgedAhead`. At exhaustion `setContract`
+initialises `sendContractAcked` from `acknowledgedAhead` instead of
+false, and the head under the new contract is the compact head,
+`contract_id` only, where the receiver has advertised
+`compact_contract_recovery`, or the full head otherwise, which
+re-registers idempotently. The promotion rule stays as the fallback
+for the window between announcement and its acknowledgement, which is
+now ahead of the data by at least a round trip, and for legacy peers.
+
+The threshold is derived, not chosen: `announceAheadByteCount = max(2
+× deliveredRate × rtt_min, floor)` from the sequence's own rate ring
+and minimum round trip, the same two quantities the window uses. The
+campaign measures the smallest multiple at which no promotion occurs
+at 200 and 400 ms; two is the candidate.
+
+The receiver (`ReceiveSequence`). `registerContracts` verifies a frame
+and calls `setContract` (`:13468`), which stores the contract in
+`openReceiveContracts` and switches `receiveContract` to it
+(`:13290–13294`); a Pack's contract is resolved by its `contract_id` in
+`openReceiveContracts`, and a Pack without one falls to
+`receiveContract` (`updateContract`, the receive side). Acknowledged
+Packs carry no id except on compact heads, so switching early would
+charge the old contract's Packs to the new one. The change is one
+method: on a Pack with `contract_ahead`, `registerContractAhead`
+verifies exactly as `registerContracts` does, stores in
+`openReceiveContracts`, and does not call `setContract`. The switch then
+happens where it does today: the sender's head under the new id reaches
+`setContract`, whose existing early path finds the id already open and
+makes it `receiveContract`. Nothing else moves.
+
+The capability gate. The `Ack` carries `compact_contract_recovery = 6`
+and `logical_lane_version = 7`; it gains `bool contract_ahead = 8`. The
+sender announces ahead only after a delivery acknowledgement has
+carried it; to a legacy receiver it behaves as today.
+
+Tests: at a simulated 200 ms round trip with pipelining, zero promoted
+IP Packs after the first contract, and the first contract's successor
+announced at set time; `openReceiveContracts` holds both across the
+switch and Packs without an id are charged to the old contract until
+the head; a legacy receiver without the bit gets today's promotion; the
+announce Pack takes one admission slot and no data.
+
+### 39.2 The four ceilings, complete enough to build against
+
+The surface gives each layer a ceiling as a draw on the budget and
+leaves each layer's growth its own (§37.4). One share function per
+layer beside `transferBudgetShareByteCount` (`transfer.go:729–734`,
+one eighth of the process budget), each a draw on M with its own
+divisor the campaign picks and the sum of divisors' reciprocals at most
+one, each with the test from 687b61c that it doubles when the budget
+doubles and never passes through `MemoryScaledByteCount`. Then, in the
+order they bind for a desktop on a real carrier (§37.23), what each
+becomes and what must move with it:
+
+1. The transfer unit (window, hold, advertisement, committed-prefix,
+   pipelining). This tree. Reach 9.5 → 22 ms.
+2. The H3 stream and connection windows, both ends together. Client
+   and provider: `H3MaxStreamReceiveWindowByteCount` =
+   `h3BudgetShareByteCount()`, connection at four thirds of it, initial
+   as today (`transport.go:684–687`); quic-go's growth unchanged. The
+   server: its listener's `quic.Config`
+   (`server/connect/transport.go:562`) sets no windows, so it runs
+   quic-go's defaults, 512 KiB initial and 6 MiB maximum stream
+   (`internal/protocol/params.go:25,31`), 5.2 MiB of goodput per hop
+   round trip, which binds the two hop-directions that terminate there
+   at 44 ms of a hop at the target. The server-tree change is
+   `MaxStreamReceiveWindow` and `MaxConnectionReceiveWindow` on that
+   config from the server's per-connection budget. Without it the
+   client-side raise moves the platform-to-client direction only. Reach
+   22 → 23.5 ms alone, further with 3.
+3. The tun's ceilings. `TunSettings.TcpReceiveBuffer.Max` and
+   `TcpSendBuffer.Max` (`tun.go:93–106`) = `tunBudgetShareByteCount()`,
+   `Default` unchanged as the bet; gVisor reads the limits on every
+   autotune step, so a live budget change moves live endpoints. This
+   tree, client side. For upload the ladder's `MaxWindowSize`
+   (`ip.go:462`) becomes the largest power of two under the provider's
+   per-client share, and the ladder's 50 ms `AckCompressTimeout` is
+   replaced as the inner acknowledgement clock by §26's design; without
+   that, upload does not reach the target at any path length (§37.23),
+   whatever the buffers say. Reach 23.5 → 29 ms.
+4. The carrier sockets. Client and provider: the websocket dialer's
+   `NetDialContext` calls `ConnectSettings.DialContext`
+   (`net_http.go:1949–1954`), which builds its dialer with
+   `Control: DialControl` (`net.go:282`), so the request attaches as
+   `upstreamSocketBufferControl(carrierSocketShareByteCount(), policy)`
+   on the strategy's `ConnectSettings`, and §15's rule decides whether
+   it pins. The server: its H1 listener sets no socket buffers, so the
+   accepted sockets autotune to the platform hosts' `tcp_wmem[2]` and
+   `tcp_rmem[2]`; the change there is a buffer request on accept from
+   the same per-connection budget, or the hosts' sysctls. Both ends
+   together. Reach 29 ms and beyond, to the shares.
+
+Each step's measurement is the namespace cell's plateau at 200 ms
+moving as §37.23's table says: 109 Mb/s with the transfer unit alone,
+the tun's 164 with H3 on both ends, the kernel's beyond with the tun,
+and the shares' with all four. A step whose plateau does not move names
+the end that did not.
+
+### 39.3 The Android entry point, specified
+
+The arming code, for the implementation stream that asked to see it:
+`noteMobilePhysicalFootprint(byteCount)` (`sdk/idle_memory.go:237–260`)
+returns if the trimmer has not started, computes `nextArmed, signal :=
+mobilePhysicalPressureTransition(byteCount, threshold, armed)`
+(`:218–235`: armed above the threshold, released below nine tenths of
+it, a signal on the crossing up), stores the latch by compare-and-swap,
+and on a signal increments `mobilePhysicalPressureCount` and calls
+`noteMobileMemoryActivity(mobileIdleMemoryActivityMinByteCount)`
+(`:302`), which pushes into the trimmer's activity channel; the trimmer
+(`runIdleMemoryTrimmerWithRetry`, `:346`) resets its quiet timer on
+activity and runs a pass when the quiet delay, 15 s, elapses, with the
+minute cooldown and the re-arm rule of `:176–200`.
+
+The entry point, in package `sdk`, exported in the style of
+`SetExtensionMemoryPressureByteCount(byteCount int64)`:
+
+    func ReportMemoryTrimLevel(level int64)
+
+`level` is Android's `ComponentCallbacks2` value as delivered:
+`TRIM_MEMORY_RUNNING_MODERATE` 5, `RUNNING_LOW` 10, `RUNNING_CRITICAL`
+15, `UI_HIDDEN` 20, `BACKGROUND` 40, `MODERATE` 60, `COMPLETE` 80. It:
+
+1. Stores `mobileTrimLevelLast` and the time, increments
+   `mobileTrimLevelCount`; these are recorded whether or not the
+   trimmer has started.
+2. If the trimmer has not started, returns, as the footprint path does.
+3. Computes `nextArmed, signal := mobileTrimLevelTransition(level,
+   armed)`: armed and signalled on the crossing up at `RUNNING_LOW`
+   (10) or above, and at any background level (40 and above); released
+   at `RUNNING_MODERATE` (5) or below; unchanged and unsignalled at
+   `UI_HIDDEN` (20), which is not pressure. The latch is a new
+   `mobileTrimPressureArmed`, separate from the physical one, so the
+   two inputs re-arm independently; on a signal it increments
+   `mobileTrimPressureCount` and calls `noteMobileMemoryActivity` as
+   the footprint path does, so a pass runs at the next quiet epoch.
+4. At `RUNNING_CRITICAL` (15) and at `MODERATE` (60) or above it also
+   calls `trimMemory(true)` at once, the forced pass the host's
+   `TrimMemory` already exposes, outside the automatic cooldown; at
+   `COMPLETE` (80) it calls what `FreeMemory` does, pools cleared and
+   spans returned.
+
+The stats: `MemoryStats` gains `TrimLevelLast`, `TrimLevelCount` and
+`TrimPressureSignalCount` beside `PhysicalFootprintByteCount`; the
+mobile sample gains `trim_level_last` and `trim_level_signals`. The
+relay: `MainService.onTrimMemory(level)` calls
+`Sdk.reportMemoryTrimLevel(level.toLong())`, replacing the
+commented-out `onLowMemory` (`MainService.kt:1153`), and `onLowMemory`
+reports 80. The Go-side sampler of §38.10 lands behind it under an
+`android` build tag, recording the cgroup and PSI figures for the
+record and arming nothing until the campaign has calibrated its
+thresholds; until then the relay carries the loop, which is a
+measurement the platform makes.
+
+Tests: the transition table above, row by row; the relay idempotent
+at a repeated level; no signal at `UI_HIDDEN`; a forced pass at
+`RUNNING_CRITICAL` regardless of quiet; the physical and trim latches
+independent; the Apple path unchanged.
+
+### 39.4 One reliable layer per hop: the upload half, and what download would take
+
+Upload, buildable. The clause is `ipPacketTransferAckForRequest(ipPath,
+requested)` in `ip_remote_multi_client.go`: `requested || ipPath == nil
+|| ipPath.Protocol == IpProtocolTcp`, applied at the client's send
+boundary with the comment that carrier reliability cannot commit an
+item across a disconnect. The upload half is one setting,
+`TcpUploadNoAck`, off by default, under which the clause reads
+`requested || ipPath == nil` on the client's send path; the provider's
+return path (`ip.go:7949–7952`, TCP socket items) is untouched and
+download keeps its guard. With it on: the client's IP layer sends TCP
+as no-acknowledgement Packs (§38.8), the sequence promotes them where
+the contract is unacknowledged or no reliable route exists and writes
+them reliable-only otherwise (§38.8, §38.12), the fast path takes them
+to the writer (§38.12), and pipelining (§39.1) keeps promotion rare.
+The client's copies go from three to two.
+
+Its price, stated. Steady state: unchanged, since delivery is bound
+by the same windows below. A single-route disconnect: the window in
+flight is lost and recovered by gVisor's TCP, a retransmission timeout
+of at least 200 ms backing off across the reconnect and then slow
+start from one segment, about twelve round trips to refill 4 MiB, 2.4 s
+at 200 ms and 4.8 at 400, per event; today Transfer delivers the held
+window the moment the new carrier is up. A two-route disconnect: SACK
+recovery in about one round trip with the congestion window halved,
+close to today. The cell that prices it is the failover cell of §37.16
+run with the setting on, single-route and two-route, at 200 and 400 ms,
+against the acknowledged arm, reading the dip's depth and its
+recovery time. The setting ships off until that cell has run.
+
+Download, for the user to decide. It is a relocation: the NAT's
+`TcpSequence` (`ip.go`) holds pending items in a channel and nothing
+sent, and its acknowledgement handler `applySendAckWithLock` advances
+the acknowledged sequence and the window edge and retains nothing
+(§38.11). To carry loss recovery it would need a retained buffer of
+sent-unacknowledged `DataPackets` bounded by the client's advertised
+window and released by cumulative acknowledgement; a round-trip
+estimator from the inner acknowledgements, which it lacks (§37.6); a
+retransmission timer from that estimate with backoff, resending from
+the retained buffer; fast retransmit on three duplicate
+acknowledgements; and parsing of the client's SACK blocks to resend
+only the holes. That is a TCP sender's loss-recovery core inside the
+NAT, tested against gVisor as the peer. What it buys: it removes the
+Transfer window, hold and advertisement from the download path. What it
+does not buy: memory, since the provider holds two copies either way,
+the retained copy moving from Transfer to the NAT. So it is worth doing
+only if, after §37's landing, the Transfer layer's reliability
+machinery itself is the binding cost on download at scale, which the
+namespace cell decides: if the download plateau with the transfer unit
+and the ceilings raised reaches the tun's, the Transfer layer is not
+the binder and the relocation buys nothing. My reading is that it is
+never worth doing, and the record says so plainly so the decision is
+made against that.
+
+### 39.5 The reporter's ceiling: readings decided in advance
+
+The namespace cell has a real carrier and can run their regime: zero
+imposed delay, the shipping 2 MiB queue, the pin-pair buffers, upload
+and download. Four readings, each connecting or disconnecting their
+figure from what this program found, decided before the cell runs:
+
+1. `Rtt.Min` and `Rtt.Mean` of the data sequence at the shipping queue.
+   If the queue is their binder, the round trip that divides it is
+   about 21 ms of our own delay (§37.23's arithmetic on 665 Mb/s from
+   2 MiB at 0.865). Minimum and mean together near 20 ms: fixed
+   delays, the queue is the binder, connected, and the transfer unit
+   lifts it to the next ceiling. Minimum near a millisecond and the
+   mean near 20: a serial stage, §35's writer, disconnected from the
+   window work.
+2. The constant-queue sweep at zero delay, 2, 4, 8, 16 MiB, both
+   directions. Throughput scaling with the queue to the next binder:
+   connected. Flat: a rate stage, and no window fix touches their
+   number.
+3. On upload, the inner connection's round trip from the tun,
+   `TunTcpConn.TcpInfo()`, at zero network delay. Near 50 to 60 ms: the
+   ladder's 50 ms `AckCompressTimeout` is the inner acknowledgement
+   clock, their 665 is the tun's 4 MiB over that clock, 559 to 671
+   Mb/s (§37.23), and their ceiling is connected to §25 and §26, the
+   acknowledgement clock, and not to the window; the fix that moves it
+   is the quickack design and the tun's send buffer, and the transfer
+   unit alone reads about 1.0 there. Near 20 ms: the clock is not it.
+4. Eight flows against one, after the transfer unit. Same aggregate as
+   one flow: the per-destination sequence, as they reported, and the
+   window work applies. Scaling with flows: a per-flow stage, and it
+   does not.
+
+"Connected" is 1 with fixed delays and 2 scaling; "disconnected" is 1
+with the serial signature or 2 flat; "connected to the clock, not the
+window" is 3 at fifty. The prediction, so it can be wrong: download
+reads connected with the transfer unit lifting 665 to about 1.3 Gb/s at
+the tun's ceiling over a 25 ms inner loop; upload reads 3 at fifty and
+the transfer unit alone near 1.0.
