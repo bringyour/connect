@@ -1,0 +1,28 @@
+# Lint configuration for bringyour.yml.
+#
+# The recommended ruleset is kept as-is apart from two rules that describe a
+# house style this document does not follow, and that cannot be changed
+# without breaking consumers or rewriting the whole file:
+#
+#   operation-operationId-url-safe -- most operationIds here are human-readable
+#     phrases with spaces ("Auth Login"). They are part of the published
+#     contract that client generators key off, so renaming them is a breaking
+#     change, not a lint fix. New operations use camelCase; the old names stay.
+#
+#   operation-summary -- this document carries its prose in `description`, and
+#     only the newer tagged operations add a `summary` on top of it. Requiring
+#     a summary everywhere would mean inventing 120 one-liners that repeat the
+#     first line of each description.
+#
+# Everything else, including every structural rule, is enforced. Run:
+#   npx -y @redocly/cli lint bringyour.yml
+extends:
+  - recommended
+
+rules:
+  operation-operationId-url-safe: off
+  operation-summary: off
+
+apis:
+  bringyour:
+    root: bringyour.yml
