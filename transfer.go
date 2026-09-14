@@ -1385,8 +1385,19 @@ type ClientReceiveStatsSnapshot struct {
 	// eviction notice reaches the sender those bytes are invisible to every
 	// resend path. Until this counter existed the drop count was the only
 	// reading of hold pressure and it is a lower bound (THROUGHPUTFIX §37.16).
+	// Under the committed-prefix policy this must stay at zero: an
+	// acknowledged item is never discarded, which is the whole of what the
+	// policy buys over plain eviction.
 	ReceiveQueueEvictionCount     uint64
 	ReceiveQueueEvictionByteCount uint64
+	// Items evicted while still held tentatively, which the sender was never
+	// told had arrived. Not a withdrawal, so it costs the sender's resend
+	// rather than a lease, and it is expected to be high against a sender that
+	// overruns the hold.
+	ReceiveQueueTentativeEvictionCount     uint64
+	ReceiveQueueTentativeEvictionByteCount uint64
+	// held items that crossed the boundary and were acknowledged
+	ReceiveQueueCommitCount uint64
 	// evictions the notice could not carry, which are the ones that still cost
 	// a sixty second lease
 	ReceiveQueueEvictionNoticeOverflow uint64
@@ -1608,6 +1619,9 @@ type Client struct {
 	receiveQueueDropByteCount              atomic.Uint64
 	receiveQueueEvictionCount              atomic.Uint64
 	receiveQueueEvictionByteCount          atomic.Uint64
+	receiveQueueTentativeEvictionCount     atomic.Uint64
+	receiveQueueTentativeEvictionByteCount atomic.Uint64
+	receiveQueueCommitCount                atomic.Uint64
 	receiveQueueEvictionNoticeOverflow     atomic.Uint64
 	sendEvictionResendCount                atomic.Uint64
 	receiveAckHandoffDropCount             atomic.Uint64
@@ -1952,31 +1966,34 @@ func (self *Client) ClientTag() string {
 // message counts are consistent-enough telemetry rather than a transaction.
 func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 	snapshot := ClientReceiveStatsSnapshot{
-		PackHandoffDropCount:               self.receivePackHandoffDropCount.Load(),
-		PackHandoffDropByteCount:           self.receivePackHandoffDropByteCount.Load(),
-		PackHandoffWaitCount:               self.receivePackHandoffWaitCount.Load(),
-		PackHandoffWaitSuccess:             self.receivePackHandoffWaitSuccess.Load(),
-		PackHandoffMaxCount:                self.receivePackHandoffMaxCount.Load(),
-		PackHandoffMaxByteCount:            self.receivePackHandoffMaxByteCount.Load(),
-		PackHandoffSaturationCount:         self.receivePackHandoffSaturationCount.Load(),
-		PackHandoffDepthGrowCount:          self.receivePackHandoffDepthGrowCount.Load(),
-		PackHandoffDeepenedFlows:           self.receivePackHandoffDeepenedFlowCount.Load(),
-		PackHandoffAdaptiveMaxDepth:        self.receivePackHandoffAdaptiveMaxDepth.Load(),
-		PackHandoffAdaptiveMaxByteCount:    self.receivePackHandoffAdaptiveMaxByteCount.Load(),
-		ReceiveQueueDropCount:              self.receiveQueueDropCount.Load(),
-		ReceiveQueueDropByteCount:          self.receiveQueueDropByteCount.Load(),
-		ReceiveQueueEvictionCount:          self.receiveQueueEvictionCount.Load(),
-		ReceiveQueueEvictionByteCount:      self.receiveQueueEvictionByteCount.Load(),
-		ReceiveQueueEvictionNoticeOverflow: self.receiveQueueEvictionNoticeOverflow.Load(),
-		AckHandoffDropCount:                self.receiveAckHandoffDropCount.Load(),
-		AckHandoffQueueFullCount:           self.receiveAckHandoffQueueFullCount.Load(),
-		AckHandoffMissCount:                self.receiveAckHandoffMissCount.Load(),
-		AckHandoffWaitCount:                self.receiveAckHandoffWaitCount.Load(),
-		AckHandoffWaitSuccess:              self.receiveAckHandoffWaitSuccess.Load(),
-		AckRouteWriteCount:                 self.receiveAckRouteWriteCount.Load(),
-		AckRoutePriorityWriteCount:         self.receiveAckRoutePriorityWriteCount.Load(),
-		AckRouteWriteBlockedCount:          self.receiveAckRouteWriteBlockedCount.Load(),
-		AckRouteWriteErrorCount:            self.receiveAckRouteWriteErrorCount.Load(),
+		PackHandoffDropCount:                   self.receivePackHandoffDropCount.Load(),
+		PackHandoffDropByteCount:               self.receivePackHandoffDropByteCount.Load(),
+		PackHandoffWaitCount:                   self.receivePackHandoffWaitCount.Load(),
+		PackHandoffWaitSuccess:                 self.receivePackHandoffWaitSuccess.Load(),
+		PackHandoffMaxCount:                    self.receivePackHandoffMaxCount.Load(),
+		PackHandoffMaxByteCount:                self.receivePackHandoffMaxByteCount.Load(),
+		PackHandoffSaturationCount:             self.receivePackHandoffSaturationCount.Load(),
+		PackHandoffDepthGrowCount:              self.receivePackHandoffDepthGrowCount.Load(),
+		PackHandoffDeepenedFlows:               self.receivePackHandoffDeepenedFlowCount.Load(),
+		PackHandoffAdaptiveMaxDepth:            self.receivePackHandoffAdaptiveMaxDepth.Load(),
+		PackHandoffAdaptiveMaxByteCount:        self.receivePackHandoffAdaptiveMaxByteCount.Load(),
+		ReceiveQueueDropCount:                  self.receiveQueueDropCount.Load(),
+		ReceiveQueueDropByteCount:              self.receiveQueueDropByteCount.Load(),
+		ReceiveQueueEvictionCount:              self.receiveQueueEvictionCount.Load(),
+		ReceiveQueueTentativeEvictionCount:     self.receiveQueueTentativeEvictionCount.Load(),
+		ReceiveQueueTentativeEvictionByteCount: self.receiveQueueTentativeEvictionByteCount.Load(),
+		ReceiveQueueCommitCount:                self.receiveQueueCommitCount.Load(),
+		ReceiveQueueEvictionByteCount:          self.receiveQueueEvictionByteCount.Load(),
+		ReceiveQueueEvictionNoticeOverflow:     self.receiveQueueEvictionNoticeOverflow.Load(),
+		AckHandoffDropCount:                    self.receiveAckHandoffDropCount.Load(),
+		AckHandoffQueueFullCount:               self.receiveAckHandoffQueueFullCount.Load(),
+		AckHandoffMissCount:                    self.receiveAckHandoffMissCount.Load(),
+		AckHandoffWaitCount:                    self.receiveAckHandoffWaitCount.Load(),
+		AckHandoffWaitSuccess:                  self.receiveAckHandoffWaitSuccess.Load(),
+		AckRouteWriteCount:                     self.receiveAckRouteWriteCount.Load(),
+		AckRoutePriorityWriteCount:             self.receiveAckRoutePriorityWriteCount.Load(),
+		AckRouteWriteBlockedCount:              self.receiveAckRouteWriteBlockedCount.Load(),
+		AckRouteWriteErrorCount:                self.receiveAckRouteWriteErrorCount.Load(),
 		AckRouteWriteWaitDuration: time.Duration(
 			self.receiveAckRouteWriteWaitNanoseconds.Load(),
 		),
@@ -10200,6 +10217,31 @@ func newResendQueue(budget *TransferMemoryBudget, minByteCount ByteCount) *resen
 	return queue
 }
 
+// How a full receive hold treats an arrival earlier than what it holds.
+type ReceiveHoldPolicyKind int
+
+const (
+	// Keep the hold sequence-earliest by evicting the latest held item, and
+	// acknowledge a held item only once it can no longer be evicted
+	// (THROUGHPUTFIX §37.20). The default, and receiver-only: it needs its own
+	// capacity, its delivery point, its held set and a frame size, and nothing
+	// of its peer.
+	ReceiveHoldCommittedPrefix ReceiveHoldPolicyKind = iota
+	// Evict the latest held item and acknowledge on admission, which is every
+	// tree before §37.17. Kept as an arm: an evicted item was acknowledged, so
+	// its removal is a withdrawal the sender learns of only when an
+	// acknowledgement-tail probe reaches it, serialised, twice, and then a
+	// minute (§37.19).
+	ReceiveHoldEvict
+	// Refuse the arrival and never evict, which is §37.17's guard one as first
+	// landed. Truthful, and it starves at high overrun because the only way a
+	// full hold empties is the head draining its contiguous prefix, and a
+	// middle gap that would extend that prefix is refused: measured at a
+	// 6.4 times overrun, none of four runs completed against evicting's two,
+	// with 53,509 loss events against 25,227 (§37.20).
+	ReceiveHoldRefuse
+)
+
 type ReceiveBufferSettings struct {
 	GapTimeout  time.Duration
 	IdleTimeout time.Duration
@@ -10304,13 +10346,11 @@ type ReceiveBufferSettings struct {
 	// cell has yet run, and the shipping window is under the hold by an
 	// accident of ordering rather than by design.
 	AdvertiseReceiveWindow bool
-	// EvictHeldItemsToFit lets a full hold remove an item it has already
-	// acknowledged to admit an earlier arrival (THROUGHPUTFIX §37.17 guard
-	// one). Off by default: eviction reneges on a selective acknowledgement
-	// the sender holds for a minute, while a refusal acknowledges nothing and
-	// recovers on paths that already exist. On is the pre-guard behaviour and
-	// exists so a cell can measure the difference in one binary.
-	EvictHeldItemsToFit bool
+	// ReceiveHoldPolicy decides what a full hold does with an arrival that is
+	// earlier than what it holds (THROUGHPUTFIX §37.20). One field with three
+	// arms, because that is what made the two preceding policies measurable
+	// against each other in one binary.
+	ReceiveHoldPolicy ReceiveHoldPolicyKind
 	// EvictionNotice puts the sequence numbers of items this receiver removed
 	// from its hold after acknowledging them onto the next acknowledgement, so
 	// the sender resends them instead of holding a sixty second lease on bytes
@@ -10956,6 +10996,12 @@ type ReceiveSequence struct {
 	// writer, so it takes its own leaf lock.
 	evictedMutex           sync.Mutex
 	evictedSequenceNumbers []uint64
+	// the largest message the hold has taken, the conservative estimate of
+	// what a missing item below the boundary would cost
+	maxHeldByteCount ByteCount
+	// reused by commitHeldPrefix so walking the hold in order allocates
+	// nothing per arrival
+	heldScratch []*receiveItem
 	// immutable receiver-visible lane metadata copied into every Peer callback.
 	transferKey TransferKey
 	// encryptionRole is the local per-peer session role that owns this
@@ -12002,6 +12048,12 @@ func (self *ReceiveSequence) Run() {
 					item.messagePoolReturn()
 				}
 			}
+			// The delivery point has moved, so items that were held
+			// tentatively may now be safe: fewer can be missing below them
+			// (THROUGHPUTFIX §37.20).
+			if self.receiveBufferSettings.ReceiveHoldPolicy == ReceiveHoldCommittedPrefix {
+				self.commitHeldPrefix()
+			}
 		}
 
 		processPack := func(receivePack *ReceivePack, ok bool) bool {
@@ -12300,69 +12352,89 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			)
 		}
 
-		// THROUGHPUTFIX §37.17 guard one: a full hold refuses the arrival
-		// rather than removing an item it has already acknowledged.
+		// THROUGHPUTFIX §37.20: what a full hold does with an arrival that is
+		// earlier than what it holds.
 		//
-		// Why evicting was the wrong choice and refusing is safe. Eviction
-		// reneges silently: a selective acknowledgement does not release the
-		// item at the sender, it leases it for SelectiveAckTimeout, and every
-		// resend path skips a marked item, so a removal the sender is not told
-		// about costs a minute. A refusal acknowledges nothing, so the
-		// sender's selective acknowledgements stay truthful and the item comes
-		// back on a path that already exists: a dead route's frames on the
-		// carrier-change path, which is prompt and not bounded by the gap
-		// burst; a gap with held items beyond it on gap recovery, where those
-		// held items are its proving acknowledgements; the refused tail on the
-		// paced resend at its interval floor.
+		// Two things had to be true at once and the first two policies each
+		// had one of them.
 		//
-		// The head-of-line objection, and why it does not arise. A full hold
-		// cannot block the item that would drain it, because that item never
-		// reaches here: an arrival at the delivery point takes the branch above
-		// that registers its contract, delivers and returns. Only an arrival
-		// beyond the delivery point is queued. So the filler of a hole needs no
-		// hold space, and a gap behind a full hold always fills.
+		// Drainage. The only way a full hold empties is the head arriving and
+		// draining the contiguous run behind it. A middle gap — earlier than
+		// held items but not the head — must be held, so a hold that refuses
+		// it never extends its run, and what it does hold is whatever arrived
+		// first, an arbitrary set in sequence order. Evicting the latest held
+		// item to admit an earlier one is monotone: the highest held sequence
+		// number only falls and what replaces it is earlier, so the hold
+		// converges on the items adjacent to the delivery point and the runs
+		// are long. Measured at a 6.4 times overrun, four runs each: evicting
+		// completed two of four with 25,227 loss events, refusing none of four
+		// with 53,509.
 		//
-		// The cost is redundant resends, bounded by a window per round and by
-		// the paced resend's interval floor on the tail. Measured against
-		// eviction on the failover cell: the arm whose arrivals were refused
-		// rather than evicted completed, and the arms that evicted did not.
-		// The receive advertisement removes the cost entirely by removing the
-		// refusals, which is why the two fields remain the fix proper.
+		// Truth. An evicted item had been acknowledged, and a selective
+		// acknowledgement does not release the item at the sender: it leases
+		// it, and every resend path skips a marked item except the
+		// acknowledgement-tail probe, which fires twice and then leaves the
+		// sixty second timeout. So eviction buys drainage with a lie.
 		//
-		// One caveat. The hold keeps what arrived first rather than what is
-		// earliest in sequence, so under sustained reordering recovery
-		// lengthens by rounds. It never lengthens by a lease, which is the
-		// point.
-		if self.receiveBufferSettings.EvictHeldItemsToFit {
-			// remove later items to fit: the behaviour before the guard, kept
-			// so a cell can measure the difference in one binary
+		// Committed-prefix acknowledgement has both. Keep the hold
+		// sequence-earliest exactly as eviction does, and acknowledge a held
+		// item only once it can no longer be evicted. Below that boundary an
+		// item is acknowledged and never discarded; above it the item is held
+		// tentatively, unacknowledged, and evictable with nothing withdrawn.
+		// Against a sender honouring the advertisement every held item commits
+		// at once and this is today's behaviour exactly; against one that does
+		// not, the cost is that sender's resends of tentative items rather
+		// than a lease.
+		if policy := self.receiveBufferSettings.ReceiveHoldPolicy; policy != ReceiveHoldRefuse {
 			for !canQueue(item) {
 				lastItem := self.receiveQueue.PeekLast()
-				if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
-					self.receiveQueue.RemoveByMessageId(lastItem.messageId)
+				if lastItem == nil ||
+					lastItem.sequenceNumber <= receivePack.Pack.SequenceNumber {
+					break
+				}
+				if policy == ReceiveHoldCommittedPrefix && lastItem.committed {
+					// an acknowledged item is never discarded; the boundary is
+					// supposed to make this unreachable, and if it is reached
+					// the gap estimate under-counted
+					break
+				}
+				self.receiveQueue.RemoveByMessageId(lastItem.messageId)
+				if lastItem.committed {
 					self.client.receiveQueueEvictionCount.Add(1)
 					self.client.receiveQueueEvictionByteCount.Add(
 						uint64(max(lastItem.MessageByteCount(), 0)))
 					// the sender was told this item arrived; tell it that it
 					// did not survive (THROUGHPUTFIX §37.16)
 					self.noteEviction(lastItem.sequenceNumber)
-					lastItem.messagePoolReturn()
 				} else {
-					break
+					self.client.receiveQueueTentativeEvictionCount.Add(1)
+					self.client.receiveQueueTentativeEvictionByteCount.Add(
+						uint64(max(lastItem.MessageByteCount(), 0)))
 				}
+				lastItem.messagePoolReturn()
 			}
 		}
 
 		if canQueue(item) {
+			// the largest frame seen is the conservative gap estimate:
+			// over-counting commits fewer items and costs churn at the
+			// boundary, under-counting commits an item that is later evicted,
+			// which is the lie the policy exists to remove
+			self.maxHeldByteCount = max(self.maxHeldByteCount, item.MessageByteCount())
 			self.receiveQueue.Add(item)
-			self.sendAck(
-				sequenceNumber,
-				messageId,
-				true,
-				item.tag,
-				item.unwrapped,
-				item.transportType,
-			)
+			if self.receiveBufferSettings.ReceiveHoldPolicy == ReceiveHoldCommittedPrefix {
+				self.commitHeldPrefix()
+			} else {
+				item.committed = true
+				self.sendAck(
+					sequenceNumber,
+					messageId,
+					true,
+					item.tag,
+					item.unwrapped,
+					item.transportType,
+				)
+			}
 			return true, nil
 		} else {
 			self.client.receiveQueueDropCount.Add(1)
@@ -12372,6 +12444,52 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			}
 			return false, nil
 		}
+	}
+}
+
+// commitHeldPrefix acknowledges every held item that can no longer be evicted,
+// and only those (THROUGHPUTFIX §37.20).
+//
+// An item is evicted only by an earlier arrival at a full hold, so it is safe
+// once every item missing below it could arrive and it would still fit.
+// Sequence numbers are dense, one per Pack, so with the delivery point D and
+// the held items in ascending order the number missing below the i-th is
+// (seq_i - D) - i, and the item is committed when
+//
+//	missing_below(i) x maxFrameBytes + sum of held sizes through i <= capacity
+//
+// The boundary only rises as the head drains, and an item's acknowledgement is
+// sent as it crosses. One second-order cost: a tentative item gives the sender
+// no proving acknowledgement, so a gap just below the boundary recovers on the
+// paced resend rather than on gap recovery. Bounded, and removed along with
+// the rest by the receive advertisement.
+func (self *ReceiveSequence) commitHeldPrefix() {
+	capacity := self.receiveBufferSettings.ReceiveQueueMaxByteCount
+	frameByteCount := max(self.maxHeldByteCount, 1)
+	self.heldScratch = self.receiveQueue.AscendingItems(self.heldScratch)
+	heldByteCount := ByteCount(0)
+	for i, held := range self.heldScratch {
+		heldByteCount += held.MessageByteCount()
+		missing := int64(held.sequenceNumber) - int64(self.nextSequenceNumber) - int64(i)
+		if missing < 0 {
+			missing = 0
+		}
+		if capacity < ByteCount(missing)*frameByteCount+heldByteCount {
+			break
+		}
+		if held.committed {
+			continue
+		}
+		held.committed = true
+		self.client.receiveQueueCommitCount.Add(1)
+		self.sendAck(
+			held.sequenceNumber,
+			held.messageId,
+			true,
+			held.tag,
+			held.unwrapped,
+			held.transportType,
+		)
 	}
 }
 
@@ -12927,6 +13045,11 @@ type receiveItem struct {
 	decodedOwner       *decodedPackOwner
 	transferFrameBytes []byte
 	transportType      TransportType
+	// committed is set once this held item has been selectively acknowledged,
+	// which under the committed-prefix policy happens only when it can no
+	// longer be evicted (THROUGHPUTFIX §37.20). A committed item is never
+	// discarded.
+	committed bool
 	// unwrapped is true when the originating TransferFrame arrived on
 	// the wire as plaintext (no outer encrypted wrap). Propagated into
 	// the sequenceAck so the ack format mirrors the incoming pack.

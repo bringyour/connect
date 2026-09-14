@@ -2,6 +2,7 @@ package connect
 
 import (
 	"container/heap"
+	"slices"
 	"sync"
 )
 
@@ -326,6 +327,18 @@ func (self *transferQueue[T]) RemoveFirst() T {
 	delete(self.sequenceNumberItems, item.SequenceNumber())
 	self.updateByteCountWithLock(-item.MessageByteCount(), -item.QueueByteCount())
 	return item
+}
+
+// AscendingItems appends the queue's items to buf in the queue's own order,
+// smallest first. The backing store is a heap, so only its head is ordered;
+// a caller that needs the whole run in order pays a sort, and passes its own
+// buffer so a hot path does not allocate per call.
+func (self *transferQueue[T]) AscendingItems(buf []T) []T {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	buf = append(buf[:0], self.orderedItems...)
+	slices.SortFunc(buf, self.cmp)
+	return buf
 }
 
 func (self *transferQueue[T]) PeekFirst() T {

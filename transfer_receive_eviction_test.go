@@ -13,16 +13,15 @@ import (
 // part of the fix, and this row exists to keep it from being deleted as dead.
 //
 // Read this before concluding the field is unused. Preventing the overrun is
-// what fixes the defect, and that is the advertisement; §37.17's guard one then
-// makes the receiver policy never-evict without exception, so an updated
-// receiver emits no notice ever, and with the advertisement in force the hold
-// can only be full when everything outstanding is already held, which leaves
-// eviction no occasion at all. **A capture between two updated peers containing
-// no evicted_sequence_numbers is the expected reading, not a failure, and not
-// evidence the field is dead.** What the field protects is the sender's side of
-// a contract that any receiver still evicting may invoke, which is every
-// unupdated receiver in the field — and those are exactly the ones we cannot
-// observe from here. It is removed only when no such receiver remains.
+// what fixes the defect, and that is the advertisement. Under §37.20's
+// committed-prefix policy no acknowledged item is ever discarded, so **no
+// receiver in this tree emits a notice at all** — it is compatibility for a
+// receiver that does not exist. A capture between two peers containing no
+// evicted_sequence_numbers is therefore the expected reading rather than a
+// failure, and not evidence the path is dead: the sender-side handling is a
+// one-line safety against any receiver that does withdraw an acknowledged
+// item, and the field number stays reserved. Record, do not rely on, and do
+// not remove by accident.
 //
 // So this row turns eviction back on to exercise the sender's half.
 //
@@ -111,12 +110,9 @@ func TestTheEvictionNoticeStillServesAReceiverThatEvicts(t *testing.T) {
 			})
 		harness.receiver.settings.ReceiveBufferSettings.ReceiveQueueMaxByteCount = hold
 		harness.receiver.settings.ReceiveBufferSettings.EvictionNotice = notice
-		// §37.17's guard one means an updated receiver never evicts, so this
-		// row turns eviction back on: what it measures is the notice, which
-		// covers the cases the guard and the advertisement cannot — a receiver
-		// whose budget shrank under it, or a deployment that has the old
-		// behaviour.
-		harness.receiver.settings.ReceiveBufferSettings.EvictHeldItemsToFit = true
+		// No receiver emits a notice under the shipping policy, so this row
+		// selects the plain-eviction arm to exercise the sender's half.
+		harness.receiver.settings.ReceiveBufferSettings.ReceiveHoldPolicy = ReceiveHoldEvict
 		delivered := &atomic.Int64{}
 		harness.receiver.AddReceiveCallback(
 			func(_ TransferPath, frames []*protocol.Frame, _ Peer) {
