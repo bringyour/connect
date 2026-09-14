@@ -7401,3 +7401,122 @@ test, held bytes over the delivered rate within a few per cent of the
 sampled mean round trip, which is the reading that would have named
 this in the first place and cannot pass while any release goes
 unsampled.
+
+### 38.15 The oscillation, the peak at two thirds, and the identity underneath both
+
+Two corrections to §38.14 first, both the coordinator's. The
+acknowledgement mechanism is refuted by measurement: no handoff drops,
+no queue-full events, no misses, zero timeout resends in twenty
+thousand writes, at both path lengths. And the inference that produced
+it had a flaw worth keeping: the round-trip sample count reads 128 at
+both path lengths while acknowledgement writes differ fivefold, so it
+is a fixed ring, which §34 recorded and I did not apply; the sampled
+mean is the mean of the last 128 releases and not of the population,
+comparing whole-transfer residence against it compares two
+populations, and the thirty per cent derived from that comparison is
+discarded. The rule for next time: a count that does not move with
+traffic is a ring, and a ring's mean says nothing about what it does
+not hold.
+
+The batching account, checked from source. Release is per item at the
+acknowledgement worker, one `receiveAck` and one `RemoveByMessageId`
+per acknowledgement in a batch; the send loop is woken once per batch
+through `ackNotify`, a buffered channel of one that `Update` signals
+without blocking and that `Snapshot(true)` drains at the top of each
+iteration before the loop blocks on it, so no wake-up is lost and no
+wake-up is missed. Between batches a sender at its window has nothing
+freed and sends nothing, and nothing smooths the release. So the
+mechanism is as described, and its depth is set by the batch interval
+against the round trip, not by the batch size: the interval is bounded
+by the 10 ms compression constant and by receive-batch boundaries, the
+size follows from the rate. At 200 ms the 544 writes over a transfer of
+about four seconds are one every 7 ms, twenty-eight releases per round
+trip, and a sawtooth with twenty-eight steps per period is a ripple of
+about four per cent. Batching cannot be the half, and the measured
+depth, 0.66 at 25 ms and 0.70 at 200 with the batch fivefold larger,
+says so directly.
+
+What the oscillation's period is. 31 ms on the 25 ms path, 61 ms on the
+200 ms path: neither the round trip nor a constant. It is the fill
+time. The loop drains one Pack from its channel per select iteration
+(`packIngress` is nil while the scheduler holds anything, and one case
+fires per select), and every iteration pays a `Snapshot(true)`, a
+`sendWindowEstimate` under three locks, the build and the write; at
+about 1,900 Packs in 61 ms and about 900 in 31 ms the loop refills at
+roughly thirty thousand Packs a second on both paths, and the period is
+the window over that rate, 61/31 against a window ratio of 2.07. The
+per-Pack cost is the quantity the harness's sampler contends with four
+times a millisecond on the same lock, which is the perturbation it
+declared: the instrument lands on the fill rate, which sets the period
+and the depth both. Prediction: sampling at a hundredth of the rate
+shortens the period and shallows the trough; the level does not move.
+
+The peak at two thirds, and the candidates, from source:
+
+- Units: no. The queue's admission counts `item.MessageByteCount()`,
+  the framed length, on `Add`; the delivery ring is handed
+  `cumulativeByteCount`, accumulated from `MessageByteCount()` too
+  (`transfer.go:10100–10156`); and `CanAdd(0, Window)` compares the
+  framed byte count against the window. Window and occupancy are one
+  unit. The cell's 4 KiB messages would give 0.97 even if they were
+  not.
+- Floor-and-borrow: no. The maximum check precedes the budget check
+  and uses the framed byte count; the budget branch admits above the
+  floor by what the pool has available, and obtainable reads an order
+  of magnitude above the window.
+- A per-flow bound: no. The only per-flow limits are in items, 31 of
+  32 admission slots, and cannot make a byte ratio.
+- Target against bound: the window is a bound. `CanAdd(0, Window)`
+  refuses only when the framed byte count reaches it, so a running loop
+  fills to it. The reported window is the same function evaluated at
+  the stats call, the largest over the destination's sequences
+  (`transfer.go:5805`), which for one busy sequence is that sequence's.
+
+So a peak below the window is not a second limit and not a units
+difference; it means the loop was not taking at the top of the cycle.
+What is underneath both factors is the identity. At the fixed point the
+window is defined as twice the delivery per round trip, and delivery is
+the mean occupancy over the effective round trip, so the mean
+occupancy is half the window whatever the shape of the oscillation.
+The two measured factors multiply to it: 0.685 × 0.698 = 0.478. They
+are one constraint distributed over a sawtooth, not two mechanisms.
+The rule holds the sender's mean at half its window by construction,
+and any dynamics that stop the fill short of the window while the mean
+sits at half are consistent with it. That is also why the sender
+"never fills its window": if it did, delivery would rise, the window
+would double, and the sender would be at half of the new one.
+
+That leaves the shape, which is dynamics and not a limit, and the
+question it turns into is why the loop stops taking before the window
+for part of each cycle when it has room, supply and eligibility. From
+source the loop waits in exactly one place, its select, on one of four
+things: an acknowledgement, a flight-policy change, Pack ingress, or
+the idle timer. The reading that names it is the loop's wait, not the
+queue: for each blocking select, which case woke it and how long it
+waited, alongside the byte count and the window at that instant. If it
+waits on ingress at the top of the cycle, the supply reaches it through
+admission one Pack per iteration and the 16× offer test did not exercise
+the loop's own drain; if on the acknowledgement notify with room in the
+window, the eligible set was empty for a reason in `sendEligible` and
+the reason is the field; if on the timer, the wait is `timeout`. The
+harness has the sampler; this is one more field per select. Prediction,
+stated so it can be wrong: the wait is on ingress, and the cause of the
+sawtooth is that the loop drains one Pack per select with ingress gated
+by `scheduler.Len()`, so that the fill proceeds at the loop's own
+iteration rate with the sampler on its lock, and the trough is where a
+drain of the window at the delivery rate overtakes a fill at the loop's
+perturbed rate.
+
+The test contract stands as the user set it, a flow with no loss and
+no queueing delivers what its window permits, with one clarification
+the identity forces: under the delivery-sized rule the sender's mean
+occupancy is half its window at equilibrium by definition, so that
+test is satisfied by a rule whose window is twice the delivery only
+when delivery equals the path's capacity, and it is the path's
+capacity that the fixture must supply. Two assertions beside it that
+cannot pass by accident: with the rule off and a fixed window and an
+offered load above it, the occupancy peak equals the window within one
+frame, which separates units and bounds from dynamics; and the
+oscillation's period times the loop's iteration rate equals the
+window, which pins the period to the fill and fails if the period
+belongs to anything else.
