@@ -3976,3 +3976,99 @@ the window is the whole decision. The arithmetic the coordinator worked
 holds either way: 2 MiB over 90 ms is 186 Mb/s and over 20 is 838, so a
 factor of four and a half is on the table if the excess is ours, and
 nothing in source yet says it is; one reading says.
+
+## 35. The zombie remainder: not a fourth mechanism, but zombie resends inflating live flows' effective round trip through the shared serial stage
+
+Three structural candidates for the reporter's threshold are eliminated
+by measurement: bytes on the wire (84 Mb/s of resends against a 460 loss),
+pool pinning (34 MB pinned at forty zombies, live flow 154.7 against
+154.5 at zero, no fall-through), and per-flow scaling. The falsification
+of the pool candidate is clean and I recorded its prediction before it
+ran, so it is a real negative and not a missed regime, with the one
+caveat that the cell reaches 155 Mb/s and the reporter's collapse is at
+639; the boundary is simply not at 34 MB pinned on that host.
+
+### 35.1 Per-pack service time is constant; the load on the shared stage is not
+
+What a return pack costs to service on the send path, in work: on the
+sequence goroutine, marshal, the session AEAD, resend-queue bookkeeping;
+on the transport writer, websocket framing and the TLS record AEAD; then
+the exchange terminates that TLS, forwards, and re-encrypts. The
+sequence goroutine is per destination, so a zombie's resends do not
+share it with a live client's. But everything from the transport writer
+onward is shared: one carrier connection per provider per family, one
+writer serializing every pack of every destination, and one exchange
+ingress path. That is the serialized stage of §31.1, and its throughput
+ceiling is well below the wire because it is framing plus two
+encryptions on a serial path (§31.2, one to two gigabits per core split
+across those passes).
+
+The per-pack cost is constant. What scales with the zombie count is the
+number of packs entering that shared serial stage per second: each
+zombie is an independent send sequence resending its queue at up to
+2 MiB per resend interval, so forty of them offer about 84 Mb/s of
+resend packs into the one writer, on top of the live flows' data and
+their return acknowledgements. A constant per-pack cost times a pack
+rate that scales with population is a load on the shared stage that
+scales with population, which is what the coordinator's objection asked
+for and it needs no fourth mechanism.
+
+### 35.2 Why it collapses rather than degrades: the coupling to §32
+
+Bandwidth alone is linear and would take 84 Mb/s from a 639 provider,
+not 459. The super-linear part is the coupling this program has the
+pieces for. A live flow's download throughput is its window over its
+effective acknowledgement round trip (§32). That round trip includes the
+live flow's own acknowledgements queueing in the shared transport writer
+and the shared exchange (§32.2, term 3 and term 5). When forty zombies
+fill that shared writer with resend packs, every live flow's
+acknowledgement waits behind them, so the live flows' effective round
+trip rises with the zombie count, and since their throughput is
+window/RTT against a fixed 2 MiB window, it falls as the reciprocal of a
+divisor that grows with the population. That is the mechanism that turns
+84 Mb/s of zombie load into 459 Mb/s of lost live throughput: the loss
+is not the zombies' bytes, it is the live flows' window stranded behind
+an inflated round trip. The missing 376 the backoff arithmetic could not
+find (§13.6) is live throughput lost to round-trip inflation, not zombie
+bytes on the wire, and that is why no bytes-on-wire accounting closed it.
+
+The threshold shape follows: below the writer's capacity the zombies add
+queueing delay roughly linearly and the reciprocal is gentle; as the
+writer approaches saturation the queueing delay rises sharply and the
+reciprocal collapses, which is a knee at the count where zombie resend
+load plus live load crosses the shared stage's throughput ceiling. Eight,
+sixteen and forty straddling that knee is what a shared serial stage
+saturating looks like, and it is the same ceiling §31 and §32 name from
+the other side.
+
+### 35.3 What would confirm it, and what it is not
+
+It is testable without a new mechanism: the instruments exist. During a
+zombie sweep, read the live flows' `DestinationSendStats.Rtt` (the
+reader landed in `cfc63d7`) and the transport writer's occupancy, against
+live throughput. The prediction: the live flow's effective round trip
+rises monotonically with the zombie count while its window is unchanged,
+and live throughput tracks window over that round trip within the null
+band; the knee in throughput coincides with the writer's occupancy
+approaching one. If the round trip does not rise with the zombie count,
+this is wrong and the remainder is a fourth mechanism after all, and what
+would then distinguish it is that the live flow's window itself would
+have to be shrinking, which `DestinationSendStats` and the ladder state
+would show; a collapse with a flat window and a flat round trip is none
+of the four and would be genuinely new.
+
+It is not the transport parallelism candidate wearing a different coat,
+though it shares a cause: parallelising the writer across several carrier
+connections per client (§31.3) would relieve exactly this, because the
+zombie resends and the live acknowledgements would no longer serialize
+through one writer, which is a second reason that candidate is worth its
+place beside lanes. And it is not per-flow scaling: the zombies are per
+destination, and it is their aggregate resend load on the shared stage,
+not any per-flow cost, that does it. The cheapest mitigation is the one
+this program already built for a different reason: the abandon timeout
+(§10) retires a zombie's sequence in 120 to 150 s, which removes its
+resend load from the shared stage, so §10's benefit is not only the
+retired flows but the round-trip inflation it lifts off every live flow
+of the provider, which is the reporter's 72 per cent restored. That
+reframes §10 as a throughput fix for the live flows and not only a
+cleanup of the dead ones.
