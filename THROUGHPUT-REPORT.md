@@ -274,39 +274,30 @@ count not derived from the path. On a real H3 carrier it would bind at 3 MiB.
 | Is the rule a no-op at low latency, where the queue cannot bind? | Queued. **Decides shippability.** Most paths are short |
 | What does the rule cost in memory while doing nothing? | Queued with the above |
 | Which inner window sets the 4 MiB plateau? | Queued |
-| What would the rule compute on the reporter's own path? | Being derived |
 | Why do 8 flows give 1.84x one flow, identically with and without the Transfer layer? | Unexplained |
 
 The rule ships **default-off** until the no-op guard answers.
 
 ---
 
-## 5. What we would like from the reporter
+## 5. Measurement stance
 
-Three measurements, all cheap, two of which would materially unblock us.
+**Nothing in this work depends on the reporting machine's configuration.** We
+measure against our own local baseline and report relative improvement,
+because a ceiling is a window over a round trip: the multiple transfers to any
+system, the absolute does not.
 
-**1. WireGuard at one flow on your rig.** The report gives WireGuard at eight
-flows (~2,680 Mb/s) and the provider at one and eight. The missing cell is
-WireGuard at one. If WireGuard scales roughly eightfold from one to eight
-while the provider does not move, that confirms the per-destination
-serialization on your own hardware, with none of our harness involved. If
-WireGuard is also flat, the ceiling is shared by both stacks and our leading
-explanation is badly damaged. Either way it is decisive and costs one run.
+That is also why our test cell topping out far below a production provider is
+not a limitation for these questions. We can put the cell into any regime by
+moving the round trip, which is exactly what produced the result in section 3.
+The cell's absolute rate never needed to match anything.
 
-**2. Four integers from the provider host.**
-
-```
-sysctl net.core.rmem_max net.ipv4.tcp_rmem
-sysctl net.core.wmem_max net.ipv4.tcp_wmem
-```
-
-These decide whether the unconditional buffer deletion you are running helps
-or hurts on your host. On ours it loses 38% at the provider budget.
-
-**3. Whether the client in your tests runs our tun.** Our measurements put a
-per-byte ceiling in the userspace network stack our clients use. WireGuard
-terminates in the client's own kernel and skips it. Whether that ceiling
-exists on your path depends on which client you measured.
+One consequence worth stating for anyone reproducing this. The buffer-pin sign
+in section 1.1 is genuinely host-dependent — it turns on `net.core.rmem_max`
+against `net.ipv4.tcp_rmem[2]`, and the same pair on the write side. That is
+why the fix is a runtime rule that reads those values rather than a constant
+choice. It is not a question we need answered about any particular host; it is
+a question the code now answers on whatever host it runs.
 
 ---
 
