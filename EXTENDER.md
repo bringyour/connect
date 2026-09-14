@@ -2200,12 +2200,15 @@ Windows.
   started and stopped by `WalletPage::SetPresentationActive`, which
   `MainWindow::SetPresentationActive` calls beside the Connect page's.
   `AppController::HideWindow`
-  closes the provider transport sheet before the window hides
-  to the tray, through `MainWindow::CloseSheetsForHide()` and
-  `WalletPage::CloseProviderTransportSheet()`, whose `Dialog().Hide()`
-  ends the sheet's `ShowAsync` and clears the `sheetOpen` gate as any
-  dismissal does; a minimize, which also stops the presentation, keeps
-  the sheet.
+  closes every open sheet before the window hides to the tray, the
+  provider transport sheet among them, through
+  `MainWindow::CloseSheetsForHide()`, which hides each open
+  `ContentDialog` that `VisualTreeHelper::GetOpenPopupsForXamlRoot`
+  finds on the window's XamlRoot; `Hide()` ends each sheet's
+  `ShowAsync` and clears the `sheetOpen` gate as any dismissal does,
+  and a sheet whose `Closing` guard refuses a dismissal, the seedphrase
+  sheet, stays open. A minimize, which also stops the presentation,
+  keeps every sheet.
 - Feed: `SdkHost` gains `ProviderThroughputSnapshot{providerPoints,
   extenderPoints, windowSeconds, hasProviderStats,
   providerDistribution}`, the last two `std::optional`
@@ -2670,9 +2673,9 @@ WinUI code and the XAML are reviewed and not compiled. Not verified:
 nothing ran on Linux or Windows, no pass was made with VoiceOver, Orca or
 Narrator, and no window shown again was checked by hand on any platform.
 Outside this work: the macOS kill switch and notification toggles still
-draw as checkboxes beside the Extender switch, and the Windows Connect
-page's older sheets do not close on a hide to the tray as the provider
-transport sheet now does.
+draw as checkboxes beside the Extender switch. Since then, a hide to the
+tray on Windows closes every open sheet, the Connect page's older sheets
+included (windows `d86057b`).
 
 Operations for phases 11 and 12: none beyond releasing the sdk and the
 app builds that carry it. No server, database, DNS or services change
