@@ -38,6 +38,7 @@ func TestTcpOrphanRstTerminatesGvisorSocket(t *testing.T) {
 		TcpBufferRange{Min: 4096, Default: 65536, Max: 262144},
 		TcpBufferRange{Min: 4096, Default: 65536, Max: 262144},
 		8*time.Second,
+		0,
 	)
 	defer gvisorStack.Close()
 	const nicID = tcpip.NICID(1)
