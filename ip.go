@@ -6520,6 +6520,9 @@ type RemoteUserNatProvider struct {
 
 	afterUnreachableSourceReleaseForTest func(Id)
 	backendDegradedForTest               func() bool
+	// returnSendNowForTest replaces the wall clock that times an unadmitted
+	// socket-owned return against ReturnSendAbandonTimeout.
+	returnSendNowForTest func() time.Time
 }
 
 func NewRemoteUserNatProviderWithDefaults(
@@ -7448,7 +7451,11 @@ func (self *RemoteUserNatProvider) retryReturnSend(
 		retryTimeout = 10 * time.Millisecond
 	}
 	abandonTimeout := self.settings.ReturnSendAbandonTimeout
-	startTime := time.Now()
+	now := time.Now
+	if self.returnSendNowForTest != nil {
+		now = self.returnSendNowForTest
+	}
+	startTime := now()
 	for {
 		retry := NewPacedReconnect(retryTimeout)
 		sent := send()
@@ -7467,7 +7474,7 @@ func (self *RemoteUserNatProvider) retryReturnSend(
 			// the attempt failed because the source or provider closed
 			return false
 		}
-		if 0 < abandonTimeout && abandonTimeout <= time.Since(startTime) && !self.backendDegraded() {
+		if 0 < abandonTimeout && abandonTimeout <= now().Sub(startTime) && !self.backendDegraded() {
 			self.releaseUnreachableSource(item.source.SourceId, item.sourceLifecycle)
 			return false
 		}
