@@ -1284,20 +1284,25 @@ and the ports it uses), `extender_not_providing`, `extender_setting_up`,
 `extender_start_failed`, `extender_listen_failed` and
 `extender_activation_failed` with an `{error}` placeholder,
 `extender_activation_refused` with `{error}`; `Off` reuses the existing
-`off` key. Generated per platform as every other key.
+`off` key, and `extender_not_providing` is listed for linux and windows
+only, since the apple catalog is keyed by the English text and already
+carries "Not providing". Generated per platform as every other key.
 
 N6. Tests. Connect: a refusing operator leaves `LastRefused` true with
-its reason, a request error leaves it false, a later success clears
-both, and a refusal in the fallback mode marks every family. Sdk: a table
-test of the state rule over every case of N3 and their order, with the
-case each error carries; the rpc mirror (the status through the rpc and
-the cached last value, a service without the method answering unsupported
-even after a cached value, the setting round trip, the queued setting
-replayed at sync and the last-known value read while unreachable, a
-listener added while unreachable registered and replayed at sync, the
-listener firing on a change with `ErrorCase` and `Reason` intact,
-including a change made before the device's watch first runs); the
-start error over a space with no directory and over an unusable
+its reason, a request error and every other failure leave it false, a
+later success clears both, and the plain api url does the same under
+its placeholder and under the family an answer named. Sdk: a table test
+of the state rule over every case of N3 and their order, with the case
+each error carries; a refusal in the fallback mode marking every family,
+end to end through one api url that activated both (sdk aa47a45); the
+rpc mirror (the status through the rpc and the cached last value, a
+service without the method answering unsupported even after a cached
+value, the setting round trip, the queued setting replayed at sync and
+the last-known value read while unreachable, including a value the sync
+alone seeded, a listener added while unreachable registered and replayed
+at sync, the listener firing on a change with `ErrorCase` and `Reason`
+intact, including a change made before the device's watch first runs);
+the start error over a space with no directory and over an unusable
 identity; the setting cache; the mobile stub answering unsupported;
 bindings. Each desktop app, in its existing view test style: the row
 hidden when unsupported, with no setting read for it; the mapping from
@@ -1448,27 +1453,32 @@ macOS.
   setting, write the setting, observe the status) that `SdkDeviceRemote`
   conforms to and a test replaces. `setupExtenderProvide(source:)`,
   called beside the provide listeners, registers the status listener
-  and then seeds from `readExtenderProvideStatus()`; each pushed status
-  is applied on the main queue through an injectable dispatch, and one
-  still queued from a replaced source is dropped by an owner token.
+  and then seeds from `readExtenderProvideStatus()`; the seed and every
+  pushed status go through `applyExtenderProvideStatus(_:from:)`, a
+  pushed one on the main queue through the initializer's injectable
+  `extenderProvideCallbackDispatch`, and one still queued from a
+  replaced source is dropped by an `ExtenderProvideCallbackOwner` token.
   `resetExtenderProvide()`, called when the device's listeners are
   cleaned up, closes the listener and restores `.unsupported` with the
   setting on, without writing. `provideExtender`'s `didSet` writes
   through the source under `DeviceSettingWritePolicy.shouldPropagate`,
   as `provideControlMode` does, and only while the status is supported
-  and a source is set; the setting is read from the source under
-  the echo guard when a supported status is applied, and not for
-  a status that is not supported. The model and the reading are
+  and a source is set; `applyExtenderProvideStatus(_:from:)` reads the
+  setting from the source only for a supported status and applies it
+  under the echo guard, and a status that is not supported leaves the
+  switch as it is. The model and the reading are
   `ExtenderProvideStatusModel` (`supported`, `state`, `errorCase`,
   `reason`, `activatedV4`, `activatedV6`, `lastActivationRefused` and
   `enabled`, the last being what O8 reads) and `ExtenderProvideDisplay`
   in `Shared/ViewModels/ExtenderProvideModel.swift`, plain values in the
   shape of `ExtenderStatusModel`; `ExtenderProvideDisplay.of(status:)`
-  returns the dot color case, the text and `visible`, and
-  `ExtenderProvideDisplay.guess(on:providing:)` the toggle's local
-  repaint, which `DeviceManager.extenderProvideGuess` holds for both
-  rows, the settings row and the earnings row, until the next status or
-  the reset clears it.
+  returns the dot color case (`ExtenderProvideDot`), the text and
+  `visible`, and `ExtenderProvideDisplay.guess(on:providing:)` the
+  toggle's local repaint, which `DeviceManager.extenderProvideGuess`
+  holds for both rows, the settings row and the earnings row, until the
+  next status or the reset clears it; both rows draw
+  `DeviceManager.extenderProvideDisplay`, the guess while it stands,
+  else the reading of the status.
 - Accessibility: the `Toggle` label names the control "Extender";
   `.accessibilityValue(Text(stateText))` on the toggle, which
   keeps the switch's on and off value and gives VoiceOver
@@ -1483,7 +1493,8 @@ macOS.
 - Read-only row: `ProviderStatsSection.swift`, directly under
   `ProvideModeRow(action: { navigate(.settings) })`: `Spacer().frame(height: 8)`
   then `ExtenderProvideRow(kind: .readOnly(action: { navigate(.settings) }))`,
-  inside `if deviceManager.extenderProvideStatus.supported`. Line one ends
+  inside `if deviceManager.extenderProvideStatus.supported`, itself inside
+  `#if os(macOS)` since the row is compiled for macOS only. Line one ends
   in `ProvideModeRow`'s `chevron.right` (12 pt medium, `textFaintColor`).
   The earnings screen is the only macOS screen that repeats the provide
   mode row.
@@ -1515,25 +1526,33 @@ Linux.
 - Indicator: a `Gtk::Label` with `set_markup("<span foreground='…'>●</span>")`,
   always the solid "●", `kit::MarkDecorative`, as `provideDot_` beside it.
   Colors through `HexForMarkup`: grey `kUrTextMuted` (#989898), green
-  `kUrGreen`, yellow `kUrAmber` (#F5C242), red `kUrCoral`.
+  `kUrGreen`, yellow `kUrAmber` (#F5C242), red `kUrCoral`, picked by
+  `ExtenderDotColor`. Both rows paint through
+  `PaintExtenderProvideRow(dot, state, row)` in `ExtenderProvideRowPaint.hpp`
+  (new, the GTK side the two pages share), which sets the dot, the state
+  text, its tooltip and the error class and returns the text; each page
+  keeps only its own part, the switch and the description on the connect
+  page and the button's accessible label on the earnings page.
 - State line colors: `ur-row-note` (11 px, #989898) as built; the
   error state adds `ur-error-text` and removes it on the way back, and
   `UrTheme.cpp` gains `.ur-row-note.ur-error-text { color: #FF6C58; }`,
   since the two classes have equal specificity and `.ur-row-note`, later
   in the sheet, would keep the line grey; the two-class rule keeps the
   note's 11 px size.
-- Strings: `T_("extender", "Extender")`, `T_("off", "Off")`,
-  `T_("extender_not_providing", "Not providing")`,
-  `T_("extender_setting_up", "Setting up")`,
-  `Format(T_("extender_active", "Active · {}"), families)` with
-  `T_("ipv4_and_ipv6", "IPv4 and IPv6")`, `T_("ipv4", "IPv4")`,
-  `T_("ipv6", "IPv6")`, `T_("extender_revoked", "Revoked by the operator")`,
-  `Format(T_("extender_start_failed", "Could not start: {}"), reason)`,
-  `Format(T_("extender_listen_failed", "Could not listen: {}"), reason)`,
-  `Format(T_("extender_activation_refused", "Activation refused: {}"), reason)`,
-  `Format(T_("extender_activation_failed", "Activation failed: {}"), reason)`
-  and `T_("extender_setting_description", …)`; every English literal
-  matches the store's `en` byte for byte, as `I18n.hpp` requires.
+- Strings: `T_("extender", "Extender")` and
+  `T_("extender_setting_description", …)` where the widgets are built;
+  the state line's keys and English sources ride the `ProvideRow` of the
+  reading below (`off` "Off", `extender_not_providing` "Not providing",
+  `extender_setting_up` "Setting up", `extender_active` "Active · {}"
+  with `ipv4_and_ipv6` "IPv4 and IPv6", `ipv4` "IPv4" or `ipv6` "IPv6",
+  `extender_revoked` "Revoked by the operator", and, filled with the
+  reason, `extender_start_failed` "Could not start: {}",
+  `extender_listen_failed` "Could not listen: {}",
+  `extender_activation_refused` "Activation refused: {}" and
+  `extender_activation_failed` "Activation failed: {}"), looked up
+  through `T_` and filled through `Format` by `ExtenderStateText` in
+  `ExtenderProvideRowPaint.hpp`; every English source matches the
+  store's `en` byte for byte, as `I18n.hpp` requires.
 - Source: `SdkHost` gains `GetExtenderProvideStatus()`
   (`std::optional<urnet::ExtenderProvideStatus>`, nullopt with no device,
   the shape of `GetExtenderStatus`), `GetProvideExtender()`,
@@ -1598,21 +1617,27 @@ Windows.
   `OnProvideModeChanged` and forwarded to `ConnectPage::OnExtenderToggled`
   as that one is, guarded by `updatingControls_`, calling
   `Sdk().SetProvideExtender(w_.ExtenderToggle().IsOn())`.
-- Indicator: `ExtenderDot.Fill(colors::MakeBrush(color))`, the
-  `ProvideModeDot` drawing; colors `colors::kTextMuted` (#989898),
+- Indicator: `ExtenderDot.Fill(colors::MakeBrush(ExtenderProvideToneColor(tone)))`,
+  the `ProvideModeDot` drawing; colors `colors::kTextMuted` (#989898),
   `colors::kUrGreen`, `colors::kUrAmber` (#F5C242), `colors::kUrCoral`.
+  `ExtenderProvideToneColor`, `ExtenderProvideNoteBrush` and
+  `ExtenderProvideText` live in `ProvideModeVisual.h` beside the provide
+  mode visual, so the Connect page's row and the wallet page's row paint
+  one way.
 - State line: `ExtenderNote` keeps the muted brush of `UrRowNoteStyle` and
-  takes `Foreground` of `UrErrorTextBrush` (#FF6C58) in the error state,
-  `colors::MutedBrush()` otherwise; trimmed by the style, and
+  takes `Foreground` from `ExtenderProvideNoteBrush(tone)`:
+  `UrErrorTextBrush` (#FF6C58) from the app dictionary in the error
+  state, `colors::MutedBrush()` otherwise; trimmed by the style, and
   `ToolTipService::SetToolTip(note, box_value(text))`.
-- Strings: `Loc("extender")`, `Loc("off")`, `Loc("extender_not_providing")`,
-  `Loc("extender_setting_up")`, `Format("extender_active", families)` with
-  `Loc("ipv4_and_ipv6")`, `Loc("ipv4")`, `Loc("ipv6")`,
-  `Loc("extender_revoked")`, `Format("extender_start_failed", reason)`,
-  `Format("extender_listen_failed", reason)`,
-  `Format("extender_activation_refused", reason)`,
-  `Format("extender_activation_failed", reason)`,
-  `Loc("extender_setting_description")`; every key is in
+- Strings: `Loc("extender")` and `Loc("extender_setting_description")` in
+  `ConnectPage::ApplyStrings`; the state line is
+  `ExtenderProvideText(model)`, which fills `ComposeExtenderProvideText`
+  with `Localized(key)`, `Format(key, argument)` and the reason widened
+  from UTF-8, over the keys `off`, `extender_not_providing`,
+  `extender_setting_up`, `extender_active` with `ipv4_and_ipv6`, `ipv4`
+  or `ipv6`, `extender_revoked`, `extender_start_failed`,
+  `extender_listen_failed`, `extender_activation_refused` and
+  `extender_activation_failed`; every key is in
   `Strings/en/Resources.resw` since 11a, with the placeholder lowered to
   `{}`.
 - Source: `ExtenderProvideStatusView` (`supported, state,
@@ -1621,14 +1646,20 @@ Windows.
   in `ExtenderPresentation.h`, which `SdkHost.h` includes, so the host
   tests reach it, and `ExtenderProvideStatusViewOf(status, readSetting)`,
   generic over the status type, maps the sdk's optional status
-  to it and calls the setting reader, `GetProvideExtender()`,
-  only for a supported status, so a device that reports the role
-  unsupported is never asked for the setting. `SdkHost` gains
+  to it and calls the setting reader only for a supported status, so a
+  device that reports the role unsupported is never asked for the
+  setting; the host's reader is the device's `getProvideExtender()`
+  while the service's control pipe is connected, else the setting last
+  published, since with the pipe down the getter would be an rpc into a
+  dying service. `SdkHost` gains
   `SetExtenderProvideStatusHandler`, `PublishExtenderProvideStatus`
   (the view from `ExtenderProvideStatusViewOf`, dedup by
   value, the shape of `PublishExtenderStatus`, subscribed
   beside it), `CurrentExtenderProvideStatus()` and
-  `SetProvideExtender(bool)`. `MainWindow` hands each
+  `SetProvideExtender(bool)`, which sets `extenderProvideRepublish_` so
+  the next status publishes even when it equals the last, and two flips
+  inside one device epoch cannot leave the toggle's guess standing.
+  `MainWindow` hands each
   view to `connect().ApplyExtenderProvideState(view)` and
   `wallet().ApplyExtenderProvideState(view)` on the UI queue,
   as `OnStatsChanged` hands `LiveStats` to both. The reading is
@@ -1748,33 +1779,42 @@ Checklist and tests.
   against a recording `ExtenderProvideSource` with a held dispatch: a
   toggle writes the setting through the source at once and repaints with
   the guess, and the seed writes nothing; while the role is unsupported
-  nothing is written, no guess is set and no setting is read; a pushed
+  nothing is written, no guess is set and no setting is read; the
+  setting is read once for each supported status, seeded or pushed, and
+  never for an unsupported one, which leaves the switch as it is; a pushed
   status replaces the guess and moves the switch without writing it back;
   a status queued from a replaced source changes nothing; the reset hides
   the row without writing.
 - linux (`app`): new `src/ExtenderProvidePresentation.hpp`, new
+  `src/ExtenderProvideRowPaint.hpp`, new
   `tests/ExtenderProvidePresentationTest.cpp` added to the test source
   list in `meson.build`; change `src/SdkHost.hpp`, `src/SdkHost.cpp`,
   `src/ConnectPage.hpp`, `src/ConnectPage.cpp`, `src/EarningsPage.hpp`,
-  `src/EarningsPage.cpp`, `src/MainWindow.cpp`, `src/UrTheme.cpp`. The
-  test file pins the same cases as apple's through `ProvideRowFor` and
-  `StateTextFor`, in the style of `ExtenderStatusPresentationTest.cpp`
-  (`UR_TEST`, `UR_EXPECT_TRUE`), and `ProvideRowOf` over a status struct
+  `src/EarningsPage.cpp`, `src/MainWindow.cpp`, `src/UrTheme.cpp`, and
+  `src/ConnectDrawer.cpp`, whose switch over `DrawerEvent` takes the new
+  event as a no-op under `-Werror=switch`. The test file pins the same
+  cases as apple's through `ProvideRowFor` and `StateTextFor`, in the
+  style of `ExtenderStatusPresentationTest.cpp` (`UR_TEST`,
+  `UR_EXPECT_TRUE`), every key and English source the row can emit
+  against `po/en.po`, and `ProvideRowOf` over a status struct
   carrying every field of `urnet::ExtenderProvideStatus` under the sdk's
   names: the eleven fields the row does not read change nothing when set
   to noise, each field it reads moves the row on its own, and a hidden
   row, with no status or an unsupported one, never calls the setting
   reader.
 - windows (`app`): change `src/App/ExtenderPresentation.h`,
-  `src/App/ExtenderPresentation.cpp`, `src/App/SdkHost.h`,
-  `src/App/SdkHost.cpp`, `src/App/MainWindow.xaml`,
+  `src/App/ExtenderPresentation.cpp`, `src/App/ProvideModeVisual.h`,
+  `src/App/SdkHost.h`, `src/App/SdkHost.cpp`, `src/App/MainWindow.xaml`,
   `src/App/MainWindow.xaml.h`, `src/App/MainWindow.xaml.cpp`,
   `src/App/ConnectPage.h`, `src/App/ConnectPage.cpp`,
   `src/App/WalletPage.h`, `src/App/WalletPage.cpp`; the same cases
   through `ExtenderProvideRowModelFor` and `ComposeExtenderProvideText`
-  in `tools/extender-tests.cpp`, built with the command in that file's
-  header, which is the only test the windows tree can run on the build
-  host, and `ExtenderProvideStatusViewOf` over a status struct carrying
+  in `tools/extender-tests.cpp`, the English composed from
+  `Strings/en/Resources.resw` as the app ships it, with a case that the
+  store carries every key the row names and one `{}` in each key that
+  takes an argument, built with the command in that file's header,
+  which is the only test the windows tree can run on the build host,
+  and `ExtenderProvideStatusViewOf` over a status struct carrying
   every field of `urnet::ExtenderProvideStatus` under the sdk's names:
   the ten fields the view does not read change nothing, each field it
   reads, `Enabled` among them, changes the view on its own, and a hidden
@@ -1888,8 +1928,10 @@ provider contracts feed on both.
 
 O6. Strings. `extender_statistics` (the section title), `reads_per_second`
 for the chart unit, and, where Linux and Windows lack them, the strings
-of the provider section: `provider_statistics` and the existing
-`providing_disabled`; platforms apple, linux and windows as N5.
+of the provider section: `provider_statistics` and `providing_disabled`,
+and on Windows the chart titles `local` and `blocked`, whose keys now
+list those platforms (both trees already carried the strings); platforms
+apple, linux and windows as N5.
 
 O7. Tests. Connect: the counters over a relayed session on each carrier,
 both directions, bytes and reads, with the decoy proxy and the DNS
@@ -1980,15 +2022,18 @@ macOS.
 - Section: `ExtenderStatsSection` (new, `Main/Account/Earnings/ExtenderStatsSection.swift`),
   a `VStack(alignment: .leading, spacing: 0)` of `UrLabel(text: "Extender statistics")`
   in an `HStack` with a `Spacer()` and no chevron, `Spacer().frame(height: 8)`,
-  then `TransferChart(points: throughputStore.extenderPoints, route: .remote,
-  title: "Extender", window: throughputStore.windowDuration,
-  byteColor: .urLightBlue, packetColor: .urPink, countUnit: .reads)` at the
-  default 128 pt.
+  then `ExtenderStatsSection.chart(points: throughputStore.extenderPoints,
+  window: throughputStore.windowDuration)`, a static factory the tests
+  read, which returns the `TransferChart` of those points and that window
+  with `route: .remote`, `title: "Extender"`, `byteColor: .urLightBlue`,
+  `packetColor: .urPink` and `countUnit: .reads` at the default 128 pt.
 - Placement: `EarningsView.providerCard`, between the reliability block
   and `ProviderStatsSection(navigate:)`: `if extenderStatsVisible {
   ExtenderStatsSection(); Spacer().frame(height: 12); Divider();
   Spacer().frame(height: 12) }`, where
-  `extenderStatsVisible` is the provider gate above,
+  `extenderStatsVisible`, a private property of `EarningsView`, is
+  `extenderStatsSectionVisible(provideControlMode:hasProviderStats:extenderRunning:)`
+  in `ExtenderStatsSection.swift`: the provider gate above,
   `providerStatisticsVisible(provideControlMode:hasProviderStats:)`
   in `ProviderStatsSection.swift`, which the reliability
   block and `ProviderStatsSection` read as well, and
@@ -1999,7 +2044,8 @@ macOS.
 - Store: `ThroughputStore` gains `@Published private(set) var extenderPoints: [ThroughputPoint]`
   from `contractViewController.getExtenderThroughputPoints()`, read in
   `update()` on the same tick as the provider points and published only
-  when changed, cleared in `reset()`. `setup(_:)`, which opens a new
+  when changed, mapped by `ThroughputStore.mapPoints`, now internal so the
+  tests reach it, and cleared in `reset()`. `setup(_:)`, which opens a new
   controller whenever the window shows again or the device changes, seeds
   `hasProviderStats` from `device.getProviderPacketStats()` through
   `update(hasProviderStats:)`, one rpc on the main queue, and every tick
@@ -2007,7 +2053,9 @@ macOS.
   extender stats: the section's presence is the status's `enabled`, and
   the sdk polls `getExtenderStats()` itself for the series.
 - Provider section: unchanged but for the read-only row of N7 under
-  `ProvideModeRow`; the section's tap still opens `.providerContracts`.
+  `ProvideModeRow` and its `providerStatsEnabled`, which reads
+  `providerStatisticsVisible`; the section's tap still opens
+  `.providerContracts`.
 
 Linux and Windows, the provider section (O5).
 
@@ -2045,7 +2093,8 @@ Linux.
 
 - Groups: `EarningsPage::BuildNetworkPane`, after the reliability card:
   `extenderStatsHeader_` from `kit::MakePaneGroupHeader(T_("extender_statistics", "Extender statistics"))`;
-  `extenderChartRow_` from `kit::MakePaneRow(132)` holding
+  `extenderChartRow_` from `MakeChartRow(132, extenderChart_)`, the
+  page's helper for a `kit::MakePaneRow(132)` holding
   `extenderChart_` (`TransferChart(T_("extender", "Extender"), TransferChart::Route::Remote, kUrLightBlue, kUrPink, TransferChart::CountUnit::Reads)`,
   hexpand and vexpand, appended into the row's inner box, the first child
   `MakePaddedRow` reaches, the way `ConnectPage::BuildPaneC` adds a chart);
@@ -2077,9 +2126,9 @@ Linux.
   and `DeviceHasProviderStats()`
   (`device_->getProviderPacketStats().has_value()` under the host mutex,
   one rpc), all nullopt or false with no session; the running state
-  of the role is the `enabled` of the `GetExtenderProvideStatus()`
-  the N7 drawer event already carries, so the host reads no
-  extender stats. `MainWindow` forwards `DrawerEvent`s to
+  of the role is the `Enabled` of the status `GetExtenderProvideStatus()`
+  answers when the page re-reads it on the N7 drawer event, so the host
+  reads no extender stats. `MainWindow` forwards `DrawerEvent`s to
   `earningsPage_->OnHostEvent(event)` under the same visibility
   gate as `connectPage_`, and its `reconcilePresentation` calls
   `earningsPage_->SetPresentationActive(windowVisible_)` beside the
@@ -2097,12 +2146,17 @@ Linux.
   in `ExtenderProvidePresentation.hpp`, which returns `{providerVisible,
   extenderVisible, disabledMeta}`. `ApplyProvideState` keeps the
   `providingEnabled_` gate and `ApplyExtenderProvideState` (N7) keeps
-  `extenderRunning_`, each re-applying the rule when its input flips. The
-  charts redraw on their own timers, as every `TransferChart` does.
+  `extenderRunning_`, each re-applying the rule when its input flips. On
+  `DrawerEvent::ProviderTransportSettings` the page re-reads the
+  distribution, so the bar's unused footer follows the policy at once.
+  The charts redraw on their own timers, as every `TransferChart` does.
 - Chart: `TransferChart` gains `enum class CountUnit { Packets, Reads }` as
   a trailing constructor parameter defaulting to `Packets`; `Reads` labels
-  the count rows with `FormatCountRate(value, T_("reads_per_second", "reads/s"))`,
-  a new `Formatters` function beside `FormatPacketRate`.
+  the count rows through `TransferChart::CountRateText` with
+  `FormatCountRate(value, T_("reads_per_second", "reads/s"))`, which lives
+  with `FormatCountCompact`, moved out of `Formatters.cpp`, in the new
+  header-only `CountFormat.hpp` that `Formatters.hpp` includes, so the
+  unit tests reach the label with the compact count it carries.
 
 Windows.
 
@@ -2124,22 +2178,28 @@ Windows.
   with its hairline and padding, as the Connect page's bare
   `TransportBarHost` is; `WalletProviderBlockedChartRow` with
   `<Grid x:Name="WalletProviderBlockedChartHost" Height="66" />`, the two
-  chart rows shaped as the extender's. Every chart host is clipped as
-  `ConnectPage::BuildCharts` clips its three. `WalletPage::ApplyStrings`
-  sets the two headings.
+  chart rows shaped as the extender's. Every chart host is clipped by
+  `kit::ClipToBounds` (`UrComponents.h`), which moved out of
+  `ConnectPage.cpp` so the Connect page's three charts and these three
+  share one clip. `WalletPage::ApplyStrings` sets the two headings.
 - Charts: `WalletPage::BuildCharts`, called from `Initialize`, creates
   `extenderChart_` (`TransferChart(host, Localized("extender"), ThroughputRoute::Remote, colors::kUrLightBlue, colors::kUrPink, CountUnit::Reads)`),
   `providerLocalChart_` (`Localized("local")`, `Local`, `kUrGreen`, `kUrPink`),
   `providerTransportBar_` (`TransportBar(host, …)` whose click runs
   `ShowProviderTransportSettingsSheet()`, a copy of
   `ConnectPage::ShowTransportSettingsSheet` for `TransportSettingsKind::Provider`
-  under the window's `sheetOpen` gate, with the policy from
-  `Sdk().CurrentTransportSettings(TransportSettingsKind::Provider)`), and
+  under the window's `sheetOpen` gate, opening on
+  `connect().ProviderTransportSettings()`, the provider policy the
+  settings listener last pushed, which `ConnectPage` keeps and exposes,
+  so opening reads nothing from the device on the UI thread), and
   `providerBlockedChart_` (`Localized("blocked")`, `Block`, `kUrCoral`,
   `kUrMutedCoral`). `chartTimer_`, a `DispatcherQueueTimer` at `ConnectPage`'s
   interval, ticks the three charts and the bar in `OnChartTick` only while
   `WalletView()` is visible, the gate `ConnectPage::OnChartTick`
-  applies to `ConnectView()`. `AppController::HideWindow`
+  applies to `ConnectView()`, and runs only while the window presents,
+  started and stopped by `WalletPage::SetPresentationActive`, which
+  `MainWindow::SetPresentationActive` calls beside the Connect page's.
+  `AppController::HideWindow`
   closes the provider transport sheet before the window hides
   to the tray, through `MainWindow::CloseSheetsForHide()` and
   `WalletPage::CloseProviderTransportSheet()`, whose `Dialog().Hide()`
@@ -2257,20 +2317,25 @@ Checklist and tests.
   unit, height and window), `formatReadRate(340) == "340 reads/s"` and
   the compact forms, the store's mapping of an extender point list and of
   an empty one.
-- linux (`app`): change `src/SdkHost.hpp`, `src/SdkHost.cpp`,
+- linux (`app`): new `src/CountFormat.hpp`, new
+  `tests/CountFormatTest.cpp` added to the test source list in
+  `meson.build`; change `src/SdkHost.hpp`, `src/SdkHost.cpp`,
   `src/EarningsPage.hpp`, `src/EarningsPage.cpp`, `src/MainWindow.cpp`,
   `src/TransferChart.hpp`, `src/TransferChart.cpp`, `src/Formatters.hpp`,
   `src/Formatters.cpp`, `src/ExtenderProvidePresentation.hpp`
   (`StatsSectionsFor`). Tests: `StatsSectionsFor` over every combination
-  in `tests/ExtenderProvidePresentationTest.cpp`, as a literal table; the
-  reads label composed by a pure helper in a header free of the sdk and
-  GTK and tested in the unit binary, since `Formatters.cpp` includes the
-  sdk header and glib and does not link into it; the chart bindings are
-  reviewed (O7).
+  in `tests/ExtenderProvidePresentationTest.cpp`, as a literal table;
+  `CountFormat_Rate`, the reads label with its compact count at 340,
+  1234, 12345, 1234567 and 0, in the unit binary, which reaches
+  `CountFormat.hpp` because it needs neither the sdk header nor glib, as
+  `Formatters.cpp` does; the chart bindings are reviewed (O7).
 - windows (`app`): change `src/App/SdkHost.h`, `src/App/SdkHost.cpp`,
   `src/App/AppController.cpp`, `src/App/MainWindow.xaml`,
   `src/App/MainWindow.xaml.h`, `src/App/MainWindow.xaml.cpp`,
-  `src/App/WalletPage.h`, `src/App/WalletPage.cpp`, `src/App/TransferChart.h`,
+  `src/App/WalletPage.h`, `src/App/WalletPage.cpp`, `src/App/ConnectPage.h`
+  and `src/App/ConnectPage.cpp` (`ProviderTransportSettings()`, the shared
+  clip), `src/App/UrComponents.h` and `src/App/UrComponents.cpp`
+  (`kit::ClipToBounds`), `src/App/TransferChart.h`,
   `src/App/TransferChart.cpp`, `src/App/StatsFormat.h`, `src/App/StatsFormat.cpp`,
   `src/App/ExtenderPresentation.h`, `src/App/ExtenderPresentation.cpp`
   (`ExtenderStatsSectionsFor`). Tests: `ExtenderStatsSectionsFor` over
@@ -2502,7 +2567,7 @@ Phase 5b follows 4 because both touch the server.
 
 ## 7. As built
 
-Every phase of section 5 is implemented and committed on branch
+Phases 1 to 9 of section 5 are implemented and committed on branch
 `extender` across connect, server, sdk, sn, vault (services version v22
 and `extender.yml`), warp, build, localizations, android, apple, windows
 and linux, as of 2026-09-13. Each phase's refinements are recorded inline
@@ -2569,3 +2634,49 @@ the warp grafana front; publish the dashboards with
 `bringyourctl grafana load-defaults`, which adds the providers dashboard
 and the public row under the unchanged public uid; the site picks up the
 extender headline on its next build once the feed carries the count.
+
+Phases 11 and 12 (sections N and O) are implemented on branch
+`extender-ui` in connect (this document), sdk, localizations, apple,
+linux and windows as of 2026-09-14, the connect and sdk halves first and
+then one agent per desktop app, the sdk and each app fixed from their
+reviews against N and O; nothing is merged or pushed. Connect (`8acd1ad`,
+`c4921fd`): the relay counters of O1 and `LastRefused`; the extender
+package is green under `-race` and the activation tests of the root
+package pass three times over. Sdk (`abe132a` to `e035c92`): the status
+fields and the state rule, the `Device` interface and `DeviceRemote`
+mirror with the queued setting, the setting cache, the status watches
+armed before their goroutines start (`776c19d`), `GetExtenderStats`, the
+extender series and its presence notification, and the regenerated cgo
+exports (`4a68ddb`); the focused and full suites are green but for the
+build host's pre-existing memory ceiling flake in
+`TestDeviceLocalProviderMemoryUnderLoad`, `./test.sh` and the `cgo/gen`
+tests are green, and the apple and android bindings are built.
+Localizations (`442a792` to `92819b0`): the keys of N5 and O6, generated
+into the three app trees. Apple (`cfb5d70` to `07bc61c`): the macOS row
+in the Connections card and on the earnings screen, and the extender
+statistics section; 618 of 618 tests, the new ones among them, pass on
+the iPhone 16 Pro simulator and the unsigned iOS and macOS Release
+builds succeed, while the macOS test host on the build machine hangs
+before its tests start in the latest runs, traced to the sdk's first
+access to the shared app group container and reproduced on the code
+before the fixes, so the hang is environmental. Linux (`511ddd1` to
+`ed07358`): the row on the Connect page, and the two statistics groups
+with the read-only row on the earnings page; 255 unit tests pass and
+every touched GUI translation unit syntax-checks on macOS with no error
+and no new warning, there being no Linux host. Windows (`2328df4` to
+`2a68e21`): the same on the Connect and wallet pages; the 67 host cases
+of `tools/extender-tests.cpp` pass and `./test.sh` passes, while the
+WinUI code and the XAML are reviewed and not compiled. Not verified:
+nothing ran on Linux or Windows, no pass was made with VoiceOver, Orca or
+Narrator, and no window shown again was checked by hand on any platform.
+Outside this work: the macOS kill switch and notification toggles still
+draw as checkboxes beside the Extender switch, and the Windows Connect
+page's older sheets do not close on a hide to the tray as the provider
+transport sheet now does.
+
+Operations for phases 11 and 12: none beyond releasing the sdk and the
+app builds that carry it. No server, database, DNS or services change
+is involved, and the rpc version is unchanged: an app newer than its
+device process hides the Extender row and the extender statistics until
+that process runs this sdk (N1, N2), and an older app never calls the
+new methods, so apps and daemons update in either order.
