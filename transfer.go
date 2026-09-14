@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -1038,8 +1039,15 @@ func DefaultReceiveBufferSettingsWithBufferSize(bufferSize int) *ReceiveBufferSe
 		// the resend floors (RttMinResendInterval 300ms / cold 2s), so it does
 		// not affect resends; it does inflate measured rtt by up to 10ms,
 		// which the RttScale headroom absorbs.
-		AckCompressTimeout:  10 * time.Millisecond,
-		MinMessageByteCount: ByteCount(1),
+		AckCompressTimeout: 10 * time.Millisecond,
+		// End one compression wait early when a hole becomes provable to the
+		// sender (this many later selective acks, its SelectiveAckGapThreshold)
+		// or when a head ack advances past selectively acked items (a hole
+		// filled). Written in sequence order, a partial batch can no longer
+		// "prove" the neighbours of one hole lost. The in-order ack rate is
+		// unchanged: a wake costs at most one extra write per interval.
+		AckGapWakeSelectiveCount: 3,
+		MinMessageByteCount:      ByteCount(1),
 		// ResendAbuseThreshold: 4,
 		// ResendAbuseMultiple:  0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
@@ -11764,6 +11772,11 @@ type ReceiveBufferSettings struct {
 	// AckBufferSize int
 
 	AckCompressTimeout time.Duration
+	// Selective acks pending in one compression interval that end the wait
+	// early, and enable the early wake on a head ack that advances past
+	// selectively acked items. Should match the sender's
+	// SelectiveAckGapThreshold. Zero keeps the fixed compression interval.
+	AckGapWakeSelectiveCount int
 
 	MinMessageByteCount ByteCount
 
@@ -12710,7 +12723,7 @@ func newReceiveSequenceWithLogicalLaneBudget(
 		receiveQueue:                    newReceiveQueue(receiveQueueBudget, receiveQueueMinByteCount),
 		nextSequenceNumber:              0,
 		idleCondition:                   NewIdleCondition(),
-		ackWindow:                       newSequenceAckWindow(),
+		ackWindow:                       newSequenceAckWindowWithGapWake(receiveBufferSettings.AckGapWakeSelectiveCount),
 		exit:                            make(chan struct{}),
 	}
 	// Never encrypt control-plane traffic. A ReceiveSequence's data source is
@@ -13346,16 +13359,34 @@ func (self *ReceiveSequence) Run() {
 		// select arms it (go1.23+ delivers no stale fire after Reset).
 		ackCompressTimer := time.NewTimer(0)
 		defer ackCompressTimer.Stop()
+		// Selective acks leave in ascending sequence order. The sender
+		// declares a hole lost once SelectiveAckGapThreshold later selective
+		// acks are visible and snapshots its acks between pack writes, so a
+		// partial batch in map order would "prove" the neighbours of one real
+		// hole lost and resend them needlessly. The scratch slice is owned by
+		// this worker and reused across snapshots.
+		var selectiveAckScratch []sequenceAck
 		writeSnapshot := func(ackSnapshot sequenceAckWindowSnapshot) bool {
 			wrote := false
 			if 0 < ackSnapshot.ackUpdateCount {
 				writeAck(ackSnapshot.headAck)
 				wrote = true
 			}
-			for messageId, ack := range ackSnapshot.selectiveAcks {
-				ack.messageId = messageId
-				ack.selective = true
-				writeAck(ack)
+			if 0 < len(ackSnapshot.selectiveAcks) {
+				selectiveAckScratch = selectiveAckScratch[:0]
+				for messageId, ack := range ackSnapshot.selectiveAcks {
+					ack.messageId = messageId
+					ack.selective = true
+					selectiveAckScratch = append(selectiveAckScratch, ack)
+				}
+				if 1 < len(selectiveAckScratch) {
+					slices.SortFunc(selectiveAckScratch, func(a sequenceAck, b sequenceAck) int {
+						return cmp.Compare(a.sequenceNumber, b.sequenceNumber)
+					})
+				}
+				for _, ack := range selectiveAckScratch {
+					writeAck(ack)
+				}
 				wrote = true
 			}
 			for messageId, ack := range ackSnapshot.contractMissingAcks {
@@ -13431,6 +13462,10 @@ func (self *ReceiveSequence) Run() {
 					drainAndStop()
 					return
 				case <-ackCompressTimer.C:
+				case <-self.ackWindow.GapNotify():
+					// a hole became provable or filled: the sender is waiting
+					// on exactly these acks, so do not hold them for the rest
+					// of the interval
 				}
 			}
 
@@ -14713,14 +14748,32 @@ type sequenceAckWindow struct {
 	// Recovery requests never acknowledge delivery and therefore remain
 	// separate from both cumulative and selective acknowledgement windows.
 	contractMissingAcks map[Id]sequenceAck
+	// The gap wake ends the consumer's compression wait early, at most once
+	// per reset snapshot, when the pending selective acks reach
+	// gapWakeSelectiveCount (the hole is provable to the sender) or when the
+	// head advances past a selectively acked item (the hole filled). Zero
+	// disables it. The signal token is drained with the state it describes.
+	gapNotify             chan struct{}
+	gapWakeSelectiveCount int
+	gapWakeSignaled       bool
+	// highest selectively acked sequence number; a head below it has
+	// selective acks outstanding above it, whether or not they were already
+	// written, so the next head advance is a hole filling
+	gapSelectiveMax uint64
 }
 
 func newSequenceAckWindow() *sequenceAckWindow {
+	return newSequenceAckWindowWithGapWake(0)
+}
+
+func newSequenceAckWindowWithGapWake(gapWakeSelectiveCount int) *sequenceAckWindow {
 	return &sequenceAckWindow{
-		ackNotify:           make(chan struct{}, 1),
-		ackUpdateCount:      0,
-		selectiveAcks:       map[Id]sequenceAck{},
-		contractMissingAcks: map[Id]sequenceAck{},
+		ackNotify:             make(chan struct{}, 1),
+		ackUpdateCount:        0,
+		selectiveAcks:         map[Id]sequenceAck{},
+		contractMissingAcks:   map[Id]sequenceAck{},
+		gapNotify:             make(chan struct{}, 1),
+		gapWakeSelectiveCount: gapWakeSelectiveCount,
 	}
 }
 
@@ -14728,6 +14781,24 @@ func newSequenceAckWindow() *sequenceAckWindow {
 // It is safe to fetch without a lock because the channel never changes.
 func (self *sequenceAckWindow) Notify() <-chan struct{} {
 	return self.ackNotify
+}
+
+// GapNotify is the early-wake edge for the consumer's compression wait. Like
+// Notify it never changes, so it is safe to fetch without a lock.
+func (self *sequenceAckWindow) GapNotify() <-chan struct{} {
+	return self.gapNotify
+}
+
+// signalGapWakeWithLock fires the gap wake once per reset snapshot.
+func (self *sequenceAckWindow) signalGapWakeWithLock() {
+	if self.gapWakeSignaled {
+		return
+	}
+	self.gapWakeSignaled = true
+	select {
+	case self.gapNotify <- struct{}{}:
+	default:
+	}
 }
 
 // Pending checks whether a worker can proceed without constructing a
@@ -14807,7 +14878,21 @@ func (self *sequenceAckWindow) Update(ack sequenceAck) {
 				}
 			}
 			self.selectiveAcks[ack.messageId] = ack
+			if self.gapSelectiveMax < ack.sequenceNumber {
+				self.gapSelectiveMax = ack.sequenceNumber
+			}
+			// enough later selective acks now prove a hole to the sender
+			if 0 < self.gapWakeSelectiveCount &&
+				self.gapWakeSelectiveCount <= len(self.selectiveAcks) {
+				self.signalGapWakeWithLock()
+			}
 		} else {
+			// a head advancing under outstanding selective acks is a hole
+			// filling; the sender's flight is head-blocked on this ack
+			if 0 < self.gapWakeSelectiveCount && self.hasHeadAck &&
+				self.headAck.sequenceNumber < self.gapSelectiveMax {
+				self.signalGapWakeWithLock()
+			}
 			// cumulative head ack: or-in the prior head's plaintext bit
 			// (and any absorbed selective acks below the new head) so a
 			// single plaintext pack anywhere under the head keeps the
@@ -14910,11 +14995,16 @@ func (self *sequenceAckWindow) Snapshot(reset bool) sequenceAckWindowSnapshot {
 		self.ackUpdateCount = 0
 		clear(self.selectiveAcks)
 		clear(self.contractMissingAcks)
-		// The signal corresponds to state included in this snapshot. Drain it
-		// while ackLock excludes Update so the next empty snapshot cannot wake
-		// on a stale token.
+		// The signals correspond to state included in this snapshot. Drain
+		// them while ackLock excludes Update so the next empty snapshot cannot
+		// wake on a stale token, and re-arm the once-per-snapshot gap wake.
 		select {
 		case <-self.ackNotify:
+		default:
+		}
+		self.gapWakeSignaled = false
+		select {
+		case <-self.gapNotify:
 		default:
 		}
 	}
