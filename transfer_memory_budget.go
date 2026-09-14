@@ -22,6 +22,10 @@ import (
 type TransferMemoryBudget struct {
 	totalByteCount atomic.Int64
 	usedByteCount  atomic.Int64
+	// The sum of the guaranteed floors of every queue attached to this pool.
+	// A queue below its floor is admitted whatever the pool says, so those
+	// bytes are spoken for and are not lendable to anyone else.
+	floorByteCount atomic.Int64
 	// cumulative counters, so tests can assert reserve/release balance after
 	// a build/load/teardown cycle (the message pool counts pattern)
 	reservedByteCount atomic.Int64
@@ -121,6 +125,30 @@ func (self *TransferMemoryBudget) TotalByteCount() ByteCount {
 func (self *TransferMemoryBudget) SetTotalByteCount(totalByteCount ByteCount) {
 	self.totalByteCount.Store(totalByteCount)
 	self.notifyCapacityChanged()
+}
+
+// addFloor and removeFloor track the guaranteed floors of attached queues, so
+// the pool can say what it would lend one of them at full demand.
+func (self *TransferMemoryBudget) addFloor(byteCount ByteCount) {
+	self.floorByteCount.Add(int64(max(0, byteCount)))
+}
+
+func (self *TransferMemoryBudget) removeFloor(byteCount ByteCount) {
+	self.floorByteCount.Add(-int64(max(0, byteCount)))
+}
+
+// LendableByteCount is the static permission ceiling for a queue with the
+// given guaranteed floor: the pool less the floors guaranteed to the other
+// attached queues (THROUGHPUTFIX §37.24).
+//
+// This is what the window rule's share means, and it is deliberately not
+// `Available`. Available is a transient — it is zero whenever the pool happens
+// to be reserved elsewhere at that instant — and reading a transient as a
+// limit pins the window at its floor for reasons that have nothing to do with
+// the path. Admission still consults Available; the ceiling does not.
+func (self *TransferMemoryBudget) LendableByteCount(ownFloorByteCount ByteCount) ByteCount {
+	otherFloors := max(0, ByteCount(self.floorByteCount.Load())-max(0, ownFloorByteCount))
+	return max(0, self.totalByteCount.Load()-otherFloors)
 }
 
 // Available is the unreserved remainder of the budget

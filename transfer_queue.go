@@ -96,6 +96,7 @@ type transferQueue[T transferQueueItem] struct {
 	budget            *TransferMemoryBudget
 	minByteCount      ByteCount
 	borrowedByteCount ByteCount
+	floorRegistered   bool
 
 	cmp TransferQueueCmpFunction[T]
 }
@@ -146,8 +147,31 @@ func (self *transferQueue[T]) Budget() *TransferMemoryBudget {
 // setBudget attaches a shared budget with a guaranteed floor. Set before the
 // queue is used; the floor and budget do not change afterwards.
 func (self *transferQueue[T]) setBudget(budget *TransferMemoryBudget, minByteCount ByteCount) {
+	if self.budget != nil && self.floorRegistered {
+		self.budget.removeFloor(self.minByteCount)
+		self.floorRegistered = false
+	}
 	self.budget = budget
 	self.minByteCount = minByteCount
+	if budget != nil {
+		budget.addFloor(minByteCount)
+		self.floorRegistered = true
+	}
+}
+
+// LendableByteCount is what this queue's pool would lend it at full demand:
+// the pool less the floors guaranteed to the other queues attached to it. The
+// static permission ceiling, read now rather than frozen when settings were
+// built. Zero means no shared pool.
+func (self *transferQueue[T]) LendableByteCount() ByteCount {
+	self.stateLock.Lock()
+	budget := self.budget
+	minByteCount := self.minByteCount
+	self.stateLock.Unlock()
+	if budget == nil {
+		return 0
+	}
+	return budget.LendableByteCount(minByteCount)
 }
 
 // updateByteCountWithLock applies a byte count change and maintains the
@@ -228,6 +252,12 @@ func (self *transferQueue[T]) Clear() []T {
 	clear(self.messageIdItems)
 	clear(self.sequenceNumberItems)
 	self.updateByteCountWithLock(-self.byteCount, -self.queueByteCount)
+	// Teardown drops the queue wholesale, so its guaranteed floor is no longer
+	// spoken for and the pool may lend those bytes to the queues that remain.
+	if self.budget != nil && self.floorRegistered {
+		self.budget.removeFloor(self.minByteCount)
+		self.floorRegistered = false
+	}
 	return items
 }
 

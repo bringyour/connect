@@ -364,6 +364,11 @@ func TestDeliverySizedWindowConvergesInLogRoundTrips(t *testing.T) {
 			// the rule needs a memory budget before it will grow at all
 			settings.ResendQueueBudget = NewTransferMemoryBudget(ceiling)
 		})
+		// and a receiver that says what it can hold. Without an advertisement
+		// a sender takes its own constant and can never exceed it, which is
+		// the status quo by design (THROUGHPUTFIX §37.21) and would make this
+		// row assert something the rule deliberately does not do.
+		harness.receiveHold(ceiling)
 		harness.offer(t, payloadByteCount, offerWindow)
 		return harness.sender.DestinationSendStats(harness.receiverId).SendWindow
 	}()
@@ -753,11 +758,15 @@ func TestReceiveAdvertisementStopsTheLossRetransmitStorm(t *testing.T) {
 // equals scale x delivered x roundTrip / interval exactly, and the round trip
 // the rule used is close to the path's rather than at the 300 ms floor.
 //
-// Correction after the first run, kept on the record. At a 5 ms propagation the
-// computed value was 204,800 bytes, below the 262,144 floor, so the row passed
-// with the window clamped and would have gone on passing had the rule read the
-// resend timer. The path is 25 ms here and the row now fails if the window
-// lands on either clamp, because a cell that measures a clamp measures nothing.
+// Two corrections after earlier runs, kept on the record. At a 5 ms
+// propagation the computed value was 204,800 bytes, below the 262,144 floor, so
+// the row passed with the window clamped and would have gone on passing had the
+// rule read the resend timer. The path is 25 ms here and the row now fails if
+// the window lands on either clamp, because a cell that measures a clamp
+// measures nothing. And the receiver has to advertise a hold with room in it:
+// without an advertisement a sender takes its own constant as its ceiling and
+// can never exceed it, so the delivery term never binds and this row would be
+// measuring that clamp instead.
 func TestSizedWindowIsComputedFromTheMeasuredRoundTrip(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
@@ -770,6 +779,7 @@ func TestSizedWindowIsComputedFromTheMeasuredRoundTrip(t *testing.T) {
 		settings.DeliverySizedWindowCeilingByteCount = ceiling
 		settings.ResendQueueBudget = NewTransferMemoryBudget(ceiling)
 	})
+	harness.receiveHold(ceiling)
 	harness.offer(t, 4*1024, 2*time.Second)
 	estimate := harness.sender.DestinationSendStats(harness.receiverId).SendWindow
 
@@ -1030,11 +1040,15 @@ func TestALargerWindowIsFasterAtALongRoundTrip(t *testing.T) {
 			constantEstimate.Window, advertisedRate/constantRate, propagation,
 		)
 	}
-	if assumedEstimate.Ceiling != receiveHoldShippingByteCount() {
+	// A peer that answers without the field gets this sender's own constant,
+	// which is the status quo. Not the shipping hold constant, which would be
+	// a raise on no evidence, and not the blind floor, which would be a
+	// regression for every peer not yet updated (THROUGHPUTFIX §37.21).
+	if assumedEstimate.Ceiling != constantEstimate.Window {
 		t.Errorf(
-			"a sender with no advertisement took a ceiling of %d rather than the %d byte shipped hold it has to assume",
+			"a sender with no advertisement took a ceiling of %d rather than its own %d byte constant",
 			assumedEstimate.Ceiling,
-			receiveHoldShippingByteCount(),
+			constantEstimate.Window,
 		)
 	}
 	if assumedRate >= 1.5*constantRate {

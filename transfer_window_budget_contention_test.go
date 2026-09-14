@@ -30,15 +30,18 @@ import (
 //     rest, because the floor is unconditional;
 //   - the budget's own used count stays within its total, the reserve path
 //     being gated on what is available;
-//   - the window each sequence reports is capped by what it can obtain rather
-//     than by the whole budget, which is the property this row was written to
-//     check and the one most likely to be wrong.
+//   - each sequence reports what it could actually obtain as the pool stands,
+//     which is the property this row was written to check.
 //
-// The third was wrong, which is why the row exists. Every one of the eight
-// sequences reported a ceiling of the entire 2 MiB pool while none of them
-// could have held more than a fraction of it; the ceiling is now what the
-// queue can obtain — its floor, plus what it has already borrowed, plus what
-// is unreserved — and under contention it reads 262 to 328 KiB instead.
+// A correction to how that third one is expressed, which the design settled
+// after this row first found it. The ceiling is the share: the static
+// permission the pool would lend a queue at full demand, less the floors
+// guaranteed to the other queues attached to it. Every sequence seeing the same
+// share is right. What differs under contention is obtainable — the floor, plus
+// what this queue has borrowed, plus what is unreserved right now — and that is
+// reported for diagnosis and never clamped, because reading a transient as a
+// limit pins the window at its floor whenever the pool happens to be busy
+// elsewhere, for reasons that have nothing to do with the path.
 //
 // The other two held. Measured over three runs: delivery spread across the
 // eight sequences of 1.01 to 1.03 times, so the unconditional floor does keep
@@ -119,8 +122,16 @@ func TestManySequencesSizingAgainstOneBudget(t *testing.T) {
 					}
 				}
 				for i, l := range lanes {
+					// Obtainable, not the ceiling. The ceiling is the share —
+					// the static permission the pool would lend at full demand
+					// — and it is right that every sequence sees the same one.
+					// What differs under contention is what a sequence can
+					// actually get right now, and that is reported for
+					// diagnosis rather than clamped, because reading a
+					// transient as a limit pins the window at its floor for
+					// reasons that have nothing to do with the path.
 					ceiling := int64(l.harness.sender.
-						DestinationSendStats(l.harness.receiverId).SendWindow.Ceiling)
+						DestinationSendStats(l.harness.receiverId).SendWindow.Obtainable)
 					if ceiling <= 0 {
 						continue
 					}
@@ -189,11 +200,11 @@ func TestManySequencesSizingAgainstOneBudget(t *testing.T) {
 	for _, least := range leastCeiling {
 		contended = append(contended, ByteCount(least.Load()))
 	}
-	t.Logf("least ceiling seen under contention: %v", contended)
-	for i, ceiling := range contended {
-		if budget.TotalByteCount() <= ceiling && 1 < sequenceCount {
+	t.Logf("least obtainable seen under contention: %v", contended)
+	for i, obtainable := range contended {
+		if budget.TotalByteCount() <= obtainable && 1 < sequenceCount {
 			t.Errorf(
-				"sequence %d never reported a ceiling below the %d byte pool it shares with %d others; a window rule that says it may have the whole pool while the pool is busy is reporting permission it cannot obtain, and the number it publishes is what a campaign reads",
+				"sequence %d never reported an obtainable figure below the %d byte pool it shares with %d others; obtainable is what a sequence could actually hold as the pool stands, and a diagnosis that always reads the whole pool tells a campaign nothing about which sequence lost",
 				i, budget.TotalByteCount(), sequenceCount-1,
 			)
 		}

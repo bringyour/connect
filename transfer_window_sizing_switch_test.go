@@ -318,25 +318,22 @@ func TestTheResolvedCeilingMovesWithTheBudget(t *testing.T) {
 		settings.WindowSizing = WindowSizingFromDelivery
 		settings.ApplyWindowSizing()
 		share := transferBudgetShareByteCount()
+		// resolved, not configured: the ceiling is the share read from the
+		// queue's own budget at estimate time, and the configured setting is
+		// deliberately left unset
+		estimate := windowEstimateForSettings(settings)
 		t.Logf(
-			"process budget %d: share %d, resolved ceiling %d, active %t",
-			processBudget, share, settings.DeliverySizedWindowCeilingByteCount,
+			"process budget %d: share %d, resolved ceiling %d, window %d, active %t",
+			processBudget, share, estimate.Ceiling, estimate.Window,
 			settings.WindowSizingActive(),
 		)
 		if !settings.WindowSizingActive() {
 			t.Errorf("the rule is not active at a %d byte process budget", processBudget)
 		}
-		if settings.DeliverySizedWindowCeilingByteCount != share {
+		if estimate.Ceiling != share {
 			t.Errorf(
 				"the resolved ceiling is %d against a %d byte share at a %d byte process budget; the ceiling is the number the rule clamps to, so a ceiling that does not move with the budget is a rule that cannot grow whatever else is right",
-				settings.DeliverySizedWindowCeilingByteCount, share, processBudget,
-			)
-		}
-		if settings.DeliverySizedWindowCeilingByteCount <= settings.ResendQueueMaxByteCount {
-			t.Errorf(
-				"the resolved ceiling is %d against an initial size of %d; a ceiling at or below the initial size means the rule computes a window and is clamped straight back to where it started",
-				settings.DeliverySizedWindowCeilingByteCount,
-				settings.ResendQueueMaxByteCount,
+				estimate.Ceiling, share, processBudget,
 			)
 		}
 	}
@@ -351,10 +348,10 @@ func TestTheResolvedCeilingMovesWithTheBudget(t *testing.T) {
 	if !attached.WindowSizingActive() {
 		t.Error("a caller's own attached budget did not make the rule active")
 	}
-	if attached.DeliverySizedWindowCeilingByteCount != mib(32) {
+	if ceiling := windowEstimateForSettings(attached).Ceiling; ceiling != mib(32) {
 		t.Errorf(
 			"an attached %d byte budget resolved to a %d byte ceiling; the ceiling comes from whatever budget is attached, derived or given",
-			mib(32), attached.DeliverySizedWindowCeilingByteCount,
+			mib(32), ceiling,
 		)
 	}
 
@@ -369,4 +366,72 @@ func TestTheResolvedCeilingMovesWithTheBudget(t *testing.T) {
 	if empty.ResendQueueMaxByteCount != MemoryScaledByteCount(mib(2), kib(256)) {
 		t.Errorf("an unbudgeted process lost today's constant: %d", empty.ResendQueueMaxByteCount)
 	}
+}
+
+// The test that would have caught both faults in the ceiling term, written
+// before the fix and expected to fail on the tree as it stands.
+//
+// The harness attached its budgets after calling apply, which is the ordinary
+// order for a caller that builds settings and then decides what pool to give
+// them. Apply froze the budget total into the configured ceiling at apply
+// time, so a budget attached afterwards left that setting at zero; the
+// configured ceiling then defaulted to the initial size, and every later term
+// became a minimum taken against two mebibytes. Either fault alone is enough.
+//
+// Prediction, recorded before the run: with the budget attached after apply,
+// the resolved ceiling reads 2, 8, 32 and 128 MiB as the budget grows, and the
+// window follows it.
+func TestTheCeilingReadsABudgetAttachedAfterApply(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+	SetMemoryBudget(0)
+
+	for _, share := range []ByteCount{mib(2), mib(8), mib(32), mib(128)} {
+		settings := DefaultSendBufferSettings()
+		settings.WindowSizing = WindowSizingFromDelivery
+		settings.ApplyWindowSizing()
+		// attached after apply, which is the order that broke it
+		settings.ResendQueueBudget = NewTransferMemoryBudget(share)
+
+		estimate := windowEstimateForSettings(settings)
+		t.Logf(
+			"budget %d attached after apply: configured ceiling %d, resolved ceiling %d, window %d, reason %q",
+			share, settings.DeliverySizedWindowCeilingByteCount,
+			estimate.Ceiling, estimate.Window, estimate.Reason,
+		)
+		if estimate.Ceiling != share {
+			t.Errorf(
+				"the resolved ceiling is %d against a %d byte budget attached after apply; the share is the queue's own budget read at estimate time, not a total frozen into a setting when apply happened to run",
+				estimate.Ceiling, share,
+			)
+		}
+	}
+}
+
+// The resolved estimate for one settings object, with the peer's advertised
+// capacity set far above anything under test so the share is the binding term.
+// A sequence that has heard nothing takes the blind bet, which is correct and
+// is not what these rows are about.
+func windowEstimateForSettings(settings *SendBufferSettings) SendWindowEstimate {
+	sequence := &SendSequence{
+		sendBufferSettings: settings,
+		resendQueue: newResendQueue(
+			settings.ResendQueueBudget,
+			settings.ResendQueueMinByteCount,
+		),
+		deliveredBytes: make([]deliveredBytesSample, deliveredBytesRingSize),
+		rttWindow: NewRttWindow(
+			NewNoopLogger(),
+			settings.RttWindowSize,
+			settings.RttWindowTimeout,
+			settings.RttScale,
+			settings.MinResendInterval,
+			settings.RttMinResendInterval,
+			settings.MaxResendInterval,
+		),
+	}
+	sequence.ackSeen.Store(true)
+	sequence.receiveWindowByteCount.Store(uint64(mib(4096)))
+	sequence.receiveWindowSet.Store(true)
+	return sequence.sendWindowEstimate(time.Now())
 }

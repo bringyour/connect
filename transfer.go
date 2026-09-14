@@ -782,27 +782,14 @@ func (self *SendBufferSettings) ApplyWindowSizing() {
 				self.ResendQueueBudget = NewTransferMemoryBudget(share)
 			}
 		}
-		// Then the ceiling, from whatever budget is attached, derived or
-		// given. This was nested inside the share test and it is the defect
-		// that made the whole rule inert: with no process budget set, a
-		// caller's own attached budget left the ceiling at zero, the estimate
-		// fell back to the initial size for it, and the resolved ceiling read
-		// exactly 2 MiB at process budgets of 16, 64, 256 and 1024 MiB alike.
-		// A sixty-four-fold increase in memory moved the window not at all,
-		// and the whole fix measured four per cent slower than the constant it
-		// was replacing.
-		if self.ResendQueueBudget != nil && self.DeliverySizedWindowCeilingByteCount <= 0 {
-			self.DeliverySizedWindowCeilingByteCount =
-				self.ResendQueueBudget.TotalByteCount()
-		}
-		if self.ResendQueueBudget == nil {
-			// Nothing to draw on: say so in the settings rather than leaving a
-			// switch that reads on and does nothing. Attaching a budget is a
-			// precondition for the fix rather than a tuning step.
-			self.DeliverySizedWindowScale = 0
-			self.TargetGoodputByteRate = 0
-			self.DeliverySizedWindowCeilingByteCount = 0
-		}
+		// The ceiling is deliberately left unset. It is the share, read from
+		// the queue's own budget at estimate time; freezing a total into this
+		// setting here meant a budget attached after apply — the ordinary
+		// order for a caller that builds settings and then decides what pool
+		// to give them — left it at zero, the configured ceiling defaulted to
+		// the initial size, and every later term became a minimum taken
+		// against two mebibytes. The harness attached four budgets that way
+		// and every one of them read 2 MiB.
 	default:
 		self.DeliverySizedWindowScale = 0
 		self.DeliverySizedWindowCeilingByteCount = 0
@@ -9459,12 +9446,17 @@ type SendWindowEstimate struct {
 	Interval           time.Duration
 	RoundTrip          time.Duration
 	SampleCount        int
-	// the bounds the rule clamped between. Initial is the pre-sample value
-	// and is not a lower clamp: once sampled the rule may shrink below it, to
-	// Floor, which is a working minimum of a few packets.
+	// The bounds. Initial is a starting value the rule climbs away from and is
+	// never a bound. Floor is the guaranteed working minimum. Ceiling is the
+	// share — what the queue's pool would lend it at full demand — narrowed by
+	// any configured ceiling, the peer's advertised capacity and the target.
 	Initial ByteCount
 	Floor   ByteCount
 	Ceiling ByteCount
+	// Obtainable is the admission's quantity: the floor, plus what this queue
+	// has already borrowed, plus what is unreserved right now. Reported for
+	// diagnosis and never used as a clamp, because it is a transient.
+	Obtainable ByteCount
 }
 
 // sendWindowEstimate is the window this sequence may hold unacknowledged, and
@@ -9532,28 +9524,27 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 		estimate.Reason = "no memory budget: holding today's constant"
 		return estimate
 	}
-	ceiling := self.sendBufferSettings.DeliverySizedWindowCeilingByteCount
+	// The share: what this queue's pool would lend it at full demand, read now
+	// rather than frozen when the settings were built. The static permission
+	// ceiling (THROUGHPUTFIX §37.24).
+	//
+	// Two things this deliberately is not. It is not the initial size: the
+	// initial is a starting value the rule climbs away from and never a bound,
+	// and defaulting the ceiling to it made every later term a minimum taken
+	// against two mebibytes. And it is not `Available`, the admission's
+	// quantity: that is a transient, zero whenever the pool happens to be
+	// reserved elsewhere at that instant, and reading a transient as a limit
+	// pins the window at its floor for reasons that have nothing to do with
+	// the path. Obtainable is reported below for diagnosis and clamps nothing.
+	ceiling := self.resendQueue.LendableByteCount()
 	if ceiling <= 0 {
-		ceiling = initial
+		ceiling = budget.TotalByteCount()
+	}
+	if configured := self.sendBufferSettings.DeliverySizedWindowCeilingByteCount; 0 < configured {
+		ceiling = min(ceiling, configured)
 	}
 	ceiling = max(ceiling, floor)
-	// What this sequence can obtain rather than what the pool holds. With many
-	// sequences drawing on one budget — a provider serving many downloaders is
-	// the case, and the only one where a per-sequence window multiplies
-	// against a fixed total — every sequence reporting the pool's total is
-	// every sequence claiming permission none of them has. Measured with eight
-	// sequences on a 2 MiB pool before this: all eight reported a 2 MiB
-	// ceiling while none could have held more than a fraction of it.
-	//
-	// The floor is unconditional, so nothing here can starve a sequence: a
-	// queue below its floor is admitted whatever the pool says, which is also
-	// why the aggregate bound is the floors plus the budget rather than the
-	// budget alone.
-	if obtainable := self.resendQueue.ObtainableByteCount(); 0 < obtainable {
-		ceiling = min(ceiling, max(obtainable, floor))
-	} else {
-		ceiling = min(ceiling, budget.TotalByteCount())
-	}
+	estimate.Obtainable = self.resendQueue.ObtainableByteCount()
 
 	// The receiver it can see, and the three cases are different facts
 	// (THROUGHPUTFIX §37.21).
@@ -9584,12 +9575,21 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	// it, once per sequence, and it pays one round trip rather than a ramp.
 	stepAtNanos := int64(0)
 	if advertised, ok := self.receivedWindowAdvertisement(); ok {
+		// The peer's capacity is the window, stepped to the moment it is
+		// learned rather than climbed toward. It is the largest harmless one:
+		// permission is not occupancy, and the one harm of an oversized window
+		// is the overrun the advertisement bounds.
 		ceiling = min(ceiling, advertised)
 		stepAtNanos = self.receiveWindowSetAtNanos.Load()
 	} else if self.ackSeen.Load() {
 		ceiling = min(ceiling, initial)
 	} else {
-		ceiling = min(ceiling, defaultInitialWindowByteCount())
+		// Blind: assume only what every receiver already ships, and never more
+		// than this sender would have sent anyway. The bet is a reduction, not
+		// a licence — on any configuration whose own constant is below the
+		// receive hold's floor, the constant is the more conservative of the
+		// two and is what a blind sender takes.
+		ceiling = min(ceiling, min(defaultInitialWindowByteCount(), initial))
 	}
 	estimate.Ceiling = ceiling
 	// The rule, stated here because the next layer to gain an initial size
@@ -9612,7 +9612,15 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 	// §37.4's configuration surface: the bet is what a layer believes about a
 	// path it has not measured, and a bound its peer has stated is not a
 	// belief. Clamp the bet, not only the estimate.
-	estimate.Window = max(min(initial, ceiling), floor)
+	// The window is the ceiling until delivery lowers it. Each of the three
+	// cases above has already folded its own bet into the ceiling — the peer's
+	// capacity, this sender's constant, or the blind floor — so there is
+	// nothing left to take a minimum against. Taking one against the constant
+	// here was a defect: it capped the window at the initial size and left
+	// only the one-sided delivery term, so the step to the peer's capacity
+	// could never happen and a 16 MiB advertised hold still produced a 2 MiB
+	// window.
+	estimate.Window = max(ceiling, floor)
 
 	// The round trip it can see.
 	roundTrip := self.rttWindow.Estimate()
@@ -9633,7 +9641,7 @@ func (self *SendSequence) sendWindowEstimate(now time.Time) SendWindowEstimate {
 		)
 		ceiling = min(ceiling, max(targetWindow, floor))
 		estimate.Ceiling = ceiling
-		estimate.Window = max(min(initial, ceiling), floor)
+		estimate.Window = max(ceiling, floor)
 	}
 
 	// the rate must span several acknowledgement bursts, and at least a couple
