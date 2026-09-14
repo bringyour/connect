@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -223,6 +224,16 @@ type ExtenderServer struct {
 
 	connectionCount        int
 	sourceConnectionCounts map[string]int
+
+	// the relayed traffic of O1, summed over every carrier and cumulative for
+	// the life of the server. They are taken at the relay copy of each
+	// direction rather than at a carrier, so a byte is counted exactly once
+	// whatever framed it, and the reverse proxy and the dns forwarder, which
+	// relay nothing for a client, count nothing.
+	ingressByteCount atomic.Int64
+	ingressReadCount atomic.Int64
+	egressByteCount  atomic.Int64
+	egressReadCount  atomic.Int64
 
 	allowedSecrets []string
 	// exact (x) or wildcard (*.x)
@@ -1118,6 +1129,33 @@ func (self *ExtenderServer) ConnectionCount() int {
 	return self.connectionCount
 }
 
+// ExtenderStats is the traffic one extender has relayed, summed over every
+// carrier and cumulative for the life of the server like the packet stats of a
+// device (O1). It is operator-centric: ingress is what moves from a client
+// toward the forward destination and egress what moves back from the
+// destination toward the client. A read is one chunk the relay moved on one
+// side, because a byte stream has no packet boundary in userspace.
+type ExtenderStats struct {
+	IngressByteCount int64
+	IngressReadCount int64
+	EgressByteCount  int64
+	EgressReadCount  int64
+}
+
+// A snapshot of the relayed traffic (O1). The four counters are read
+// independently, so a snapshot taken while a relay is running can hold a byte
+// count of one direction from just after a read whose count it missed; the
+// series that samples it reads deltas over a second and never a total that
+// must agree across directions.
+func (self *ExtenderServer) Stats() ExtenderStats {
+	return ExtenderStats{
+		IngressByteCount: self.ingressByteCount.Load(),
+		IngressReadCount: self.ingressReadCount.Load(),
+		EgressByteCount:  self.egressByteCount.Load(),
+		EgressReadCount:  self.egressReadCount.Load(),
+	}
+}
+
 // Connection errors are observable only when a caller installs the test seam.
 func (self *ExtenderServer) reportError(stage string, err error) {
 	if self.settings.ErrorHandler != nil {
@@ -1347,6 +1385,10 @@ func (self *ExtenderServer) relay(
 			clientConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 			n, err := clientConn.Read(buffer)
 			if n > 0 {
+				// the ingress of O1, counted before the write so a client that
+				// has seen the round trip has seen the count
+				self.ingressByteCount.Add(int64(n))
+				self.ingressReadCount.Add(1)
 				forwardConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 				toWrite := buffer[0:n]
 				for len(toWrite) > 0 {
@@ -1382,6 +1424,9 @@ func (self *ExtenderServer) relay(
 			forwardConn.SetReadDeadline(time.Now().Add(self.settings.ReadTimeout))
 			n, err := forwardConn.Read(buffer)
 			if n > 0 {
+				// the egress of O1
+				self.egressByteCount.Add(int64(n))
+				self.egressReadCount.Add(1)
 				clientConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
 				toWrite := buffer[0:n]
 				for len(toWrite) > 0 {

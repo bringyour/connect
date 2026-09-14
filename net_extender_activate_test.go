@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +49,24 @@ type testActivatePost struct {
 	postTime time.Time
 }
 
+// How the fixture operator answers an activation it does not refuse.
+type testActivateAnswer int
+
+const (
+	// the signed activation of the family the post arrived on
+	testActivateAnswerActivated testActivateAnswer = iota
+	// an http error, which reaches the extender as a failed request
+	testActivateAnswerUnavailable
+	// a json null, which decodes to no activation result at all
+	testActivateAnswerNull
+	// the signed activation without the family or the address, which leaves
+	// an activation through the plain api url with no family to record
+	testActivateAnswerNoFamily
+)
+
+// The body of the unavailable answer, which the failed request's error carries.
+const testActivateUnavailable = "the operator is unavailable"
+
 // testActivateOperator serves `/network/extender-activate` and `/hello` for
 // both families (C2, C7).
 type testActivateOperator struct {
@@ -67,6 +86,8 @@ type testActivateOperator struct {
 	// non-empty refuses every activation with this message
 	refusal    string
 	postCounts map[int]int
+	// how an activation that is not refused is answered
+	answer testActivateAnswer
 	// the addresses this extender has activated, by family. One record names
 	// every one of them, as the operator's does from its address rows (C1, C2).
 	activatedIps map[int]string
@@ -132,6 +153,7 @@ func (self *testActivateOperator) familyHandler(ipVersion int) http.Handler {
 		now := self.clock.Now()
 		self.stateLock.Lock()
 		refusal := self.refusal
+		answer := self.answer
 		self.postCounts[ipVersion] += 1
 		self.stateLock.Unlock()
 		select {
@@ -147,10 +169,22 @@ func (self *testActivateOperator) familyHandler(ipVersion int) http.Handler {
 			})
 			return
 		}
+		switch answer {
+		case testActivateAnswerUnavailable:
+			http.Error(w, testActivateUnavailable, http.StatusServiceUnavailable)
+			return
+		case testActivateAnswerNull:
+			fmt.Fprint(w, "null")
+			return
+		}
 		result, err := self.activateResult(ipVersion, args, now)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+		if answer == testActivateAnswerNoFamily {
+			result.Ip = ""
+			result.IpVersion = 0
 		}
 		json.NewEncoder(w).Encode(result)
 	})
@@ -263,6 +297,12 @@ func (self *testActivateOperator) setRefusal(refusal string) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	self.refusal = refusal
+}
+
+func (self *testActivateOperator) setAnswer(answer testActivateAnswer) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.answer = answer
 }
 
 func (self *testActivateOperator) postCount(ipVersion int) int {
@@ -452,6 +492,36 @@ func (self *testActivatorFixture) waitActivation() int {
 // The state of one address as the directory reports it.
 func (self *testActivatorFixture) directoryState(ip string) string {
 	return testDirectoryState(self.t, self.directory, netip.MustParseAddr(ip))
+}
+
+// Waits for the loop to record an activation outcome after `version`, the
+// change counter read before the attempt, and returns the status it left.
+// Only a recorded outcome moves the counter here, since no test that waits on
+// it revokes the key.
+func (self *testActivatorFixture) waitOutcome(version uint64) *ExtenderActivatorStatus {
+	self.t.Helper()
+	for {
+		current, change := self.activator.ChangeMonitor().Get()
+		if version < current {
+			return self.activator.Status()
+		}
+		select {
+		case <-change:
+		case <-time.After(30 * time.Second):
+			self.t.Fatal("the activator did not record an activation outcome")
+			return nil
+		}
+	}
+}
+
+// Forces one activation attempt with a network change and returns the status
+// its outcome left. The clock stays put, so no hold expires and the forced
+// pass is the only attempt.
+func (self *testActivatorFixture) forceActivation() *ExtenderActivatorStatus {
+	self.t.Helper()
+	version, _ := self.activator.ChangeMonitor().Get()
+	self.networkChanged()
+	return self.waitOutcome(version)
 }
 
 // Both families activate against their own api url, the record and the
@@ -927,6 +997,209 @@ func TestExtenderActivatorRecordsAPlainApiUrlRefusal(t *testing.T) {
 	if !status.Families[0].Activated || status.Families[0].LastError != "" {
 		t.Fatalf("v4 status = %+v, expected activated", status.Families[0])
 	}
+}
+
+// One activation attempt of an outcome sequence: what is listening, how the
+// operator answers, and the family status the attempt must leave.
+type testActivateOutcome struct {
+	name      string
+	listening bool
+	refusal   string
+	answer    testActivateAnswer
+
+	// the family the outcome is recorded under, 0 for the placeholder of the
+	// plain api url
+	ipVersion int
+	activated bool
+	lastError string
+	refused   bool
+}
+
+// The carriers seam of an outcome sequence: every carrier while `listening`
+// holds and none otherwise. It starts with none, so the loop's own first pass
+// is a failure a test can wait on before it switches anything.
+func testActivateCarriers(listening *atomic.Bool) func() []string {
+	return func() []string {
+		if !listening.Load() {
+			return nil
+		}
+		return []string{ExtenderCarrierTcp, ExtenderCarrierQuic, ExtenderCarrierDns}
+	}
+}
+
+// Checks the family status one outcome left. The activators of the outcome
+// sequences run one family, so the status has one entry.
+func (self *testActivatorFixture) expectOutcome(
+	status *ExtenderActivatorStatus,
+	outcome testActivateOutcome,
+) {
+	self.t.Helper()
+	if len(status.Families) != 1 {
+		self.t.Fatalf("%s: families = %+v, expected one", outcome.name, status.Families)
+	}
+	family := status.Families[0]
+	if family.IpVersion != outcome.ipVersion ||
+		family.Activated != outcome.activated ||
+		family.LastError != outcome.lastError ||
+		family.LastRefused != outcome.refused {
+		self.t.Fatalf(
+			"%s: status = %+v, expected v%d activated %t, error %q, refused %t",
+			outcome.name, family,
+			outcome.ipVersion, outcome.activated, outcome.lastError, outcome.refused)
+	}
+}
+
+// Forces one attempt per outcome, in order, each against the carriers and the
+// answer the outcome names.
+func (self *testActivatorFixture) expectOutcomes(
+	listening *atomic.Bool,
+	outcomes []testActivateOutcome,
+) {
+	self.t.Helper()
+	for i, outcome := range outcomes {
+		listening.Store(outcome.listening)
+		self.operator.setRefusal(outcome.refusal)
+		self.operator.setAnswer(outcome.answer)
+		outcome.name = fmt.Sprintf("attempt %d, %s", i+1, outcome.name)
+		self.expectOutcome(self.forceActivation(), outcome)
+	}
+}
+
+// The operator's refusal is told apart from every other failure: it marks the
+// family refused beside the operator's reason, a failure of any other kind
+// after it clears the mark, and so does a success (N3, N7).
+func TestExtenderActivatorTellsARefusalFromAFailure(t *testing.T) {
+	listening := &atomic.Bool{}
+	fixture := newTestActivatorFixture(t, func(settings *ExtenderActivatorSettings) {
+		settings.ApiUrlV6 = ""
+		settings.Carriers = testActivateCarriers(listening)
+	})
+	const refusal = "the tcp carrier did not answer"
+
+	fixture.expectOutcome(fixture.waitOutcome(0), testActivateOutcome{
+		name:      "no carrier on the first pass",
+		ipVersion: 4,
+		lastError: "no carrier is listening",
+	})
+
+	refused := testActivateOutcome{
+		name:      "refused",
+		listening: true,
+		refusal:   refusal,
+		ipVersion: 4,
+		lastError: refusal,
+		refused:   true,
+	}
+	fixture.expectOutcomes(listening, []testActivateOutcome{
+		refused,
+		{
+			name:      "a failed request after a refusal",
+			listening: true,
+			answer:    testActivateAnswerUnavailable,
+			ipVersion: 4,
+			lastError: "503 Service Unavailable: " + testActivateUnavailable,
+		},
+		refused,
+		{
+			name:      "no activation result after a refusal",
+			listening: true,
+			answer:    testActivateAnswerNull,
+			ipVersion: 4,
+			lastError: "the operator sent no activation result",
+		},
+		refused,
+		{
+			name:      "no carrier after a refusal",
+			ipVersion: 4,
+			lastError: "no carrier is listening",
+		},
+		refused,
+		{
+			name:      "activated after a refusal",
+			listening: true,
+			ipVersion: 4,
+			activated: true,
+		},
+	})
+}
+
+// The plain api url tells a refusal from a failure the same way: under the
+// placeholder while no answer has named a family, and under the family once
+// one has. An activation whose answer names no family is a failure, not a
+// refusal (C2, N7).
+func TestExtenderActivatorTellsAPlainApiUrlRefusalFromAFailure(t *testing.T) {
+	listening := &atomic.Bool{}
+	fixture := newTestActivatorFixture(t, func(settings *ExtenderActivatorSettings) {
+		settings.ApiUrl = settings.ApiUrlV4
+		settings.ApiUrlV4 = ""
+		settings.ApiUrlV6 = ""
+		settings.Carriers = testActivateCarriers(listening)
+	})
+	const refusal = "the tcp carrier did not answer"
+
+	fixture.expectOutcome(fixture.waitOutcome(0), testActivateOutcome{
+		name:      "no carrier on the first pass",
+		lastError: "no carrier is listening",
+	})
+
+	refused := testActivateOutcome{
+		name:      "refused",
+		listening: true,
+		refusal:   refusal,
+		lastError: refusal,
+		refused:   true,
+	}
+	fixture.expectOutcomes(listening, []testActivateOutcome{
+		refused,
+		{
+			name:      "a failed request after a refusal",
+			listening: true,
+			answer:    testActivateAnswerUnavailable,
+			lastError: "503 Service Unavailable: " + testActivateUnavailable,
+		},
+		refused,
+		{
+			name:      "no activation result after a refusal",
+			listening: true,
+			answer:    testActivateAnswerNull,
+			lastError: "the operator sent no activation result",
+		},
+		refused,
+		{
+			name:      "no carrier after a refusal",
+			lastError: "no carrier is listening",
+		},
+		refused,
+		{
+			name:      "an answer naming no family after a refusal",
+			listening: true,
+			answer:    testActivateAnswerNoFamily,
+			lastError: "the operator named no address family",
+		},
+		refused,
+		{
+			// the first answer that names a family replaces the placeholder
+			name:      "activated after a refusal",
+			listening: true,
+			ipVersion: 4,
+			activated: true,
+		},
+		{
+			// a refusal names no family, so it lands on the family there is
+			name:      "refused after the activation",
+			listening: true,
+			refusal:   refusal,
+			ipVersion: 4,
+			lastError: refusal,
+			refused:   true,
+		},
+		{
+			name:      "activated after that refusal",
+			listening: true,
+			ipVersion: 4,
+			activated: true,
+		},
+	})
 }
 
 // The posted args are the server's json contract field for field (C2). The
