@@ -60,10 +60,47 @@ func TestTheMemoryScaleOnlyShrinks(t *testing.T) {
 		}
 	}
 
-	// where the reference is, read through the behaviour rather than the
-	// constant: at the reference a scaled value is exactly its unscaled value,
-	// at half the reference exactly half, and above the reference unchanged.
-	// Raising `referenceMemoryBudgetByteCount` fails the first two.
+	// the scale itself never leaves (0, 1], at any budget
+	for _, budget := range []ByteCount{
+		-1, 0, mib(1), mib(20), mib(24), mib(64), mib(65), mib(1024), mib(8192),
+	} {
+		if scale := memoryTargetScale(budget); scale <= 0 || 1 < scale {
+			t.Errorf(
+				"memoryTargetScale(%d) is %f, outside (0, 1]; a scale above one inflates every memory-scaled constant at once",
+				budget, scale,
+			)
+		}
+	}
+
+	// the reference, pinned as a number. The checks after this one read the
+	// symbol, so a moved reference moves them with it and they cannot see it:
+	// a mutation raising the reference to 128 MiB passed all of them. This and
+	// the literal-budget reads below are what fail on that mutation.
+	if referenceMemoryBudgetByteCount != mib(64) {
+		t.Errorf(
+			"the memory reference is %d rather than 64 MiB; every memory-scaled constant is whole only at or above it, so raising it shrinks each one on every host below the new value, a fleet-wide slowdown with nothing to read afterwards",
+			referenceMemoryBudgetByteCount,
+		)
+	}
+	for _, s := range scaled {
+		if got := MemoryTargetScaledByteCount(mib(64), s.unscaled, s.floor); got != s.unscaled {
+			t.Errorf(
+				"%s reads %d at a literal 64 MiB budget rather than its unscaled %d; the reference has moved above 64 MiB",
+				s.name, got, s.unscaled,
+			)
+		}
+		if got, want := MemoryTargetScaledByteCount(mib(32), s.unscaled, s.floor), max(s.floor, s.unscaled/2); got != want {
+			t.Errorf(
+				"%s reads %d at a literal 32 MiB budget rather than %d; the reference is no longer 64 MiB",
+				s.name, got, want,
+			)
+		}
+	}
+
+	// the shape against the symbol: at the reference a scaled value is exactly
+	// its unscaled value, at half the reference exactly half, and above the
+	// reference unchanged. These catch a scale that is not proportional or not
+	// saturating; a moved reference is caught above, not here.
 	for _, s := range scaled {
 		atReference := MemoryTargetScaledByteCount(referenceMemoryBudgetByteCount, s.unscaled, s.floor)
 		if atReference != s.unscaled {
