@@ -120,6 +120,14 @@ func ackFrameHasField(t *testing.T, frameBytes []byte, want protowire.Number) bo
 func TestTheWindowRuleIsInertOnAShortPath(t *testing.T) {
 	assertMessagePoolOwnership(t)
 
+	// The rule needs a process budget to draw on or it is not active at all,
+	// and the first version of this row did not set one: its "sized" arm was
+	// the constant arm and the row measured nothing. Asserted below rather
+	// than assumed, because that is exactly how it went unnoticed.
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+	SetMemoryBudget(mib(256))
+
 	const propagation = 5 * time.Millisecond
 	// bound well below what either window permits, so the carrier is what
 	// decides throughput and the window is not the binder
@@ -137,6 +145,14 @@ func TestTheWindowRuleIsInertOnAShortPath(t *testing.T) {
 				settings.ApplyWindowSizing()
 			})
 		harness.receiveHold(hold)
+		if sizing == WindowSizingFromDelivery {
+			probe := DefaultSendBufferSettings()
+			probe.WindowSizing = sizing
+			probe.ApplyWindowSizing()
+			if !probe.WindowSizingActive() {
+				t.Fatal("the rule is not active, so the sized arm is the constant arm and this row measures nothing")
+			}
+		}
 		// Counted at the receiver. The sender's write count is admission
 		// rather than goodput, and against a carrier that queues, a larger
 		// window scores higher on it while delivering exactly the same bytes:
@@ -268,5 +284,89 @@ func TestTheTransferShareIsADrawOnTheBudget(t *testing.T) {
 			receive.ReceiveQueueMaxByteCount,
 			transferBudgetShareByteCount(),
 		)
+	}
+}
+
+// The row that would have caught the defect that made the whole rule inert.
+//
+// The resolved ceiling was derived inside a test on the process share, so a
+// caller that attached its own budget got no ceiling at all: the estimate fell
+// back to the initial size, the resolved ceiling read exactly 2 MiB at process
+// budgets of 16, 64, 256 and 1024 MiB alike, and the rule computed about eight
+// megabytes from delivery and clamped straight back to where it started. A
+// sixty-four-fold increase in memory moved the window not at all, and measured
+// end to end the whole fix came in four per cent below the constant it was
+// replacing.
+//
+// The lesson for the row rather than for the code: every other term was
+// behaving — the scale, the interval, the target, the budget attached — so a
+// test on any of them passed. What no row asserted was the one number the rule
+// actually clamps to, and that is the number to assert.
+//
+// Predictions, recorded before the run: the resolved ceiling equals the
+// attached budget's total and moves with it, at every process budget and for a
+// budget the caller supplies as well as one derived; and a switch turned on
+// with nothing to draw on reports that it is not active rather than reading on
+// and doing nothing.
+func TestTheResolvedCeilingMovesWithTheBudget(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+
+	for _, processBudget := range []ByteCount{mib(16), mib(64), mib(256), mib(1024)} {
+		SetMemoryBudget(processBudget)
+		settings := DefaultSendBufferSettings()
+		settings.WindowSizing = WindowSizingFromDelivery
+		settings.ApplyWindowSizing()
+		share := transferBudgetShareByteCount()
+		t.Logf(
+			"process budget %d: share %d, resolved ceiling %d, active %t",
+			processBudget, share, settings.DeliverySizedWindowCeilingByteCount,
+			settings.WindowSizingActive(),
+		)
+		if !settings.WindowSizingActive() {
+			t.Errorf("the rule is not active at a %d byte process budget", processBudget)
+		}
+		if settings.DeliverySizedWindowCeilingByteCount != share {
+			t.Errorf(
+				"the resolved ceiling is %d against a %d byte share at a %d byte process budget; the ceiling is the number the rule clamps to, so a ceiling that does not move with the budget is a rule that cannot grow whatever else is right",
+				settings.DeliverySizedWindowCeilingByteCount, share, processBudget,
+			)
+		}
+		if settings.DeliverySizedWindowCeilingByteCount <= settings.ResendQueueMaxByteCount {
+			t.Errorf(
+				"the resolved ceiling is %d against an initial size of %d; a ceiling at or below the initial size means the rule computes a window and is clamped straight back to where it started",
+				settings.DeliverySizedWindowCeilingByteCount,
+				settings.ResendQueueMaxByteCount,
+			)
+		}
+	}
+
+	// a budget the caller attaches, with no process budget set at all: this is
+	// the exact configuration the defect hid in
+	SetMemoryBudget(0)
+	attached := DefaultSendBufferSettings()
+	attached.WindowSizing = WindowSizingFromDelivery
+	attached.ResendQueueBudget = NewTransferMemoryBudget(mib(32))
+	attached.ApplyWindowSizing()
+	if !attached.WindowSizingActive() {
+		t.Error("a caller's own attached budget did not make the rule active")
+	}
+	if attached.DeliverySizedWindowCeilingByteCount != mib(32) {
+		t.Errorf(
+			"an attached %d byte budget resolved to a %d byte ceiling; the ceiling comes from whatever budget is attached, derived or given",
+			mib(32), attached.DeliverySizedWindowCeilingByteCount,
+		)
+	}
+
+	// and nothing to draw on has to say so rather than reading on
+	SetMemoryBudget(0)
+	empty := DefaultSendBufferSettings()
+	empty.WindowSizing = WindowSizingFromDelivery
+	empty.ApplyWindowSizing()
+	if empty.WindowSizingActive() {
+		t.Error("the rule reports active with no budget to draw on")
+	}
+	if empty.ResendQueueMaxByteCount != MemoryScaledByteCount(mib(2), kib(256)) {
+		t.Errorf("an unbudgeted process lost today's constant: %d", empty.ResendQueueMaxByteCount)
 	}
 }

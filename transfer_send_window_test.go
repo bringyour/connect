@@ -69,6 +69,9 @@ type sendWindowHarness struct {
 	// then an earlier arrival gets exactly that, rather than depending on a
 	// retransmit racing the hold filling.
 	delayNextNanos *atomic.Int64
+	// when set, the acknowledgement half discards everything it carries, so a
+	// sequence's resend queue fills and stays full
+	holdAcks *atomic.Bool
 	// the carrier's drain in bytes per second, settable mid-flight so one
 	// cell can measure a path that changes
 	bytesPerSecond *atomic.Int64
@@ -171,6 +174,7 @@ func newPacedSendWindowHarness(
 	dropNext := &atomic.Bool{}
 	drops := &atomic.Int64{}
 	delayNextNanos := &atomic.Int64{}
+	holdAcks := &atomic.Bool{}
 	rate := &atomic.Int64{}
 	rate.Store(int64(bytesPerSecond))
 	ratePump := func(from Route, to Route) {
@@ -218,6 +222,11 @@ func newPacedSendWindowHarness(
 			for {
 				select {
 				case transferFrameBytes := <-from:
+					// the acknowledgement half, withheld
+					if 0 < delay && holdAcks.Load() {
+						MessagePoolReturn(transferFrameBytes)
+						continue
+					}
 					// one induced loss on the data half, for the loss cell
 					if delay == 0 && dropNext.CompareAndSwap(true, false) {
 						drops.Add(1)
@@ -286,6 +295,7 @@ func newPacedSendWindowHarness(
 		dropNext:          dropNext,
 		drops:             drops,
 		delayNextNanos:    delayNextNanos,
+		holdAcks:          holdAcks,
 		bytesPerSecond:    rate,
 		wireFrameCapacity: cap(senderOut),
 	}

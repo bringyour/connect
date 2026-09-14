@@ -771,21 +771,37 @@ func (self *SendBufferSettings) ApplyWindowSizing() {
 	case WindowSizingFromDelivery:
 		self.DeliverySizedWindowScale = deliverySizedWindowScale
 		self.TargetGoodputByteRate = targetGoodputByteRate
-		// An unbudgeted process cannot participate in the surface at all, and
-		// the right answer for it is today's behaviour rather than a floor: a
-		// share of nothing is nothing, and falling to the floor would make
-		// every unbudgeted provider slower the moment the rule is turned on,
-		// which is the opposite of the point. The absence is legible rather
-		// than silent — the estimate says "no memory budget" and reports the
-		// constant it is holding.
-		if share := transferBudgetShareByteCount(); 0 < share {
-			if self.ResendQueueBudget == nil {
+		// The budget first: derived from the process share, or the one a
+		// caller attached. An unbudgeted process cannot participate in the
+		// surface at all, and the right answer for it is today's behaviour
+		// rather than a floor, because a share of nothing is nothing and
+		// falling to the floor would make every unbudgeted provider slower the
+		// moment the rule is turned on.
+		if self.ResendQueueBudget == nil {
+			if share := transferBudgetShareByteCount(); 0 < share {
 				self.ResendQueueBudget = NewTransferMemoryBudget(share)
 			}
-			if self.DeliverySizedWindowCeilingByteCount <= 0 {
-				self.DeliverySizedWindowCeilingByteCount =
-					self.ResendQueueBudget.TotalByteCount()
-			}
+		}
+		// Then the ceiling, from whatever budget is attached, derived or
+		// given. This was nested inside the share test and it is the defect
+		// that made the whole rule inert: with no process budget set, a
+		// caller's own attached budget left the ceiling at zero, the estimate
+		// fell back to the initial size for it, and the resolved ceiling read
+		// exactly 2 MiB at process budgets of 16, 64, 256 and 1024 MiB alike.
+		// A sixty-four-fold increase in memory moved the window not at all,
+		// and the whole fix measured four per cent slower than the constant it
+		// was replacing.
+		if self.ResendQueueBudget != nil && self.DeliverySizedWindowCeilingByteCount <= 0 {
+			self.DeliverySizedWindowCeilingByteCount =
+				self.ResendQueueBudget.TotalByteCount()
+		}
+		if self.ResendQueueBudget == nil {
+			// Nothing to draw on: say so in the settings rather than leaving a
+			// switch that reads on and does nothing. Attaching a budget is a
+			// precondition for the fix rather than a tuning step.
+			self.DeliverySizedWindowScale = 0
+			self.TargetGoodputByteRate = 0
+			self.DeliverySizedWindowCeilingByteCount = 0
 		}
 	default:
 		self.DeliverySizedWindowScale = 0
@@ -793,6 +809,14 @@ func (self *SendBufferSettings) ApplyWindowSizing() {
 		self.TargetGoodputByteRate = 0
 		self.ResendQueueBudget = nil
 	}
+}
+
+// WindowSizingActive reports whether the rule can actually act, which is not
+// the same as the switch being set: without a budget to draw on there is no
+// share, so the rule holds today's constant. A caller that turns the switch on
+// and gets false here has a process with no memory budget attached.
+func (self *SendBufferSettings) WindowSizingActive() bool {
+	return 0 < self.DeliverySizedWindowScale && self.ResendQueueBudget != nil
 }
 
 func DefaultSendBufferSettings() *SendBufferSettings {
@@ -1560,6 +1584,12 @@ type ClientReceiveStatsSnapshot struct {
 	ReceiveQueueTentativeEvictionByteCount uint64
 	// held items that crossed the boundary and were acknowledged
 	ReceiveQueueCommitCount uint64
+	// no-acknowledgement Packs offered by a caller, handed to the write path,
+	// and turned away by admission. Offered above written is the mode being
+	// dropped under back pressure.
+	SendNoAckOfferedCount uint64
+	SendNoAckWriteCount   uint64
+	SendNoAckRefusedCount uint64
 	// evictions the notice could not carry, which are the ones that still cost
 	// a sixty second lease
 	ReceiveQueueEvictionNoticeOverflow uint64
@@ -1784,49 +1814,60 @@ type Client struct {
 	receiveQueueTentativeEvictionCount     atomic.Uint64
 	receiveQueueTentativeEvictionByteCount atomic.Uint64
 	receiveQueueCommitCount                atomic.Uint64
-	receiveQueueEvictionNoticeOverflow     atomic.Uint64
-	sendEvictionResendCount                atomic.Uint64
-	receiveAckHandoffDropCount             atomic.Uint64
-	receiveAckHandoffQueueFullCount        atomic.Uint64
-	receiveAckHandoffMissCount             atomic.Uint64
-	receiveAckHandoffWaitCount             atomic.Uint64
-	receiveAckHandoffWaitSuccess           atomic.Uint64
-	receiveAckRouteWriteCount              atomic.Uint64
-	receiveAckRoutePriorityWriteCount      atomic.Uint64
-	receiveAckRouteWriteBlockedCount       atomic.Uint64
-	receiveAckRouteWriteErrorCount         atomic.Uint64
-	receiveAckRouteWriteWaitNanoseconds    atomic.Uint64
-	receiveAckRouteWriteMaxWaitNanos       atomic.Uint64
-	initialSendWriteCount                  atomic.Uint64
-	initialSendFrameCount                  atomic.Uint64
-	initialSendMessageByteCount            atomic.Uint64
-	selectiveGapWriteCount                 atomic.Uint64
-	timeoutResendWriteCount                atomic.Uint64
-	ackPendingResendPreemptCount           atomic.Uint64
-	timeoutResendDeferCount                atomic.Uint64
-	carrierChangeWriteCount                atomic.Uint64
-	carrierChangeSelectiveAckVoidCount     atomic.Uint64
-	ackTailProbeWriteCount                 atomic.Uint64
-	cumulativeProbeWriteCount              atomic.Uint64
-	recoveryWriteErrorCount                atomic.Uint64
-	missingContractWriteCount              atomic.Uint64
-	missingContractRequestCount            atomic.Uint64
-	compactRecoveryAckCount                atomic.Uint64
-	compactRecoveryContractCount           atomic.Uint64
-	unreliableFlowIsolationBypassCount     atomic.Uint64
-	unreliableNoAckAdmissionBypassCount    atomic.Uint64
-	unreliableFlowReserveSelectionCount    atomic.Uint64
-	unreliableFlowReserveUseCount          atomic.Uint64
-	unreliableFlightWaitCount              atomic.Uint64
-	unreliableFlightWaitNanoseconds        atomic.Uint64
-	unreliableFlightMaximumWaitNanos       atomic.Uint64
-	unreliableFlightGapCount               atomic.Uint64
-	unreliableFlightTimeoutCount           atomic.Uint64
-	unreliableFlightReductionCount         atomic.Uint64
-	unreliableFlightMaximumBytes           atomic.Uint64
-	unreliableFlightMaximumLimit           atomic.Uint64
-	unreliableFlightMaximumMessages        atomic.Uint64
-	unreliableFlightMaximumMessageLimit    atomic.Uint64
+	// A no-acknowledgement Pack asks for delivery out of sequence with no ack
+	// and no retry, so it should never be queued behind a retransmit buffer it
+	// will never occupy, and never dropped because one is full. Offered counts
+	// what a caller handed in, written counts what reached the write path, and
+	// refused counts what admission turned away. A forwarder that discards
+	// traffic because a reliability buffer it does not use is full would be a
+	// defect that looks like ordinary loss, so it needs a counter rather than
+	// an inference.
+	sendNoAckOfferedCount               atomic.Uint64
+	sendNoAckWriteCount                 atomic.Uint64
+	sendNoAckRefusedCount               atomic.Uint64
+	receiveQueueEvictionNoticeOverflow  atomic.Uint64
+	sendEvictionResendCount             atomic.Uint64
+	receiveAckHandoffDropCount          atomic.Uint64
+	receiveAckHandoffQueueFullCount     atomic.Uint64
+	receiveAckHandoffMissCount          atomic.Uint64
+	receiveAckHandoffWaitCount          atomic.Uint64
+	receiveAckHandoffWaitSuccess        atomic.Uint64
+	receiveAckRouteWriteCount           atomic.Uint64
+	receiveAckRoutePriorityWriteCount   atomic.Uint64
+	receiveAckRouteWriteBlockedCount    atomic.Uint64
+	receiveAckRouteWriteErrorCount      atomic.Uint64
+	receiveAckRouteWriteWaitNanoseconds atomic.Uint64
+	receiveAckRouteWriteMaxWaitNanos    atomic.Uint64
+	initialSendWriteCount               atomic.Uint64
+	initialSendFrameCount               atomic.Uint64
+	initialSendMessageByteCount         atomic.Uint64
+	selectiveGapWriteCount              atomic.Uint64
+	timeoutResendWriteCount             atomic.Uint64
+	ackPendingResendPreemptCount        atomic.Uint64
+	timeoutResendDeferCount             atomic.Uint64
+	carrierChangeWriteCount             atomic.Uint64
+	carrierChangeSelectiveAckVoidCount  atomic.Uint64
+	ackTailProbeWriteCount              atomic.Uint64
+	cumulativeProbeWriteCount           atomic.Uint64
+	recoveryWriteErrorCount             atomic.Uint64
+	missingContractWriteCount           atomic.Uint64
+	missingContractRequestCount         atomic.Uint64
+	compactRecoveryAckCount             atomic.Uint64
+	compactRecoveryContractCount        atomic.Uint64
+	unreliableFlowIsolationBypassCount  atomic.Uint64
+	unreliableNoAckAdmissionBypassCount atomic.Uint64
+	unreliableFlowReserveSelectionCount atomic.Uint64
+	unreliableFlowReserveUseCount       atomic.Uint64
+	unreliableFlightWaitCount           atomic.Uint64
+	unreliableFlightWaitNanoseconds     atomic.Uint64
+	unreliableFlightMaximumWaitNanos    atomic.Uint64
+	unreliableFlightGapCount            atomic.Uint64
+	unreliableFlightTimeoutCount        atomic.Uint64
+	unreliableFlightReductionCount      atomic.Uint64
+	unreliableFlightMaximumBytes        atomic.Uint64
+	unreliableFlightMaximumLimit        atomic.Uint64
+	unreliableFlightMaximumMessages     atomic.Uint64
+	unreliableFlightMaximumMessageLimit atomic.Uint64
 	// FLIGHTGATEFIX §8: attribution counters. Atomic adds only.
 	unreliableFlightBlockedWithReliableCapacity atomic.Uint64
 	unreliableFlightGapReorderSuspected         atomic.Uint64
@@ -2145,6 +2186,9 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		ReceiveQueueTentativeEvictionCount:     self.receiveQueueTentativeEvictionCount.Load(),
 		ReceiveQueueTentativeEvictionByteCount: self.receiveQueueTentativeEvictionByteCount.Load(),
 		ReceiveQueueCommitCount:                self.receiveQueueCommitCount.Load(),
+		SendNoAckOfferedCount:                  self.sendNoAckOfferedCount.Load(),
+		SendNoAckWriteCount:                    self.sendNoAckWriteCount.Load(),
+		SendNoAckRefusedCount:                  self.sendNoAckRefusedCount.Load(),
 		ReceiveQueueEvictionByteCount:          self.receiveQueueEvictionByteCount.Load(),
 		ReceiveQueueEvictionNoticeOverflow:     self.receiveQueueEvictionNoticeOverflow.Load(),
 		AckHandoffDropCount:                    self.receiveAckHandoffDropCount.Load(),
@@ -3355,7 +3399,15 @@ func (self *Client) sendWithTimeoutDetailed(
 		lifecycleUpstreamRecoverable: resolved.upstreamRecoverable,
 		retainAfterAckTimeout:        resolved.retainAfterAckTimeout,
 	}
-	return self.enqueueSendPack(sendPack, timeout)
+	noAck := !resolved.transferOptions.Ack
+	if noAck {
+		self.sendNoAckOfferedCount.Add(1)
+	}
+	success, err := self.enqueueSendPack(sendPack, timeout)
+	if noAck && !(success && err == nil) {
+		self.sendNoAckRefusedCount.Add(1)
+	}
+	return success, err
 }
 
 // The fully resolved values shared by single, batch, and raw sends.
@@ -8559,6 +8611,9 @@ func (self *SendSequence) sendRecordsForSchedulingKey(
 	forceUnwrapped bool,
 	schedulingKey sendSchedulingKey,
 ) {
+	if !ack && self.client != nil {
+		self.client.sendNoAckWriteCount.Add(1)
+	}
 	self.sendWithSetContractRecords(
 		sendFrames,
 		acks,
