@@ -2608,3 +2608,35 @@ trigger alone would give, fails the row rather than passing as an
 improvement. Row Q1 is restated the same way: ten doublings in a bound
 of round trips, with the acknowledgement count per round rising with the
 burst.
+
+### 26.8 Implementer's note: the entry condition is evidence of a small window, never a byte count
+
+Read this with 26.3 before writing the predicate. The counting rule of
+26.3 and 26.7 must be gated on the recovery phase, and the phase is
+entered only by E1 (a `Stale`, `Retained` or `Rejected` arrival), E2
+(`sendSeq − initialSynSeq − 1 < StartQuickackByteCount`) or E3
+(an arrival after `outstanding == 0` had held for longer than
+`AckCompressTimeout`), and left when a burst since the last
+acknowledgement reaches `windowSize/2`, when `RecoveryQuickackByteBound`
+bytes have been acknowledged since entry, or when `outstanding == 0`
+has held for `AckCompressTimeout`.
+
+The simplification to avoid, stated as the invariant it breaks: outside
+the phase, a saturated upload with a large window produces exactly one
+acknowledgement per half-window or per timer interval, as it does
+today. Any predicate of the form "bytes since the last acknowledgement
+are under `windowSize/2`" or "outstanding is small" is true at the start
+of every interval of every flow, would satisfy every recovery row in
+26.6, and would acknowledge every k segments of every upload for ever:
+twenty thousand acknowledgements a second at 465 Mb/s, on the client's
+downlink. The recovery rows cannot catch that, so a row exists that
+does.
+
+| Row | Test | Pins | Fails on | Regime |
+|---|---|---|---|---|
+| Q6 | `TestSteadyStateUploadEmitsNoQuickacks` | a peer with a window above `windowSize/2` sending continuously for ten timer intervals with no loss, no start and no idle in the window: the acknowledgements emitted number at most one per half-window of bytes received plus one per timer interval, exactly the tree as shipped; the phase is never entered (`recovering` stays false) | an implementation whose entry condition is a byte count rather than E1, E2 or E3 | in-process; the row that guards steady state while Q1 to Q5 guard recovery |
+
+The same invariant, read from the counters after any campaign run: on a
+lossless steady-state upload the acknowledgement count on this tree
+equals the count on main within the timer's jitter. If it does not, the
+gate is wrong, whatever the recovery rows say.
