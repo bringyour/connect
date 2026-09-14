@@ -282,3 +282,87 @@ func TestANoAckPackIsNotHeldOrDroppedByAFullResendQueue(t *testing.T) {
 		)
 	}
 }
+
+// The invariant the three-stage design rests on: the resend queue is retention,
+// and a no-acknowledgement item has nothing to retain.
+//
+// Items in that queue are charged to the window, resent on a timer, probed, and
+// lease-tracked by the selective-acknowledgement machinery. A no-acknowledgement
+// pack is written once and never acknowledged, so putting one there would give
+// it a lease nothing will ever clear and charge a window it does not use. The
+// pre-write queue — admission, the channel, the scheduler — is where a
+// no-acknowledgement pack waits, and it keeps its own semantics there: taken by
+// the bypass regardless of capacity, written once, never retained.
+//
+// Prediction, recorded before the run: through a burst of no-acknowledgement
+// traffic on a sequence that is also carrying reliable traffic, every item the
+// resend queue holds at any moment is one that expects an acknowledgement.
+func TestTheResendQueueNeverHoldsAnUnacknowledgedItem(t *testing.T) {
+	assertMessagePoolOwnership(t)
+
+	const propagation = 10 * time.Millisecond
+	const bytesPerSecond = ByteCount(4 * 1000 * 1000 / 8)
+	const payloadByteCount = 1024
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	harness := newPacedSendWindowHarness(t, ctx, propagation, bytesPerSecond,
+		shallowCarrierFrameCapacity,
+		func(settings *SendBufferSettings) {
+			settings.ResendQueueMaxByteCount = ByteCount(256 * 1024)
+		})
+
+	var running sync.WaitGroup
+	running.Add(2)
+	go func() {
+		defer running.Done()
+		payload := string(make([]byte, payloadByteCount))
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			frame := RequireToFrameWithDefaultProtocolVersion(
+				&protocol.SimpleMessage{Content: payload},
+			)
+			if admitted, _ := harness.sender.SendWithTimeoutDetailed(
+				frame, harness.receiverId, nil, 50*time.Millisecond,
+				sendPackRecoveryOption{upstreamRecoverable: true},
+			); !admitted {
+				MessagePoolReturn(frame.MessageBytes)
+			}
+		}
+	}()
+	go func() {
+		defer running.Done()
+		payload := string(make([]byte, payloadByteCount))
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			frame := RequireToFrameWithDefaultProtocolVersion(
+				&protocol.SimpleMessage{Content: payload},
+			)
+			if admitted, _ := harness.sender.SendWithTimeoutDetailed(
+				frame, harness.receiverId, nil, 50*time.Millisecond, NoAck(),
+			); !admitted {
+				MessagePoolReturn(frame.MessageBytes)
+			}
+		}
+	}()
+	running.Wait()
+
+	// Counted where the item is added, on the sequence's own goroutine. The
+	// items are pooled and reset, so reading their fields from a watcher would
+	// be a data race rather than an observation — which the race detector said
+	// when this row first tried it.
+	stats := harness.sender.ReceiveStats()
+	t.Logf(
+		"%d no-acknowledgement packs written, %d items put into retention that expect no acknowledgement",
+		stats.SendNoAckWriteCount, stats.ResendQueueUnackedItemCount,
+	)
+	if stats.SendNoAckWriteCount == 0 {
+		t.Fatal("no no-acknowledgement pack was written, so this cell reads nothing")
+	}
+	if 0 < stats.ResendQueueUnackedItemCount {
+		t.Errorf(
+			"%d items entered the resend queue expecting no acknowledgement; that queue is retention, and an item there is charged to the window, resent on a timer, probed and lease-tracked, none of which a no-acknowledgement pack can ever clear",
+			stats.ResendQueueUnackedItemCount,
+		)
+	}
+}

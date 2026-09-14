@@ -1043,6 +1043,14 @@ type SendPack struct {
 	// message pool send-ownership rule.
 	Frame  *protocol.Frame
 	Frames []*protocol.Frame
+	// The caller's budget as an absolute instant rather than a duration, so
+	// every stage spends the same one (THROUGHPUTFIX §38.12). Zero means the
+	// caller gave no bound. Without this the budget reset twice: a pack that
+	// cleared admission then waited in the scheduler with no bound at all,
+	// because the caller's timeout covered admission only, and the loop's
+	// write then took the settings' full write timeout however much of the
+	// caller's budget was already spent.
+	deadline time.Time
 	// logicalGroup marks Frames as one admission/completion unit. The owning
 	// SendSequence may split it into ordered wire Packs at the transport-safe
 	// frame/byte bounds without returning to Client routing or admission.
@@ -1580,6 +1588,13 @@ type ClientReceiveStatsSnapshot struct {
 	// no-acknowledgement packs discarded after admission, on a failed route
 	// write or a contract that could not be created
 	SendNoAckDiscardCount uint64
+	// packs dropped because the caller's budget expired while they waited in
+	// the pre-write queue
+	SendPackDeadlineDropCount uint64
+	// items put into the retention queue that expect no acknowledgement, which
+	// must always be zero: that queue is retention and they have nothing to
+	// retain
+	ResendQueueUnackedItemCount uint64
 	// evictions the notice could not carry, which are the ones that still cost
 	// a sixty second lease
 	ReceiveQueueEvictionNoticeOverflow uint64
@@ -1816,6 +1831,8 @@ type Client struct {
 	sendNoAckWriteCount                 atomic.Uint64
 	sendNoAckRefusedCount               atomic.Uint64
 	sendNoAckDiscardCount               atomic.Uint64
+	sendPackDeadlineDropCount           atomic.Uint64
+	resendQueueUnackedItemCount         atomic.Uint64
 	receiveQueueEvictionNoticeOverflow  atomic.Uint64
 	sendEvictionResendCount             atomic.Uint64
 	receiveAckHandoffDropCount          atomic.Uint64
@@ -2181,6 +2198,8 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		SendNoAckWriteCount:                    self.sendNoAckWriteCount.Load(),
 		SendNoAckRefusedCount:                  self.sendNoAckRefusedCount.Load(),
 		SendNoAckDiscardCount:                  self.sendNoAckDiscardCount.Load(),
+		SendPackDeadlineDropCount:              self.sendPackDeadlineDropCount.Load(),
+		ResendQueueUnackedItemCount:            self.resendQueueUnackedItemCount.Load(),
 		ReceiveQueueEvictionByteCount:          self.receiveQueueEvictionByteCount.Load(),
 		ReceiveQueueEvictionNoticeOverflow:     self.receiveQueueEvictionNoticeOverflow.Load(),
 		AckHandoffDropCount:                    self.receiveAckHandoffDropCount.Load(),
@@ -3390,6 +3409,9 @@ func (self *Client) sendWithTimeoutDetailed(
 		logicalLaneExplicit:          resolved.logicalLaneExplicit,
 		lifecycleUpstreamRecoverable: resolved.upstreamRecoverable,
 		retainAfterAckTimeout:        resolved.retainAfterAckTimeout,
+	}
+	if 0 < timeout {
+		sendPack.deadline = time.Now().Add(timeout)
 	}
 	noAck := !resolved.transferOptions.Ack
 	if noAck {
@@ -6012,6 +6034,10 @@ type SendSequence struct {
 	// packAdmission counts both channel-resident and scheduler-resident Packs,
 	// so flow isolation cannot expand the configured memory bound.
 	packAdmission *sendPackAdmission
+	// The deadline of the pack the loop is writing, read by the write so it
+	// spends what the caller has left rather than a fresh write timeout.
+	// Owned by the sequence goroutine, which is the only writer and reader.
+	currentPackDeadline time.Time
 	// Whether a pack entering now could also enter the resend queue, published
 	// by the send loop each pass. A reliable pack takes its admission slot
 	// only when this is true (THROUGHPUTFIX §38.11): admission bounds the
@@ -6972,7 +6998,7 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 		}
 		item.resendTime = resendTime
 		item.recoveryKind = recoveryKind
-		self.resendQueue.Add(item)
+		self.addResendItem(item)
 	}
 
 	selectiveAckCount := 0
@@ -7192,7 +7218,7 @@ func (self *SendSequence) scheduleRetiredReliableCarrierRecovery(
 		}
 		item.resendTime = currentTime
 		item.recoveryKind = sendRecoveryCarrierChange
-		self.resendQueue.Add(item)
+		self.addResendItem(item)
 	}
 }
 
@@ -7660,7 +7686,7 @@ sendSequenceLoop:
 						}
 						item.resendTime = holdUntil
 						item.recoveryKind = sendRecoveryNone
-						self.resendQueue.Add(item)
+						self.addResendItem(item)
 						self.client.laneProbeRideCount.Add(1)
 						continue
 					}
@@ -7693,7 +7719,7 @@ sendSequenceLoop:
 					// is never held here in the first place.
 					item.resendTime = sendTime.Add(
 						self.deferredResendInterval(item, self.rttWindow.ScaledRtt()))
-					self.resendQueue.Add(item)
+					self.addResendItem(item)
 					self.client.timeoutResendDeferCount.Add(1)
 					continue
 				} else if recoveryKind == sendRecoveryNone && !self.lastCumulativeAckTime.IsZero() {
@@ -7717,7 +7743,7 @@ sendSequenceLoop:
 						item.timeoutDeferAckTime = self.lastCumulativeAckTime
 						item.deferralOutstanding = true
 						item.resendTime = sendTime.Add(deferInterval)
-						self.resendQueue.Add(item)
+						self.addResendItem(item)
 						self.client.timeoutResendDeferCount.Add(1)
 						continue
 					}
@@ -7818,7 +7844,7 @@ sendSequenceLoop:
 						time.Now(),
 						item.sendTime.Add(self.sendBufferSettings.AckTimeout),
 					) {
-					self.resendQueue.Add(item)
+					self.addResendItem(item)
 					continue
 				}
 
@@ -7844,7 +7870,7 @@ sendSequenceLoop:
 				} else {
 					item.resendTime = sendTime.Add(itemResendTimeout)
 				}
-				self.resendQueue.Add(item)
+				self.addResendItem(item)
 			}
 		}
 
@@ -7923,6 +7949,24 @@ sendSequenceLoop:
 			bypassedRecoveryAdmission = sendPack != nil
 		}
 		if sendPack != nil {
+			// The caller's budget is absolute, so a pack that waited longer
+			// than the caller was willing to wait is dropped here and counted,
+			// rather than waiting in the scheduler with no bound at all —
+			// which is what it did before, because the caller's timeout
+			// covered admission only (THROUGHPUTFIX §38.12).
+			if !sendPack.deadline.IsZero() && sendPack.deadline.Before(sendTime) {
+				self.client.sendPackDeadlineDropCount.Add(1)
+				if !sendPack.Ack {
+					self.client.sendNoAckDiscardCount.Add(1)
+				}
+				sendPack.completeLifecycleFirstRouteWrite(ErrSendPackNotAdmitted)
+				sendPack.completeNoAck(ErrSendPackNotAdmitted)
+				sendPack.invokeAck(ErrSendPackNotAdmitted)
+				sendPack.returnFrames()
+				sendPack.releaseRaw()
+				continue
+			}
+			self.currentPackDeadline = sendPack.deadline
 			processingPacks[0] = sendPack
 			// The first selected Pack is the earliest point at which opening a
 			// destination writer is useful. Refresh its carrier policy here so the
@@ -8909,6 +8953,7 @@ func (self *SendSequence) sendWithSetContractRecords(
 		)),
 		ackTimeout:         self.ackTimeoutForPolicy(transferFlightPolicySnapshot{}),
 		sendCount:          1,
+		expectsAck:         ack,
 		head:               head,
 		hasContractFrame:   (contractFrame != nil),
 		transferFrameBytes: transferFrameBytes,
@@ -8925,7 +8970,7 @@ func (self *SendSequence) sendWithSetContractRecords(
 		// inside the write; validation must find the item instead of discarding that
 		// progress and leaving resend admission closed until the recovery timer.
 		self.sendItems = append(self.sendItems, item)
-		self.resendQueue.Add(item)
+		self.addResendItem(item)
 	}
 
 	var writeDisposition transferWriteDisposition
@@ -9088,7 +9133,7 @@ func (self *SendSequence) receiveContractMissing(
 	}
 	transferFrameBytes, hasContractFrame, err := self.setHead(item, true)
 	if err != nil {
-		self.resendQueue.Add(item)
+		self.addResendItem(item)
 		self.log.Errorf(
 			"[s]%s->%s...%s s(%s) could not restore missing contract = %s\n",
 			self.client.ClientTag(),
@@ -9106,7 +9151,7 @@ func (self *SendSequence) receiveContractMissing(
 	item.sendTime = time.Now()
 	item.resendTime = item.sendTime
 	item.recoveryKind = sendRecoveryContractMissing
-	self.resendQueue.Add(item)
+	self.addResendItem(item)
 	return true
 }
 
@@ -9418,7 +9463,7 @@ func (self *SendSequence) resendEvicted(evictedSequenceNumbers []uint64) {
 		item.selectiveAcked = false
 		item.resendTime = now
 		item.recoveryKind = sendRecoveryEviction
-		self.resendQueue.Add(item)
+		self.addResendItem(item)
 	}
 }
 
@@ -10009,7 +10054,7 @@ func (self *SendSequence) receiveAck(
 		item.sendTime = time.Now()
 		item.resendTime = item.sendTime.Add(self.sendBufferSettings.SelectiveAckTimeout)
 		item.selectiveAcked = true
-		self.resendQueue.Add(item)
+		self.addResendItem(item)
 		if laneHeadAcked && !item.carrierChanged && 1 < item.sendCount {
 			if slot := self.laneSlotFor(item.carrierRoute); 0 <= slot {
 				self.promoteLaneHeads(uint32(1)<<uint(slot), ackTime)
@@ -10153,6 +10198,43 @@ func (self *SendSequence) ackItem(item *sendItem) {
 // loud error: the frame is dropped (the SendSequence will retry, and
 // eventually time out, rather than transmit application data sealed under
 // the wrong identity).
+// What an initial write may spend: the smaller of the settings' write timeout
+// and what is left of the caller's budget (THROUGHPUTFIX §38.12).
+//
+// A resend takes the ordinary write timeout. The caller's budget bounds getting
+// the pack onto the wire once; retention past that belongs to the resend queue
+// and its own timers, and letting an expired budget shorten a retransmission
+// would make recovery worse the longer a flow had already waited.
+// addResendItem puts an item into the retention queue, and guards the one
+// invariant that queue rests on: everything in it expects an acknowledgement.
+//
+// An item there is charged to the window, resent on a timer, probed and
+// lease-tracked by the selective-acknowledgement machinery, none of which a
+// no-acknowledgement item can ever clear. The structure already keeps them out
+// — the only add on the write path is inside the acknowledged branch — and this
+// counts rather than panics so a regression is visible in the field rather than
+// fatal in it (THROUGHPUTFIX §38.12).
+func (self *SendSequence) addResendItem(item *sendItem) {
+	if !item.expectsAck && self.client != nil {
+		self.client.resendQueueUnackedItemCount.Add(1)
+	}
+	self.resendQueue.Add(item)
+}
+
+func (self *SendSequence) writeTimeoutForPack(resend bool) time.Duration {
+	writeTimeout := self.sendBufferSettings.WriteTimeout
+	if resend || self.currentPackDeadline.IsZero() {
+		return writeTimeout
+	}
+	remaining := time.Until(self.currentPackDeadline)
+	if remaining <= 0 {
+		// the budget is spent: one non-blocking attempt rather than none, so a
+		// pack that reached the writer is never dropped for want of a moment
+		return 0
+	}
+	return min(writeTimeout, remaining)
+}
+
 func (self *SendSequence) writeMaybeWrappedBytes(
 	transferFrameBytes []byte,
 	path TransferPath,
@@ -10212,7 +10294,7 @@ func (self *SendSequence) writeMaybeWrappedBytes(
 			writer,
 			self.ctx,
 			shared,
-			self.sendBufferSettings.WriteTimeout,
+			self.writeTimeoutForPack(resend),
 			reliableOnly,
 		)
 		if err != nil {
@@ -10253,7 +10335,7 @@ func (self *SendSequence) writeMaybeWrappedBytes(
 		writer,
 		self.ctx,
 		shared,
-		self.sendBufferSettings.WriteTimeout,
+		self.writeTimeoutForPack(resend),
 		reliableOnly,
 	)
 	if err != nil {
@@ -10587,6 +10669,14 @@ type sendItem struct {
 	hybridReliableCarrierObserved bool
 	unreliableFlightTracked       bool
 	unreliableFlowReserve         bool
+	// expectsAck records whether this item was written on the acknowledged
+	// lane. The resend queue is retention — an item there is charged to the
+	// window, resent on a timer, probed and lease-tracked — so an item that
+	// expects no acknowledgement has nothing to retain and must never be
+	// there (THROUGHPUTFIX §38.12). Recorded rather than inferred, because
+	// sequence number zero is both the unacknowledged marker and a legitimate
+	// first reliable number.
+	expectsAck bool
 	// carrierChanged is set once a write of this item lands on a route other
 	// than the one its previous write took. From then on an acknowledgement
 	// of it proves nothing about either lane, since the copy the receiver
