@@ -5487,7 +5487,10 @@ resend (`:6743`), the gap recovery (`:6581–6605`) and the carrier-change
 resend that fires when a route dies (`:2310,2439`). The only place
 `selectiveAcked` is cleared is the timeout resend (`:7296`), when the
 60 s deadline passes, at which point the sequence's own `AckTimeout`,
-also 60 s from the same refreshed send time, is due as well. On the
+also 60 s from the same refreshed send time, is due as well. Amended in
+§37.19: a fourth path, the ack-tail probe, re-sends the oldest marked
+item without clearing the mark, so the harm is serialised probe
+intervals per evicted item rather than a flat minute. On the
 receive side, when an arrival does not fit, later held items are
 removed to admit it, or the arrival is refused if it is itself the
 latest (`:11789–11800`), and the removal sends nothing: the item's
@@ -5737,3 +5740,72 @@ capacity for the duration of the recovery and memory otherwise
 unchanged. If a run still stalls, the stall is a refused item the
 sender is not resending, and the item's `resendTime` and whether it has
 proving acknowledgements beyond it are the fields to read.
+
+### 37.19 The fourth path, the notice as compatibility, the bet as a window, and the raise that moves nothing alone
+
+The mechanism of §37.16 was incomplete, and the correction reconciles
+the branch cell and the main cell, which produced different shapes for
+the same defect. There is a fourth resend path. When the oldest
+outstanding item is selectively acknowledged, the recovery scheduler
+reschedules it as an ack-tail probe at its send time plus `probeRtt`,
+which is twice the window's minimum round trip clamped between the
+300 ms floor and 8 s (`transfer_rtt.go:346–366`), on every pass and
+without clearing the mark (`transfer.go:6704–6740,6900`); the probe is
+a full write of the frame (`:2597`), so an evicted item that has
+reached the head is admitted and delivered by it; and each item gets at
+most `AckTailProbeLimit` probes, two (`:730`), after which it waits for
+the timeout of §37.16. So the harm is one probe interval per evicted
+item that reaches the head, serialised: a small eviction generation is
+a few intervals and looks like a hiccup, a large one is hundreds and
+looks like a stall, 80 s for a few hundred items at the 300 ms floor,
+and any item that exhausts its two probes before reaching the head
+waits the minute. That is why the branch cell at 3 MiB completed and
+the main cell at 24 MiB did not, and it is the shape §37.16 should have
+had.
+
+The eviction notice: a decision. Under an overrun it cascades. A
+resent evicted item is earlier than everything held, so admitting it
+evicts another, which is noticed, resent, and evicts a third; measured,
+one run in six took 80 s and delivered 289 of 400 against the leased
+arm completing. So the notice cannot be the fix, because the fix is not
+to recover from eviction but to prevent the overrun, which is the
+advertisement, and with never-evict landed an updated receiver never
+evicts, so in the shipping configuration the notice never fires. It
+stays, as the coordinator inclines, and the reason is not that it is
+cheap but what it is for: it is the sender's side of a contract that
+any receiver which evicts may invoke, which is every unupdated receiver
+in the field, and the same argument that justifies guard 2. It is
+recorded here as a compatibility and diagnostic mechanism and not as
+part of the fix; its tests are to say so in their names, so that a path
+that never fires against an updated peer is not read as dead and
+removed; and its absence on the wire between updated peers is the
+expected reading, not a fault. The receiver policy is never-evict,
+without exception: with the advertisement in force the hold can be
+full only when everything outstanding is already held, so there is
+never an earlier arrival to admit, and eviction has no occasion.
+
+The bet is a window. Step one bounded only the sized window by the
+advertisement and not the pre-sample bet, and the opening burst
+overran: a 4 MiB initial against a 256 KiB advertised hold produced 35
+evictions and 330 refusals while the sized window still reported
+64 KiB. Fixed, and the rule of §37.16 is restated so that the omission
+cannot recur in any layer that gains an initial size: the advertised
+capacity is the outermost clamp, on the initial before samples and on
+the sized window after them, from the first pack. In §37.4's form,
+`window = min(advertised, initial)` until sampled and
+`min(advertised, clamp(...))` after, and every other layer that takes
+an initial bet from the surface applies its peer's bound to the bet
+the same way.
+
+The raise that moves nothing alone. A sender with a raised ceiling and
+no advertisement reaches 1.21 to 1.24 times; with the full rule, 2.46
+to 2.73. The difference is the whole result: without the advertisement
+a window above the hold turns routine reordering between two routes
+into refusals and, at an old receiver, evictions and serialised probes,
+and the loss eats the window; with it the hold and the window move
+together, which §37.3 asked for at the start and which the
+measurement now says in numbers. The advertisement is a precondition
+for the ceiling raise, not a refinement of it, and the raise is blocked
+on nothing else but the assumed round trip, which the harness is
+measuring as a campaign rather than choosing, at the settled target of
+one gigabit.
