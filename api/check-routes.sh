@@ -10,6 +10,14 @@
 # the same shape, and exits non-zero if either side has something the other
 # does not.
 #
+# The /competition/* routes are the one exception. This api process serves
+# them, but they are a separate security domain with their own document,
+# sn/api/competition.yml, so bringyour.yml must NOT list them: a competition
+# path found there is drift. They are checked against that document instead,
+# looked up at <server>/../sn/api/competition.yml; when it is not reachable
+# that half of the check is skipped with a note rather than failed, so the
+# script still works in a checkout without the sn repo beside the server.
+#
 # Deliberately dependency-free: zsh, grep, sed, sort, comm. No yaml parser and
 # no go toolchain, so it runs in a bare checkout and in CI.
 #
@@ -51,8 +59,27 @@ if [[ ! -f $spec ]]; then
     exit 2
 fi
 
+competition_spec=${server_dir:A:h}/sn/api/competition.yml
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+
+# spec_paths <file> -- the "METHOD /path" operations an OpenAPI document
+# declares. Paths are the two-space keys under `paths:`; methods are their
+# four-space children. Stops at the next top-level key (components:).
+spec_paths() {
+    awk '
+        /^paths:[[:space:]]*$/ { inpaths = 1; next }
+        /^[A-Za-z]/            { inpaths = 0 }
+        !inpaths               { next }
+        /^  \/[^ ]*:[[:space:]]*$/ { path = $1; sub(/:$/, "", path); next }
+        /^    (get|put|post|patch|delete|head|options|trace):[[:space:]]*$/ {
+            method = $1
+            sub(/:$/, "", method)
+            print toupper(method), path
+        }
+    ' "$1" | sed -e 's/{[^}]*}/*/g' | sort -u
+}
 
 # --- the route table -------------------------------------------------------
 # Every NewRoute( occurrence, not every line: some source lines hold two.
@@ -64,47 +91,63 @@ done
 grep -oh 'NewRoute("[A-Z*]*", "[^"]*"' $route_files \
     | sed -e 's/.*NewRoute("//' -e 's/", "/ /' -e 's/"$//' \
     | sed -e 's/\\\\\./\./g' -e 's/(\[^\/\]+)/*/g' \
-    | sort -u > $work/routes
+    | sort -u > $work/routes.all
 
-# --- the spec --------------------------------------------------------------
-# Paths are the two-space keys under `paths:`; methods are their four-space
-# children. Stops at the next top-level key (components:).
-awk '
-    /^paths:[[:space:]]*$/ { inpaths = 1; next }
-    /^[A-Za-z]/            { inpaths = 0 }
-    !inpaths               { next }
-    /^  \/[^ ]*:[[:space:]]*$/ { path = $1; sub(/:$/, "", path); next }
-    /^    (get|put|post|patch|delete|head|options|trace):[[:space:]]*$/ {
-        method = $1
-        sub(/:$/, "", method)
-        print toupper(method), path
-    }
-' $spec | sed -e 's/{[^}]*}/*/g' | sort -u > $work/spec
+grep -v ' /competition/' $work/routes.all > $work/routes
+grep ' /competition/' $work/routes.all > $work/routes.competition
 
-missing_from_spec=$(comm -23 $work/routes $work/spec)
-missing_from_server=$(comm -13 $work/routes $work/spec)
-
-route_count=$(grep -c . $work/routes)
-spec_count=$(grep -c . $work/spec)
+# --- the specs -------------------------------------------------------------
+spec_paths $spec > $work/spec.all
+grep -v ' /competition/' $work/spec.all > $work/spec
+grep ' /competition/' $work/spec.all > $work/spec.competition
 
 drifted=0
 
-if [[ -n $missing_from_spec ]]; then
-    print -u2 "registered but NOT in the spec:"
-    print -u2 -- "$missing_from_spec" | sed 's/^/  /' >&2
+report() {
+    print -u2 "$1:"
+    print -u2 -- "$2" | sed 's/^/  /' >&2
     drifted=1
-fi
+}
 
-if [[ -n $missing_from_server ]]; then
-    print -u2 "in the spec but NOT registered:"
-    print -u2 -- "$missing_from_server" | sed 's/^/  /' >&2
-    drifted=1
+# --- bringyour.yml ---------------------------------------------------------
+missing_from_spec=$(comm -23 $work/routes $work/spec)
+missing_from_server=$(comm -13 $work/routes $work/spec)
+
+[[ -n $missing_from_spec ]] && report "registered but NOT in bringyour.yml" "$missing_from_spec"
+[[ -n $missing_from_server ]] && report "in bringyour.yml but NOT registered" "$missing_from_server"
+
+# a competition path in bringyour.yml is drift on its own: they belong to
+# sn/api/competition.yml and must not be dual-listed
+listed_competition=$(cat $work/spec.competition)
+[[ -n $listed_competition ]] && \
+    report "in bringyour.yml but belongs in sn/api/competition.yml" "$listed_competition"
+
+# --- sn/api/competition.yml ------------------------------------------------
+route_count=$(grep -c . $work/routes)
+spec_count=$(grep -c . $work/spec)
+competition_route_count=$(grep -c . $work/routes.competition)
+
+if [[ -f $competition_spec ]]; then
+    spec_paths $competition_spec > $work/spec.sn
+    competition_spec_count=$(grep -c . $work/spec.sn)
+
+    competition_missing=$(comm -23 $work/routes.competition $work/spec.sn)
+    competition_extra=$(comm -13 $work/routes.competition $work/spec.sn)
+
+    [[ -n $competition_missing ]] && \
+        report "registered but NOT in sn/api/competition.yml" "$competition_missing"
+    [[ -n $competition_extra ]] && \
+        report "in sn/api/competition.yml but NOT registered" "$competition_extra"
+
+    competition_summary="$competition_route_count competition routes, $competition_spec_count documented in sn/api/competition.yml"
+else
+    competition_summary="$competition_route_count competition routes NOT CHECKED (no $competition_spec)"
 fi
 
 if (( drifted == 0 )); then
-    print "ok: $route_count registered routes, $spec_count documented operations, no drift"
+    print "ok: $route_count registered routes, $spec_count documented operations; $competition_summary; no drift"
 else
-    print -u2 "drift: $route_count registered routes, $spec_count documented operations"
+    print -u2 "drift: $route_count registered routes, $spec_count documented operations; $competition_summary"
 fi
 
 exit $drifted
