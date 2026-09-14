@@ -5334,3 +5334,128 @@ excess in every arm rather than the kernel's drop counter; and
 occupancy at the window in every arm, which is where the budget, with
 forty such clients, is the only thing between a provider and forty
 times its ceiling.
+
+### 37.15 The UDP cell: the excess is loss, the class of error, and what of the fix is measured
+
+Forty-eight of forty-eight valid, 97 Mb/s offered against a 20 Mb/s
+drain. Every arm added 1.6 to 1.8 ms against §37.14's 840 ms, 6.7 s
+and never below 600; peak queue 16 to 20 KiB whether the window was 2,
+3.6 or 16 MiB; 86.7 per cent loss in every arm; every drop at the
+return send, the downstream sequence refusing admission, none at the
+ingress handoff or the return queue. The source reading of §37.14 was
+exact and the inference from it was wrong: a non-blocking admit with a
+zero timeout converts excess into loss, not into delay and not into
+occupancy. I wrote the mechanism that cannot build a queue and then
+predicted the queue.
+
+The class, named so it is watched for. Twice now the source reading
+was accurate and the step from mechanism to consequence added a queue
+the mechanism excludes: on TCP a sender that fills its window, when
+the inner protocol hands it only what it offers; on UDP an excess that
+waits, when the admit refuses. The rule for every prediction of delay
+or occupancy from here: name the buffer the bytes would wait in, its
+bound, and the code that fills it, and check that the code has
+somewhere for them to wait. A non-blocking admit is loss. A blocking
+write is the layer below's acceptance, not our window. And the fact I
+had in §32.1 and did not apply either time: the sequence goroutine
+writes a Pack to the carrier before it enters the resend queue, so the
+resend queue holds only what the carrier has accepted. Against a
+carrier that accepts at its drain rate, the queue is the carrier's
+in-flight, 20 KiB at 20 Mb/s over the carrier's round trip, and no
+window above that is ever reached.
+
+Where occupancy could approach the window, from that fact. It needs a
+layer below the sequence that accepts faster than the far end drains,
+or a source of bytes that is not backed off:
+
+- A fast first hop into a buffer with a slow hop beyond it. The
+  platform relay is the one such layer on the production path, and its
+  queue bound is in the server tree, unread here; the harness's
+  thousand-frame route buffer was a model of it, and it absorbed the
+  backpressure exactly as such a buffer would. A carrier socket pinned
+  large would be another, and none is: §15 pins only the upstream
+  socket. quic-go accepts only what its congestion window allows, and
+  an autotuned kernel socket about twice its own bandwidth-delay
+  product, so neither carrier in this tree hands the sequence a queue
+  beyond one or two round trips of its own hop.
+- A fast wire with a long round trip. The queue fills to the window,
+  in flight, which is the throughput case and not a harm: the 200 ms
+  cell held 4.6 MiB with 16 MiB permitted, bounded by the inner window
+  for TCP and by the source rate for UDP.
+- The receive side under reordering. A single reliable carrier delivers
+  in order and loses a contiguous tail on failure, which the sender
+  resends in order, so the out-of-order hold is never used; with more
+  than one route in the transport window, frames are striped across
+  routes and arrive out of order routinely, and when one route dies
+  its frames are a scattered subset, so the hold fills with the other
+  routes' arrivals up to 2.5 MiB and evicts or refuses beyond it, all
+  of which is retransmitted. That is reachable, in production
+  configuration, and constructible: two routes at 200 ms with 16 MiB
+  permitted and one route killed mid-transfer.
+- Upload. Untestable in this cell, whose source calls the provider's
+  receive path directly with no client send buffer, sequence or resend
+  queue, so every result in this sequence is download only for both
+  protocols. On upload the bytes that wait are in the tun's send
+  buffer, which autotunes to twice a congestion window that never
+  sees loss on a reliable carrier and so reaches its 4 MiB maximum per
+  connection with the application's write blocked behind it. That is
+  TCP's own socket buffer doing what a socket buffer does, its memory
+  is the tun's constant and not the transfer window, and the shared
+  queue on that side is the tun's outbound queue, bounded by
+  `OutboundQueueWaitTimeout`. A client-side cell is needed to measure
+  any of it.
+
+None of these is a configuration in which the transfer window's
+permission becomes occupancy through the carriers in this tree with a
+single route. The memory argument for the transfer window rests on the
+relay and on multi-route reordering, and both are unmeasured.
+
+What the delivery term is for, in those words. Measured: nothing beyond
+a larger permission; the 8 MiB constant did as well as the sized arm
+at 200 ms, better in fact, and the 16 MiB constant cost nothing in any
+cell. The harm I argued it prevents, a UDP source standing a queue in
+front of a TCP flow on the shared sequence, is unreachable through
+this tree's carriers because the excess is dropped at admission and
+the carrier bounds its own acceptance; it is reachable only through a
+deep buffer below the sequence, which is the relay case above. The
+latency cost of the interval defect, 600 ms by my arithmetic, was
+measured at 2 ms for the same reason. So the term's justification is
+structural: it is what bounds the standing queue where a buffer below
+the sequence would let one form, and it is cheap. It is not what the
+throughput result needed.
+
+What of the composite fix is measured and what is structural, so that
+the landing is sized to the evidence:
+
+- Measured: the 2 MiB transfer window binds throughput at long round
+  trip, and a larger permission lifts it to the next binder at no cost
+  in memory or latency in any cell; the next binder is the tun's 4 MiB
+  send buffer, measured; the H3 stream window at 3 MiB is the next on
+  a real carrier, predicted for the namespace cell. The fix that this
+  evidence supports is raising those three ceilings consistently, with
+  the surface of §37.4 as the form that writes the assumption down.
+- Structural, cheap, and worth landing on the argument: the interval
+  and floor corrections of §36.7, because a rule that multiplies by
+  300 ms is wrong whether or not a cell can show it; a mandatory
+  budget as a cap on permission, §37.12.
+- Structural and to be measured before it lands: the receive
+  advertisement, whose one reachable harm is the multi-route failover
+  above. Prediction for that cell: with 16 MiB permitted and 4.6 MiB in
+  flight, killing one of two routes evicts or refuses about 2 MiB at
+  the hold and retransmits it, `ReceiveQueueDropCount` above zero and a
+  throughput dip of several round trips; with the advertisement, zero
+  evictions and a dip of one; with the shipping 2 MiB window, zero
+  either way, because 2 MiB is under the 2.5 MiB hold, which is the
+  accident of ordering that has protected it so far.
+- Deferred until a regime needs them: the proportional division of
+  occupancy across layers and clients of §37.11, and the occupancy
+  pooling of §37.13. They solve a compounding that no cell has
+  produced, and the record should not carry them as if it had.
+
+The implementation order of §37.10 stands with its first three steps
+reordered by that: the ceilings first, then the interval and the
+budget, then the advertisement behind its cell, and the rest behind a
+regime. The prediction that remains open and is the program's, since
+it is the one the user's framing turns on: on a real carrier at 200 ms
+the sized arm's multiple over the shipping constant holds until the H3
+window binds at 109 Mb/s, and raising that window moves it.
