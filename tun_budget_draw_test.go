@@ -49,7 +49,19 @@ func TestTheTunsMaximaAreADrawOnTheBudget(t *testing.T) {
 		send    ByteCount
 	}
 	samples := []sample{}
-	for _, budget := range []ByteCount{mib(16), mib(64), mib(256), mib(1024)} {
+	// The ladder carries the budgets that actually ship as well as the round
+	// ones. THROUGHPUT-TESTGAPS §1.2 asks for the 20 and 24 MiB targets, and
+	// they are here, but note which surface each number is: 20 and 24 MiB are
+	// per-DEVICE memory targets (`sdk/device_local.go`), and this layer does
+	// not read them — no per-device tun constructor exists, so the tun draws on
+	// the PROCESS budget. The process budgets that ship are the Apple hosts'
+	// 8, 32, 48 and 64 MiB (`PacketTunnelProvider.swift`, `AppDelegate.swift`).
+	// Every one of them is below the 64 MiB reference or at it, which is the
+	// region where the old scaled form shrinks, so this is where a campaign
+	// would otherwise read a null and conclude the work was worthless.
+	for _, budget := range []ByteCount{
+		mib(16), mib(20), mib(24), mib(32), mib(48), mib(64), mib(256), mib(1024),
+	} {
 		SetMemoryBudget(budget)
 		settings := DefaultTunSettings()
 		samples = append(samples, sample{
@@ -238,7 +250,9 @@ func TestTheBudgetFloorsFitTheSmallestSupportedHost(t *testing.T) {
 	// every supported minimum, not only the smallest. `memory_budget.go` names
 	// the 8 MiB legacy target as the one the transport total's 3 MiB floor
 	// exists for, and the rows have to fit at each step above it too.
-	for _, budget := range []ByteCount{mib(8), mib(16), mib(32), mib(64)} {
+	for _, budget := range []ByteCount{
+		mib(8), mib(16), mib(20), mib(24), mib(32), mib(48), mib(64),
+	} {
 		SetMemoryBudget(budget)
 		settings := DefaultTunSettings()
 		transportTotal := DefaultPlatformTransportBudget().Stats().TotalByteCount
