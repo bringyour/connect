@@ -7196,6 +7196,12 @@ device or shard goroutine's longest stall under a stalled writer.
 
 ### 38.13 The window that does not climb: the interval cancels nothing, the effective round trip does
 
+Corrected in place: the rate R this section infers below the sender's
+queue is the fixture's own frame pump (§49), not a stage in the tree.
+The arithmetic on the rule stands, and the standing-queue reading the
+section predicted was refuted at once, the mean round trip at 1.025
+times the minimum (§38.14).
+
 Measured directly: at 200 ms the sender holds 2.190 MiB, the rule
 computes 2.763, the peer advertises 28.422. Admission is faithful, the
 constant arm is correctly window-bound at 2 MiB, and nothing reads the
@@ -7453,9 +7459,14 @@ about four per cent. Batching cannot be the half, and the measured
 depth, 0.66 at 25 ms and 0.70 at 200 with the batch fivefold larger,
 says so directly.
 
-What the oscillation's period is. 31 ms on the 25 ms path, 61 ms on the
-200 ms path: neither the round trip nor a constant. It is the fill
-time. The loop drains one Pack from its channel per select iteration
+What the oscillation's period is. Retracted in place: the thirty
+thousand Packs a second below divided the window by the period, a
+population mean over a single sample, which is the error §49 names
+for the equilibrium statistic; the fill per period is the measured
+rate times the period, about three hundred Packs at 200 ms, and the
+period's cause is not established. The paragraph is kept as written.
+31 ms on the 25 ms path, 61 ms on the 200 ms path: neither the round
+trip nor a constant. It is the fill time. The loop drains one Pack from its channel per select iteration
 (`packIngress` is nil while the scheduler holds anything, and one case
 fires per select), and every iteration pays a `Snapshot(true)`, a
 `sendWindowEstimate` under three locks, the build and the write; at
@@ -7719,9 +7730,15 @@ becomes and what must move with it:
 1. The transfer unit (window, hold, advertisement, committed-prefix,
    pipelining). This tree. Reach 9.5 → 22 ms.
 2. The H3 stream and connection windows, both ends together. Client
-   and provider: `H3MaxStreamReceiveWindowByteCount` =
-   `h3BudgetShareByteCount()`, connection at four thirds of it, initial
-   as today (`transport.go:684–687`); quic-go's growth unchanged. The
+   and provider: the stream window at 3/8 of the H3 reservation and
+   the connection window at 4/8, the reservation `max(3 MiB, M/8)`,
+   initial as today (`transport.go:684–687`); quic-go's growth
+   unchanged. Corrected in place: this item first read
+   `h3BudgetShareByteCount()` with the connection at four thirds of
+   it, which would have made the stream window 8 MiB at the reference,
+   2.67 times today's on every host at or below it; §42.1's form is the
+   one that reproduces today's values at the reference and it is the
+   one built. §48 then finds that the shipped value is not 3 MiB. The
    server: its listener's `quic.Config`
    (`server/connect/transport.go:562`) sets no windows, so it runs
    quic-go's defaults, 512 KiB initial and 6 MiB maximum stream
@@ -7970,6 +7987,18 @@ record already names.
 
 ### 40.2 The occupancy invariant: 1.43 MiB at every window
 
+Corrected in place (§49): the rate stage this section looks for is not
+in the tree. The fixture's ceiling is a frame rate, about 7,800 frames a
+second at every payload from 1 to 16 KiB, 63 to 509 Mb/s, and it moves
+with the send and sequence buffer depths; it is the fixture's own frame
+pipeline, the goroutine-per-frame delay element and its handoffs, and
+the eighth instrument defect on the ledger. The three candidates below
+were the right list for a byte-rate stage and none of them held the
+fixture; the second's knob moved the frame rate for the pipeline's
+reason and not for the loop's. What the invariant says, restated: on a
+frame-rate-bound fixture, occupancy is the frame rate times the frame
+size times the round trip, and no window above that product can show.
+
 Mean occupancy is about 1.43 MiB at every ceiling from 1.5 to 2.8 MiB:
 95 per cent of the ceiling where the clamp binds in every run, half the
 window where it binds in none. The same number in both, so occupancy is
@@ -8194,6 +8223,15 @@ because the claim is a ratio. My prediction, so it can be wrong:
 download yes, upload the clock.
 
 ### 41.3 The sequence buffer at both path lengths
+
+Corrected in place (§49): the 200 ms prediction below was in the right
+direction for the wrong reason. Doubling the buffers raises the
+fixture's frame rate at every payload, most at 16 KiB, 3,883 to 10,015
+frames a second and 509 to 1,313 Mb/s, because the bound is a
+depth-over-latency limit of the fixture's frame pipeline and not the
+loop's supply per acknowledgement wake; the 25 ms per-item-service
+account is withdrawn with it. Neither path length has a rate stage in
+the tree.
 
 The first attempt spread sixfold with near-total overlap; the sampler's
 lock on the loop (§38.15) is the likely cause and the re-run should
@@ -8451,19 +8489,38 @@ tun exists to bridge startup with a small footprint. Under the surface:
 
 At the 64 MiB reference the reservation is 8 MiB, above today's 4, so
 no host regresses and the hosted client at the reference gains; at
-256 MiB it is 32 MiB. gVisor's growth is untouched: the receive side's
+256 MiB it is 32 MiB. Two notes added in place from the build. Today's
+maximum is `MemoryScaledByteCount(mib(4), kib(512))`, which is M/16 at
+the reference and not M/8, so the M/8 draw doubles the maximum at every
+budget of 8 MiB and above rather than reproducing it; that is the
+intent stated here and not a bit-identity, and a review asking for the
+identity should be refused. And gVisor declares `tcp.MaxBufferSize =
+4 << 20` (`pkg/tcpip/transport/tcp/protocol.go:52`), the same 4 MiB as
+today's maximum: it is not a clamp. `SetOption` validates only the
+ordering of the range, `MaxBufferSize` is the protocol's default and
+the fallback when the option cannot be read, and both autotune paths
+cap against the installed option; a real stack built with a 32 MiB
+range reads 32 MiB back. Two identical constants, one of them ours,
+which the next reader must not take for a ceiling. gVisor's growth is untouched: the receive side's
 moderation and the send side's `2 × cwnd × MSS` rule grow toward the
-new maximum, and since the limits are read on every autotune step
-(`endpoint.go:3446–3475`), a budget change moves live connections.
+new maximum, and the limits are read on every autotune step
+(`endpoint.go:3446–3475`). Corrected in place: a budget change does not
+move live connections, because nothing re-applies the option.
+`DefaultTunSettings` samples the budget once and `newTunStack` installs
+the ranges once at construction, and there is no later
+`SetTransportProtocolOption` for them, which is `memory_budget.go`'s own
+contract that the budget sizes objects constructed after it is set. A
+live `SetMemoryBudget` moves nothing until the next tun is created.
 
 Send and receive are independent. The receive maximum is the download
 binder on a hosted client, reached by moderation; the send maximum is
 the upload binder together with the inner acknowledgement clock, the
 ladder's 50 ms `AckCompressTimeout` at the provider, so that 4 MiB over
 `P + 60 ms` is 129 Mb/s at 200 ms and 32 MiB is 1.03 Gb/s; the raise
-helps upload even under the clock, and §26's rule, which replaces the
-timer as the clock, is the separate change that takes `P + 60` to about
-`P + 15`. Nothing else must move with the receive side.
+helps upload even under the clock, and the steady-state cadence of
+§45.2, not §26's recovery-phase rule, is the separate change that takes
+`P + 60` to about `P + 15` (corrected in place: §26 fires only after a
+timeout, `ip.go:3696–3706`). Nothing else must move with the receive side.
 
 Where the memory lands: on the client, both sides. The receive buffer
 holds bytes until the application reads, so its occupancy is the rate
@@ -8511,6 +8568,16 @@ server's quic windows are the third for upload and for the provider-hop
 case, in the server tree, and their specification is §42.3's.
 
 ### 43.3 Upload before the server changes: a landing path, not only a diagnosis
+
+Superseded in one attribution, §45.2 and §47.5 governing: the 129 → 156
+step below is credited to §26's acknowledgement rule. §45.2 later
+established from `ip.go:3696–3706` that §26's phase is entered only on
+loss evidence, connection start or resumption after idle and never on a
+byte count, so it cannot be the steady-state clock; the step belongs to
+the steady-state cadence `SteadyAckEverySegments` of §45.2, and §26 is
+worth the first round after a timeout and nothing in steady state. The
+rest of the section stands, and §43.1's closing clause on the same
+point is corrected the same way.
 
 Upload at 200 ms with the delay on the client's hop binds in this order:
 the transfer window at 71 Mb/s; the client's send buffer over the
@@ -8991,14 +9058,20 @@ missed that, and §44 is the place it is argued.
 
 ### 47.4 Built and unmeasured
 
-- The window rule's gain on a fixture that is not rate-bound. The
-  in-process fixture delivers about 50 Mb/s at 200 ms whatever the
-  window, for a reason in the fixture or in the send loop's fill
-  dynamics that the record has narrowed but not closed (§38.15, §40.2),
-  so the sized arm reads inside the constant arm's null band there and
-  no in-process cell can show the rule's throughput value. The
-  namespace cell, with a native stack and a real carrier, is the first
-  that can; its prediction is 109 Mb/s at 200 ms against 71 (§40.1).
+- The window rule's gain on the in-process fixture. Corrected in place
+  (§49): the fixture has no byte-rate ceiling; its limit is a frame
+  rate of its own pump, and below that limit it shows the rule's
+  throughput value, 2.46 to 2.73 times at 200 ms in
+  `TestALargerWindowIsFasterAtALongRoundTrip` and 0.88 to 0.91 of the
+  permitted rate across a fourfold sweep of window and round trip
+  together in `TestAFlowDeliversWhatItsWindowPermits`. The earlier
+  claim that no in-process cell can show the value is withdrawn; a
+  cell that raises the window at a fixed round trip drives into the
+  frame limit and reads inside the null band, and the arrangement that
+  shows the effect varies the two together below it. The namespace
+  cell remains the first with a native stack and a real carrier; its
+  prediction is 109 Mb/s at 200 ms against 71 (§40.1), restated per
+  carrier and per shipped budget in §48.
 - Per-flow keying of the client's IP traffic, the no-acknowledgement
   write-failure counter, and the eviction counter: built, no cell yet.
 
@@ -9128,11 +9201,10 @@ performance arguments.
   about the same values, because the OS ceilings are of the same order,
   but no reading has been taken there. The namespace cell is the first
   in the native shape.
-- What sets the in-process fixture's rate at about 50 Mb/s at 200 ms
-  independent of the window (§40.2), and whether the send loop's fill
-  dynamics that hold occupancy at half the window there are the tree's
-  or the fixture's (§38.15, §40.1). The namespace cell separates them;
-  a doubling of `SequenceBufferSize` tests one candidate without it.
+- Closed (§49): the in-process fixture's 50 Mb/s at 200 ms was its own
+  frame pump, about 7,800 frames a second whatever the payload, not a
+  stage in the tree; the eighth instrument defect. What remains open on
+  the fixture is the equilibrium statistic, §49, with its reading named.
 - Whether the original report's ceiling is what this program found.
   Decided in advance by four readings (§41.2); prediction, download yes
   and upload the acknowledgement clock.
