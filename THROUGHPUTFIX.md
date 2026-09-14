@@ -5809,3 +5809,120 @@ for the ceiling raise, not a refinement of it, and the raise is blocked
 on nothing else but the assumed round trip, which the harness is
 measuring as a campaign rather than choosing, at the settled target of
 one gigabit.
+
+### 37.20 The floor case: composition against truth, and the policy that has both
+
+At an 8 MiB client budget the hold is at its 312 KiB floor against a
+2 MiB peer window, 6.4 times inverted; one binary, one field, four
+runs each. Evicting completed two of four, median 19,178 delivered,
+25,227 loss events. Refusing completed none, 15,068 delivered, 53,509
+loss events; drops and evictions are complementary counters, so loss
+events is the fair comparison, and refusing is worse on both. The
+lateness confound was checked rather than assumed: refusing is not
+systematically later, and the single worst element reading belongs to
+an evicting run that completed. So never-evict as landed is wrong at
+high overrun, and the hypothesis for why is confirmed by the mechanism
+rather than replaced by it.
+
+Why refusal starves. The head is delivered on arrival and drains the
+hold's contiguous prefix; that is the only way a full hold empties. An
+arrival that is a middle gap, earlier than held items but not the head,
+must be held, and a full hold refuses it. So under refusal the only
+progress is the head, each head fill drains only the run the hold
+happens to contain from there, and every other resend, including the
+middle gaps that would extend the run, is refused until that run
+drains. The hold keeps what arrived first, which under reordering is
+an arbitrary set in sequence order, so the runs are short and the
+rounds are many, each at the paced floor or a recovery scan, and the
+refused resends are counted again on every round: 53,509. Eviction of
+the latest held item to admit an earlier one is monotone: the hold's
+highest sequence number only falls and what replaces it is earlier, so
+the hold converges on the earliest outstanding items that have arrived,
+which are the ones adjacent to the delivery point, and the runs are
+long. Its cost is the lie: the evicted item was acknowledged, and it
+returns only as an ack-tail probe when it reaches the head (§37.19),
+serialised, which is the two of four. Composition against truth.
+
+The coordinator's candidate is eviction plus the notice under an
+advertisement that keeps the window at or under the hold. With that
+advertisement in force there is no overrun, so there is never an
+earlier arrival to admit and eviction has no occasion; the cascade of
+§37.19 was entirely the overrun's, and the candidate is correct but
+does no work in the configuration it is correct in. Its work would be
+against a sender that does not read the advertisement, and that sender
+does not read the notice either, so against it the candidate is silent
+eviction with a lease. It also makes an updated receiver's protection
+depend on its peer, which changes the deployment story for a live
+defect. That is the consequence to weigh, and it decides against it as
+the receiver policy.
+
+The policy: committed-prefix acknowledgement. Keep the hold
+sequence-earliest, evicting the latest held item when an earlier one
+arrives, exactly as eviction does, and selectively acknowledge a held
+item only once it can no longer be evicted. An item can be evicted only
+by an earlier arrival at a full hold, so it is safe once every missing
+item below it could arrive and it would still fit. Sequence numbers are
+dense, one per Pack, so with delivery point D and the held items in
+order, the number of missing items below the i-th held item is
+(seq_i − D) − (i − 1), and the item is committed when
+
+    missing_below(i) × maxFrameBytes + Σ_{j ≤ i} size_j ≤ H
+
+where H is the hold's capacity and maxFrameBytes the largest frame the
+receiver has seen, the conservative choice, because overestimating the
+gaps commits fewer items and costs churn while underestimating would
+commit an item that is later evicted, which is the lie. Everything
+below the boundary is acknowledged and never discarded; everything
+above it is held tentatively, unacknowledged, and evictable without
+untruth. The boundary moves up as the head drains, and each item's
+acknowledgement is sent when it crosses. The receiver needs nothing it
+does not have: its capacity, its delivery point, its held set, and a
+frame size. It does not need its peer's window and it has no round
+trip, and it needs neither. Against an old sender at any overrun the
+hold drains as eviction's does, nothing acknowledged is ever lost,
+and the cost is the old sender's resends of tentative items, each
+admitted, evicted or discarded as a duplicate by message id, bandwidth
+in proportion to the overrun and never a lease. Against a sender with
+the advertisement the window is under the hold, so missing plus held
+never exceeds outstanding, every held item is committed at once, and
+the behaviour is today's exactly. One second-order cost: tentative
+items provide no proving acknowledgements, so a gap just below the
+boundary recovers on the paced resend rather than the gap recovery;
+bounded, and removed by the advertisement with the rest.
+
+The three candidates are its degenerate cases. Never-evict commits
+everything and cannot shape the hold. Evict-with-notice commits
+everything and retracts on the wire. The hybrid, refuse while the hold
+can contain the reordering and order beyond it, needs a reordering
+window the receiver would have to estimate; the boundary above is that
+estimate made exact from the sequence numbers. So the ruling: the
+receiver policy is committed-prefix acknowledgement, receiver-only,
+requiring nothing of the sender, which keeps never-evict's deployment
+property and eviction's drainage. Guard 2 keeps its role for receivers
+in the field against updated senders. The advertisement remains the
+fix that removes the overrun, and the notice is emitted by no receiver
+under this policy, since no acknowledged item is ever discarded: its
+sender-side handling stays as a one-line safety and its field number
+stays reserved, and it is compatibility for a receiver that does not
+exist, which the record should say so it is neither relied on nor
+mistaken for dead by accident.
+
+Two confirmations carried. Zero evictions in every high-bet arm: the
+pre-sample bound has no gap. And the assumed round trip is bounded by
+the peer's hold over the target rather than by the path: 21 ms against
+an unbudgeted provider, 7.9 against a phone at 24 MiB, 2.6 against a
+phone at 8. A blind sender must assume the worst peer and an informed
+one need not; the gap between 21 and 2.6 is the measured case for the
+advertisement, in the sizing as well as in the loss.
+
+Prediction for the 8 MiB cell under committed-prefix acknowledgement,
+against the same unbudgeted sender: four of four complete, 20,000
+delivered; evictions of acknowledged items zero, with tentative
+evictions and refusals counted separately and high, on the order of
+the evicting arm's loss events or above, since the sender keeps
+re-offering what does not fit; no probe serialisation and no run near
+the minute; completion time set by rounds of prefix drain rather than
+by probes. At 24 MiB the same, with far fewer tentative events. If a
+run stalls, the boundary is being crossed by an item that is later
+evicted, which means the gap estimate under-counted, and the frame
+size used for it is the field to read.
