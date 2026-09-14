@@ -6177,7 +6177,10 @@ download, in binding order by P:
     C3 hold (via advert.)  2.5 MiB fr   2.27 MB      13.1 ms
     D1 H3 stream window    3 MiB fr     2.72 MB      21.8 ms one-hop,
                                                      43.6 even split
-    B2 tun receive buffer  4 MiB pl     4.19 MB      23.5 ms
+    B2 tun receive buffer  4 MiB pl     4.19 MB      23.5 ms (gVisor-hosted
+                                                     clients and the cells;
+                                                     on a native device the
+                                                     OS's own ceiling, §43.1)
     D2 H3 connection       4 MiB fr     3.63 MB      29 to 58, inert
                                                      behind D1
     D5 H1 kernel socket    4 MiB fr     3.63 MB      29 to 58 per hop
@@ -8028,9 +8031,11 @@ hop, the binders above the transfer unit and the work each costs:
    the plateau from 109 to the tun's 160. The single change that moves
    the common path most after the transfer unit, and the cheapest.
 2. The tun's receive and send maxima (`tun.go:93–106`), 4 MiB to a
-   share: two constants in this tree; moves 160 to the server's 218 on
-   the other hop, and for upload it is the binder with the ladder's
-   clock (§37.23), so it carries §26 with it there.
+   share: two constants in this tree, ours on gVisor-hosted clients and
+   in the cells; on a native desktop the same layer is the OS's TCP
+   autotuning ceiling and not ours (§43.1). Moves 160 to the server's
+   218 on the other hop, and for upload it is the binder with the
+   ladder's clock (§37.23), so it carries §26 with it there.
 3. The server's quic windows (`server/connect/transport.go:562`), the
    6 MiB default to a per-connection share: the server tree, a few
    lines; needed to go past 218 wherever the provider's hop carries
@@ -8344,7 +8349,9 @@ The tun's two constants. `TunSettings.TcpReceiveBuffer.Max` and
 They become `tunReservationByteCount = max(mib(4), M / 8)` each,
 `Default` unchanged as the bet; gVisor reads its limits on every
 autotune step (`endpoint.go:3446–3475`), so a live budget change moves
-live connections; both this tree, client side. What moves with them:
+live connections; both this tree, client side, and only where the
+client's inner stack is gVisor's: on a native desktop the inner stack
+is the OS kernel's and this layer is its autotuning ceiling (§43.1). What moves with them:
 for download nothing else, the receive maximum is the binder at 160
 and the raise lifts it to the shares; for upload the send maximum is
 bound with the ladder's 50 ms acknowledgement clock (§37.23), so the
@@ -8397,7 +8404,128 @@ provider-hop case need the server tree for their first raise above
 Download, delay on the client's hop, H3, a desktop with a 256 MiB
 budget: today 2 MiB, 71 Mb/s at 200 ms, gigabit to 9.5 ms of path; the
 transfer unit, 109 and 22 ms; the client's H3 windows, 160 and 23.5 ms;
-the tun, 415 at the 12 MiB reservation and the reach set by the shares,
+the tun where it is ours, or the OS's ceiling where it is not (§43.1),
+then 415 at the 12 MiB H3 reservation with the reach set by the shares,
 a gigabit at 200 ms needing 29 MB per framed layer, which is the
 budget's decision and not a constant's. Upload, or the provider's hop
 carrying the delay: the same to 218, then the server tree.
+
+## 43. The second and third ceilings, and upload's landing path
+
+### 43.1 The second ceiling: the tun's two maxima, and whose they are
+
+Whose they are, first, because it bounds the whole item. The shipped
+native devices hand packets between the OS tun and the SDK:
+`DeviceLocal.SendPacket` (`sdk/device_local.go:4697–4808`) forwards to
+`remoteUserNatClient.SendPacket`, and no gVisor tun is created on that
+path. gVisor's tun is created by `sim_device.go:373`, `socket.go:113`
+and `probe_suite.go:234`, the hosted, simulated and probe modes, and by
+the DoH fallback in `ip_mux_upgrade.go:471–472` at 64 KiB, which is
+deliberately small and not a data path. So the inner TCP stack of a
+native desktop, phone or extension is the OS kernel's, and its receive
+and send windows autotune to the OS's ceilings: about 4 MiB on macOS
+(`net.inet.tcp.autorcvbufmax`, §15's notes), `tcp_rmem[2]` 6 MiB with the
+kernel's window accounting on Linux and Android, and up to 16 MiB on
+Windows. Those are the same order as gVisor's 4 MiB, which is why the
+reach arithmetic of §37.23 and §42 holds on a native desktop with the
+same numbers; but the lever is the user's operating system, and this
+tree cannot move it. The tun's maxima are ours on gVisor-hosted clients
+and in every cell this program has run, which all use gVisor's tun or
+the in-process fixture. This corrects the framing that "the tunnel's
+maximum binds immediately behind" on a desktop: it does, at about the
+same value, and it is not ours there.
+
+The constants, where they are ours. `TcpReceiveBuffer` and
+`TcpSendBuffer`, each `TcpBufferRange{Min 4 KiB, Default
+MemoryScaledByteCount(mib(1), kib(128)), Max MemoryScaledByteCount(mib(4),
+kib(512))}` at `tun.go:93–106`, applied as gVisor's range options at
+`:221–235`; `DefaultTunSettingsWithBufferSize` (`:59`) scales the channel
+size and not the ranges, so it is not a repeat; the DoH fallback's
+64 KiB ranges (`ip_mux_upgrade.go:471–472`) stay as they are, since that
+tun exists to bridge startup with a small footprint. Under the surface:
+
+    tunReservationByteCount        = max(mib(4), M / 8)
+    TcpReceiveBuffer.Max           = tunReservation
+    TcpSendBuffer.Max              = tunReservation
+    Min and Default unchanged
+
+At the 64 MiB reference the reservation is 8 MiB, above today's 4, so
+no host regresses and the hosted client at the reference gains; at
+256 MiB it is 32 MiB. gVisor's growth is untouched: the receive side's
+moderation and the send side's `2 × cwnd × MSS` rule grow toward the
+new maximum, and since the limits are read on every autotune step
+(`endpoint.go:3446–3475`), a budget change moves live connections.
+
+Send and receive are independent. The receive maximum is the download
+binder on a hosted client, reached by moderation; the send maximum is
+the upload binder together with the inner acknowledgement clock, the
+ladder's 50 ms `AckCompressTimeout` at the provider, so that 4 MiB over
+`P + 60 ms` is 129 Mb/s at 200 ms and 32 MiB is 1.03 Gb/s; the raise
+helps upload even under the clock, and §26's rule, which replaces the
+timer as the clock, is the separate change that takes `P + 60` to about
+`P + 15`. Nothing else must move with the receive side.
+
+Where the memory lands: on the client, both sides. The receive buffer
+holds bytes until the application reads, so its occupancy is the rate
+times the reader's latency and its credit is backed under a stall; the
+send buffer holds unacknowledged and unsent bytes, one of the three
+upload copies of §37.7. The provider holds nothing new, since the NAT
+retains nothing (§38.11) and bounds its sending by the client's
+advertised window.
+
+The test. Unit: the resolved `TcpReceiveBufferSizeRangeOption.Max`
+doubles when the process budget doubles above the reference, 8 MiB at
+64, 16 at 128, 32 at 256, and reads 4 MiB at every budget on the tree
+as it stands. Cell: the in-process download plateau at 200 ms, 164 Mb/s
+at the 4 MiB cap (§36.4, cell C), moving with the client's budget once
+the H3 raise has landed, and not before it.
+
+The reach and rate after it, on a hosted client with a 256 MiB budget,
+download, delay on the client's hop, with the transfer unit and the H3
+raise landed: the tun at 32 MiB permits 1.2 Gb/s over 210 ms and no
+longer binds, and the next binder is the H3 stream window at its
+reservation's 12 MiB, 415 Mb/s at 200 ms; the reach to a gigabit moves
+from 23.5 ms of path to about 83, where 12 MiB over the hop is the
+target's product. On a native desktop the same landing is the OS's
+ceiling, which is where the reach stops until the user's system moves
+it, and the record should say so to support rather than to engineering.
+
+### 43.2 The third: not a constant, and the honest recommendation
+
+On the desktop-download path the binder after the H3 raise and the tun
+is the H3 reservation's fraction, 3/8 of M/8, 12 MiB at 256 MiB, 415
+Mb/s at 200 ms; the transfer share at M/8 permits 221 ms of path and the
+tun at M/8 more. So the third landing is not a fourth constant. It is
+the share table: the divisors that turn M into each layer's draw and
+the fraction of the H3 reservation the stream window takes. Two changes
+inside that table lift the common path without a new mechanism: the
+stream window at three quarters of the reservation with the connection
+window at the whole, keeping their ratio, 24 MiB at 256 MiB and 830
+Mb/s; or a larger H3 draw. The constraint is that the reciprocals of the
+divisors sum to at most one, and the property tests of 687b61c pin each
+draw to the budget. The campaign sweeps the divisors; a desktop's
+common-path rate is then the budget it is given, which is the surface's
+promise (§37.4) and the sentence for the user: after three landings the
+desktop-download path is bounded by the budget, not by a constant. The
+server's quic windows are the third for upload and for the provider-hop
+case, in the server tree, and their specification is §42.3's.
+
+### 43.3 Upload before the server changes: a landing path, not only a diagnosis
+
+Upload at 200 ms with the delay on the client's hop binds in this order:
+the transfer window at 71 Mb/s; the client's send buffer over the
+inner acknowledgement clock, 4 MiB over `P + 60 ms`, 129; the server's
+6 MiB stream window over the hop, 218; then the send buffer and the
+clock again at their raised values. So in this tree, before any server
+change: the transfer unit takes 71 to 129; §26's acknowledgement rule at
+the provider's ladder, ours, takes the clock from 50 ms to a few, which
+at a 4 MiB send buffer is 156; and on a hosted client the send maximum
+at M/8 takes it to 218, where the server's window binds. On a native
+desktop the send buffer is the OS's, so the in-tree path is the
+transfer unit and §26, to about 156, and the server's window is the
+next binder after that. Upload is therefore not blocked on another
+repository below 218 Mb/s at 200 ms; it is blocked there and above.
+The harness's upload measurement has a landing path in this tree to
+that figure, and the reading that shows the ceiling is the server's is
+the plateau at 218 with the inner round trip from `TcpInfo()` reading
+`P + 15` rather than `P + 60` once §26 has landed.
