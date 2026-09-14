@@ -1,0 +1,95 @@
+package connect
+
+import "testing"
+
+// THROUGHPUTFIX §37.17 and §37.18: the crossing budget at which a client's
+// receive hold falls below an unbudgeted peer's send window, reproduced on
+// unmodified main and never pinned as a relationship until here.
+//
+// The two constants pass through the same scale
+// (`transfer.go`, `ResendQueueMaxByteCount` and `ReceiveQueueMaxByteCount`), so
+// on ONE host the hold is 1.25 times the window at every budget and the
+// ordering never inverts. They do not live on one host. A provider runs
+// unbudgeted, so its window is the whole 2 MiB; a client at budget B holds
+// `max(320 KiB, 2.5 MiB x B / 64 MiB)`. The hold is under the peer's window
+// whenever 2.5 MiB x B / 64 MiB < 2 MiB, which is B < 51.2 MiB — every mobile
+// budget this program has discussed. Measured at a 24 MiB client against two
+// routes with one killed mid-transfer: the hold saturated in four of four runs
+// and none completed; a 52 MiB client completed clean.
+//
+// What this row is and is not. It pins the relationship — the same-host ratio
+// and the cross-host crossing — and deliberately does not assert that the
+// shipped budgets are inverted, because that would freeze the defect in place
+// and fail the day someone fixes it. It is a guard: it passes before and after,
+// and it fails when either constant moves without the other, which is the way
+// the crossing would silently shift.
+//
+// What refutes it: rescaling the hold or the window alone, changing either
+// floor out of their 1.25 ratio, or moving the reference, each of which moves
+// the crossing budget away from 0.8 of the sender's.
+func TestTheReceiveHoldAndThePeerWindowCrossAtFourFifthsOfTheSendersBudget(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+
+	// a provider runs unbudgeted, so the sender's window is the unscaled
+	// constant. This is the peer a shipped client actually faces.
+	SetMemoryBudget(0)
+	peerWindow := DefaultSendBufferSettings().ResendQueueMaxByteCount
+
+	// on one host the hold is 1.25 times the window at every budget, floors
+	// included, which is why the inversion is asymmetric rather than general
+	for _, budget := range []ByteCount{
+		0, mib(1), mib(8), mib(24), mib(32), mib(51), mib(52), mib(64), mib(256),
+	} {
+		SetMemoryBudget(budget)
+		window := DefaultSendBufferSettings().ResendQueueMaxByteCount
+		hold := DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount
+		if 4*hold != 5*window {
+			t.Errorf(
+				"at a %d byte budget one host holds %d against its own window of %d, a ratio of %.3f rather than 1.25; the two are scaled by the same factor by construction, and a host whose hold is not 1.25 times its window has had one of them moved alone",
+				budget, hold, window, float64(hold)/float64(window),
+			)
+		}
+	}
+
+	// the crossing, bracketed with shipping settings rather than asserted from
+	// the formula: at 51 MiB the client holds less than the peer may have
+	// outstanding, and at 52 MiB it does not
+	SetMemoryBudget(mib(51))
+	below := DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount
+	SetMemoryBudget(mib(52))
+	above := DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount
+	if !(below < peerWindow && peerWindow <= above) {
+		t.Errorf(
+			"the hold reads %d at a 51 MiB budget and %d at 52 MiB against an unbudgeted peer's %d byte window; the crossing is meant to sit between them, at four fifths of the sender's budget, and a crossing that has moved means a client and its peer now invert at a different budget than the record says",
+			below, above, peerWindow,
+		)
+	}
+
+	// the general condition, stated as the record states it: the receiver
+	// inverts below 0.8 of the sender's budget. Computed from the hold at the
+	// reference, where it is whole, rather than from whatever budget is set.
+	SetMemoryBudget(referenceMemoryBudgetByteCount)
+	holdAtReference := DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount
+	crossing := referenceMemoryBudgetByteCount * peerWindow / holdAtReference
+	t.Logf(
+		"unbudgeted peer window %d, hold at 51 MiB %d, at 52 MiB %d, crossing near %d (0.8 of the reference)",
+		peerWindow, below, above, crossing,
+	)
+	for _, shipped := range []struct {
+		name   string
+		budget ByteCount
+	}{
+		{"the 8 MiB legacy target", mib(8)},
+		{"a 24 MiB mobile device target", mib(24)},
+		{"the 32 MiB iOS extension", mib(32)},
+		{"the 48 MiB macOS extension", mib(48)},
+	} {
+		SetMemoryBudget(shipped.budget)
+		hold := DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount
+		t.Logf(
+			"%s: hold %d against peer window %d, %.2f times inverted",
+			shipped.name, hold, peerWindow, float64(peerWindow)/float64(hold),
+		)
+	}
+}
