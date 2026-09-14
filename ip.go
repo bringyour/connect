@@ -9217,6 +9217,23 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 				nil,
 				0,
 				timeout,
+				// This layer has already parsed the packet for policy and
+				// routing, so it knows the flow and the transfer layer does
+				// not. Telling it costs nothing — the key never crosses the
+				// wire — and it is the provider's own derivation rather than a
+				// second five-tuple hash that would have to agree with it.
+				//
+				// Note what this is and is not. This single-destination client
+				// is not a production path: the only non-test reference in
+				// connect, the SDK or the server is a commented-out line, and
+				// production client traffic goes through the multi client,
+				// which already passes this option at both of its IP send
+				// sites. So this is not a head-of-line fix; it is making the
+				// fixture behave the way production does, which matters
+				// because several cells drive traffic through this layer and
+				// would otherwise measure a queueing behaviour the shipping
+				// path does not have.
+				scheduleIpFlow(&ipPath),
 			)
 			return success
 		}
@@ -9228,7 +9245,13 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 
 		// the sender will control transfer
 		// note udp is sent with ack because because otherwise the delivery reliability will mulitply with the egress
-		success := self.client.SendMultiHopWithTimeout(frame, destination, func(err error) {}, timeout)
+		success := self.client.SendMultiHopWithTimeout(
+			frame,
+			destination,
+			func(err error) {},
+			timeout,
+			scheduleIpFlow(&ipPath),
+		)
 		if success {
 			// Legacy serialization copied the packet into frame.MessageBytes;
 			// consume the caller's packet only after the queue accepts the copy.
