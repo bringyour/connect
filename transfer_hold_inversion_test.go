@@ -93,3 +93,51 @@ func TestTheReceiveHoldAndThePeerWindowCrossAtFourFifthsOfTheSendersBudget(t *te
 		)
 	}
 }
+
+// THROUGHPUTFIX §37.18: the protection that replaced the floor raise, asserted
+// because it ships as a zero value and nothing reads it back.
+//
+// U-09 in THROUGHPUT-TESTGAPS states the contract as "for every supported
+// client budget, the receive hold is at least an unbudgeted peer's send
+// window". That guard was considered and deliberately rejected. §37.18 chose
+// never-evict over the floor raise precisely because the raise "would have
+// taken a 24 MiB phone from 938 KiB to 2 MiB against a ceiling this program
+// deferred", and committed-prefix acknowledgement makes the inversion
+// survivable rather than absent. So the hold is still below the peer's window
+// at every shipped budget by decision, and a row asserting otherwise would sit
+// permanently red against the record rather than find anything.
+//
+// What is genuinely unpinned is whether the protection is on.
+// `ReceiveHoldPolicy` is the zero value of its kind, so committed-prefix ships
+// by reason of iota order and an unset field. Reorder those constants, or set
+// the field anywhere along a settings path, and the tree silently returns to
+// evicting — which withdraws an acknowledgement the sender still leases, the
+// failure §37.20 measured at 45 and 108 acknowledged evictions per run. Nothing
+// reads it back.
+//
+// A guard: it passes today and fails the moment the default moves.
+func TestTheHoldKeepsTheProtectionThatReplacedTheFloorRaise(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+
+	// the zero value has to be the safe policy, because that is the only reason
+	// the shipping settings get it
+	if ReceiveHoldCommittedPrefix != 0 {
+		t.Errorf(
+			"ReceiveHoldCommittedPrefix is %d rather than the zero value; the shipping settings never set ReceiveHoldPolicy, so the protection is on only while the safe policy is the one an unset field resolves to",
+			ReceiveHoldCommittedPrefix,
+		)
+	}
+
+	for _, budget := range []ByteCount{0, mib(8), mib(24), mib(32), mib(48), mib(64), mib(256)} {
+		SetMemoryBudget(budget)
+		settings := DefaultReceiveBufferSettings()
+		if settings.ReceiveHoldPolicy != ReceiveHoldCommittedPrefix {
+			t.Errorf(
+				"at a %d byte budget the shipping hold policy is %d rather than committed-prefix (%d). The hold is under an unbudgeted peer's window at every shipped budget by decision, and committed-prefix is what makes that survivable: evicting withdraws an acknowledgement the sender still leases, and refusing starves a middle gap",
+				budget, settings.ReceiveHoldPolicy, ReceiveHoldCommittedPrefix,
+			)
+		}
+	}
+	t.Logf("shipping hold policy is committed-prefix (%d) at every budget", ReceiveHoldCommittedPrefix)
+}
