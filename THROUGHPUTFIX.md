@@ -7084,3 +7084,102 @@ price. With the guard removed on download before the NAT retransmits:
 any loss on the client-to-NAT leg is permanent for that flow, which is
 the row that must never be run in production and is the reason the
 guard is kept.
+
+### 38.12 The user's no-acknowledgement path, reconciled: write first, queue second, drop third, one deadline
+
+The specification: a no-acknowledgement Pack is written immediately to
+the writer under the Pack's timeout; if the write fails it may be added
+to the queue under the remaining part of that same timeout; if that
+fails it is dropped. §38.11 argued the boundary is the write and that
+admission must still bound whatever waits behind it. The two agree on
+where the line is and differ on which side the traffic starts, and the
+specification's answer is the better one: my objection to exempting
+admission was that queueing without admission grows the scheduler
+without bound, and a Pack that goes straight to the writer never
+queues. The writer takes it or it does not. The unboundedness came from
+the queue, not from the bypass, and the specification skips both. The
+fallback re-enters through ordinary admission, which is exactly the
+bound §38.11 asked for. So §38.11 extends rather than reverses, and the
+extension is four points.
+
+Whether the capacity-at-admission fix is still needed. Yes, and it is a
+correctness matter for the fallback and an efficiency matter for
+everything else. The fast path fails when the writer is full, which on
+a slow carrier is the same moment acknowledgements lag, the resend
+queue fills, and reliable Packs sit in the scheduler holding admission
+slots they cannot use (§38.11). That is precisely when the fallback is
+invoked, and without the fix it meets a full admission and is refused
+in the one case it exists for. With reliable Packs waiting for capacity
+in front of admission rather than behind it, the slots are free for the
+fallback whenever the write will eventually keep up. Absent
+no-acknowledgement traffic altogether, the same fix is only the
+efficiency of not holding a slot one cannot use.
+
+What the Pack means once queued. Not what the resend queue means. The
+resend queue is retention: an item in it is charged to the window,
+resent on its timer, probed at the head, and lease-tracked, and the
+loop never adds a no-acknowledgement item to it (`transfer.go:8765`,
+`if ack`). The fallback's queue is the sequence's pre-write queue,
+admission, the channel and the scheduler, and the Pack keeps its
+semantics there: taken by the bypass predicate regardless of capacity,
+written once, never retained, never resent, never acknowledged. What
+changes is that it carries its deadline. The Pack records an absolute
+deadline at entry; the scheduler, on taking a no-acknowledgement Pack
+whose deadline has passed, drops it and counts it; the loop's write for
+such a Pack uses the smaller of `WriteTimeout` and the time to its
+deadline; and a write that fails at the deadline is the third stage,
+dropped and counted by the counter that now exists. An assertion that
+the resend queue never contains an unacknowledged item is the test
+that keeps the two queues from being confused later.
+
+The shared deadline, and what resets it today. Admission threads it:
+`acquirePackAdmission` returns the remaining time and the channel
+enqueue uses it (§38.7 items 3 and 4). Two things do not. Once queued,
+a Pack waits for the loop with no bound at all, since the caller's
+timeout covered admission only and the caller was told true at
+enqueue; and the loop's write uses the settings' `WriteTimeout`, 15 s
+(`transfer.go:882,992`), whatever the caller asked for. Both are fixed
+by the deadline on the Pack; nothing else in the path resets it, and
+the writer takes the timeout it is given (`MultiRouteSelector.Write`).
+On the fast path the caller's timeout goes to the writer and the
+remainder to admission, threaded by subtraction as admission already
+does. One refinement to the specification's first stage, from where
+the caller stands: on the client the caller is the tun's device
+goroutine and on the provider the return sender's shard, both shared by
+every flow they serve, so a fast-path write that blocks in the caller's
+goroutine holds every other flow for the duration. The first stage
+should be an immediate acceptance or nothing, the non-blocking try each
+route already makes, with the whole timeout left for the queue, whose
+wait is on the sequence goroutine. That keeps the three stages and the
+one deadline and moves the waiting to where it does not block others.
+
+Writing from the caller's goroutine. The write itself is safe: a route
+is a channel, the seal is per call, a fresh nonce from `crypto/rand`
+and a fresh output over a shared AEAD that Go documents as safe for
+concurrent use (`transfer_encrypt.go:302–310`), and the pool is safe.
+What is not safe is the state around it, which is the sequence
+goroutine's: the writer handle, which `openContractMultiRouteWriter`
+replaces on a destination change with no lock; the contract snapshot,
+`sendContract`, `sendContractAcked` and `canUpdate`, which is the same
+predicate the bypass reads and which also guarantees the contract's
+head was acknowledged before any Pack references it, so ordering of
+this traffic needs nothing more; and the byte accounting on success,
+`ackItem` into `openSendContracts`. The fast path takes the sequence's
+lock briefly for the snapshot, writes outside it, and takes it again
+for the accounting; or the goroutine publishes an immutable snapshot
+of writer, contract id, acknowledged flag and remaining bytes that the
+fast path reads atomically. Buffer ownership follows the loop's own
+no-acknowledgement write exactly: the transport returns the frame to
+the pool after writing (`transport.go:1103–1135`), so the fast path
+hands the buffer to the writer and never touches it again.
+
+Tests. The deterministic test's second row reads twenty written when
+the writer is free and the resend queue full, all by the fast path,
+none through admission. With the writer stalled and the resend queue
+full, the fallback is admitted once reliable Packs wait in front of
+admission, written when the writer frees, and otherwise dropped at the
+deadline with the drop counted; the worst-case latency at every stage
+is under the caller's timeout, measured per stage. No unacknowledged
+item ever appears in the resend queue. And a fast-path write never
+blocks the calling goroutine beyond the immediate try, measured as the
+device or shard goroutine's longest stall under a stalled writer.
