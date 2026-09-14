@@ -5157,7 +5157,10 @@ the standing queue, the standing queue is the window less r × rtt, and
 every flow of that client sharing the writer waits behind it for
 window over r. Predictions for the cell the harness is building, the
 added delay per arm, which is rate-independent where it is the rule's
-own doing:
+own doing. Falsified for TCP, every row, by the cell (§37.14): a TCP
+sender is only handed what the inner protocol's flow control offers.
+They stand, unchanged, for UDP, which has no such control, and that is
+where they are now to be tested:
 
 - the shipping constant, 2 MiB: 2 MiB / r, 840 ms at 20 Mb/s, 170 at
   100;
@@ -5183,3 +5186,151 @@ which on a slow path is far below today's constant, and the only floor
 under it is a working minimum of a few packets, which
 `ResendQueueMinByteCount` already is for reliable admission. A bet
 that cannot be walked back is not a bet.
+
+### 37.14 The slow drain: TCP bounds itself, and UDP is the route left to both costs
+
+Sixty of sixty runs valid. At a 20 Mb/s drain every arm added between
+2.3 and 2.9 ms of delay against §37.13's predictions of 840 ms, 6.7 s
+and never below 600 ms; peak send queue was 19 to 21 KiB, a hundredth
+of the window or less, and identical whether the window was 2, 3.6 or
+16 MiB; occupancy was smaller under the slow drain than under an
+unlimited one. All four rows were wrong for one reason: I had a sender
+fill its window, and a TCP sender is only handed what the inner
+protocol offers. The slow carrier is seen by the client tunnel's
+receive side, whose moderation sizes the advertised window from bytes
+copied per round trip (§36.4), so the window closes to the drain's own
+bandwidth-delay product, the origin's TCP backs off through the
+provider's socket, and the transfer layer is handed 20 KiB, which is
+the drain rate times the carrier's round trip and nothing more. The
+window cannot cost memory it is never given, and the floored interval
+cannot cost latency through a queue that never forms. The same holds at
+full speed, where the queue sits near half a mebibyte regardless of
+window.
+
+So the composite memory bound of §37.7, in its occupancy form, is
+correct and largely inoperative for TCP: the quantity it bounds is set
+by the inner protocol's flow control and not by anything this design
+configures. The budget is not what keeps a TCP flow's memory bounded;
+TCP is. The budget's job is the cases where that protection does not
+exist. One direction is still owed a reading: the mechanism above is
+the receive side's, on download. On upload the inner flow control is
+the NAT's advertised window, which sizes from loop A's backpressure and
+not from the carrier (§37.2, B4), beside a congestion window that grows
+without loss on a reliable carrier; either something I have not found
+bounds it, or upload at a slow drain fills the client's transfer queue
+to the smaller of its window and the tun's 4 MiB send buffer. The
+cell's record says which direction it ran, and if it ran only download,
+upload is the second cell.
+
+UDP has no end-to-end flow control, and the program's own cells show it
+does not share TCP's ceiling, 1.39 Gb/s against 0.3, so a UDP source is
+exactly what can outrun a slow drain. What bounds it today, from source,
+on the return path from origin to client:
+
+- `UdpSequence.receivePacket` hands each datagram to the return path in
+  `receiveRecoveryModeNonblocking` (`ip.go:3189–3200`);
+- `enqueueReturnItem` offers it to a per-shard channel with a
+  non-blocking send and drops on a full channel, counted in
+  `congestionDrops.addReturnQueue`; the channels hold
+  `ReturnSendQueueSize` = `MemoryScaledCount(256, 64)` items in
+  aggregate (`ip.go:6387,7676–7700`);
+- the return sender calls `SendWithTimeout` with `returnWriteTimeout`,
+  which is `WriteTimeout` for a TCP socket item and zero for everything
+  else (`ip.go:8038–8043`); at zero, `SendSequence.Pack` refuses rather
+  than waits, at the slot admission and again at the 32-item `packs`
+  channel (`transfer.go:6105,6215–6250`), and the channel is what fills
+  when the sequence goroutine stops draining it because the byte window
+  is full (§32.1);
+- `retryReturnSend` retries only TCP socket items; for anything else a
+  refused send returns false on the first attempt and the datagram is
+  dropped, counted in `congestionDrops.addReturnSend`
+  (`ip.go:7983–8026,8137`).
+
+So a UDP return flood fills the transfer send queue to its byte window,
+plus 32 items, plus the return shards, and everything past that is
+dropped at once: no blocking, no retry, no backpressure into the kernel
+socket, whose own drops (`udpKernelReceiveDropCount`) occur only when
+our reader is slower than arrival, not when the carrier is. Memory is
+bounded by the window. Latency is the window: every admitted datagram
+waits window over drain rate, 840 ms at 2 MiB and 20 Mb/s, 6.7 s at
+16 MiB, never less than 600 ms under the rule as built, and so does
+every TCP packet of the same client, because UDP and TCP returns share
+the per-destination sequence in first-in first-out order, lanes being
+shipped at zero. The four rows of §37.13 are UDP's rows. And the
+head-of-line cost is §35's mechanism with a UDP source in place of the
+zombies: a concurrent TCP flow's round trip rises by the standing
+queue and its throughput falls to its window over that round trip.
+
+On the client side the tun's link endpoint waits at most
+`OutboundQueueWaitTimeout`, 250 ms, for outbound queue space and drops
+the rest of a write (`tun.go:65,127–132`); the device layer's timeout
+into `SendPacket` is chosen in the sdk tree, outside this one, and the
+in-tree delegations pass zero (`ip.go:9177,9236`), which refuses and
+drops. A refusal is an inner loss: for TCP from the application it
+halves the congestion window, which is self-limiting; for UDP it is a
+loss to the application, which is UDP's own semantics.
+
+Whether the advertisement reaches UDP: it does, because UDP returns
+ride the same sequence as TCP returns, the provider's reply key echoes
+the client's key at lane zero (§27.5, §30.2), and nothing in this tree
+requests the protocol's no-acknowledgement Pack for IP traffic (the
+`noAckSendRecord` path has no caller). So the `Ack`'s
+`receive_window_byte_count` bounds the sender's window for the whole
+sequence, UDP included. What it bounds is the receiver's memory: a
+receiver at its share throttles the sender instead of dropping. It
+does not bound latency; a 16 MiB advertised hold still lets a sender
+stand 16 MiB of UDP in front of a 20 Mb/s drain. Latency for UDP is
+bounded by exactly one thing in the design, the k × achieved term of
+the window rule, which measures the drain from acknowledgements and
+holds the window at k times the drain's bandwidth-delay product, so
+the standing queue is (k − 1) round trips and the excess is dropped at
+admission, early, which for UDP is correct. With the shipping constant
+that term does not exist and the delay is 2 MiB over the drain; with
+the rule as built it is never less than 600 ms; with the interval and
+the floor corrected it is one propagation round trip.
+
+So the statement the coordinator asked for, plainly: the budget, the
+advertisement and the window rule's delivery term are load-bearing for
+UDP specifically, and inert for TCP on a slow drain, where the inner
+protocol supplies all three protections itself. The design should not
+imply uniform protection; it should say that UDP is the traffic the
+Transfer layer's own flow control exists for, and that a slow path
+with a UDP source is the regime in which every constant this program
+has enumerated turns from a throughput ceiling into a latency floor.
+There is one more window in that regime the enumeration missed: the
+unreliable carrier's flight controller, slow start and additive
+increase on acknowledgement, halved on loss, between
+`UnreliableInitialFlightByteCount` 8 KiB and
+`UnreliableMaximumFlightByteCount` 256 KiB (`transfer.go:734–736`,
+`transfer_flight.go:222–320`). Path-sized growth under a constant
+ceiling, the same defect shape, and the tightest ceiling in the chain:
+256 KiB encodes 84 Mb/s at 25 ms and 10 at 200. It is D6 in §37.2's
+list and takes its ceiling from the surface like the others.
+
+Two corrections to carry. The slow-drain cell cannot confirm the
+initial-size clamping defect of §37.13, because its old-clamping arm
+showed no added delay either: nothing filled the queue, so nothing
+distinguishes a rule that can shrink from one that cannot. UDP is the
+discriminator for that defect as well as for the interval's latency
+cost, two open questions with one cell. And three instrument faults
+were found and fixed on the way, two of which would have inverted the
+result: a pacer that paced to timer granularity rather than rate, a
+carrier route whose own thousand-frame buffer absorbed the backpressure,
+and occupancy inferred from a global pool that charged unrelated
+buffers. The second is the item-bound wire §36.4 named as the one
+place an in-process carrier could charge framed bytes; it existed. All
+three are the shape this program has now seen seven times, something
+accurate standing in for the record that decides, and the fixture's
+wire capacity now belongs in every cell's record as a field.
+
+Predictions for the UDP cell, stated before it runs, at a 20 Mb/s
+drain with a UDP source above it: added delay 840 ms for the shipping
+constant, 6.7 s for a 16 MiB constant, not less than 600 ms for the
+rule as built, and tens of milliseconds for the corrected rule; a
+concurrent TCP flow's `Rtt.Mean − Rtt.Min` equal to that delay in each
+arm; the old-clamping arm with a 3.6 MB bet at 1.4 s against the
+corrected rule's tens of milliseconds; `congestionDrops` counting the
+excess in every arm rather than the kernel's drop counter; and
+occupancy at the window in every arm, which is where the budget, with
+forty such clients, is the only thing between a provider and forty
+times its ceiling.
