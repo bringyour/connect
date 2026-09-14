@@ -451,9 +451,11 @@ func DefaultTcpBufferSettingsWithBufferSize(bufferSize int) *TcpBufferSettings {
 		// wedged flow, so patience is cheap.
 		WriteTimeout:       60 * time.Second,
 		AckCompressTimeout: 50 * time.Millisecond,
-		IdleTimeout:        300 * time.Second,
-		SequenceBufferSize: bufferSize,
-		Mtu:                DefaultMtu,
+		// THROUGHPUTFIX §45.2. The candidate, not a measured optimum.
+		SteadyAckEverySegments: 16,
+		IdleTimeout:            300 * time.Second,
+		SequenceBufferSize:     bufferSize,
+		Mtu:                    DefaultMtu,
 		// large socket reads are split into mtu-sized data packets by `DataPackets`
 		ReadBufferByteCount: int(MemoryScaledByteCount(kib(64), kib(16))),
 		WriteBatchSize:      64,
@@ -3679,6 +3681,41 @@ type TcpBufferSettings struct {
 	// an ack is sent sooner when the unacked byte count reaches half the window.
 	// zero sends a pure ack on every send seq advance.
 	AckCompressTimeout time.Duration
+	// The steady-state acknowledgement cadence (THROUGHPUTFIX §45.2): one
+	// acknowledgement every this many in-order segments that carry payload,
+	// whatever the window is doing. Zero disables it.
+	//
+	// The half-window signal above is the only fast clock a saturated upload
+	// has, and it keys on the advertised window, so it cannot fire until the
+	// sender holds half a rung in flight. At the ladder's 16 MiB rung that
+	// half is 8 MiB, 67 ms of data at a gigabit, and `AckCompressTimeout`
+	// fires first: the sender's inner round trip becomes the path plus the
+	// compression interval rather than the path. Since a sender is bounded by
+	// its send buffer over that round trip, the timer rather than the window
+	// is the ceiling — 4 MiB over `path + 60 ms` cannot reach a gigabit at any
+	// path length or any memory budget.
+	//
+	// A cadence counted in segments gives the sender a clock that does not
+	// depend on the window having grown. It is what TCP's delayed
+	// acknowledgement does at two; k here can be larger because the only cost
+	// is acknowledgement traffic, and there is no memory consequence at all
+	// since acknowledgements are not retained. At 16 and 1,280 byte segments
+	// that is one acknowledgement per 20 KB, about 6,000 a second at a
+	// gigabit, under 0.3 per cent of the bytes, and the clock it leaves is
+	// 20 KB over the rate, a fraction of a millisecond.
+	//
+	// This is not `QuickackEverySegments` below and does not replace it. That
+	// phase is entered only on evidence that the peer's window is small and is
+	// deliberately bounded so it cannot run in steady state; this rule is the
+	// steady state and nothing else. Both may be on: the signal they share
+	// coalesces, so the pair costs no more than the earlier of them. The
+	// half-window signal and the compression timer remain as backstops for a
+	// sender that stops short of k.
+	//
+	// 16 is the design's starting candidate rather than a measured optimum.
+	// What a campaign measures to set it is k against acknowledgement traffic,
+	// and the shape is expected to be flat above it.
+	SteadyAckEverySegments int
 	// The recovery phase (THROUGHPUTFIX §26). The half-window signal above
 	// keys on the window rung, so it cannot fire while the peer keeps less
 	// than half a rung in flight, which is every slow start and every
@@ -4398,6 +4435,17 @@ const (
 	tcpReorderDispositionStale
 )
 
+// Which rule asked for an acknowledgement in steady state (THROUGHPUTFIX
+// §45.2). The half-window rule keys on the window rung; the cadence does not,
+// which is the whole point of it. §26's recovery phase has its own signals and
+// its own rows, and is not reported here.
+type tcpAckClock int
+
+const (
+	tcpAckClockHalfWindow tcpAckClock = iota
+	tcpAckClockSteadyCadence
+)
+
 // TcpSequence owns one user-NAT TCP flow and its bounded crossover reorder state.
 type TcpSequence struct {
 	ctx    context.Context
@@ -4442,6 +4490,14 @@ type TcpSequence struct {
 	// Tests observe exact reorder decisions without using negative socket-read
 	// timeouts. The callback must not block; nil is a production no-op.
 	afterReorderDispositionForTest func(tcpReorderDisposition)
+	// Tests observe which steady-state rule asked for an acknowledgement
+	// (THROUGHPUTFIX §45.2). Called from the send loop under the connection
+	// mutex, where the decision is made. The decision is what a cadence row
+	// has to count: the acknowledgement it leads to is built on another
+	// goroutine, and signals coalesce in a one-deep channel, so the
+	// acknowledgements that leave are not a count of the decisions taken. The
+	// callback must not block; nil is a production no-op.
+	afterAckClockForTest func(tcpAckClock)
 	// Tests may hold a pool-owned pure acknowledgement after construction to force
 	// cancellation at its ownership boundary. Nil is a production no-op.
 	afterPureAckBuildForTest func([]byte)
@@ -4996,6 +5052,19 @@ func (self *TcpSequence) Run() {
 	// when the last in-order segment arrived, which is what the burst-end
 	// trigger asks about; zero means the trigger is disarmed
 	lastArrivalNanos := int64(0)
+
+	// THROUGHPUTFIX §45.2. In-order segments carrying payload since the last
+	// acknowledgement this loop asked for, which is the cadence's whole state.
+	// Read and written under self.mutex, as ackedSendSeq is.
+	//
+	// Only this loop's own decisions reset it. An acknowledgement the
+	// compression timer sends does not, so the cadence is a pure count of
+	// segments and its spacing does not depend on when that timer happens to
+	// fire. The cost of that choice is at most one extra acknowledgement after
+	// a timer acknowledgement, and what it buys is a rule whose behaviour is
+	// the same at every round trip.
+	steadyAckEverySegments := max(0, self.tcpBufferSettings.SteadyAckEverySegments)
+	steadySegmentCount := 0
 
 	// Entry is evidence of a small window and never a byte count: E1 loss
 	// evidence, E2 connection start, E3 resumption after idle. Re-entry after
@@ -5839,7 +5908,29 @@ func (self *TcpSequence) Run() {
 				self.sendSeq += advanceByteCount
 				nextSeq = self.sendSeq
 				ackCond.Broadcast()
-				if 0 < len(payload) && self.windowSize/2 <= self.sendSeq-ackedSendSeq {
+				halfWindowReached := 0 < len(payload) &&
+					self.windowSize/2 <= self.sendSeq-ackedSendSeq
+				// THROUGHPUTFIX §45.2, the steady-state cadence, ahead of the
+				// phase rule below and beside the half-window rule above. The
+				// half-window signal cannot fire until the sender holds half a
+				// rung, so without this a saturated upload is clocked by the
+				// compression timer and is bounded by its send buffer over the
+				// path plus that interval. Counting segments gives it a clock
+				// that does not wait on the window.
+				if !halfWindowReached && 0 < len(payload) && 0 < steadyAckEverySegments {
+					steadySegmentCount += 1
+					if steadyAckEverySegments <= steadySegmentCount {
+						steadySegmentCount = 0
+						select {
+						case ackSignal <- struct{}{}:
+						default:
+						}
+						if self.afterAckClockForTest != nil {
+							self.afterAckClockForTest(tcpAckClockSteadyCadence)
+						}
+					}
+				}
+				if halfWindowReached {
 					select {
 					case ackSignal <- struct{}{}:
 					default:
@@ -5847,6 +5938,12 @@ func (self *TcpSequence) Run() {
 					// the half-window rule is the binding trigger again, so the
 					// peer is out of the small-window region this phase serves
 					recovering = false
+					// an acknowledgement has just been asked for, so the
+					// cadence counts its next k from here
+					steadySegmentCount = 0
+					if self.afterAckClockForTest != nil {
+						self.afterAckClockForTest(tcpAckClockHalfWindow)
+					}
 				} else if 0 < quickackEverySegments && 0 < len(payload) {
 					nowNanos := monotonicNanos()
 					if outstandingBeforeByteCount == 0 {

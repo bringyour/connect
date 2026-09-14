@@ -50,6 +50,8 @@ func TestAckCompressionIsTheOnlyClockBelowHalfAWindowRung(t *testing.T) {
 		// the recovery phase, which the shipping default leaves off; the whole
 		// window of this row is connection start, which is E2
 		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.StartQuickackByteCount = startQuickackByteCount
 		sequence.tcpBufferSettings.RecoveryQuickackByteBound = startQuickackByteCount
 		// the counting rule counts segments, so the peer's segment size is
@@ -168,6 +170,8 @@ func TestFirstSegmentAfterATimeoutIsAckedAtOnce(t *testing.T) {
 	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 32, 0, func(sequence *TcpSequence) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
 		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 1
 		// the burst-end trigger is off: only the immediate rule may answer
 		sequence.tcpBufferSettings.QuiescenceBound = 0
@@ -216,6 +220,8 @@ func TestBurstEndTriggerArmsOnFirstArrivalAndRearms(t *testing.T) {
 		// the counting rule is out of reach, and nothing is acknowledged at
 		// once, so only the burst-end trigger can answer
 		sequence.tcpBufferSettings.QuickackEverySegments = 1024
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 0
 		sequence.tcpBufferSettings.QuiescenceBound = quiescenceBound
 		sequence.tcpBufferSettings.StartQuickackByteCount = ByteCount(1024 * 1024)
@@ -289,6 +295,8 @@ func TestSteadyStateUploadEmitsNoQuickacks(t *testing.T) {
 	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 32, 0, func(sequence *TcpSequence) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
 		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 1
 		sequence.tcpBufferSettings.StartQuickackByteCount = startQuickackByteCount
 		sequence.tcpBufferSettings.RecoveryQuickackByteBound = startQuickackByteCount
@@ -367,6 +375,8 @@ func TestCountingRuleCountsSegmentsNotBytes(t *testing.T) {
 	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 32, 0, func(sequence *TcpSequence) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
 		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 0
 		sequence.tcpBufferSettings.StartQuickackByteCount = ByteCount(1024 * 1024)
 		sequence.tcpBufferSettings.RecoveryQuickackByteBound = ByteCount(1024 * 1024)
@@ -441,6 +451,8 @@ func TestBurstEndWakesPerIntervalNotPerArrival(t *testing.T) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
 		// nothing but the burst-end trigger may end a wait
 		sequence.tcpBufferSettings.QuickackEverySegments = 4096
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 0
 		sequence.tcpBufferSettings.StartQuickackByteCount = ByteCount(16 * 1024 * 1024)
 		sequence.tcpBufferSettings.QuiescenceBound = quiescenceBound
@@ -536,6 +548,8 @@ func TestConnectionStartQuickackIsBounded(t *testing.T) {
 	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 64, 0, func(sequence *TcpSequence) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
 		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = immediateSegmentCount
 		sequence.tcpBufferSettings.StartQuickackByteCount = startQuickackByteCount
 		sequence.tcpBufferSettings.RecoveryQuickackByteBound = startQuickackByteCount
@@ -590,6 +604,8 @@ func TestRetransmissionEntersTheRecoveryPhaseAndTheBoundEndsIt(t *testing.T) {
 	harness := newTcpReorderTestHarnessWithSetup(t, 1000, 64, 0, func(sequence *TcpSequence) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
 		sequence.tcpBufferSettings.QuickackEverySegments = quickackEverySegments
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 0
 		// no start window: only a loss may enter the phase here
 		sequence.tcpBufferSettings.StartQuickackByteCount = 0
@@ -668,6 +684,8 @@ func TestOverdueBurstEndIsAckedAtOnce(t *testing.T) {
 		sequence.tcpBufferSettings.AckCompressTimeout = ackCompressTimeout
 		// only the burst-end trigger may end a wait
 		sequence.tcpBufferSettings.QuickackEverySegments = 4096
+		// the steady-state cadence (§45.2) is off: this row is §26's phase alone
+		sequence.tcpBufferSettings.SteadyAckEverySegments = 0
 		sequence.tcpBufferSettings.QuickackImmediateSegmentCount = 1
 		sequence.tcpBufferSettings.StartQuickackByteCount = ByteCount(16 * 1024 * 1024)
 		sequence.tcpBufferSettings.QuiescenceBound = quiescenceBound
