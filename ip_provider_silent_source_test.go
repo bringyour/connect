@@ -337,6 +337,8 @@ func startDatagramProviderReturn(
 	producerReturned := make(chan struct{})
 	go func() {
 		defer close(producerReturned)
+		// borrowed for the call; see the TCP helper this mirrors
+		defer MessagePoolReturn(packet)
 		provider.receiveTransferWithRecovery(
 			SourceId(peerId),
 			TransferKey{

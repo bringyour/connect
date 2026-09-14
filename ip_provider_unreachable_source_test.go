@@ -57,6 +57,9 @@ func startUnreachableProviderReturn(
 	producerReturned := make(chan struct{})
 	go func() {
 		defer close(producerReturned)
+		// the receive entry borrows: the packet is valid for the call and the
+		// caller still owns it afterwards
+		defer MessagePoolReturn(packet)
 		provider.receiveTransferWithRecovery(
 			SourceId(peerId),
 			TransferKey{
