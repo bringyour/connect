@@ -294,19 +294,32 @@ func TestLogicalLaneReplyTransferKeyIsExplicitAndBounded(t *testing.T) {
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
 	defer client.Cancel()
 
+	// A key that states a lane reproduces it; a key that states none leaves
+	// the lane to the sender's own gate. Zero is both the legacy lane and the
+	// value a key carries when it says nothing about lanes, and the two cannot
+	// be told apart in the field, so a stated zero is read as unstated. That
+	// is what lets a provider's reply reach its own gate instead of being
+	// pinned to the lane its client happened to be on (THROUGHPUTFIX §30.2).
+	// An out-of-range lane is still a statement, and is still bounded to zero.
 	for _, testCase := range []struct {
-		name string
-		key  TransferKey
-		want uint32
+		name     string
+		key      TransferKey
+		explicit bool
+		want     uint32
 	}{
-		{name: "legacy", key: TransferKey{}, want: 0},
-		{name: "negotiated lane", key: TransferKey{LogicalLane: 4}, want: 4},
-		{name: "out of range", key: TransferKey{LogicalLane: maxLogicalDataLaneCount + 1}, want: 0},
+		{name: "legacy", key: TransferKey{}, explicit: false, want: 0},
+		{name: "negotiated lane", key: TransferKey{LogicalLane: 4}, explicit: true, want: 4},
+		{name: "out of range", key: TransferKey{LogicalLane: maxLogicalDataLaneCount + 1}, explicit: true, want: 0},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			resolved := client.resolveSendOptions([]any{testCase.key})
-			if !resolved.logicalLaneExplicit {
-				t.Fatal("received TransferKey did not select an explicit reply lane")
+			if resolved.logicalLaneExplicit != testCase.explicit {
+				t.Fatalf(
+					"a received TransferKey stating lane %d selected an explicit reply lane = %t, want %t",
+					testCase.key.LogicalLane,
+					resolved.logicalLaneExplicit,
+					testCase.explicit,
+				)
 			}
 			if resolved.logicalLane != testCase.want {
 				t.Fatalf("reply lane=%d, want %d", resolved.logicalLane, testCase.want)
