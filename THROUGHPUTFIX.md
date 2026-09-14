@@ -5577,3 +5577,84 @@ bytes, one round per eviction generation rather than a minute. If the
 transfer still stalls with both fields, the lease is being taken by a
 path this section did not read, and the item's `resendTime` after the
 notice is the field to inspect.
+
+### 37.17 The ordering inverts on a shipped configuration: a budgeted client below 51.2 MiB against an unbudgeted provider
+
+Both shipping constants are memory-scaled by the same factor:
+`ResendQueueMaxByteCount = MemoryScaledByteCount(mib(2), kib(256))` and
+`ReceiveQueueMaxByteCount = MemoryScaledByteCount(mib(2) + kib(512),
+kib(320))` (`transfer.go:762,831`), against a reference budget of
+64 MiB (`memory_budget.go:21`), with the scale never above one
+(§36.1). On one host the hold is 1.25 times the window at every
+budget, floors included, so the ordering never inverts symmetrically;
+my earlier remark that the hold scales and the send ceiling does not
+was about the delivery-sized rule's ceiling, which is a plain byte
+count, and not about the shipping constant.
+
+The inversion is asymmetric, and it is the common production shape.
+The sender's window and the receiver's hold are on different hosts. A
+provider runs unbudgeted ("unbudgeted server/provider callers are not
+silently assigned the phone cap", `ip.go:416–420`), so its window is
+2 MiB; a client at budget B holds `max(320 KiB, 2.5 MiB × B / 64 MiB)`.
+The hold is below the peer's window whenever
+
+    2.5 MiB × B / 64 MiB < 2 MiB,  that is  B < 51.2 MiB.
+
+At 24 MiB the hold is 960 KiB against a 2 MiB window, 2.1 times over;
+at 32 MiB, 1.25 MiB, 1.6 times; at or below 8.2 MiB the floor, 320 KiB,
+6.4 times. The general condition is a receiver budget below 0.8 of the
+sender's. Upload is safe: the phone's window is scaled down and the
+provider's hold is not. So on main today, a phone downloading through a
+provider has a hold smaller than its peer's window at every mobile
+budget this program has discussed, and §37.16's reneging is reachable
+with none of this program's changes. That makes the two fields of
+§37.16 a bug fix rather than a precondition, and the severity does not
+depend on any of this work.
+
+The trigger is ordinary rather than exotic, from source. Under the
+production Auto policy H1 is primary and H3 is dialed after a stagger of
+one `ModeInitialDelay`, 2 s, gated only by budget admission and not by
+H1's health (`transport.go:163–175,1443–1460,1636–1650`,
+`startH3ModeGroup`); a connected H3 registers its routes beside H1's
+with no standby guard (`transport.go:2950–2990`); and an ordered stream
+is offered to the reliable routes in weighted or shuffled order and
+takes the first that accepts (`transfer_route_manager.go`,
+`writeRoutes`, `writeRoutesReliableOnly`, `writeDetailedWithRoutePolicy`),
+which is striping. Two live routes is the default steady state, and a
+route death is a network handover, an extender rotation, an idle drain
+or a middlebox closing H3 mid-session. Routine reordering between two
+routes of unequal latency uses the hold without any death, and whether
+that alone overruns a 960 KiB hold is rate times skew against it. A
+second candidate needs its own cell: hybrid H3 routes download frames,
+1,240 B under the 1,332 B threshold (`transport_h3_datagram.go:44–52`),
+on the datagram lane with the stream lane taking the excess above the
+256 KiB flight limit, so one datagram loss opens a hole the stream lane
+runs ahead of by up to the sender's window; on a single route, with no
+failover.
+
+Guards, at the point the arithmetic names, in the order they can land:
+
+1. Receiver side, no wire change, any binary: the hold's floor becomes
+   the peer's unscaled window, `max(mib(2), scaled)`, so a budgeted
+   client never holds less than a shipping peer can have outstanding.
+   The cost on a phone is permission, and occupancy only under
+   reordering, at most 2 MiB; against a sixty-second stall.
+2. Sender side, deployable on providers alone, protecting clients that
+   have not updated: a carrier change voids selective acknowledgements,
+   so the carrier-change resend (`transfer.go:2310,2439`) covers evicted
+   items too. Evictions still happen at an inverted peer but each is
+   resent within a round on the surviving route rather than after a
+   minute; the redundant resend is bounded by one window per route
+   death, and a duplicate of an item the receiver still holds is
+   discarded by message id.
+3. The two fields of §37.16, which remove the eviction rather than
+   recover from it.
+
+Prediction for a cell on main with none of this program's changes:
+client budget 24 MiB, provider unbudgeted, two routes at 50 ms, one
+killed mid-transfer; evictions above zero once the counter exists, and
+a stall of about sixty seconds or a sequence closed on its ack timeout.
+The same cell at a client budget of 52 MiB or more completes, which is
+the guard point measured. With guard 1 alone the 24 MiB cell completes
+with zero evictions; with guard 2 alone it completes with about one
+window of redundant resend per route death.
