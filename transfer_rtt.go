@@ -213,6 +213,54 @@ func (self *RttWindow) closeSendTime(sendTimeUnixMilli uint64, receiveTime time.
 // sooner. A lane whose samples are spread reports a longer one, so a
 // routine excursion of several times the mean no longer rewrites the whole
 // window; its rare real loss waits longer for it (FLIGHTGATEFIX §25.2).
+// An estimate carried with its own evidence: the value, how many samples back
+// it, and how old the newest of them is.
+//
+// It is a type rather than a duration on purpose. A zero mean over no samples
+// means unsampled and a zero mean over samples means a measured
+// sub-millisecond path, and this program has twice been misled by exactly that
+// ambiguity — once by a deviation timer over an unsampled stall and once by a
+// receive-side precondition. A bare duration lets a caller read the first as
+// the second by accident; this does not. Every other reader on the window
+// folds the unsampled case into a resend floor, which is right for timing and
+// wrong for measurement.
+type RttEstimate struct {
+	Mean        time.Duration
+	SampleCount int
+	// Age of the newest sample when the estimate was taken. An estimate whose
+	// newest sample is older than the path's behaviour describes a path that
+	// no longer exists, so freshness travels with the value rather than being
+	// inferred from the caller's own clock.
+	NewestSampleAge time.Duration
+}
+
+// Sampled reports whether any sample backs the mean.
+func (self RttEstimate) Sampled() bool {
+	return 0 < self.SampleCount
+}
+
+// Estimate is the window's unscaled mean round trip with its evidence.
+func (self *RttWindow) Estimate() RttEstimate {
+	return self.estimate(time.Now())
+}
+
+func (self *RttWindow) estimate(sampleTime time.Time) RttEstimate {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.coalesceWithLock(sampleTime)
+
+	if self.windowCount == 0 {
+		return RttEstimate{}
+	}
+	newestIndex := (self.windowTailIndex + self.windowCount - 1) % len(self.window)
+	newestSampleAge := sampleTime.Sub(time.Unix(0, self.window[newestIndex].receiveUnixNano))
+	return RttEstimate{
+		Mean:            self.netRtt / time.Duration(self.windowCount),
+		SampleCount:     self.windowCount,
+		NewestSampleAge: max(0, newestSampleAge),
+	}
+}
+
 func (self *RttWindow) DeviationRtt() time.Duration {
 	return self.deviationRtt(time.Now())
 }

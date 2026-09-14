@@ -5392,6 +5392,27 @@ type SendDestinationStats struct {
 	WriteByteCount       uint64
 	ResendWriteCount     uint64
 	ResendWriteByteCount uint64
+	// Rtt is the acknowledgement round trip over the sequences to this
+	// destination, carried with its evidence: an unsampled estimate and a
+	// measured sub-millisecond one are different facts and the type keeps them
+	// apart.
+	//
+	// It is here because a per-destination ceiling is its resend queue over
+	// the effective acknowledgement round trip, and that divisor is the
+	// network's round trip plus terms of ours. Whether it is mostly ours or
+	// mostly the network's decides between raising the queue, which buys
+	// throughput proportionally and costs memory proportionally, and
+	// shrinking the divisor, which buys the same throughput for no memory.
+	// The sequence already measures the quantity; nothing outside could read
+	// it.
+	//
+	// Interim: this is a reader on an accumulating surface, where the rule
+	// would put a decision input on a mechanism surface that the deciding
+	// predicate itself reads. The next mechanism change is where that shape
+	// gets established, rather than by retrofitting stats types that work.
+	Rtt RttEstimate
+	// how many of this destination's sequences contributed a sampled estimate
+	RttSequenceCount int
 }
 
 func (self *SendBuffer) DestinationSendStats(destinationId Id) SendDestinationStats {
@@ -5408,11 +5429,27 @@ func (self *SendBuffer) DestinationSendStats(destinationId Id) SendDestinationSt
 	self.mutex.Unlock()
 
 	stats := SendDestinationStats{SequenceCount: len(sequences)}
+	meanRttTotal := time.Duration(0)
+	newestSampleAge := time.Duration(0)
 	for sequence := range sequences {
 		stats.WriteCount += sequence.writeCount.Load()
 		stats.WriteByteCount += sequence.writeByteCount.Load()
 		stats.ResendWriteCount += sequence.resendWriteCount.Load()
 		stats.ResendWriteByteCount += sequence.resendWriteByteCount.Load()
+		// the window's own lock is a leaf, and the buffer lock above is
+		// already released
+		if estimate := sequence.rttWindow.Estimate(); estimate.Sampled() {
+			meanRttTotal += estimate.Mean
+			stats.Rtt.SampleCount += estimate.SampleCount
+			if stats.RttSequenceCount == 0 || estimate.NewestSampleAge < newestSampleAge {
+				newestSampleAge = estimate.NewestSampleAge
+			}
+			stats.RttSequenceCount += 1
+		}
+	}
+	if 0 < stats.RttSequenceCount {
+		stats.Rtt.Mean = meanRttTotal / time.Duration(stats.RttSequenceCount)
+		stats.Rtt.NewestSampleAge = newestSampleAge
 	}
 	return stats
 }
