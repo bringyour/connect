@@ -3236,3 +3236,203 @@ implemented, pinned in process for its own properties (F1, the floor
 rows), and unmeasured for throughput. The entry-condition rule did its
 job, the harness stream's refusal to soften it was right, and the run's
 two real yields are the second gate and the per-Pack lock.
+
+## 31. Where the factor goes: the cost of one byte on the download path, and three structural candidates sized honestly
+
+A decomposition from source and from what this program has measured, not
+a campaign. The gaps to explain: 34 Gb/s kernel-to-kernel on one host
+against about 300 Mb/s in the provider-upstream cell, a factor of 113;
+and the reporter's 665 Mb/s on one flow against 2,680 for WireGuard on
+the same hosts, a factor of four, with eight flows buying nothing.
+
+### 31.1 The stages, per byte and per packet
+
+The path of a downloaded byte from the origin socket to the application
+inside the client, with what each stage does to it. "Pass" means the
+byte is read or written by the CPU once; "handoff" means a goroutine
+hands work to another goroutine through a channel or a lock and the
+receiver must be scheduled.
+
+| Stage | What happens to the byte | Per byte | Per packet or Pack | Inherent or implementation |
+|---|---|---|---|---|
+| origin kernel to `socket.Read` | copy to the 64 KiB read buffer | 1 pass | one syscall per 64 KiB | inherent to a userspace proxy |
+| `DataPackets` | split into MTU segments: pool buffer per segment, payload copy, IP and TCP headers, checksum over the payload | 2 passes | 1 pool get, 1 header build, per 1,448 B | implementation: a userspace NAT re-originating TCP toward the client |
+| reader to batch consumer (`readPackets`) | none | 0 | 1 handoff per packet, amortised per batch of up to 64 | implementation |
+| provider callback: policy inspection, share, item, frame | header parse, refcount, frame build | 0 | per packet: parse, share, `ipPacketFromProviderFrame`; per Pack of up to 16 packets or 24 KiB: one item, one admission | implementation |
+| `SendBuffer.Pack` to the sequence goroutine | none | 0 | buffer mutex, sequence lookup, admission, 1 handoff per Pack | implementation; per client serialised from here |
+| sequence goroutine: marshal, session cipher, resend queue | Pack serialised (copy), AEAD over the Pack (crypto pass and copy into ciphertext), ciphertext retained for resend | 3 passes, 1 of them crypto | per Pack: contract accounting, queue insert, 1 handoff to the transport writer | marshal copy is implementation; one crypto pass per hop endpoint is inherent |
+| transport writer (H1) | websocket framing, masking if the client role masks, TLS record AEAD, copy into the record, kernel write | 3 to 4 passes, 1 crypto | per record | the second crypto layer is implementation: the session cipher already encrypts, TLS to the exchange is transport hygiene |
+| exchange ingress resident | kernel read, TLS decrypt, unmask, frame parse, shard handoff | 3 to 4 passes, 1 crypto | 1 to 2 handoffs per frame | the relay is a structural choice; every relayed byte pays two extra TLS terminations and a hop |
+| exchange forward to the destination resident | internal connection write and read | 2 passes | 1 handoff per frame each side | relay |
+| exchange egress to the client | TLS encrypt, framing, kernel write | 2 to 3 passes, 1 crypto | per record | relay |
+| client transport reader | kernel read, TLS decrypt, unmask, Pack parse | 3 passes, 1 crypto | 1 handoff per Pack | second crypto layer again |
+| client receive sequence | session decrypt (crypto pass and copy), ordering, frame delivery | 2 passes, 1 crypto | per Pack: queue, ack generation (a Transfer ack per Pack back up the whole chain) | inherent crypto; the ordering domain is implementation (§20) |
+| client device write | copy into the tun; on a device app this is the kernel's tun and the kernel's TCP; in the harness and headless hosts it is gVisor's inject and gVisor's TCP | 1 to 2 passes | per packet: tun write; in gVisor, per segment: checksum, reassembly, endpoint lock, and an inner ACK generated every second segment | tun copy inherent; gVisor is implementation on hosts that use it |
+| the inner ACK path back | every second data segment produces a 60-byte ACK that rides the whole chain in reverse: tun read, Pack, session AEAD, TLS, exchange, TLS, provider, session decrypt, NAT `applySendAckWithLock` | none per data byte | one full chain traversal per 2 segments, about 28,000 per second at 665 Mb/s | inherent to end-to-end TCP through a tunnel; its per-packet cost is implementation |
+| application read | copy out of the client stack | 1 pass | per read | inherent |
+
+Counting: about 25 passes per delivered byte, six of them crypto (two
+session, four TLS at the four transport endpoints), against WireGuard's
+roughly five passes and one crypto pass per hop with no relay. And
+about ten to fifteen goroutine handoffs per 1,448-byte packet across the
+chain at the per-packet stages, plus the ACK chain.
+
+### 31.2 Where the factor goes
+
+The passes do not explain the numbers. Twenty-five passes at a memory
+or crypto pass rate of one to four gigabytes per second per core bound
+a pipelined chain near one to two gigabits per core, above both measured
+figures. What matches them is the per-packet work on a serialised chain.
+At 665 Mb/s a 1,448-byte packet arrives every 17 µs, and a chain that
+has ten to fifteen handoffs per packet, at one to two microseconds of
+scheduling each, plus the per-packet header, checksum, pool, policy and
+tun work, spends about that long per packet on its critical path. So the
+reporter's single-flow number is the chain's per-packet service time,
+and the way to read the 4x is: WireGuard handles a packet in the kernel
+in about a microsecond with one crypto pass and no handoffs, at 64 KB
+super-segments where the host offloads; we handle it in about 17 µs
+across four processes and two encryptions, at 1,448 bytes. Eight flows
+buy nothing because the chain is one sequence, one transport writer,
+one exchange path and one client reader per client, so more flows queue
+behind the same per-packet service (§20). The 113x in the cell is that
+plus two things the cell adds: the harness's gVisor client, whose TCP
+receive path costs about four times its UDP path per segment (1.39 Gb/s
+UDP against 0.3 TCP through the same tun and NAT), and the comparison
+against a loopback stream whose segments are 65 KB, so that most of the
+113 is the ratio of segment sizes rather than of per-packet efficiency.
+
+Two conclusions the decomposition forces. The dominant lever is the
+number of packets per byte, not the number of passes; and the second
+lever is the number of serial stages per client, not any window or
+timer. Everything this program has swept, windows, compression, buffer
+pins, lanes' gate, is a percentage on a chain whose shape is the cost.
+
+### 31.3 Candidate one: the per-client ordered sequence
+
+Real, and the reporter's eight-flow result is its signature. Honest
+size of the prize: it is an aggregate prize, not a single-flow one. One
+flow at 665 is the chain's service time and no amount of concurrency
+changes it; eight flows could approach eight times only if every
+per-client serial stage were parallelised, and the sequence goroutine
+is one of four (sequence, transport writer, exchange path, client reader
+and receive sequence). Lanes parallelise the sequence at both ends and
+nothing else, so by Amdahl their aggregate prize is bounded near 1.5x
+until the transport is also parallel, which means several exchange
+connections per client, which the multi-route writer's shape allows and
+nothing today configures. Lanes as designed are the right idea for the
+part they cover and were done badly in two places this program found,
+inert on downloads because the reply key pins the lane (§27.5) and a
+buffer lock per Pack in the gate (§30.3); fixed, they are worth their
+share and not more. Ordering per flow rather than per destination is
+the right semantic and lanes approximate it by hashing; true per-flow
+sequences would be thousands per client and, because contracts and
+sessions are per sequence today, would multiply contract requests by the
+flow count, so it needs contracts decoupled from ordering domains first.
+Verdict: worth pursuing for aggregate throughput, in the order transport
+parallelism then lanes then per-flow domains; a dead end for the
+single-flow gap, and it should not be sold as one.
+
+### 31.4 Candidate two: the client's network stack
+
+The framing needs a correction before the assessment. Device apps do not
+terminate TCP in a userspace stack: on iOS, Android, macOS, Windows and
+Linux the app injects packets into the OS tun and the kernel's TCP owns
+the connection, exactly as wireguard-go does on the same platforms. The
+gVisor stack under `tun.go` is the client on headless hosts, proxies,
+the harness, and whatever the reporter's rig used as its client, which
+must be established because it decides whether their 4x contains this
+term at all. Where gVisor is the client, the cell says its TCP receive
+costs about four times its UDP receive per segment, and the path that
+avoids it is a kernel tun on those Linux hosts, letting the kernel own
+TCP and the client forward packets as the apps do: a multiple, up to
+the UDP-to-TCP ratio, for exactly those hosts, and zero for the apps.
+For every client, the lever that remains is the one WireGuard uses to
+be fast in userspace: fewer, larger packets through the tun boundary.
+Our inner MTU is 1,280 to 1,500 and it never touches a physical link
+inside the tunnel; only the carrier does, and Transfer already chunks
+Packs to the carrier. A 16 to 64 KB inner MTU divides every per-packet
+stage in 31.1, including the inner ACK chain, by ten to forty-five,
+leaving the per-byte passes as the bound at one to two gigabits per
+core. What would have to be true: the client OS's tun accepts the MTU
+(Linux and macOS utun do; iOS and Android limits need checking, and
+they may cap it), the inner TCP negotiates its MSS from it (it does, via
+the SYN through the tunnel), the provider emits large segments (one
+`DataPackets` change), the pool has a large class, Transfer carries a
+frame larger than an H3 datagram chunk (it does not today: it splits
+groups at frame boundaries, so datagram carriers need frame
+fragmentation or a stream carrier), and the loss cost per lost frame is
+acceptable on reliable carriers, which it is. Verdict: the inner MTU is
+the one candidate on this list that is a multiple on every client and
+on the single-flow number, and it is a change of moderate size with
+platform preconditions that must be verified before it is promised.
+
+### 31.5 Candidate three: the reliability layer
+
+The reporter's claim tested: "the provider terminates TCP and keeps no
+copy, so Transfer is the only retransmitter" is true of the terminating
+user NAT and is not inherent to a provider. Someone must hold a copy of
+unacknowledged bytes; the question is who. Today Transfer holds it in
+the resend queue. The NAT could hold it instead, as a real TCP sender
+toward the client with its own retransmission driven by the client's
+duplicate acknowledgements and SACK, and Transfer could carry data
+frames unreliably with reliability kept for control. Honest prize: not
+throughput. The per-byte passes are not in the reliability layer, and
+the per-Pack bookkeeping it adds is a few per cent; what it would buy is
+loss recovery at the inner TCP's cadence (one round trip, fast
+retransmit) instead of Transfer's timers with their 300 ms floor and
+8 s ceiling, and the removal of cross-flow head-of-line blocking (§20.2),
+which is a latency and robustness prize on lossy paths and nothing on a
+clean one. Honest size: a TCP sender's loss recovery inside the NAT,
+which is large, for a gain the throughput cells cannot see. Verdict: a
+dead end for the 4x on user-space providers, and it should stop being
+listed as a throughput candidate.
+
+The version of it that is not a dead end is the one WireGuard actually
+uses: keep the origin as the retransmitter by not terminating at all.
+A provider with kernel privileges can be a kernel NAT rather than a
+userspace one: inner packets go to a tun, the kernel masquerades to the
+origin, return packets come back on the tun and go down the tunnel.
+The provider then keeps no TCP state, `DataPackets` and the per-flow
+socket readers disappear, the origin holds the retransmission copy, the
+inner TCP is end to end, and Transfer's reliability is unnecessary for
+data because the endpoints have their own. That removes the provider's
+per-packet NAT work and two of its passes, and it removes the
+head-of-line and timer costs for free. Its size is a second provider
+mode for server-class hosts only, since phones cannot do it, and it
+does nothing about the exchange or the client. Verdict: a real
+candidate for server providers, worth perhaps a third of the chain's
+per-packet cost plus the loss-path gains, not a multiple by itself, and
+the natural companion of the inner-MTU change on such hosts.
+
+### 31.6 What fell out that was not on the list
+
+Two structural costs the decomposition surfaced that none of the three
+candidates names. The inner ACK chain: every second data segment sends
+a 60-byte ACK through the whole chain in reverse, about 28,000 per
+second at 665 Mb/s, each paying every per-packet stage; at high rates
+that is a large share of the chain's CPU, and it scales with the inner
+packet count, so the inner MTU removes it and nothing else does short of
+thinning ACKs at the client's tun, which is §22's tradeoff on the other
+side and carries the same recovery caveats. And the double encryption:
+the session cipher and TLS both encrypt every byte at every transport
+endpoint, six crypto passes where one per hop is inherent; dropping TLS
+where the session cipher is in place is a percentage, ten to twenty on
+CPU, and it is listed so it is not mistaken for a multiple. The relay
+itself is the third: a direct route removes two TLS terminations, a hop
+and its handoffs, and the previous programs found direct routes fail to
+connect on Android, which is where the relay is most expensive.
+
+### 31.7 Summary for the choice
+
+| Candidate | Prize on the single-flow gap | Prize on aggregate | Size of the change | Must be true |
+|---|---|---|---|---|
+| inner MTU of 16 to 64 KB | a multiple, bounded by the per-byte passes at one to two gigabits per core | the same | moderate: tun MTU, `DataPackets`, a pool class, Transfer frame fragmentation for datagram carriers | client OS tun limits; carrier framing; loss cost per frame |
+| kernel NAT provider mode | about a third of the chain's per-packet cost, plus loss-path gains | the same, plus no head-of-line | large, server hosts only | privileges; a second provider mode |
+| kernel tun for gVisor-hosted clients | up to about four times on those hosts, zero on apps | the same | moderate, Linux hosts only | which client the reporter measured |
+| transport parallelism then lanes | none | up to a few times, bounded by the client's chain | moderate, with §27.5 and §30.3 first | ordering rows L2 and L3 |
+| dropping Transfer reliability on user-space providers | none | none on clean paths | large | a dead end for throughput |
+| dropping the second crypto layer | ten to twenty per cent | the same | moderate | a percentage, listed so it is not sold as more |
+
+The first row is where a multiple lives on every client and on the
+number the reporter measured; the second and third are multiples for
+particular hosts; the fourth is aggregate only; the fifth is a dead end.
