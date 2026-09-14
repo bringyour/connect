@@ -761,6 +761,12 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		// borrow cap and the min as the guaranteed floor.
 		ResendQueueMaxByteCount: MemoryScaledByteCount(mib(2), kib(256)),
 		ResendQueueMinByteCount: kib(256),
+		// THROUGHPUTFIX §37.17 guard two. On by default: a selective
+		// acknowledgement earned by a route that has since died is not proof
+		// the receiver still holds the item, and the sender's mark otherwise
+		// stands for a minute. Off is the pre-guard behaviour and exists so a
+		// cell can measure the difference in one binary.
+		CarrierChangeVoidsSelectiveAck: true,
 		// zero keeps the constant window of every tree before THROUGHPUTFIX
 		// §32.5; a campaign sets the scale and the ceiling together
 		DeliverySizedWindowScale:            0,
@@ -1435,8 +1441,11 @@ type ClientSendRecoveryStatsSnapshot struct {
 	AckPendingResendPreemptCount uint64
 	// RTO resends of reliable-carried items deferred by one scaled RTT
 	// because the cumulative ack was still advancing (FLIGHTGATEFIX §13.5).
-	TimeoutResendDeferCount               uint64
-	CarrierChangeWriteCount               uint64
+	TimeoutResendDeferCount uint64
+	CarrierChangeWriteCount uint64
+	// selective acknowledgements voided because the route that earned them was
+	// retired (THROUGHPUTFIX §37.17 guard two)
+	CarrierChangeSelectiveAckVoidCount    uint64
 	SelectiveGapWriteCount                uint64
 	AckTailProbeWriteCount                uint64
 	CumulativeProbeWriteCount             uint64
@@ -1597,6 +1606,7 @@ type Client struct {
 	ackPendingResendPreemptCount           atomic.Uint64
 	timeoutResendDeferCount                atomic.Uint64
 	carrierChangeWriteCount                atomic.Uint64
+	carrierChangeSelectiveAckVoidCount     atomic.Uint64
 	ackTailProbeWriteCount                 atomic.Uint64
 	cumulativeProbeWriteCount              atomic.Uint64
 	recoveryWriteErrorCount                atomic.Uint64
@@ -1979,6 +1989,7 @@ func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
 		AckPendingResendPreemptCount:        self.ackPendingResendPreemptCount.Load(),
 		TimeoutResendDeferCount:             self.timeoutResendDeferCount.Load(),
 		CarrierChangeWriteCount:             self.carrierChangeWriteCount.Load(),
+		CarrierChangeSelectiveAckVoidCount:  self.carrierChangeSelectiveAckVoidCount.Load(),
 		SelectiveGapWriteCount:              self.selectiveGapWriteCount.Load(),
 		AckTailProbeWriteCount:              self.ackTailProbeWriteCount.Load(),
 		CumulativeProbeWriteCount:           self.cumulativeProbeWriteCount.Load(),
@@ -4528,6 +4539,9 @@ type SendBufferSettings struct {
 	// then the same binary with one field changed, which is what measuring a
 	// multiple on one cell needs.
 	DeliverySizedWindowScale int
+	// CarrierChangeVoidsSelectiveAck lets the retired-carrier recovery move
+	// selectively acknowledged items too (THROUGHPUTFIX §37.17 guard two).
+	CarrierChangeVoidsSelectiveAck bool
 	// The ceiling for the rule above. It is a share of a budget rather than a
 	// per-sequence constant: forty simultaneous downloaders at 16 MiB would
 	// retain over a gigabyte on one provider, so a constant that works in a
@@ -6730,8 +6744,25 @@ func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bo
 // front immediately so a parallel or replacement route can take ownership.
 //
 // Merely publishing another equal-priority route is not sufficient evidence:
-// the original route may still be draining normally. Selectively acknowledged
-// items are also excluded because the receiver already proved delivery.
+// the original route may still be draining normally.
+//
+// THROUGHPUTFIX §37.17's second guard, and a correction to what this function
+// used to assume. Selectively acknowledged items were excluded here because
+// "the receiver already proved delivery". It did not: a selective
+// acknowledgement says the receiver is holding the item out of order, and a
+// hold that must admit an earlier arrival removes a later held item without
+// telling anyone (§37.16). The sender's mark then survives for
+// SelectiveAckTimeout, sixty seconds, and every resend path skips a marked
+// item, so the transfer stalls on bytes both ends believe are in hand.
+//
+// A route death is exactly when that happens: the dead route's items are
+// resent, each is earlier than what the hold accumulated past the hole, and
+// each admission evicts. So a carrier change voids the selective
+// acknowledgements the dead route earned, and a minute becomes a round trip.
+// The cost is redundant: one window per route death at worst, and a duplicate
+// of an item the receiver still holds is discarded by message id. This is the
+// guard that can be deployed on providers alone, protecting clients that are
+// never updated.
 func (self *SendSequence) scheduleRetiredReliableCarrierRecovery(
 	currentTime time.Time,
 ) {
@@ -6739,8 +6770,10 @@ func (self *SendSequence) scheduleRetiredReliableCarrierRecovery(
 	if !ok {
 		return
 	}
+	voidSelectiveAcks := self.sendBufferSettings.CarrierChangeVoidsSelectiveAck
 	for _, item := range self.sendItems {
-		if item == nil || item.selectiveAcked ||
+		if item == nil ||
+			(item.selectiveAcked && !voidSelectiveAcks) ||
 			!item.reliableCarrierObserved || item.reliableRoute == nil ||
 			provider.transferRouteActive(item.reliableRoute) ||
 			!currentTime.Before(item.resendTime) {
@@ -6757,6 +6790,14 @@ func (self *SendSequence) scheduleRetiredReliableCarrierRecovery(
 		item.reliableCarrierObserved = false
 		item.reliableRoute = nil
 		item.hybridReliableCarrierObserved = false
+		if item.selectiveAcked {
+			// the lease is void: the route that earned the acknowledgement is
+			// gone, and the hold may have dropped the item to make room
+			item.selectiveAcked = false
+			if self.client != nil {
+				self.client.carrierChangeSelectiveAckVoidCount.Add(1)
+			}
+		}
 		item.resendTime = currentTime
 		item.recoveryKind = sendRecoveryCarrierChange
 		self.resendQueue.Add(item)
