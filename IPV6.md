@@ -67,7 +67,11 @@ A4. Direct only, plus a legacy standby. Pinned transports use direct dialers
 only (no extender, no SOCKS). A third, family-agnostic standby transport with
 the full dialer set and no intent runs only while neither pinned transport is
 connected, after a `StandbyDelay` (default 15s) from start or from the last
-pinned disconnect, and stops when a pinned transport connects. This covers
+pinned disconnect, and stops when a pinned transport connects. The delay is
+skipped when no pinned transport can connect soon: every configured pin is
+held (sleeping or idle by policy) or its last dial failed because its hostname
+does not resolve (NXDOMAIN or no record of its family); any other failure
+waits out the delay. This covers
 unprovisioned names, blocked DNS and censored networks, where the provider is
 then tagged legacy v4. `FamilyPlatformTransportGroup` (transport_family.go)
 owns the three transports; the SDK exposes their states through

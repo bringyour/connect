@@ -24,26 +24,24 @@ import (
 // the constant and says the rule is off whatever the path does; and an
 // acknowledgement carries neither of the fields this program added.
 //
-// The rule now ships on, so this row sets the policy rather than reading the
-// default: it is the rollback that is pinned here, and the rollback is one
-// SetWindowSizing call in the other direction. The row below owns the default.
+// The rule ships off (see the `init` in transfer.go for the measurement), so
+// the constant regime is the default, and this row sets the policy anyway
+// rather than reading the default: the constant regime has to be today's
+// behaviour whether a host takes it by default or reaches it by rolling the
+// rule back, and the row below owns which of the two ships.
 func TestTheWindowSizingSwitchOffIsTodaysBehaviour(t *testing.T) {
-	// Both facts in one place: what the tree ships today, and that the
-	// rollback still reaches exactly what it shipped before. Reading the
-	// default and asserting it was off is what made this row red the moment
-	// the rule landed, which §0.2 of THROUGHPUT-TESTGAPS is about — the
-	// workflow runs the whole package on every push, so one row red by
-	// construction masks every genuine failure in a full run.
-	if shipped := DefaultSendBufferSettings().WindowSizing; shipped != WindowSizingFromDelivery {
-		t.Errorf(
-			"the shipping window sizing policy is %d rather than from-delivery. If the rule was rolled back deliberately, this row's framing is what needs updating; if it changed by accident, the whole program's landing is off",
-			shipped,
-		)
-	}
-
+	// The default is pinned in one place, `TestTheShippingWindowSizingDefault`,
+	// rather than repeated here: a row that asserts the default and a row that
+	// asserts the property are two rows that go red for one reason, which
+	// §0.2 of THROUGHPUT-TESTGAPS is about — the workflow runs the whole
+	// package on every push, so one row red by construction masks every
+	// genuine failure in a full run.
+	//
 	// The rollback as a host performs it: one process-wide call, after which
-	// every settings constructor builds the constant regime.
+	// every settings constructor builds the constant regime. Turning the rule
+	// on first makes this the rollback path rather than the default path.
 	defer SetWindowSizing(DefaultWindowSizing())
+	SetWindowSizing(WindowSizingFromDelivery)
 	SetWindowSizing(WindowSizingConstant)
 	settings := DefaultSendBufferSettings()
 	if settings.WindowSizing != WindowSizingConstant {
@@ -107,20 +105,25 @@ func TestTheWindowSizingSwitchOffIsTodaysBehaviour(t *testing.T) {
 	}
 }
 
-// The switch, thrown. Every ceiling this program raises sits above the
-// transfer window, so with the rule off the raises are unreachable: the
-// constant window is `MemoryScaledByteCount(mib(2), kib(256))`, which is 2 MiB
-// at or above the reference budget whatever the host has, and the share a
-// sequence may draw is not consulted at all under the constant policy.
+// The switch, and which way it ships. Every ceiling this program raises sits
+// above the transfer window, so with the rule off the raises are unreachable:
+// the constant window is `MemoryScaledByteCount(mib(2), kib(256))`, which is
+// 2 MiB at or above the reference budget whatever the host has, and the share
+// a sequence may draw is not consulted at all under the constant policy.
 //
-// This row fails the day the default goes back to the constant without anyone
-// meaning it, which is how the switch came to be built, wired and never
-// thrown. It also pins the thing that makes the flip safe: zero still means
-// constant, so a stored policy keeps its meaning.
-func TestTheShippingWindowSizingDefaultIsTheRule(t *testing.T) {
-	if policy := DefaultWindowSizing(); policy != WindowSizingFromDelivery {
+// The rule shipped on at f8d564b and was measured end to end afterwards at a
+// 44 to 67 per cent loss on a same-datacenter path (the `init` in transfer.go
+// carries the numbers), so the default is the constant until the rule is
+// round-trip and loss aware. This row pins that decision in both directions:
+// the default is the constant, one call turns the rule on with every derived
+// quantity set, and one call turns it back off. It fails the day the default
+// moves without anyone meaning it, either way. It also pins the thing that
+// makes the flip safe: zero still means constant, so a stored policy keeps its
+// meaning.
+func TestTheShippingWindowSizingDefault(t *testing.T) {
+	if policy := DefaultWindowSizing(); policy != WindowSizingConstant {
 		t.Fatalf(
-			"the process ships with window sizing policy %d rather than the delivery-sized rule; every ceiling above the transfer window is inert while this is the constant",
+			"the process ships with window sizing policy %d rather than the constant window. If the rule was turned on deliberately, this row's framing and the init comment in transfer.go are what need updating; if it changed by accident, a rule measured at a 44 to 67 per cent loss on short paths is on in production",
 			policy,
 		)
 	}
@@ -129,20 +132,47 @@ func TestTheShippingWindowSizingDefaultIsTheRule(t *testing.T) {
 		t.Fatal("the zero policy is no longer the constant, so anything that stored a policy has silently changed meaning")
 	}
 
+	// what the settings constructors build by default: the constant, with
+	// nothing derived and no advertisement
+	shipped := DefaultSendBufferSettings()
+	if shipped.WindowSizing != WindowSizingConstant {
+		t.Fatalf("the shipping send settings carry policy %d", shipped.WindowSizing)
+	}
+	if shipped.DeliverySizedWindowScale != 0 ||
+		shipped.TargetGoodputByteRate != 0 ||
+		shipped.DeliverySizedWindowCeilingByteCount != 0 ||
+		shipped.ResendQueueBudget != nil {
+		t.Errorf(
+			"the shipping settings carry the rule's quantities: scale %d, target %d, ceiling %d, budget %v",
+			shipped.DeliverySizedWindowScale,
+			shipped.TargetGoodputByteRate,
+			shipped.DeliverySizedWindowCeilingByteCount,
+			shipped.ResendQueueBudget,
+		)
+	}
+	if DefaultReceiveBufferSettings().AdvertiseReceiveWindow {
+		t.Error("the shipping receiver advertises its capacity with the rule off, which is a wire change the constant policy is not meant to carry")
+	}
+
+	// The re-enable, as a host performs it: one process-wide call, after
+	// which every settings constructor builds the rule with the scale, the
+	// target and the advertisement derived.
+	defer SetWindowSizing(DefaultWindowSizing())
+	SetWindowSizing(WindowSizingFromDelivery)
 	settings := DefaultSendBufferSettings()
 	if settings.WindowSizing != WindowSizingFromDelivery {
-		t.Fatalf("the shipping send settings carry policy %d", settings.WindowSizing)
+		t.Fatalf("the re-enabled send settings carry policy %d", settings.WindowSizing)
 	}
 	if settings.DeliverySizedWindowScale != deliverySizedWindowScale {
 		t.Errorf(
-			"the shipping scale is %d rather than the derived %d",
+			"the re-enabled scale is %d rather than the derived %d",
 			settings.DeliverySizedWindowScale,
 			deliverySizedWindowScale,
 		)
 	}
 	if settings.TargetGoodputByteRate != targetGoodputByteRate {
 		t.Errorf(
-			"the shipping target is %d rather than the derived %d bytes per second",
+			"the re-enabled target is %d rather than the derived %d bytes per second",
 			settings.TargetGoodputByteRate,
 			targetGoodputByteRate,
 		)
@@ -152,12 +182,25 @@ func TestTheShippingWindowSizingDefaultIsTheRule(t *testing.T) {
 	// budget attached after apply read zero.
 	if settings.DeliverySizedWindowCeilingByteCount != 0 {
 		t.Errorf(
-			"the shipping settings froze a %d byte ceiling, which a budget attached after apply cannot correct",
+			"the re-enabled settings froze a %d byte ceiling, which a budget attached after apply cannot correct",
 			settings.DeliverySizedWindowCeilingByteCount,
 		)
 	}
 	if !DefaultReceiveBufferSettings().AdvertiseReceiveWindow {
-		t.Error("the shipping receiver does not advertise its capacity, so every sender stays blind and holds the initial bet")
+		t.Error("the re-enabled receiver does not advertise its capacity, so every sender stays blind and holds the initial bet")
+	}
+
+	// and back, so the switch is reversible in both directions by one call
+	SetWindowSizing(WindowSizingConstant)
+	if again := DefaultSendBufferSettings(); again.WindowSizing != WindowSizingConstant ||
+		again.DeliverySizedWindowScale != 0 {
+		t.Errorf(
+			"rolled back, the send settings carry policy %d with scale %d",
+			again.WindowSizing, again.DeliverySizedWindowScale,
+		)
+	}
+	if DefaultReceiveBufferSettings().AdvertiseReceiveWindow {
+		t.Error("rolled back, the receiver still advertises its capacity")
 	}
 }
 
@@ -182,9 +225,14 @@ func TestTheUnbudgetedProcessKeepsTodaysWindowUnderTheRule(t *testing.T) {
 	t.Cleanup(func() { SetMemoryBudget(restore) })
 	SetMemoryBudget(0)
 
+	// the rule, turned on the way a host turns it on; it ships off
+	restoreSizing := DefaultWindowSizing()
+	t.Cleanup(func() { SetWindowSizing(restoreSizing) })
+	SetWindowSizing(WindowSizingFromDelivery)
+
 	ruled := DefaultSendBufferSettings()
 	if ruled.WindowSizing != WindowSizingFromDelivery {
-		t.Fatalf("the shipping policy is %d rather than the rule", ruled.WindowSizing)
+		t.Fatalf("the policy is %d rather than the rule after SetWindowSizing", ruled.WindowSizing)
 	}
 	if ruled.ResendQueueBudget != nil {
 		t.Fatal("the rule attached a pool to a process with no budget, so the share is being read as a small number rather than as the absence of the surface")
@@ -264,6 +312,9 @@ func TestTheUnbudgetedProcessKeepsTodaysWindowUnderTheRule(t *testing.T) {
 // floor.
 func TestTheDerivedWindowQuantitiesAtTheShippedBudgets(t *testing.T) {
 	defer SetMemoryBudget(0)
+	// the rule, turned on the way a host turns it on; it ships off
+	defer SetWindowSizing(DefaultWindowSizing())
+	SetWindowSizing(WindowSizingFromDelivery)
 	budgets := []struct {
 		name            string
 		budgetByteCount ByteCount
@@ -843,6 +894,10 @@ func TestTheReliableAdmissionBoundReadsThePathNotTheResendFloor(t *testing.T) {
 func TestABudgetedProviderDrawsItsShareRatherThanTheConstant(t *testing.T) {
 	restore := MemoryBudget()
 	t.Cleanup(func() { SetMemoryBudget(restore) })
+	// the rule, turned on the way a host turns it on; it ships off
+	restoreSizing := DefaultWindowSizing()
+	t.Cleanup(func() { SetWindowSizing(restoreSizing) })
+	SetWindowSizing(WindowSizingFromDelivery)
 
 	constant := MemoryScaledByteCount(mib(2), kib(256))
 	for _, budget := range []ByteCount{mib(64), mib(256), gib(1), gib(8)} {

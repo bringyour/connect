@@ -32,14 +32,19 @@ func TestTheReceiveHoldAndThePeerWindowCrossAtFourFifthsOfTheSendersBudget(t *te
 	t.Cleanup(func() { SetMemoryBudget(restore) })
 
 	// The relationship above is the one between two scaled CONSTANTS, which is
-	// what shipped when §37.17 measured it. The window rule now ships on
-	// (`f8d564b`), and under it the hold is not a constant at all: it is the
-	// budget's eighth, and so is the send ceiling, which is why the crossing
-	// moves. The constant regime is still reachable by one SetWindowSizing
-	// call and is still what a rollback produces, so it is pinned here as
-	// itself rather than as the default; the rule's own relationship is
-	// asserted at the end, where it belongs.
-	t.Cleanup(func() { SetWindowSizing(DefaultWindowSizing()) })
+	// what shipped when §37.17 measured it. Under the window rule (`f8d564b`,
+	// shipped on there and since defaulted off, see the `init` in transfer.go)
+	// the hold is not a constant at all: it is the budget's eighth, and so is
+	// the send ceiling, which is why the crossing moves. The constant regime is
+	// set here explicitly rather than taken from the default, so the row pins
+	// it as itself whichever way the switch ships; the rule's own relationship
+	// is asserted at the end, where it belongs.
+	//
+	// Captured before the row moves it: a cleanup that reads the default at
+	// cleanup time restores whatever the row left, which leaked the rule into
+	// every later row the day the default went back to the constant
+	restoreSizing := DefaultWindowSizing()
+	t.Cleanup(func() { SetWindowSizing(restoreSizing) })
 	SetWindowSizing(WindowSizingConstant)
 
 	// a provider runs unbudgeted, so the sender's window is the unscaled
@@ -104,7 +109,7 @@ func TestTheReceiveHoldAndThePeerWindowCrossAtFourFifthsOfTheSendersBudget(t *te
 		)
 	}
 
-	// And the regime that ships. Under the rule the hold and the send ceiling
+	// And the rule, one call away. Under it the hold and the send ceiling
 	// are the same draw on the same budget — the eighth — so a host holds
 	// exactly what it may have outstanding, at every budget, and the 1.25
 	// ratio above is replaced by 1. The crossing against an unbudgeted peer

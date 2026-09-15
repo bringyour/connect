@@ -1,0 +1,32 @@
+SWEEPDE START 14:02:49
+sd1-w3-r1 bin=833aa9a1c5d5 goodput=168 client[cores=0.62 md5=a45ca5fd9dcd  rttMean=126 resends=0 stall=0
+sd1-w4-r1 bin=833aa9a1c5d5 goodput=208 client[cores=0.64 md5=a45ca5fd9dcd  rttMean=132 resends=0 stall=0
+sd1-w6-r1 bin=833aa9a1c5d5 goodput=198 client[cores=0.59 md5=a45ca5fd9dcd  rttMean=209 resends=0 stall=0
+sd1-w8-r1 bin=833aa9a1c5d5 goodput=196 client[cores=0.62 md5=a45ca5fd9dcd  rttMean=240 resends=0 stall=0
+sd1-w2-r1 bin=833aa9a1c5d5 goodput=125 client[cores=0.50 md5=a45ca5fd9dcd  rttMean=113 resends=0 stall=0
+sd8-w3-r1 bin=833aa9a1c5d5 goodput=181 client[cores=0.71 md5=a45ca5fd9dcd  rttMean=118 resends=0 stall=0
+sd8-w4-r1 bin=833aa9a1c5d5 goodput=216 client[cores=0.69 md5=a45ca5fd9dcd  rttMean=130 resends=0 stall=0
+sd8-w6-r1 bin=833aa9a1c5d5 goodput=8 client[cores=0.13 md5=a45ca5fd9dcd  rttMean=4027 resends=0 stall=0
+sd8-w8-r1 bin=833aa9a1c5d5 goodput=200 client[cores=0.72 md5=a45ca5fd9dcd  rttMean=277 resends=0 stall=0
+sd8-w2-r1 bin=833aa9a1c5d5 goodput=128 client[cores=0.54 md5=a45ca5fd9dcd  rttMean=110 resends=0 stall=0
+sd1-w4-r2 bin=833aa9a1c5d5 goodput=215 client[cores=0.65 md5=a45ca5fd9dcd  rttMean=131 resends=0 stall=0
+sd1-w6-r2 bin=833aa9a1c5d5 goodput=182 client[cores=0.59 md5=a45ca5fd9dcd  rttMean=212 resends=0 stall=0
+sd1-w8-r2 bin=833aa9a1c5d5 goodput=186 client[cores=0.65 md5=a45ca5fd9dcd  rttMean=226 resends=0 stall=0
+sd1-w2-r2 bin=833aa9a1c5d5 goodput=127 client[cores=0.50 md5=a45ca5fd9dcd  rttMean=113 resends=0 stall=0
+sd1-w3-r2 bin=833aa9a1c5d5 goodput=186 client[cores=0.67 md5=a45ca5fd9dcd  rttMean=114 resends=0 stall=0
+sd8-w4-r2 bin=833aa9a1c5d5 goodput=8 client[cores=0.12 md5=a45ca5fd9dcd  rttMean=3123 resends=0 stall=0
+sd8-w6-r2 bin=833aa9a1c5d5 goodput=200 client[cores=0.64 md5=a45ca5fd9dcd  rttMean=212 resends=0 stall=0
+sd8-w8-r2 bin=833aa9a1c5d5 goodput=205 client[cores=0.70 md5=a45ca5fd9dcd  rttMean=274 resends=0 stall=0
+sd8-w2-r2 bin=833aa9a1c5d5 goodput=126 client[cores=0.55 md5=a45ca5fd9dcd  rttMean=111 resends=0 stall=0
+sd8-w3-r2 bin=833aa9a1c5d5 goodput=180 client[cores=0.68 md5=a45ca5fd9dcd  rttMean=118 resends=0 stall=0
+sd1-w6-r3 bin=833aa9a1c5d5 goodput=199 client[cores=0.67 md5=a45ca5fd9dcd  rttMean=209 resends=0 stall=0
+sd1-w8-r3 bin=833aa9a1c5d5 goodput=194 client[cores=0.62 md5=a45ca5fd9dcd  rttMean=232 resends=0 stall=0
+sd1-w2-r3 bin=833aa9a1c5d5 goodput=128 client[cores=0.55 md5=a45ca5fd9dcd  rttMean=111 resends=0 stall=0
+sd1-w3-r3 bin=833aa9a1c5d5 goodput=178 client[cores=0.69 md5=a45ca5fd9dcd  rttMean=118 resends=0 stall=0
+sd1-w4-r3 bin=833aa9a1c5d5 goodput=219 client[cores=0.67 md5=a45ca5fd9dcd  rttMean=128 resends=0 stall=0
+sd8-w6-r3 bin=833aa9a1c5d5 goodput=162 client[cores=0.59 md5=a45ca5fd9dcd  rttMean=215 resends=0 stall=0
+sd8-w8-r3 bin=833aa9a1c5d5 goodput=204 client[cores=0.69 md5=a45ca5fd9dcd  rttMean=278 resends=0 stall=0
+sd8-w2-r3 bin=833aa9a1c5d5 goodput=126 client[cores=0.52 md5=a45ca5fd9dcd  rttMean=114 resends=0 stall=0
+sd8-w3-r3 bin=833aa9a1c5d5 goodput=39 client[cores=0.19 md5=a45ca5fd9dcd  rttMean=191 resends=0 stall=0
+sd8-w4-r3 bin=833aa9a1c5d5 goodput=3 client[cores=0.06 md5=a45ca5fd9dcd  rttMean=862 resends=0 stall=0
+SWEEPDE DONE 14:46:10

@@ -1439,6 +1439,9 @@ func (self *ClientStrategy) WsDialContextWithDialer(ctx context.Context, url str
 		}
 
 		dialer.Update(handleCtx, err)
+		// a pinned platform transport classifies the typed error of each
+		// attempt here; a failed parallelEval flattens it to "Timeout."
+		observeDialAttempt(handleCtx, err)
 
 		return &evalResult{
 			wsConn: wsConn,

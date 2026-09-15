@@ -1,0 +1,10 @@
+DEG2 START 13:02:52
+dg2-A1-r1 bin=62489e7802cd goodput=131 client[cores=0.48 provider[cores=0.19 md5=99de16bbe8d5 
+dg2-R1-r1 bin=833aa9a1c5d5 goodput=196 client[cores=0.65 provider[cores=0.22 md5=fb0afec7e5c9 
+dg2-A8-r1 bin=62489e7802cd goodput=128 client[cores=0.55 provider[cores=0.17 md5=99de16bbe8d5 
+dg2-R8-r1 bin=833aa9a1c5d5 goodput=67 client[cores=0.33 provider[cores=0.20 md5=fb0afec7e5c9 
+dg2-A1-r2 bin=62489e7802cd goodput=2 client[cores=0.02 provider[cores=0.03 md5=99de16bbe8d5 
+dg2-R1-r2 bin=833aa9a1c5d5 goodput=201 client[cores=0.63 provider[cores=0.26 md5=fb0afec7e5c9 
+dg2-A8-r2 bin=62489e7802cd goodput=125 client[cores=0.52 provider[cores=0.17 md5=99de16bbe8d5 
+dg2-R8-r2 bin=833aa9a1c5d5 goodput=102 client[cores=0.36 provider[cores=0.19 md5=fb0afec7e5c9 
+DEG2 DONE 13:14:18

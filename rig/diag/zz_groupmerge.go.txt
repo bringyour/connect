@@ -1,0 +1,183 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): URNETWORK_DIAG_GROUP_MERGE=1 merges
+// already-queued single-chunk logical groups (e.g. one forwarded TCP ACK each)
+// into one H1 wire Pack, so the relay sees fewer websocket messages. Only the
+// H1-only, non-flow-isolated policy is touched; every other path is unchanged.
+
+import (
+	"os"
+	"sync/atomic"
+
+	"github.com/urnetwork/connect/protocol"
+)
+
+var diagGroupMerge = os.Getenv("URNETWORK_DIAG_GROUP_MERGE") == "1"
+
+// diagMergeItems counts wire items produced by the merge path; diagMergePacks
+// counts the original packs merged into them.
+var diagMergeItems, diagMergePacks atomic.Uint64
+
+// diagProcessMergedLogicalGroup is called from SendSequence.Run in place of
+// processLogicalGroupChunk when the merge gate is on. It handles the pack only
+// when the whole logical group would be materialized as ONE wire Pack (the
+// `groupCompletion == nil && end == len(Frames)` branch of
+// processLogicalGroupChunk) and at least one compatible already-queued group
+// can be merged in. In every other case it returns handled=false with no
+// state changed beyond what processLogicalGroupChunk itself would do on entry
+// (writer open / chunk-limit pinning), so the caller falls through to the
+// unchanged code. Candidate packs it could not merge are pushed back to the
+// scheduler front, exactly as the ready-drain loop does.
+//
+// Completion: each merged pack's own ackRecord / noAckRecord goes into the
+// sendAckSet / noAckSendSet of the single send item, so every AckCallback,
+// NoAck observer and lifecycle observer fires exactly once, when that one wire
+// item is acknowledged / written / failed. No sendGroupCompletion is created:
+// a merged group is a single chunk, the same as the unmerged one-chunk case.
+// Contract: one debit for the combined serialized byte count, admitted through
+// the same updateContractOutcome the unmerged path uses.
+func (self *SendSequence) diagProcessMergedLogicalGroup(
+	sendPack *SendPack,
+	scheduler *sendPackScheduler,
+	flightPolicy transferFlightPolicySnapshot,
+	packsClosed *bool,
+	processingPacks []*SendPack,
+) (handled bool, success bool) {
+	if !flightPolicy.h1Only || flightPolicy.flowIsolation {
+		return false, false
+	}
+	// Same entry prelude as processLogicalGroupChunk (idempotent).
+	if self.contractMultiRouteWriter == nil && self.sendBuffer != nil {
+		self.openContractMultiRouteWriter()
+		flightPolicy = self.transferFlightPolicy()
+		if !flightPolicy.h1Only || flightPolicy.flowIsolation {
+			return false, false
+		}
+	}
+	self.pinLogicalGroupChunkLimits(sendPack, flightPolicy)
+	if sendPack.groupCompletion != nil || sendPack.groupFrameIndex != 0 {
+		return false, false
+	}
+	groupMaxFrames, groupMaxMessageByteCount := sendPack.groupChunkLimits()
+	end := nextSendGroupChunkEndWithLimits(
+		sendPack.Frames,
+		0,
+		groupMaxFrames,
+		groupMaxMessageByteCount,
+	)
+	if end != len(sendPack.Frames) {
+		// Partial chunk: the group needs a sendGroupCompletion; leave it alone.
+		return false, false
+	}
+
+	maxFrames, maxMessageByteCount := self.readyDrainChunkLimits(flightPolicy)
+	frameCount := len(sendPack.Frames)
+	messageByteCount := MessageByteCount(sendPack.Frames)
+	if maxFrames < frameCount || maxMessageByteCount < messageByteCount {
+		return false, false
+	}
+	if len(processingPacks) < maxFrames {
+		maxFrames = len(processingPacks)
+	}
+
+	var sendPackValues [sendPackH1GroupMaxFrames]*SendPack
+	sendPacks := sendPackValues[:0]
+	sendPacks = append(sendPacks, sendPack)
+
+	// Drain only what is already queued; never wait (a sparse ACK keeps its
+	// latency). Mirrors the ready-drain loop's take order: scheduler FIFO
+	// first, then a non-blocking receive from the ingress channel.
+	for len(sendPacks) < len(sendPackValues) && frameCount < maxFrames {
+		nextSendPack := scheduler.TakeFifoEligible(func(*SendPack) bool {
+			return true
+		})
+		if nextSendPack == nil && !*packsClosed {
+			select {
+			case queuedSendPack, ok := <-self.packs:
+				if !ok {
+					*packsClosed = true
+				} else {
+					nextSendPack = queuedSendPack
+				}
+			default:
+			}
+		}
+		if nextSendPack == nil {
+			break
+		}
+		processingPacks[len(sendPacks)] = nextSendPack
+		nextFrameCount := len(nextSendPack.frameList())
+		nextMessageByteCount := messageByteCount + nextSendPack.serializedMessageByteCount()
+		contractSafe := self.client.ContractManager().SendNoContract(self.destination) ||
+			(self.sendContract != nil &&
+				self.sendContractAcked &&
+				0 < len(self.sendItems) &&
+				self.sendContract.canUpdate(nextMessageByteCount))
+		compatible := nextSendPack.logicalGroup &&
+			nextSendPack.groupFrameIndex == 0 &&
+			nextSendPack.groupCompletion == nil &&
+			0 < nextFrameCount &&
+			sendPack.Ack == nextSendPack.Ack &&
+			sendPack.ForceUnwrapped == nextSendPack.ForceUnwrapped &&
+			frameCount+nextFrameCount <= maxFrames &&
+			nextMessageByteCount <= maxMessageByteCount &&
+			contractSafe
+		if !compatible {
+			scheduler.PushFront(nextSendPack)
+			processingPacks[len(sendPacks)] = nil
+			break
+		}
+		sendPacks = append(sendPacks, nextSendPack)
+		frameCount += nextFrameCount
+		messageByteCount = nextMessageByteCount
+	}
+
+	if len(sendPacks) == 1 {
+		// Nothing to merge: the unchanged single-group code handles this pack.
+		return false, false
+	}
+
+	// Pin the merged packs' chunk limits too, so a contract failure below
+	// disposes each one with the same bounds the unmerged path would use.
+	for _, mergedSendPack := range sendPacks[1:] {
+		self.pinLogicalGroupChunkLimits(mergedSendPack, flightPolicy)
+	}
+
+	contractUpdated, contractErr := self.updateContractOutcome(messageByteCount)
+	if !contractUpdated {
+		err := self.classifyContractCreationFailure(contractErr)
+		for packIndex, mergedSendPack := range sendPacks {
+			mergedSendPack.disposeUnsentGroup(err)
+			processingPacks[packIndex] = nil
+		}
+		return true, false
+	}
+
+	var frameValues [sendPackH1GroupMaxFrames]*protocol.Frame
+	frames := frameValues[:0]
+	var acks sendAckSet
+	var noAckSends noAckSendSet
+	for _, mergedSendPack := range sendPacks {
+		frames = append(frames, mergedSendPack.Frames...)
+		acks.add(mergedSendPack.ackRecord())
+		noAckSends.add(mergedSendPack.noAckRecord())
+	}
+	// A merged Pack spans flows; like the ready-drain path, it carries no exact
+	// flow identity.
+	self.sendRecordsForSchedulingKey(
+		frames,
+		acks,
+		noAckSends,
+		sendPack.Ack,
+		sendPack.ForceUnwrapped,
+		sendSchedulingKey{},
+	)
+	diagMergeItems.Add(1)
+	diagMergePacks.Add(uint64(len(sendPacks)))
+	for packIndex, mergedSendPack := range sendPacks {
+		mergedSendPack.groupFrameIndex = len(mergedSendPack.Frames)
+		mergedSendPack.releaseRaw()
+		processingPacks[packIndex] = nil
+	}
+	return true, true
+}

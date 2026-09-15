@@ -1,0 +1,59 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): URNETWORK_WDIAG=1 logs, once per second per destination with traffic, the send window
+// estimate (rule window/reason/ceiling/rtt), writes and resends of every SendBuffer in the process.
+
+import (
+	"os"
+	"sync"
+	"time"
+)
+
+var wdiagEnabled = os.Getenv("URNETWORK_WDIAG") == "1"
+var wdiagMu sync.Mutex
+var wdiagBuffers []*SendBuffer
+
+func wdiagRegister(b *SendBuffer) {
+	if !wdiagEnabled {
+		return
+	}
+	wdiagMu.Lock()
+	wdiagBuffers = append(wdiagBuffers, b)
+	wdiagMu.Unlock()
+}
+
+func init() {
+	if !wdiagEnabled {
+		return
+	}
+	go func() {
+		log := DefaultLogger()
+		last := map[Id]uint64{}
+		for {
+			time.Sleep(time.Second)
+			wdiagMu.Lock()
+			buffers := append([]*SendBuffer(nil), wdiagBuffers...)
+			wdiagMu.Unlock()
+			for _, b := range buffers {
+				b.mutex.Lock()
+				dests := map[Id]bool{}
+				for id := range b.sendSequences {
+					dests[id.Destination] = true
+				}
+				b.mutex.Unlock()
+				for d := range dests {
+					st := b.DestinationSendStats(d)
+					w := st.WriteCount
+					if w-last[d] < 200 {
+						last[d] = w
+						continue
+					}
+					e := st.SendWindow
+					log.Infof("WDIAG dest=%s writes/s=%d resends/s=%d window=%dK sized=%v reason=%q delivered=%dK interval=%dms rtt=%dms samples=%d floor=%dK ceiling=%dK obtainable=%dK targetBound=%v rttMean=%dms rttMin=%dms unix=%d\n",
+						d, w-last[d], st.ResendWriteCount, e.Window/1024, e.Sized, e.Reason, e.DeliveredByteCount/1024, e.Interval.Milliseconds(), e.RoundTrip.Milliseconds(), e.SampleCount, e.Floor/1024, e.Ceiling/1024, e.Obtainable/1024, e.TargetBound, st.Rtt.Mean.Milliseconds(), st.Rtt.Min.Milliseconds(), time.Now().Unix())
+					last[d] = w
+				}
+			}
+		}
+	}()
+}

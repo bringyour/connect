@@ -1,0 +1,28 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed)
+
+import (
+	"sync/atomic"
+	"time"
+)
+
+var xdiagH1Writes, xdiagH1Reads, xdiagH1FlushErrors, xdiagH1WritesLarge, xdiagH1ReadsLarge, xdiagHandoffDrops, xdiagUnwrapErrs, xdiagRqDrops, xdiagNotReceived, xdiagNilSeq, xdiagRunIn, xdiagRunInLarge, xdiagPackReach, xdiagPackOk, xdiagContractMissing atomic.Uint64
+
+func init() {
+	if !tdiagEnabled {
+		return
+	}
+	go func() {
+		log := DefaultLogger()
+		var lw, lr, lf, lwl, lrl, lhd uint64
+		for {
+			time.Sleep(time.Second)
+			w, r, f, wl, rl, hd := xdiagH1Writes.Load(), xdiagH1Reads.Load(), xdiagH1FlushErrors.Load(), xdiagH1WritesLarge.Load(), xdiagH1ReadsLarge.Load(), xdiagHandoffDrops.Load()
+			if w != lw || r != lr {
+				log.Infof("XDIAG h1 writes=%d reads=%d flushErrors=%d writesLarge=%d readsLarge=%d handoffDrops=%d unwrapErrs=%d rqDrops=%d notReceived=%d nilSeq=%d runIn=%d runInLarge=%d packReach=%d packOk=%d contractMissing=%d unix=%d\n", w-lw, r-lr, f-lf, wl-lwl, rl-lrl, hd-lhd, xdiagUnwrapErrs.Swap(0), xdiagRqDrops.Swap(0), xdiagNotReceived.Swap(0), xdiagNilSeq.Swap(0), xdiagRunIn.Swap(0), xdiagRunInLarge.Swap(0), xdiagPackReach.Swap(0), xdiagPackOk.Swap(0), xdiagContractMissing.Swap(0), time.Now().Unix())
+			}
+			lw, lr, lf, lwl, lrl, lhd = w, r, f, wl, rl, hd
+		}
+	}()
+}

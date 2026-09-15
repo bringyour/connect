@@ -1,0 +1,47 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): URNETWORK_DIAG_SACK_SORT=1 writes each ack snapshot's selective acks in ascending
+// sequence order instead of map order.
+
+import (
+	"cmp"
+	"os"
+	"slices"
+	"strconv"
+	"sync/atomic"
+	"time"
+)
+
+var diagSackSort = os.Getenv("URNETWORK_DIAG_SACK_SORT") == "1"
+
+var _ = cmp.Compare[int]
+var _ = slices.SortFunc[[]int]
+
+func diagCompareSeq(a, b uint64) int { return cmp.Compare(a, b) }
+
+// URNETWORK_DIAG_GAP_ACK_NOW=1 ends the ack compression wait at once when a gap is proven to the sender (3 selective acks
+// pending) or the head advances while selective acks are pending (a hole filled).
+var diagGapAckNow = os.Getenv("URNETWORK_DIAG_GAP_ACK_NOW") == "1"
+
+var ldiagGapWrites atomic.Uint64
+
+func (self *sequenceAckWindow) diagGapFire() {
+	self.diagGapFired = true
+	select {
+	case self.diagGapNotify <- struct{}{}:
+	default:
+	}
+}
+
+// URNETWORK_DIAG_H1_GROUP_LINGER_US: when an H1-only sequence drains a ready group and no further Pack is queued, wait up
+// to this long for one more Pack (per slot) so sparse upstream ACK frames share one websocket message.
+var diagH1GroupLinger = func() time.Duration {
+	v, _ := strconv.Atoi(os.Getenv("URNETWORK_DIAG_H1_GROUP_LINGER_US"))
+	return time.Duration(v) * time.Microsecond
+}()
+
+var diagH1LingerHits, diagH1LingerMiss atomic.Uint64
+
+func policyH1OnlyForDiag(p transferFlightPolicySnapshot) bool { return p.h1Only }
+
+var diagPolH1, diagPolIso, diagPolOther, diagGroups, diagGroupPacks atomic.Uint64
