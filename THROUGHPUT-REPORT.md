@@ -1815,8 +1815,8 @@ settings. The advertised hold is what `receiveWindowAdvertisement`
 
 | Platform | T | M | Send pool | Send initial (`ResendQueueMax`) | Receive pool | `ReceiveQueueMax` | **Advertised hold** |
 |---|---|---|---|---|---|---|---|
-| iOS | 20 MiB | 32 MiB | 5.571 MiB | 512 KiB | 1.5 MiB | **768 KiB** | **768 KiB** |
-| Android | 28 | 40 | 7.800 | 597 KiB | 1.82 | **896 KiB** | **896 KiB** |
+| iOS | 20 MiB | 32 MiB | 5.571 MiB | 512 KiB | 1.5 MiB | **2 MiB** (pool ceiling; was 768 KiB) | **1.5 MiB** (was 768 KiB) |
+| Android | 28 | 40 | 7.800 | 597 KiB | 1.82 | **2.33 MiB** (was 896 KiB) | **1.82 MiB** (was 896 KiB) |
 | Desktop, under 7 GiB or probe failed | 128 | 384 | 35.66 | 2 MiB | 47.54 | 48 | 47.54 |
 | Desktop, over 7 GiB | 256 | 768 | 71.31 | 2 | 95.09 | 96 | 95.09 |
 | Provider, 8 GiB host, one provider — its *provider* pair | 2,185 | 6,554 | 93.64 | 2 | 124.86 | 819.25 | 124.86 |
@@ -1835,8 +1835,8 @@ on, rate = `binder × 8 × goodputFactor / 0.1 s` with `goodputFactor = 0.845`
 
 | Platform | H1 binder | **Rate at 100 ms, H1** | **What binds** | H3 stream window | Rate if H3 selected |
 |---|---|---|---|---|---|
-| iOS | 768 KiB — its own advertised hold | **53 Mb/s** | the mobile receive cap, `mobileReceiveQueueMaxByteCount` = 768 KiB (`sdk/mobile_memory_policy.go:177`, applied at `:372-374`) | 1.875 MiB | 53 — the hold still binds |
-| Android | 896 KiB — its own advertised hold | **62 Mb/s** | the same cap, scaled 28/24 | 2.625 MiB | 62 — the hold still binds |
+| iOS | 1.5 MiB — its attached receive pool, now advertised whole | **106 Mb/s** (was 53) | its own receive pool; the 768 KiB cap no longer undercuts it (sdk `bbb26c8`) | 1.875 MiB | 106 — the hold still binds |
+| Android | 1.82 MiB — its attached receive pool (1.75 with providing on) | **129 Mb/s** (was 62; 124 providing) | its own receive pool | 2.625 MiB | 129 — the hold still binds |
 | Desktop, under 7 GiB | 14.1 MiB (clamp); hold 47.5, provider pool 93.6 | **1,000 Mb/s** | target clamp | 12 MiB | 851 — the H3 window binds |
 | Desktop, over 7 GiB | 14.1 MiB (clamp); hold 95.1 | **1,000 Mb/s** | target clamp | 24 MiB | 1,000 |
 | Provider, 8 GiB host | 14.1 MiB (clamp); send pool 93.6 | **1,000 Mb/s** | target clamp | 205 MiB | 1,000 |
@@ -1854,16 +1854,19 @@ unit-tested but has not been run against a phone.
 
 **To scale the table to another path**: halving the round trip doubles the
 rate wherever a window binds and does nothing where the clamp binds. At
-50 ms iOS reads 106 and the proxy 354; at 200 ms every window row halves —
-iOS 27, Android 31 — and the desktop and provider rows stay on the clamp
+50 ms iOS reads 212 and the proxy 354; at 200 ms every window row halves —
+iOS 53, Android 65 — and the desktop and provider rows stay on the clamp
 down to about 14 MiB of window, which at 200 ms is 28.2 MiB and still under
 every desktop hold, so they stay at 1,000 there too.
 
 #### The phone rows, and the cap that sets them
 
-**The phones are bound by a receive-side constant of the 24 MiB mobile
-profile, on both transports, and neither their target nor their pool is the
-lever.** `mobileReceiveQueueMaxByteCount` is 768 KiB
+*Corrected in place, sdk `bbb26c8`: the cap below no longer undercuts the
+attached pool, so the phones now advertise the pool itself — 1.5 MiB on iOS,
+1.82 MiB on Android — and the rows above read 106 and 129. The paragraph is
+kept because it is the diagnosis the fix answers.* **The phones were bound by
+a receive-side constant of the 24 MiB mobile profile, on both transports, and
+neither their target nor their pool was the lever.** `mobileReceiveQueueMaxByteCount` is 768 KiB
 (`sdk/mobile_memory_policy.go:177`). The mobile policy applies it as
 `ReceiveQueueMaxByteCount = min(current, 768 KiB × max(1, T/24 MiB))`
 (`:372-374`), after the rule's own `ApplyWindowSizing` has set that field to
@@ -1873,6 +1876,23 @@ T = 20 the cap is the unscaled 768 KiB; at 28 it is 896 KiB. That is why the
 Android row is 17% above iOS and not 40%: the cap scales with the target only
 above 24 MiB, so the first four of Android's eight extra mebibytes buy the
 hold nothing.
+
+**What the fix costs, stated because the new figure is not free.** The pool
+and the advertisement count different units. On mobile the receive pool
+charges *retained* bytes — the carrier root, the frame roots and a 1 KiB owner,
+about 5 KiB per MTU pack under `ReceiveQueueRetainedByteAccounting` — while the
+advertisement counts *payload*. So a 1.5 MiB pool holds roughly 450 KiB of
+out-of-order payload, and advertising the pool overstates the phone's payload
+capacity about threefold; the old 768 KiB constant was already above it.
+Memory is safe, as measured on device: admission stops at the pool, and the
+before-and-after blocks show the client's quiet p95 at 20.34 and 19.64 MiB
+with no sample above 28. The cost lands after a loss, when the hold fills
+before the advertised figure and the hold policy evicts or refuses the rest,
+which the eviction notice turns into resends — a bandwidth cost under loss,
+larger than before. The honest fix is to advertise the pool's payload
+capacity rather than its retained total, and that is a follow-up; the rows
+above are the loss-free figures. *Derived; refuted by a lossy-path cell
+reading the phone's delivered rate below the 53 and 62 it replaced.*
 
 This also settles, from source rather than by reading, what the 512 KiB
 mobile send cap does. `ResendQueueMaxByteCount` is **the
