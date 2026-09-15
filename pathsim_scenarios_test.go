@@ -275,17 +275,43 @@ func TestPathsimS3WindowRuleRegimes(t *testing.T) {
 // The queue here is 200 messages of 16 KiB frames, so that 2 MiB (126
 // items) fits and 4 and 8 MiB do not. Produced (fast tier, 1 ms, 1 Gb/s):
 //
-//	1 lane:  drops 0, 457, 1092; resends 0, 457, 1092;
-//	         993.5, 183.0, 129.5 Mb/s steady
-//	8 lanes: drops 0, 42, 641; resends 0, 64, 827;
-//	         993.5, 993.5, 993.5 Mb/s steady
+//	1 lane:  drops 0, 1664, 1623 of 15211, 14426, 2789 writes
+//	         (0, 11.5%, 58.2%); resends the same; 993.5, 938.1, 142.0 Mb/s
+//	8 lanes: drops 0, 42, 1078 of 15204, 15323, 15589 writes
+//	         (0, 0.3%, 6.9%); resends 0, 55, 1140; 993.5, 993.5, 985.8 Mb/s
 //
-// Drops and resends rise with the window on both flow counts, as on the
-// rig. The single flow collapses harder than the rig's (0.18x against
-// 0.43x): a tail-drop burst of consecutive holes is recovered a few gap
-// resends per round here, and the rig's kernel TCP above the transfer
-// layer kept its own pipe fuller across those rounds. The eight lanes hold
-// the link because each lane's holes stall only its share.
+// What the mechanism claims is that the queue overflows more often the
+// more bytes are in flight, and that each overflow costs a resend: the drop
+// and resend fractions of what the sender wrote rise with the window on
+// both flow counts. The absolute counts rise with it only while the
+// offered load is comparable, which the eight lanes' is (they hold the link
+// at every window) and the single lane's is not: at 8 MiB it collapses to
+// 0.14 of its rate and writes a fifth as many packs, so its 1623 drops are
+// more than half of everything it wrote and still fewer than the 1664 of
+// the 4 MiB arm. The fractions are asserted on both flow counts, the counts
+// on the eight lanes.
+//
+// The single flow at 4 MiB keeps 0.94 of its 2 MiB rate here: every one of
+// its 1664 drops cost exactly one selective-gap resend, no timeout and no
+// probe, because the receiver writes its selective acks sorted and wakes
+// once per interval on a proof or a fill (d07810dc), so the sender's
+// scoreboard recovers each tail-drop burst in one round while the link
+// stays full. Before that budget (1317530a's unbounded wake) the same arm
+// read 0.18 with 180 probes, with the wake disabled it reads 0.19, and the
+// rig's kernel TCP read 0.43. So the collapse is asserted where it still
+// holds, at 8 MiB (0.14 here; 0.13 before the budget), and at 4 MiB only
+// that the larger window does not pay.
+//
+// The eight-lane 8 MiB arm carries a 9 s head-of-line tail (`STALLED`): a
+// run of sixteen consecutive holes on one lane whose gap resends were
+// themselves dropped by the overflowing queue is left to the timeout path,
+// which recovers one hole per scaled round trip (the 300 ms floor) and
+// then, under the F12 deferral whose wait backs off by the item's send
+// count (FLIGHTGATEFIX §24.3), holds the last six for 4.8 s. The same arm
+// on the tree before the budget reads an 11 s tail with the gap wake or
+// acknowledgement compression turned off and 330 ms with the unbounded
+// wake, so which arm meets it is the drop pattern's accident rather than
+// the receiver's cadence; it is recorded here, not asserted.
 func TestPathsimS4RelayQueueOverflowVersusWindow(t *testing.T) {
 	offer := pathOffer(2*time.Second, 8*time.Second)
 	const queueMessages = 200
@@ -306,16 +332,23 @@ func TestPathsimS4RelayQueueOverflowVersusWindow(t *testing.T) {
 	}
 	reportPathScenario(t, "S4 relay queue overflow versus window", results)
 
+	// the share of the sender's writes that the relay dropped, or that were
+	// resends: the overflow and recovery cost per pack offered to the queue
+	share := func(count int64, result pathResult) float64 {
+		return float64(count) / float64(max(uint64(1), result.writeCount))
+	}
 	for lane := 0; lane < 2; lane++ {
 		arms := results[3*lane : 3*lane+3]
 		for i := 1; i < len(arms); i++ {
-			if arms[i].forwardDrops() <= arms[i-1].forwardDrops() {
-				t.Errorf("S4: %s dropped %d at the relay, not above %s at %d; a bigger window is a bigger burst into the queue",
-					arms[i].arm, arms[i].forwardDrops(), arms[i-1].arm, arms[i-1].forwardDrops())
+			if share(arms[i].forwardDrops(), arms[i]) <= share(arms[i-1].forwardDrops(), arms[i-1]) {
+				t.Errorf("S4: %s dropped %d of %d writes at the relay, not a larger share than %s at %d of %d; the queue overflows more often the more is in flight",
+					arms[i].arm, arms[i].forwardDrops(), arms[i].writeCount,
+					arms[i-1].arm, arms[i-1].forwardDrops(), arms[i-1].writeCount)
 			}
-			if arms[i].resendCount <= arms[i-1].resendCount {
-				t.Errorf("S4: %s resent %d, not above %s at %d",
-					arms[i].arm, arms[i].resendCount, arms[i-1].arm, arms[i-1].resendCount)
+			if share(int64(arms[i].resendCount), arms[i]) <= share(int64(arms[i-1].resendCount), arms[i-1]) {
+				t.Errorf("S4: %s resent %d of %d writes, not a larger share than %s at %d of %d; every overflow costs a resend",
+					arms[i].arm, arms[i].resendCount, arms[i].writeCount,
+					arms[i-1].arm, arms[i-1].resendCount, arms[i-1].writeCount)
 			}
 			if 1.01*arms[i-1].steadyGoodput() < arms[i].steadyGoodput() {
 				t.Errorf("S4: %s read %.1f Mb/s above %s at %.1f; a larger window does not pay on this path",
@@ -323,8 +356,21 @@ func TestPathsimS4RelayQueueOverflowVersusWindow(t *testing.T) {
 			}
 		}
 	}
-	if ratio := pathRatio(results[1], results[0]); 0.5 < ratio {
-		t.Errorf("S4: one lane at 4 MiB kept %.2f of its 2 MiB rate, above 0.5; produced 0.18, the rig 0.43", ratio)
+	// the eight lanes offer the same load at every window, so their counts
+	// rise with it as well as their shares
+	eightLanes := results[3:6]
+	for i := 1; i < len(eightLanes); i++ {
+		if eightLanes[i].forwardDrops() <= eightLanes[i-1].forwardDrops() {
+			t.Errorf("S4: %s dropped %d at the relay, not above %s at %d; a bigger window is a bigger burst into the queue",
+				eightLanes[i].arm, eightLanes[i].forwardDrops(), eightLanes[i-1].arm, eightLanes[i-1].forwardDrops())
+		}
+		if eightLanes[i].resendCount <= eightLanes[i-1].resendCount {
+			t.Errorf("S4: %s resent %d, not above %s at %d",
+				eightLanes[i].arm, eightLanes[i].resendCount, eightLanes[i-1].arm, eightLanes[i-1].resendCount)
+		}
+	}
+	if ratio := pathRatio(results[2], results[0]); 0.5 < ratio {
+		t.Errorf("S4: one lane at 8 MiB kept %.2f of its 2 MiB rate, above 0.5; produced 0.14, and 0.13 before the wake budget", ratio)
 	}
 }
 
