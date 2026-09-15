@@ -6313,7 +6313,10 @@ which is how the numbers in §38.3 are produced. It binds only on short
 paths, where a window at the full share would be permission a path
 cannot use, and even there permission is not occupancy. So the target
 stays as a statement of intent and a reporting reference, the record
-says plainly that it never binds at 200 to 400 ms, and the substance of
+says plainly that it never binds at 200 to 400 ms — corrected by §53.3,
+which measures the clamp binding at a 256 MiB process budget with the
+rule on, the first configuration in which the share is large enough to
+reach it — and the substance of
 the surface at the design point is the budget: how large it is, how it
 is divided across layers and clients, and how many copies it has to
 pay for.
@@ -8139,7 +8142,12 @@ Across 98 measured arms the binding reason reads the target in 25. The
 target enters the estimate as `ceiling = min(ceiling, max(T × rtt_min /
 goodputFactor, floor))`, and the reason names it when twice the
 delivery is at or above it, that is when the flow delivers at least
-half the target. At 200 ms that window is 28.9 MB and never binds. At
+half the target. At 200 ms that window is 28.9 MB and never binds
+(corrected by §53.3: it never binds at the windows this record was
+written against, and it does bind once the rule is on and the process
+budget reaches about 220 MiB, where the transfer share M/8 reaches the
+clamp's 28.9 MB; at 256 MiB the share is 32 MiB, the clamp binds, and
+the measured budget sweep stops gaining there). At
 the loop round trip our own path adds with no network delay, about
 21 ms (§37.23), it is 125 MB/s × 0.021 / 0.865 = 3.0 MB, about 1.45
 times the 2 MiB constant. So in the reporter's regime the sized window
@@ -8384,7 +8392,8 @@ gigabit's own product and none of the four ceilings binds below the
 target; a desktop on a short path already has a gigabit's reach, and
 no ceiling needs raising there. At the common path the target window
 is 28.9 MB at 200 ms and never binds, and the ceilings are what they
-were. The ranking of §40.3 survives unchanged, and the target clamp
+were (corrected by §53.3: at a 256 MiB budget with the rule on the
+transfer share passes the clamp and the target does bind). The ranking of §40.3 survives unchanged, and the target clamp
 sharpens its scope: the four ceilings matter only above about 22 ms of
 path, which is the common path and not the fast link.
 
@@ -9136,6 +9145,11 @@ missed that, and §44 is the place it is argued.
   cell remains the first with a native stack and a real carrier; its
   prediction is 109 Mb/s at 200 ms against 71 (§40.1), restated per
   carrier and per shipped budget in §48.
+  Moved to measured by §53: the rule's gain is now a paired, repeated
+  reading against the instrument's own measured ceiling rather than one
+  arm's, 2.92 times at 16 KiB and 200 ms and 2.42 at 400, rising to 4.01
+  at 1 KiB. This entry stays here because what §53 measures is the rule
+  on one fixture with one share-table row in it, not the chain.
 - Per-flow keying of the client's IP traffic, the no-acknowledgement
   write-failure counter, and the eviction counter: built, no cell yet.
 
@@ -9151,7 +9165,11 @@ Download, delay on the client's hop, H3 carrier, a desktop with a
 
 0. The budget and the surfaces (§48). In this tree first: the
    carriers' constructor form and the device target's derivation from
-   M (§48.4), because the shipped targets of 20 and 24 MiB are below
+   M (§48.4) — corrected by §52, which withdraws the derivation: there
+   is nothing to derive, a host sets T and M as a pair and §52.2's two
+   bounds say whether the pair is admissible, so what this step asks
+   for is the carriers' constructor form and then the pair —
+   because the shipped targets of 20 and 24 MiB are below
    the reference, where the draw equals the scaled constant, so steps 2
    to 4 below are inert on every client. Then the raise, which is not one step: §48.6's 0a to
    0e, none on iOS, by choice on Android after §39.3, the desktop
@@ -9295,8 +9313,14 @@ Measured: 68.6 Mb/s at 200 ms and 34.7 at 400 for one flow at the
 shipping 2 MiB window; a plateau of 164 at 200 ms at the hosted tunnel's
 4 MiB; the advertisement's 2.46 to 2.73 against 1.21 to 1.24 without;
 the stall on main below 51.2 MiB and its control; the fixed point of the
-rule at twice its delivery. All in-process unless named as a cell, and
-all ratios, not absolutes to be compared with other hardware.
+rule at twice its delivery; and, added by §53, the window rule's own
+gain, off against on, as paired per-repetition ratios over seven
+interleaved repetitions against the instrument's measured ceiling —
+4.01 and 3.89 times at 1 KiB, 3.82 and 3.83 at 4 KiB, 2.92 and 2.42 at
+16 KiB, at 200 and 400 ms, on `transfer_throughput_chain_test.go`
+(branch `throughput-perf`, 5b600a6 and c5ffc36). All in-process unless
+named as a cell, and all ratios, not absolutes to be compared with other
+hardware.
 
 Derived: every reach figure; the 109, 160, 415 and 830 for the
 download landings (restated in §48 against the shipped values: the H3
@@ -10046,6 +10070,21 @@ it is re-arranged, window and round trip together as §47.4 now says,
 until the prediction lies below. Every cell in §41 to §47 that states a
 band is read under this rule from here on.
 
+Refined in place by §53.5, from the first instrument built to this rule.
+"The delay element at zero" and "the window seeded past any bound" are
+the wrong literal arrangement for a fixture whose delay pump spawns a
+goroutine per frame: at a 64 MiB window and no delay those goroutines
+race, the reorder distance becomes whatever the window lets fly at once,
+and what is measured is a retransmit storm — the 16 KiB ceiling read
+zero once and then 2,476, 1,660 and 1,912 Mb/s across three repetitions
+of one configuration. The rule's intent is kept and its words are
+loosened: the ceiling arrangement must permit far more than the
+instrument can carry, and that is asserted against what the ceiling cell
+actually read rather than trusted from the arithmetic. §53's instrument
+measures its ceiling at a 1 ms delay element with a 4 MiB window, which
+permits about 32 Gb/s, and checks the reading against it by a factor of
+eight.
+
 ### 50.5 What the server change buys, corrected in §46
 
 The builder left the initial windows at quic-go's defaults, which is
@@ -10166,6 +10205,21 @@ row and then stops at the transfer row, and the table promises a rate
 the shipping default cannot deliver. Turning the rule on is the
 precondition for every figure in §51.4.
 
+Corrected in place: the rule no longer ships off. At f8d564b
+`WindowSizingFromDelivery` became the shipping default
+(`defaultWindowSizing` is stored as it at package initialisation), so
+the transfer row is consulted on every shipped client and the 2 MiB
+constant is what a rollback reproduces rather than what ships. The zero
+value is still `WindowSizingConstant`, deliberately, so anything storing
+a policy keeps today's meaning for zero and
+`SetWindowSizing(WindowSizingConstant)` remains a one-call rollback that
+reproduces the constant window byte for byte. What the paragraph above
+describes is therefore the rollback's behaviour, and it is worth keeping
+for that reason: it says exactly what a host gives up by taking the
+switch. The precondition sentence is spent — the figures of §51.4 no
+longer wait on anything — and §53 measures what the rule is worth at the
+design point now that it is the default.
+
 A positive process budget on a provider is a cost rather than a gain.
 `ip.go:645-655` keeps unlimited flow counts and gives plain-UDP NAT
 bindings the provider-tuned idle while `MemoryBudget()` is zero, and any
@@ -10200,7 +10254,11 @@ The process rows against M, each at `M/8`: transfer send and receive
 hold and the two tun maxima read 2.5 MiB at 20, 3 MiB at 24, 8 MiB at
 64, 16 at 128 and 32 at 256. With `WindowSizingFromDelivery` off the
 transfer window is instead 640 KiB at 20, 768 KiB at 24 and 2 MiB at
-every budget at or above 64.
+every budget at or above 64. Since f8d564b the rule is the shipping
+default, so that second row is the rollback's values and not the
+shipped ones (corrected in §51.2). §53 measures the difference between
+the two rows on an in-process fixture: 2.4 to 4.0 times, by payload and
+round trip.
 
 ### 51.4 The three constraints of §44.2, and the row that tests each
 
@@ -10501,3 +10559,190 @@ figures. That is the row's worth under this decision: a pair added with
 a target too large for its budget fails at test time rather than in a
 phone's memory graph, and the derived-target arithmetic is computed
 nowhere.
+
+## 53. The first measured result: what the window rule is worth at the design point
+
+Provenance: measured. This is the program's first end-to-end reading of
+the quantity it exists to produce, and the first figure in this record
+that is neither a constant read at a line over a round trip nor a single
+reading of one arm. It is stated with the exact limits of what was
+measured, because those limits are what stop it being read as more than
+it is: it measures the rule, on one fixture containing one row of the
+share table, and not the chain.
+
+### 53.1 The instrument
+
+`transfer_throughput_chain_test.go`, on branch `throughput-perf`
+(5b600a6, the cell; c5ffc36, what its default grid costs to run), gated
+behind `CONNECT_THROUGHPUT_MEASURE`, reporting rather than asserting.
+It is built to §50.4's rule: every repetition measures the instrument's
+own ceiling first, once per payload, and prints the headroom between
+that ceiling and every figure beside the figure; a rate within seven
+tenths of the ceiling prints as censored. The two arms of every pair run
+adjacent inside one repetition in an order that alternates with the
+repetition, the ratio is taken within the repetition and the median
+over repetitions, so that host drift across the run divides out of the
+ratio. Seven repetitions, chosen because a calibration run that set an
+arm against itself found a paired spread of 20.3 per cent at five;
+seven resolves a difference of about 15 per cent and no less. The
+headline arms run at the 64 MiB reference, with the process budget and
+the device target both at 64 MiB, so the rule-off arm's window is the
+2 MiB constant exactly.
+
+The fixture is a sender `Client` and a receiver `Client` joined by Go
+channels, with a goroutine-per-frame pump imposing the delay on the
+acknowledgement half, peers of `NewNoContractClientOob`. It contains
+exactly one row of the share table, the transfer send window and the
+receive hold, which read M through `transferBudgetShareByteCount`. It
+contains no QUIC and so no H3 reservation, stream window or connection
+window; no gVisor tun and so no tun maxima; no NAT, no contract manager,
+no socket and no operating-system stack. Every number below is a number
+about the rule, the resend queue, the hold, the acknowledgement
+compression timer and the round-trip estimator, and about nothing
+beneath them.
+
+### 53.2 The result: rule off against rule on
+
+The instrument's ceilings, medians over the clean repetitions: about
+1,487 Mb/s at 1 KiB, 2,914 at 4 KiB and 2,477 at 16 KiB. No arm came
+within five times any of them, so nothing below is censored and nothing
+is a reading of the harness.
+
+The rule off against on, paired per repetition, medians of the seven
+ratios:
+
+    payload   200 ms   400 ms
+    1 KiB     4.01×    3.89×
+    4 KiB     3.82×    3.83×
+    16 KiB    2.92×    2.42×
+
+In absolute medians, 16 KiB at 200 ms went from 71 to 190 Mb/s and at
+400 ms from 34 to 88. The rule-off median at 16 KiB and 200 ms is the
+71 the program started from, beside §47.9's measured 68.6 and §51.2's
+derived 69 for the same 2 MiB window, and across the arms the rule-off
+side read 0.80 to 0.93 of that window's bound, inside §50.3's 0.85 to
+0.97 band at the top and slightly under its floor at the bottom, which
+the record notes and does not explain from this cell. The 16 KiB ratios
+fall around the record's predicted
+2.46 to 2.73 (§37.19, the advertisement measurement, and §47.4), which
+is the prediction this cell was built to test and the number the record
+has carried as "measured, in-process" from a single arm; it now rests
+on seven paired repetitions against a measured ceiling.
+
+The smaller payloads gain more, 3.8 to 4.0 times against 2.4 to 2.9,
+and the cell does not say why: the mechanism is not established by a
+paired ratio, and the record does not guess at one here. The ratios are
+the result; the absolute rates on this host mean nothing beyond this
+host and are given only so that the ratios can be recomputed.
+
+### 53.3 The sweeps, and the clamp the sweep found
+
+Both sweeps at 16 KiB, 200 ms, the rule on, the process budget and the
+device target moved together.
+
+The budget: 83, 89, 122, 190, 272 and 330 Mb/s at 20, 24, 32, 64, 128
+and 256 MiB. It scales with the budget, as the share table says it
+must, up to a point that the record had said was not there. At 256 MiB
+the arm's window is clamped by the one-gigabit goodput target rather
+than by its share — the harness marks such an arm — so budgets above
+about 220 MiB buy nothing at that round trip: the transfer share M/8
+reaches the clamp's 28.9 MB (§41.1) at M ≈ 220 MiB, and 32 MiB at 256
+is past it. §38.2, §41.1 and §42.2 each say the target never binds at
+200 to 400 ms; that was true of every window this record was written
+against and is corrected in place at each, since with the rule on and a
+budget of that size it does bind, and a budget sweep that continues
+past it is comparing two target-clamped arms, which cannot show a window
+effect between them. The clamp is the target working as §38.2 describes
+its purpose — a window at the full share would be permission a path
+cannot use — and is not a defect; what it changes is the reading of the
+sweep, whose top step is the clamp and not the share.
+
+The transfer divisor, at the 64 MiB headline budget: a quarter gave 231,
+an eighth 190, a sixteenth 109. Monotone in the share, as the table
+requires, and the step from an eighth to a quarter is a fifth for a
+doubling of the share, which is what a row that is not the sole binder
+looks like: at 64 MiB the 8 MiB share over the transfer loop permits
+about 277 Mb/s of goodput and the arm reads 190 against it, 0.69, so
+something other than the share bounds the arm there. This cell does not
+name it; the ceiling is five times higher, so it is not the frame pump,
+and §49's residence term is the candidate the record already has. A
+sixteenth halves the share to 4 MiB and reads 109, which is 0.79 of that
+window's 138 and the row at its most nearly binding.
+
+Resolution applies here more than to the headline: seven repetitions
+resolve about 15 per cent, which is enough for the ratios of §53.2 and
+for the shape of both sweeps, and not enough for any single step of
+them. 83 against 89 is not a finding; 190 against 272 is.
+
+### 53.4 The limits, which are the reading
+
+- One row. The fixture has the transfer send window and receive hold
+  and no other row of §51.1. The H3 stream window, the largest lever in
+  the table and the binder at every desktop pair of §52.4, is not in
+  it; nor the connection window, the reservation, the tun maxima or any
+  socket. So this measures the rule and not the chain, and no figure
+  here is the 425 or 830 of §51.3, which are H3 figures and remain
+  derived.
+- The surface it sweeps. The budget sweep moves M, the process budget,
+  because that is the surface the fixture's one row reads. Shipped
+  devices do not read that row from M: the sdk attaches a transfer
+  budget derived from the device target T (`deviceLocalTransferBudgets`,
+  §48.2), and the share of M is read only by a client with no budget
+  attached, which no shipped process creates. The sweep's shape carries
+  over; its x-axis does not.
+- Resolution. Seven repetitions, about 15 per cent. Enough for the
+  headline ratios and for the shape of the sweeps, not for single steps.
+- Host. The load average went from 21.9 at the start to 8.2 at the end
+  of the run. Three of the seven repetitions were flagged by the
+  ceiling's own drift and dropped from the absolute medians, which
+  therefore rest on three or four repetitions each. They were kept in
+  the ratios, because a ratio taken inside one repetition divides the
+  instrument out, and that distinction is the reason the headline
+  survives a contended host while the absolute medians only just do.
+- The ceiling's arrangement departs from §50.4's words, for the reason
+  §53.5 gives.
+
+### 53.5 The instrument rule, refined
+
+§50.4 says the ceiling is measured with the delay element at zero and
+the window seeded past any bound. This instrument does neither
+literally, and the departure is recorded as a refinement of the rule
+rather than an exception to it, because it was itself an instrument
+finding. The fixture's delay pump spawns a goroutine per frame and those
+goroutines race to write into the route channel, so the reorder
+distance is whatever the window allows in flight at once. At a 64 MiB
+window and zero delay that is four thousand frames at 16 KiB, the
+receive sequence spends the run filling gaps, and what is measured is a
+retransmit storm: the first run read the 16 KiB ceiling as zero, and
+with the hold raised as well it read 2,476, then 1,660, then 1,912 Mb/s
+across three repetitions of one configuration.
+
+So the ceiling is measured at a 1 ms delay element with a 4 MiB window,
+which bounds the flight to 256 frames at 16 KiB and permits about
+32 Gb/s, and `assertTheWindowIsNotTheCeilingsBinder` checks against what
+the ceiling cell actually read that its window permitted at least eight
+times as much, rather than trusting the arithmetic, because the
+effective round trip at a 1 ms element is whatever the scheduler makes
+it. The rule as refined: the ceiling arrangement must permit far more
+than the instrument can carry, that must be asserted against the
+reading, and the literal zero and the literal "past any bound" are the
+usual way to get there and not the rule. §50.4 is amended in place to
+say so.
+
+### 53.6 What it changes in the record
+
+§47.9's measured list gains the rule's gain, with the instrument named;
+§47.4's first entry, the rule's gain on the in-process fixture, is
+marked as moved to measured while staying where it is, since what was
+measured is the rule on a fixture and not the chain that entry sits in.
+§51.2 and §51.3 are corrected for the rule shipping on since f8d564b,
+which is what makes this the shipped configuration's gain rather than
+an option's. §38.2, §41.1 and §42.2 are corrected for the clamp. Nothing
+in the derived list moves: the H3 figures are untouched by a fixture
+with no H3 in it, and the namespace cell of §40.1 remains the first
+reading with a native stack and a real carrier.
+
+What the result is worth, stated once: the rule the program built is
+worth between 2.4 and 4 times on the one layer it governs, at the round
+trips it was designed for, measured the way §50.4 says a measurement
+has to be made. The chain above it is still arithmetic.
