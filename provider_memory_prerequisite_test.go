@@ -8,10 +8,10 @@ func TestProviderMemoryH3TargetsReachActualQuicWindows(t *testing.T) {
 	previous := MemoryBudget()
 	t.Cleanup(func() { SetMemoryBudget(previous) })
 	for _, test := range []struct {
-		target ByteCount
+		target      ByteCount
 		reservation ByteCount
-		stream ByteCount
-		connection ByteCount
+		stream      ByteCount
+		connection  ByteCount
 	}{
 		{target: 0, reservation: mib(8), stream: mib(3), connection: mib(4)},
 		{target: mib(1), reservation: mib(3), stream: kib(384), connection: kib(512)},
@@ -68,14 +68,14 @@ func TestProviderMemoryH3EligibilityAccountsForActualFallbackReservation(t *test
 	t.Cleanup(func() { SetMemoryBudget(previous) })
 	SetMemoryBudget(mib(256))
 	for _, test := range []struct {
-		total ByteCount
-		h1 bool
+		total  ByteCount
+		h1     bool
 		wantH3 bool
 	}{
-		{total: mib(32)-1, h1: false, wantH3: false},
+		{total: mib(32) - 1, h1: false, wantH3: false},
 		{total: mib(32), h1: false, wantH3: true},
 		{total: mib(32), h1: true, wantH3: false},
-		{total: mib(32)+kib(512), h1: true, wantH3: true},
+		{total: mib(32) + kib(512), h1: true, wantH3: true},
 	} {
 		settings := DefaultPlatformTransportSettings()
 		settings.H3BudgetByteCount = 0
