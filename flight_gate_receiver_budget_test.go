@@ -29,18 +29,65 @@ func receiverBudgetRun(
 ) (time.Duration, ClientSendRecoveryStatsSnapshot, uint64) {
 	t.Helper()
 	harness := newMixedLaneHarnessWithOptions(t, mixedLaneOptions{
-		fastLatency:                20 * time.Millisecond,
-		slowLatency:                200 * time.Millisecond,
-		fastSerialization:          time.Millisecond,
-		slowSerialization:          4 * time.Millisecond,
-		replySerialization:         time.Millisecond,
-		receiveQueueMaxByteCount:   budget,
-		fastDropOnce:               25,
+		fastLatency:              20 * time.Millisecond,
+		slowLatency:              200 * time.Millisecond,
+		fastSerialization:        time.Millisecond,
+		slowSerialization:        4 * time.Millisecond,
+		replySerialization:       time.Millisecond,
+		receiveQueueMaxByteCount: budget,
+		// The hole opens at the 25th data frame on either lane rather than
+		// the 25th on the direct lane. The flight gate routes this payload
+		// onto the relay: measured, the direct lane carried 24 frames and the
+		// relay 144, so a direct-lane hole at 25 was unreachable by one frame
+		// and this row's precondition came from lane reordering, not from the
+		// hole. A lane-agnostic hole is reached on every run. The receive-side
+		// mechanism the row reads — a full hold blocked at a gap refusing what
+		// arrives above it — does not depend on which lane lost the frame.
+		dataDropOnce: 25,
+		// Force the overflow rather than racing for it. The hole at frame 25
+		// is deterministic already; this holds the arrivals behind it until
+		// enough have piled up to carry the queue past its cap, so the
+		// precondition this row needs is a counted event rather than one
+		// goroutine outpacing another (THROUGHPUTFIX 23).
+		//
+		// Sized just past the cap, not far past it. The queue holds 8 KiB
+		// against ~900 byte messages, so about nine frames fill it and ten
+		// carries it over by one. Depth costs recovery time superlinearly
+		// here: sixty-four — seven times the cap — ran to 117 timeout resends
+		// and 88 seconds while the drop count stayed at fifteen; sixteen put
+		// the lane-rule arm at 79 to 96 seconds and past the harness's old
+		// flat two-minute wait in two of four runs; twelve did not finish the
+		// lane-rule arm in ten minutes on the post-flip tree or on a copy with
+		// the window rule forced off, so the depth and not the rule was the
+		// cost. Ten, with the row's message count below cut from 150 to 60,
+		// finishes both rows in 95 and 73 seconds. The row's ceiling is
+		// derived from the drop count rather than the overflow depth, so a
+		// depth that buys more recovery than drops takes the two apart.
+		holdAfterFastDrop:          10,
 		deferTimeoutResend:         true,
 		reliableLaneProvenRecovery: laneRule,
 	})
 	start := time.Now()
 	stats := harness.run(t, messageCount)
+	// The barrier is this row's precondition, so the row proves it fired
+	// rather than inferring it from the drops it was meant to force. This is
+	// what makes the row fail deterministically with the barrier removed:
+	// without it the overflow is a race and the drop count alone cannot say
+	// which way the race went.
+	if released := harness.holdReleasedCount.Load(); released < 10 {
+		// Per-lane carriage is in the message because the likeliest reason the
+		// barrier does not fire is that the hole never opens: the induced drop
+		// counts data frames on the fast lane only, and if the flight gate
+		// routes the data onto the slow lane that count never reaches its
+		// index. A run that finishes quickly with 0 released and a fast lane
+		// that carried fewer data frames than the drop index is that case.
+		t.Fatalf(
+			"the overflow barrier released %d frames against the 10 it holds, so the receive queue was not carried past its cap by a counted event and this run's drops, if any, are scheduling luck; fast lane carried %d and dropped %d, slow lane carried %d and dropped %d",
+			released,
+			harness.fastCarried.Load(), harness.fastDropped.Load(),
+			harness.slowCarried.Load(), harness.slowDropped.Load(),
+		)
+	}
 	// Drops and tentative evictions are complementary readings of the same
 	// hold pressure since THROUGHPUTFIX §37.20. Under committed-prefix
 	// acknowledgement a full hold keeps the sequence-earliest items and
@@ -61,7 +108,11 @@ func TestReceiverBudgetDropsArrivalsAboveAHole(t *testing.T) {
 	if testing.Short() {
 		t.Skip("receiver budget")
 	}
-	const messageCount = 150
+	// Sixty rather than 150: the mechanism needs only enough traffic to fill
+	// an 8 KiB hold behind the hole, which a dozen frames do, and every
+	// message past that is recovery the lane-rule arm pays over a 400 ms
+	// round trip without adding to what the row reads.
+	const messageCount = 60
 	for _, arm := range []struct {
 		name     string
 		laneRule bool
@@ -102,7 +153,11 @@ func TestReceiverBudgetDropsDoNotWedgeEitherArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("receiver budget")
 	}
-	const messageCount = 150
+	// Sixty rather than 150: the mechanism needs only enough traffic to fill
+	// an 8 KiB hold behind the hole, which a dozen frames do, and every
+	// message past that is recovery the lane-rule arm pays over a 400 ms
+	// round trip without adding to what the row reads.
+	const messageCount = 60
 	offElapsed, offStats, offDropped := receiverBudgetRun(t, 8<<10, messageCount, false)
 	onElapsed, onStats, onDropped := receiverBudgetRun(t, 8<<10, messageCount, true)
 	t.Logf("rule off: %s, %d dropped, rto=%d deferred=%d probes=%d rides=%d promo=%d gap=%d",

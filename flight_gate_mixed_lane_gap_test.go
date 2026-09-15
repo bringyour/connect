@@ -105,6 +105,11 @@ type mixedLaneGapHarness struct {
 	// runDeadline bounds a multi-flow run; past it the run is reported as
 	// stalled rather than failing the test, so a stall can be compared.
 	runDeadline time.Duration
+	// holdReleasedCount is how many frames the holdAfterFastDrop barrier
+	// withheld and released together. A row that relies on the barrier reads
+	// it to prove the barrier fired, rather than inferring that from the drops
+	// it was meant to force.
+	holdReleasedCount atomic.Int64
 }
 
 type mixedLaneRoute struct {
@@ -241,6 +246,22 @@ type mixedLaneOptions struct {
 	// so a hole is created at a known point rather than by a seeded
 	// fraction. Zero drops nothing.
 	fastDropOnce int
+	// holdAfterFastDrop forces the receiver's queue past its cap
+	// deterministically. Once the hole exists, the next this many data frames
+	// are withheld at the point they would enter the receiver's inbound route
+	// and released together, so the arrivals pile up behind the missing head
+	// by construction rather than because the sender happened to outpace the
+	// receiver. Without it the overflow is a race between two goroutines and
+	// the proof rests on scheduling luck: the same row reads zero drops on one
+	// arm and nineteen on another for no reason the test controls.
+	holdAfterFastDrop int
+	// dataDropOnce drops the nth data frame to arrive on either inbound lane,
+	// exactly once, and opens the hole the hold keys off. Unlike fastDropOnce
+	// it does not depend on which lane the flight gate routes the data onto:
+	// measured, the fast lane carried 24 frames against a fast-lane drop index
+	// of 25 while the slow lane carried 144, so a fast-lane hole at 25 was
+	// unreachable by one frame and the barrier keyed off it never fired.
+	dataDropOnce int
 	// slowDropFraction drops that share of the relay's frames, from a seeded
 	// source. A reliable carrier retransmits below Transfer, so this models
 	// a drop at an endpoint rather than on the wire: the only reliable-lane
@@ -439,6 +460,13 @@ func newMixedLaneHarnessWithOptions(
 	// one direct-lane frame is dropped at a known point, so the hole is
 	// deterministic rather than seeded
 	var fastDataSeen atomic.Int64
+	// Set when the induced drop actually happens. The hold must not key off
+	// fastDataSeen: that counter is advanced only by the fast lane's own
+	// predicate, so on a run the slow lane carries, it never passes the drop
+	// index and the hold never engages — which is a precondition that depends
+	// on which path happened to carry the frames, the very fault this seam
+	// exists to remove.
+	var holeOpened atomic.Bool
 	dropOnce := func(frameBytes []byte) bool {
 		if options.fastDropOnce <= 0 {
 			return false
@@ -446,8 +474,87 @@ func newMixedLaneHarnessWithOptions(
 		if !decodeFlightGatePackIsData(frameBytes) {
 			return false
 		}
-		return fastDataSeen.Add(1) == int64(options.fastDropOnce)
+		if fastDataSeen.Add(1) != int64(options.fastDropOnce) {
+			return false
+		}
+		// the hole now exists; the hold below engages on whichever lane
+		// carries what follows, rather than on this lane's own counter
+		holeOpened.Store(true)
+		return true
 	}
+	// the lane-agnostic hole: counted over data frames on both inbound lanes
+	var anyDataSeen atomic.Int64
+	dropDataOnce := func(frameBytes []byte) bool {
+		if options.dataDropOnce <= 0 {
+			return false
+		}
+		if !decodeFlightGatePackIsData(frameBytes) {
+			return false
+		}
+		if anyDataSeen.Add(1) != int64(options.dataDropOnce) {
+			return false
+		}
+		holeOpened.Store(true)
+		return true
+	}
+	// Held frames, released together once enough have piled up behind the hole.
+	// Counted rather than timed, so the release point is a property of the run
+	// rather than of how fast the machine is. Each is remembered with its own
+	// lane's delivery, so a release on one lane does not carry the other
+	// lane's frames down the wrong route, and the release is concurrent so it
+	// does not serialise a batch behind one lane's latency.
+	type heldFrame struct {
+		frameBytes []byte
+		deliver    func([]byte)
+	}
+	var holdLock sync.Mutex
+	var heldFrames []heldFrame
+	holdReleased := false
+	holdFrame := func(frameBytes []byte, deliver func([]byte)) bool {
+		if options.holdAfterFastDrop <= 0 ||
+			(options.fastDropOnce <= 0 && options.dataDropOnce <= 0) {
+			return false
+		}
+		if !decodeFlightGatePackIsData(frameBytes) {
+			return false
+		}
+		holdLock.Lock()
+		defer holdLock.Unlock()
+		if holdReleased {
+			return false
+		}
+		// only after the hole exists, so the held frames are the ones that
+		// cannot be delivered and must queue
+		if !holeOpened.Load() {
+			return false
+		}
+		heldFrames = append(heldFrames, heldFrame{frameBytes: frameBytes, deliver: deliver})
+		return true
+	}
+	takeHeldFrames := func() []heldFrame {
+		holdLock.Lock()
+		defer holdLock.Unlock()
+		if holdReleased || len(heldFrames) < options.holdAfterFastDrop {
+			return nil
+		}
+		holdReleased = true
+		released := heldFrames
+		heldFrames = nil
+		harness.holdReleasedCount.Store(int64(len(released)))
+		return released
+	}
+	// A run that ends before the count is reached leaves frames in the hold.
+	// Return them rather than leak their pool roots: this cleanup is
+	// registered before the harness's own, so it runs after the clients close.
+	t.Cleanup(func() {
+		holdLock.Lock()
+		defer holdLock.Unlock()
+		for _, held := range heldFrames {
+			MessagePoolReturn(held.frameBytes)
+		}
+		heldFrames = nil
+	})
+
 	// a run of consecutive relay sequence positions is dropped, once each:
 	// the batch nothing can prove. Dropping by position rather than by a
 	// count of frames is what makes the rewrite get through, which is the
@@ -506,6 +613,15 @@ func newMixedLaneHarnessWithOptions(
 				MessagePoolReturn(b)
 				return
 			}
+			if (to == receiverInFast || to == receiverInSlow) && dropDataOnce(b) {
+				if to == receiverInFast {
+					harness.fastDropped.Add(1)
+				} else {
+					harness.slowDropped.Add(1)
+				}
+				MessagePoolReturn(b)
+				return
+			}
 			if to == receiverInSlow && dropRun(b) {
 				harness.slowDropped.Add(1)
 				MessagePoolReturn(b)
@@ -538,6 +654,23 @@ func newMixedLaneHarnessWithOptions(
 			case to <- b:
 			}
 		}
+		deliverOrHold := func(b []byte) {
+			if to == receiverInFast || to == receiverInSlow {
+				if holdFrame(b, deliver) {
+					// held; released together once the count is reached, each on
+					// its own lane and concurrently
+					for _, released := range takeHeldFrames() {
+						harness.forwarders.Add(1)
+						go func(released heldFrame) {
+							defer harness.forwarders.Done()
+							released.deliver(released.frameBytes)
+						}(released)
+					}
+					return
+				}
+			}
+			deliver(b)
+		}
 		harness.forwarders.Add(1)
 		go func() {
 			defer harness.forwarders.Done()
@@ -554,7 +687,7 @@ func newMixedLaneHarnessWithOptions(
 						harness.forwarders.Add(1)
 						go func(b []byte) {
 							defer harness.forwarders.Done()
-							deliver(b)
+							deliverOrHold(b)
 						}(transferFrameBytes)
 						continue
 					}
@@ -582,7 +715,7 @@ func newMixedLaneHarnessWithOptions(
 					harness.forwarders.Add(1)
 					go func(b []byte) {
 						defer harness.forwarders.Done()
-						deliver(b)
+						deliverOrHold(b)
 					}(transferFrameBytes)
 				}
 			}
@@ -680,14 +813,33 @@ func (self *mixedLaneGapHarness) run(
 			t.Fatalf("message %d was not admitted", index)
 		}
 	}
+	// The wait for delivery is derived rather than flat: whatever the suite
+	// has left, less a margin to report in, and never below the two minutes
+	// this harness waited before. A flat two minutes is smaller than the
+	// ceiling some rows derive for themselves — the receiver-budget rows bound
+	// a rule arm at the resend cap plus two lane round trips per dropped
+	// arrival, which reaches several minutes — so the harness would fail the
+	// row before the row's own bound could decide, and which of the two spoke
+	// first depended on machine load rather than on the transfer.
+	deliveryTimeout := 120 * time.Second
+	if deadliner, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if suiteDeadline, hasDeadline := deadliner.Deadline(); hasDeadline {
+			if remaining := time.Until(suiteDeadline) - 30*time.Second; deliveryTimeout < remaining {
+				deliveryTimeout = remaining
+			}
+		}
+	}
 	delivered := 0
-	deadline := time.After(120 * time.Second)
+	deadline := time.After(deliveryTimeout)
 	for delivered < messageCount {
 		select {
 		case frames := <-self.received:
 			delivered += frames
 		case <-deadline:
-			t.Fatalf("only %d of %d messages were delivered", delivered, messageCount)
+			t.Fatalf(
+				"only %d of %d messages were delivered within %s, the suite's remaining time less a reporting margin",
+				delivered, messageCount, deliveryTimeout,
+			)
 		}
 	}
 	// let the last acknowledgements and any scheduled recovery settle
