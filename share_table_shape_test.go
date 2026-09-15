@@ -109,6 +109,19 @@ const shareTableShapeTolerance = 1.6
 // tun's 0.125, a ratio-of-ratios of 2.55. So closing the chain makes the shape
 // worse, and the H3 fraction is what has to absorb it. That is the prediction
 // this row records ahead of the sdk's default-target change.
+//
+// Corrected by §52, kept rather than deleted because the number was recorded as
+// a prediction and a reader needs to see what became of it: there is no sdk
+// default-target change to hold it against, since T is a constant a host sets
+// beside M and no chain is being closed. The 2.55 stands only as what the shape
+// would have been under the withdrawn derivation. This row's own comparison is
+// unaffected — it is among fractions at one surface value and does not depend on
+// how a host picks the two surfaces — but the effect the prediction pointed at
+// is real and now belongs to the pair: wherever T sits well below M, which every
+// admissible pair does by §52.2's collector bound, the carrier rows are smaller
+// relative to the process rows than the equal-surface comparison shows. At the
+// desktop pairs of §52.4, 128 in 384 and 256 in 768, T is exactly a third of M.
+// What that does to the plateau is asserted per pair in the binder row below.
 func TestTheShareTableShapeFollowsItsLoops(t *testing.T) {
 	restore := MemoryBudget()
 	t.Cleanup(func() { SetMemoryBudget(restore) })
