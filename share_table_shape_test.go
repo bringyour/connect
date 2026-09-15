@@ -201,17 +201,110 @@ func TestTheShareTableShapeFollowsItsLoops(t *testing.T) {
 	}
 }
 
-// §44.4's binder row: for a given budget and path, the expected plateau is the
-// smallest row's product over its own loop, and the row that produces it is the
-// one a campaign will measure.
+// One pair of surfaces as a host sets them: the per-device memory target T and
+// the process budget M. §52 is the decision this type encodes — T is a constant
+// set beside M rather than derived from it, so the pair is the unit a host
+// chooses and the two constraints below are checks on the pair rather than a
+// formula that produces one number from the other.
+type shareTableMemoryPair struct {
+	name string
+	// T, passed to the *WithMemoryTarget constructors
+	deviceTarget ByteCount
+	// M, set through sdk.SetMemoryLimit and read here as the process budget
+	processBudget ByteCount
+	// the record's figure for the binding row at this target, in Mb/s of
+	// goodput (§51.3's table)
+	recordedMbps float64
+	// why this pair violates a constraint deliberately, empty for a pair that
+	// has to satisfy both. A declared exception is a kill-limit-bound host
+	// (§52.4), not a pair someone rounded.
+	exception string
+}
+
+// §52.2's backing constraint: the device targets plus the message pools fit
+// inside the process budget. The pools take 14 of M's 34 parts, so the targets
+// have 20, and on a single-device host T is at most 20/34 of M.
+func shareTableBackingConstraintHolds(pair shareTableMemoryPair) bool {
+	return pair.deviceTarget <=
+		pair.processBudget*sdkProcessRatioDeviceTarget/sdkProcessRatioParts
+}
+
+// §52.2's collector constraint: the process budget is at least three times the
+// device target, because the live heap a device holds amplifies roughly
+// threefold at the Go runtime — what the target permits, the garbage the same
+// path made and the collector has not swept, and the copies between them — and
+// a target close to its process's soft limit collects continuously rather than
+// failing. This is the constraint that dominates: it admits T at a third of M
+// where the backing constraint admits 20/34 of it.
+const shareTableCollectorMultiple = 3
+
+func shareTableCollectorConstraintHolds(pair shareTableMemoryPair) bool {
+	return pair.deviceTarget*shareTableCollectorMultiple <= pair.processBudget
+}
+
+// The pairs: what ships and what §52.3 proposes. A pair added here that
+// violates either constraint without a reason in `exception` fails the binder
+// row, which is the point of holding them in one place — a bad pair fails at
+// test time rather than in a phone's memory graph.
+func shareTableMemoryPairs() []shareTableMemoryPair {
+	return []shareTableMemoryPair{
+		{
+			name:          "iOS, a 20 MiB target in the extension's 32 MiB budget",
+			deviceTarget:  mib(20),
+			processBudget: mib(32),
+			// §51.3: a 1.875 MiB stream window at a 20 MiB target
+			recordedMbps: 66,
+			exception:    "the packet tunnel provider is killed above 50 MiB and the Go runtime takes about 16 of it (§48.1), so neither number is a choice; the phone pays the continuous collection the collector constraint names and §48.6 step 0a has no memory to give it",
+		},
+		{
+			name:          "Android, a 24 MiB target in a 32 MiB budget",
+			deviceTarget:  mib(24),
+			processBudget: mib(32),
+			// §51.3: a 2.25 MiB stream window at a 24 MiB target
+			recordedMbps: 80,
+			exception:    "Android mirrors the iOS budget by decision rather than by platform limit (§48.6 step 0b), and sits further outside both bounds than iOS does; a raise is the product decision that step names, not a change to this table",
+		},
+		{
+			name:          "the desktop's first step, 128 MiB in 384",
+			deviceTarget:  mib(128),
+			processBudget: mib(384),
+			// §51.3: a 12 MiB stream window at a 128 MiB target
+			recordedMbps: 425,
+		},
+		{
+			name:          "the desktop's second step, 256 MiB in 768",
+			deviceTarget:  mib(256),
+			processBudget: mib(768),
+			// §43.2's 830, which §51.3 computes as 851 before the record's
+			// rounding of MiB to MB
+			recordedMbps: 830,
+		},
+	}
+}
+
+// §44.4's binder row, under §52's decision: for a pair of surfaces a host
+// chooses and a given path, the expected plateau is the smallest row's product
+// over its own loop, and the row that produces it is the one a campaign will
+// measure.
 //
 // This is the acceptance arm made deterministic. The cell it stands in for runs
 // a real carrier and a real stack and reads a plateau; what can be asserted
 // without running anything is the arithmetic that predicts which row that
 // plateau belongs to and what it is, and that arithmetic is where the record's
-// 415 and 830 come from. A campaign that reads a plateau materially different
+// 425 and 830 come from. A campaign that reads a plateau materially different
 // from this row's figure has found either a layer the table does not list or a
 // constant this table does not govern, and either is the finding.
+//
+// WHAT CHANGED, because the row's shape follows a decision rather than a
+// measurement. It used to take the two surfaces as free numbers, assert the
+// binder with the device target at the whole of the process budget, and log
+// what §48.4's two candidate derivations of T from M would produce — the 500
+// Mb/s that a 20/34 slice of a 256 MiB budget gives. §52 withdraws the
+// derivation: T is a constant beside M, a host sets both, and the two numbers
+// are related by constraints to check rather than by a formula. So the row
+// takes the pairs a host actually sets, asserts the constraints on each, and
+// computes the plateau at the pair. No derived target is computed anywhere, and
+// 500 belongs to no pair.
 //
 // The scenario, stated because every figure depends on it: 200 ms of path with
 // the delay on the client's hop, download, the H3 carrier, every layer below
@@ -228,32 +321,48 @@ func TestTheShareTableBinderIsTheH3StreamWindow(t *testing.T) {
 	t.Cleanup(func() { SetMemoryBudget(restore) })
 
 	series := shareTableSeriesRows(t)
-	for _, scenario := range []struct {
-		name string
-		// the two surfaces, separately, because the chain does not yet make one
-		// from the other
-		processBudget ByteCount
-		deviceTarget  ByteCount
-		// the record's figure for the binding row, in Mb/s of goodput
-		recordedMbps float64
-	}{
-		{
-			name:          "a 256 MiB budget with the device target at the whole of it",
-			processBudget: mib(256),
-			deviceTarget:  mib(256),
-			// §43.2: 830 Mb/s at 200 ms, against 415 at the fractions this
-			// branch replaced
-			recordedMbps: 830,
-		},
-		{
-			name:          "the 64 MiB reference with the device target at the whole of it",
-			processBudget: mib(64),
-			deviceTarget:  mib(64),
-			// §48.4's 109 Mb/s is the 3 MiB stream window; §43.2 doubles the
-			// fraction, so the reference reads twice that
-			recordedMbps: 218,
-		},
-	} {
+	for _, scenario := range shareTableMemoryPairs() {
+		// §52.2's two constraints on the pair, before its plateau is worth
+		// computing. A pair that fails them produces the windows below and then
+		// spends the path's CPU on the collector, which is why the constraint is
+		// checked here rather than left to a campaign: nothing in the table is
+		// visibly violated when it is the collector that binds.
+		backing := shareTableBackingConstraintHolds(scenario)
+		collector := shareTableCollectorConstraintHolds(scenario)
+		t.Logf(
+			"%s: target %d in budget %d — backing (T ≤ %d/%d M) %t, collector (%d T ≤ M) %t%s",
+			scenario.name, scenario.deviceTarget, scenario.processBudget,
+			ByteCount(sdkProcessRatioDeviceTarget), ByteCount(sdkProcessRatioParts),
+			backing, ByteCount(shareTableCollectorMultiple), collector,
+			map[bool]string{true: "", false: " (declared exception)"}[scenario.exception == ""],
+		)
+		if scenario.exception == "" {
+			if !backing {
+				t.Errorf(
+					"%s: the device target %d is above %d/%d of the %d byte process budget, which is %d. The device targets and the message pools share M and the pools take %d of its %d parts, so a target above the remainder is memory promised twice (§52.2)",
+					scenario.name, scenario.deviceTarget,
+					ByteCount(sdkProcessRatioDeviceTarget), ByteCount(sdkProcessRatioParts),
+					scenario.processBudget,
+					scenario.processBudget*sdkProcessRatioDeviceTarget/sdkProcessRatioParts,
+					ByteCount(sdkProcessRatioPacketPool+sdkProcessRatioLargeObjectPool),
+					ByteCount(sdkProcessRatioParts),
+				)
+			}
+			if !collector {
+				t.Errorf(
+					"%s: the %d byte process budget is below %d times the %d byte device target, %d. The live heap amplifies about threefold at the runtime, so a target this close to the process's soft limit collects continuously and reads as a plateau below every window in this table rather than as a memory failure — declare the pair as an exception with its reason, or lower the target (§52.2, §52.4)",
+					scenario.name, scenario.processBudget,
+					ByteCount(shareTableCollectorMultiple), scenario.deviceTarget,
+					scenario.deviceTarget*shareTableCollectorMultiple,
+				)
+			}
+		} else if backing && collector {
+			t.Errorf(
+				"%s: the pair is declared an exception (%s) but now satisfies both constraints. A stale declaration exempts a pair that no longer needs exempting, and the next pair to drift past a bound would inherit the exemption silently; remove the declaration",
+				scenario.name, scenario.exception,
+			)
+		}
+
 		binderName := ""
 		binderRate := 0.0
 		binderWindow := ByteCount(0)
@@ -301,37 +410,18 @@ func TestTheShareTableBinderIsTheH3StreamWindow(t *testing.T) {
 				float64(binderWindow)/float64(max(beforeTheLanding, 1)),
 			)
 		}
-		if settings.H3BudgetByteCount != reservationDraw {
+		// the reservation is its draw wherever the draw clears the 3 MiB
+		// admission floor, which the phones' targets do not: at 20 MiB the
+		// eighth is 2.5 MiB and the reservation reads its floor, while the
+		// windows are fractions of the draw itself and keep their own floors
+		// (§51.1). So the figures above are the draw's at every pair, and this
+		// holds the reservation to it only where the floor is not what it reads.
+		if reservationDraw >= mib(3) && settings.H3BudgetByteCount != reservationDraw {
 			t.Errorf(
 				"%s: the reservation is %d rather than the %d its eighth gives; the binder arithmetic above is computed from the draw, and a floored reservation here would mean the figures belong to a different budget",
 				scenario.name, settings.H3BudgetByteCount, reservationDraw,
 			)
 		}
-	}
-
-	// The same arithmetic under the chain of §48.4, where the device target is a
-	// slice of the process budget rather than a constant beside it. Logged
-	// rather than asserted, because which slice it is has not been decided —
-	// §48.4 leaves T = M and T = M less the pools' 14/34 open, and the two give
-	// materially different plateaus. This is the number that decision produces,
-	// recorded so the decision is made against it.
-	for _, slice := range []struct {
-		name                   string
-		numerator, denominator ByteCount
-	}{
-		{"the whole process budget", 1, 1},
-		{"the process budget less the pools", sdkProcessRatioDeviceTarget, sdkProcessRatioParts},
-	} {
-		processBudget := mib(256)
-		target := processBudget * slice.numerator / slice.denominator
-		settings := DefaultPlatformTransportSettingsWithMemoryTarget(target)
-		stream := ByteCount(newPlatformQuicConfig(settings, 1).MaxStreamReceiveWindow)
-		rate := float64(stream) * goodputFactor /
-			(float64(shareTableCarrierLoopRtt) / float64(time.Second))
-		t.Logf(
-			"a %d byte process budget with the device target at %s (%d): stream window %d, %.1f Mb/s at 200 ms",
-			processBudget, slice.name, target, stream, rate*8/1e6,
-		)
 	}
 }
 
