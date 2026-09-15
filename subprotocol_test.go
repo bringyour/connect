@@ -433,13 +433,20 @@ func TestSubprotocolSendRules(t *testing.T) {
 }
 
 func TestSubprotocolSendFailureReturnsBuffer(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	client := NewClientWithDefaults(ctx, NewId(), NewNoContractClientOob())
 	client.Cancel()
 	cancel()
-	// the client's own teardown returns its buffers asynchronously; let it
-	// settle so the packet-class outstanding count reflects only the sends
-	time.Sleep(100 * time.Millisecond)
+	// The process is exclusive, and this test also joins its own client before
+	// measuring failed-send ownership. A timer cannot establish that boundary.
+	closeCtx, closeCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer closeCancel()
+	if err := client.CloseAndWait(closeCtx); err != nil {
+		t.Fatalf("join canceled subprotocol client: %v", err)
+	}
 	codec := &fixedCodec{}
 	m := &fixedMessage{}
 	m.set([]byte("after cancel"))
@@ -454,7 +461,7 @@ func TestSubprotocolSendFailureReturnsBuffer(t *testing.T) {
 	if SendSubprotocolMulti[*fixedMessage](client, 2000, []*fixedMessage{m, m}, NewId(), nil, WithSubprotocolCodec[*fixedMessage](codec)) {
 		t.Fatal("a multi send on a cancelled client must fail")
 	}
-	if outstandingAfter := MessagePoolPacketOutstandingCount(); outstandingBefore < outstandingAfter {
+	if outstandingAfter := MessagePoolPacketOutstandingCount(); outstandingBefore != outstandingAfter {
 		t.Fatalf("pool buffers leaked on failed sends: outstanding %d -> %d", outstandingBefore, outstandingAfter)
 	}
 }
