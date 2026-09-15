@@ -825,11 +825,33 @@ type Ack struct {
 	// Advertises that this receiver can request a full contract when compact
 	// contract state is missing. A sender must not emit compact contract heads
 	// until a delivery Ack carries this capability; false is the legacy peer.
+	//
+	// MONOTONE. Once a delivery Ack has carried it the sender keeps it, and a
+	// later Ack without it does not withdraw it. That is deliberate rather
+	// than an omission: the capability says the receiver can ask for a full
+	// contract through missing_contract_id, which is its own recovery path and
+	// cannot stop being available, and a withdrawal would strand any compact
+	// head already in flight with nothing able to resolve it. State monotone
+	// or withdrawable for every new capability bit on this message - the two
+	// adjacent bits here differ, and neither said which until this line.
 	CompactContractRecovery bool `protobuf:"varint,6,opt,name=compact_contract_recovery,json=compactContractRecovery,proto3" json:"compact_contract_recovery,omitempty"`
 	// Advertises support for Pack.logical_lane. Version zero is a legacy peer.
 	// The sender scopes this evidence to the live lane-zero SendSequence and
 	// retires every nonzero lane when that sequence closes or a later delivery
 	// Ack omits the capability.
+	//
+	// WITHDRAWABLE, by both of those triggers, and so unlike
+	// compact_contract_recovery above. The capability is evidence about one
+	// peer generation learned on one sequence, not a durable property of the
+	// address: a peer that restarts at an older build behind the same address
+	// reads Pack.logical_lane as nothing and keeps a single head slot for the
+	// whole class, which is the lossy alternation lanes exist to remove, so
+	// the evidence has to die with the sequence that earned it.
+	//
+	// Note this is a plain uint32 and not optional, so an older peer's Ack
+	// decodes as zero rather than as unset and absent and zero are the same
+	// fact - the opposite of receive_window_byte_count two fields along, where
+	// the optional keyword makes them different and a live case depends on it.
 	LogicalLaneVersion uint32 `protobuf:"varint,7,opt,name=logical_lane_version,json=logicalLaneVersion,proto3" json:"logical_lane_version,omitempty"`
 	// What this receiver may hold out of order, measured from the delivered
 	// point: the hold's capacity, not its free space. A sender may not let its
