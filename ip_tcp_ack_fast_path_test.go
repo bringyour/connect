@@ -40,6 +40,9 @@ func newEstablishedTcpAckFastPathSequence(t *testing.T) *TcpSequence {
 }
 
 func TestEstablishedPureTcpAckBypassesSequenceQueueAndWakesWindow(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	sequence := newEstablishedTcpAckFastPathSequence(t)
 	condition := sequence.receiveAckCondition()
 	waiting := make(chan struct{})
@@ -80,6 +83,9 @@ func TestEstablishedPureTcpAckBypassesSequenceQueueAndWakesWindow(t *testing.T) 
 }
 
 func TestPureTcpAckBeforeHandshakeKeepsOrderedOwnership(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	sequence := newEstablishedTcpAckFastPathSequence(t)
 	sequence.mutex.Lock()
 	sequence.established = false
@@ -102,6 +108,9 @@ func TestPureTcpAckBeforeHandshakeKeepsOrderedOwnership(t *testing.T) {
 }
 
 func TestEstablishedPureTcpAckFastPathDoesNotAllocate(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	sequence := newEstablishedTcpAckFastPathSequence(t)
 	ack := &parsedTcp{ack: true, ackNumber: 300, windowSize: 4_096}
 	// Prime both the packet free list and every lazy sequence helper outside the
@@ -123,6 +132,9 @@ func TestEstablishedPureTcpAckFastPathDoesNotAllocate(t *testing.T) {
 }
 
 func TestTcpBufferDispatchesEstablishedPureAckWithoutQueueing(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	sequence := newEstablishedTcpAckFastPathSequence(t)
 	source := sequence.source
 	tcp := &parsedTcp{

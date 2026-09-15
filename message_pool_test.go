@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	mathrand "math/rand"
+	"os"
+	"sync"
 	"testing"
 )
 
@@ -32,6 +34,9 @@ func TestMessagePoolReadAllLimit(t *testing.T) {
 }
 
 func TestMessagePool(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	ResetMessagePoolStats()
 	for n := range 1024 * 8 {
 		if n%32 == 0 {
@@ -68,6 +73,9 @@ func TestMessagePool(t *testing.T) {
 }
 
 func TestMessagePoolShare(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	holdCount := 16
 	holdMessages := make([][][]byte, holdCount)
 
@@ -131,8 +139,58 @@ func TestMessagePoolShare(t *testing.T) {
 }
 
 func TestMessagePoolPacketOutstandingCountTracksRootOwnershipWithoutAllocating(t *testing.T) {
+	// Force either sign of foreign activity between the two snapshots in the
+	// negative control. The corrected dispatch keeps that owner in its parent.
+	foreignStep := func() func() {
+		mode := os.Getenv(messagePoolSnapshotForeignEnv)
+		if mode == "" {
+			return func() {}
+		}
+		selected := os.Getenv(messagePoolSnapshotRootEnv)
+		if selected != "" && selected != t.Name() || mode != "return" && mode != "take" {
+			t.Fatalf("invalid pool snapshot foreign-owner control %q", mode)
+		}
+		var messages [][]byte
+		if mode == "return" {
+			for range 4 {
+				messages = append(messages, MessagePoolGet(DefaultMtu))
+			}
+		}
+		transition := make(chan struct{})
+		joined := make(chan struct{})
+		var once sync.Once
+		go func() {
+			<-transition
+			if mode == "return" {
+				for _, message := range messages {
+					MessagePoolReturn(message)
+				}
+				messages = nil
+			} else {
+				for range 4 {
+					messages = append(messages, MessagePoolGet(DefaultMtu))
+				}
+			}
+			close(joined)
+		}()
+		step := func() {
+			once.Do(func() { close(transition) })
+			<-joined
+		}
+		t.Cleanup(func() {
+			step()
+			for _, message := range messages {
+				MessagePoolReturn(message)
+			}
+		})
+		return step
+	}()
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	baseline := MessagePoolPacketOutstandingCount()
 	baselineBytes := MessagePoolPacketOutstandingByteCount()
+	foreignStep()
 	message := MessagePoolGet(DefaultMtu)
 	if got := MessagePoolPacketOutstandingCount(); got != baseline+1 {
 		t.Fatalf("packet outstanding after take = %d, want %d", got, baseline+1)
@@ -173,6 +231,9 @@ func TestMessagePoolPacketOutstandingCountTracksRootOwnershipWithoutAllocating(t
 }
 
 func TestMessagePoolSmallPacketClassUsesByteSizedRoot(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	baselineCount := MessagePoolPacketOutstandingCount()
 	baselineBytes := MessagePoolPacketOutstandingByteCount()
 	message := MessagePoolGet(80)
@@ -253,6 +314,9 @@ func TestMessagePoolRootByteCountChargesBackingClass(t *testing.T) {
 }
 
 func TestMessagePoolDeviceTunEgressClassificationFollowsRootLifetime(t *testing.T) {
+	if messagePoolSnapshotInFreshProcess(t) {
+		return
+	}
 	baseline := MessagePoolDeviceTunEgressOutstandingByteCount()
 	small := MessagePoolGet(80)
 	full := MessagePoolGet(DefaultMtu)
