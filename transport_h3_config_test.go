@@ -69,9 +69,9 @@ func TestPlatformQuicConfigDefaultsZeroReceiveWindows(t *testing.T) {
 	config := newPlatformQuicConfig(settings, 1)
 
 	if config.InitialStreamReceiveWindow != uint64(kib(256)) ||
-		config.MaxStreamReceiveWindow != uint64(MemoryScaledByteCount(mib(3), kib(384))) ||
+		config.MaxStreamReceiveWindow != uint64(defaultH3MaxStreamReceiveWindowByteCount()) ||
 		config.InitialConnectionReceiveWindow != uint64(kib(512)) ||
-		config.MaxConnectionReceiveWindow != uint64(MemoryScaledByteCount(mib(4), kib(512))) {
+		config.MaxConnectionReceiveWindow != uint64(defaultH3MaxConnectionReceiveWindowByteCount()) {
 		t.Fatalf(
 			"zero-value H3 receive windows resolved to stream=%d/%d connection=%d/%d",
 			config.InitialStreamReceiveWindow,

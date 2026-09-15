@@ -557,21 +557,17 @@ const providerMinTcpGlobalLimit = 512
 const providerMinIcmpUserLimit = 64
 const providerMinIcmpGlobalLimit = 128
 
-// DefaultProviderLocalUserNatSettings is the explicit provider/egress profile.
-// A process that installed a memory budget is a constrained device and gets
-// the scaled per-source/aggregate caps. An unbudgeted desktop/server provider
-// preserves the historical unlimited flow counts: silently assigning it the
-// phone's 512-TCP cap resets established provider traffic under ordinary
-// server-scale load. Keeping this choice here makes provider policy explicit
-// without changing every generic LocalUserNat caller.
+// The targetless provider keeps unlimited flow counts and its tuned UDP idle.
+// Process allocation budgets do not select flow caps; the SDK supplies an
+// explicit provider target when bounded flow tables are required.
 func DefaultProviderLocalUserNatSettings() *LocalUserNatSettings {
 	return DefaultProviderLocalUserNatSettingsWithMemoryTarget(0)
 }
 
 // DefaultProviderLocalUserNatSettingsWithMemoryTarget sizes the provider
 // profile from the owner's provider memory target (the per-device share, see
-// the sdk device wiring). 0 keeps the legacy behavior: process-budget-scaled
-// caps, or unlimited flow counts for an unbudgeted server/desktop provider.
+// the sdk device wiring). 0 is the targetless profile above: unlimited flow
+// counts and the provider udp idle, whether or not a process budget is set.
 func DefaultProviderLocalUserNatSettingsWithMemoryTarget(targetByteCount ByteCount) *LocalUserNatSettings {
 	settings := DefaultLocalUserNatSettings()
 	if 0 < targetByteCount {
@@ -633,18 +629,19 @@ func DefaultProviderLocalUserNatSettingsWithMemoryTarget(targetByteCount ByteCou
 		)
 		return settings
 	}
-	if MemoryBudget() <= 0 {
-		// unbudgeted: keep the unlimited flow counts and give plain-udp NAT
-		// bindings the provider-tuned idle instead of the general short reap
-		settings.UdpBufferSettings.IdleTimeout = providerUdpIdleTimeout
-		return settings
-	}
-	settings.UdpBufferSettings.UserLimit = MemoryScaledCount(512, 64)
-	settings.UdpBufferSettings.GlobalLimit = MemoryScaledCount(2048, 256)
-	settings.TcpBufferSettings.UserLimit = MemoryScaledCount(256, 32)
-	settings.TcpBufferSettings.GlobalLimit = MemoryScaledCount(512, 64)
-	settings.IcmpBufferSettings.UserLimit = MemoryScaledCount(128, 16)
-	settings.IcmpBufferSettings.GlobalLimit = MemoryScaledCount(256, 32)
+	// no target: unlimited flow counts, and plain-udp NAT bindings get the
+	// provider-tuned idle instead of the general short reap. The generic
+	// constructors above install a process-budget-scaled aggregate cap when a
+	// budget is set; that cap is the constrained-device policy and is not the
+	// provider's, so it is cleared here rather than inherited. A provider that
+	// wants bounded tables passes a target.
+	settings.UdpBufferSettings.UserLimit = 0
+	settings.UdpBufferSettings.GlobalLimit = 0
+	settings.UdpBufferSettings.IdleTimeout = providerUdpIdleTimeout
+	settings.TcpBufferSettings.UserLimit = 0
+	settings.TcpBufferSettings.GlobalLimit = 0
+	settings.IcmpBufferSettings.UserLimit = 0
+	settings.IcmpBufferSettings.GlobalLimit = 0
 	return settings
 }
 

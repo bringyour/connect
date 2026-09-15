@@ -678,13 +678,13 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		H1MaxMessageByteCount:                     DefaultClientSettings().MinimumMessageLenLimit(),
 		PlatformTransportBudget:                   DefaultPlatformTransportBudget(),
 		H1BudgetByteCount:                         MemoryScaledByteCount(kib(512), kib(256)),
-		H3BudgetByteCount:                         MemoryScaledByteCount(mib(8), mib(3)),
+		H3BudgetByteCount:                         defaultH3BudgetByteCount(),
 		H3SocketReadBufferByteCount:               MemoryScaledByteCount(mib(1), kib(256)),
 		H3SocketWriteBufferByteCount:              MemoryScaledByteCount(mib(1), kib(256)),
 		H3InitialStreamReceiveWindowByteCount:     kib(256),
-		H3MaxStreamReceiveWindowByteCount:         MemoryScaledByteCount(mib(3), kib(384)),
+		H3MaxStreamReceiveWindowByteCount:         defaultH3MaxStreamReceiveWindowByteCount(),
 		H3InitialConnectionReceiveWindowByteCount: kib(512),
-		H3MaxConnectionReceiveWindowByteCount:     MemoryScaledByteCount(mib(4), kib(512)),
+		H3MaxConnectionReceiveWindowByteCount:     defaultH3MaxConnectionReceiveWindowByteCount(),
 		PtDnsSlowMultiple:                         4,
 		EnableH3Datagrams:                         true,
 		H3DatagramSettings:                        DefaultH3DatagramSettings(),
@@ -711,11 +711,7 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 		kib(512),
 		kib(256),
 	)
-	settings.H3BudgetByteCount = MemoryTargetScaledByteCount(
-		memoryTargetByteCount,
-		mib(8),
-		mib(3),
-	)
+	settings.H3BudgetByteCount = h3BudgetByteCountForMemoryTarget(memoryTargetByteCount)
 	settings.H3SocketReadBufferByteCount = MemoryTargetScaledByteCount(
 		memoryTargetByteCount,
 		mib(1),
@@ -726,16 +722,10 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 		mib(1),
 		kib(256),
 	)
-	settings.H3MaxStreamReceiveWindowByteCount = MemoryTargetScaledByteCount(
-		memoryTargetByteCount,
-		mib(3),
-		kib(384),
-	)
-	settings.H3MaxConnectionReceiveWindowByteCount = MemoryTargetScaledByteCount(
-		memoryTargetByteCount,
-		mib(4),
-		kib(512),
-	)
+	settings.H3MaxStreamReceiveWindowByteCount =
+		h3MaxStreamReceiveWindowByteCountForMemoryTarget(memoryTargetByteCount)
+	settings.H3MaxConnectionReceiveWindowByteCount =
+		h3MaxConnectionReceiveWindowByteCountForMemoryTarget(memoryTargetByteCount)
 	if settings.H3DatagramSettings != nil {
 		settings.H3DatagramSettings.ProcessReassemblyByteCount = int64(
 			MemoryTargetScaledByteCount(
@@ -746,6 +736,76 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 		)
 	}
 	return settings
+}
+
+// H3 reserves an eighth of the target. The stream window uses three quarters
+// of that share; the connection window may use the whole share. These values
+// keep growing above the 64 MiB reference of memory-scaled constants.
+const h3BudgetShareDivisor = 8
+
+const (
+	h3StreamReceiveWindowShareNumerator     = 6
+	h3ConnectionReceiveWindowShareNumerator = 8
+	h3ReceiveWindowShareDenominator         = 8
+)
+
+// Both process defaults and explicit device targets use the same share.
+// Zero preserves the unbudgeted constants through the callers below.
+func h3BudgetShareByteCount(memoryTargetByteCount ByteCount) ByteCount {
+	if memoryTargetByteCount <= 0 {
+		return 0
+	}
+	return memoryTargetByteCount / h3BudgetShareDivisor
+}
+
+// The reservation has an independent admission floor so an explicitly
+// selected H3 carrier still fits the smallest supported host.
+func h3BudgetByteCountForMemoryTarget(memoryTargetByteCount ByteCount) ByteCount {
+	share := h3BudgetShareByteCount(memoryTargetByteCount)
+	if share <= 0 {
+		return MemoryTargetScaledByteCount(memoryTargetByteCount, mib(8), mib(3))
+	}
+	return max(mib(3), share)
+}
+
+func defaultH3BudgetByteCount() ByteCount {
+	return h3BudgetByteCountForMemoryTarget(MemoryBudget())
+}
+
+// Window floors apply to the share itself. Deriving windows from the larger
+// reservation floor would advertise excess credit on small hosts.
+func h3MaxStreamReceiveWindowByteCountForMemoryTarget(
+	memoryTargetByteCount ByteCount,
+) ByteCount {
+	share := h3BudgetShareByteCount(memoryTargetByteCount)
+	if share <= 0 {
+		return MemoryTargetScaledByteCount(memoryTargetByteCount, mib(3), kib(384))
+	}
+	return max(
+		kib(384),
+		share*h3StreamReceiveWindowShareNumerator/h3ReceiveWindowShareDenominator,
+	)
+}
+
+func defaultH3MaxStreamReceiveWindowByteCount() ByteCount {
+	return h3MaxStreamReceiveWindowByteCountForMemoryTarget(MemoryBudget())
+}
+
+func h3MaxConnectionReceiveWindowByteCountForMemoryTarget(
+	memoryTargetByteCount ByteCount,
+) ByteCount {
+	share := h3BudgetShareByteCount(memoryTargetByteCount)
+	if share <= 0 {
+		return MemoryTargetScaledByteCount(memoryTargetByteCount, mib(4), kib(512))
+	}
+	return max(
+		kib(512),
+		share*h3ConnectionReceiveWindowShareNumerator/h3ReceiveWindowShareDenominator,
+	)
+}
+
+func defaultH3MaxConnectionReceiveWindowByteCount() ByteCount {
+	return h3MaxConnectionReceiveWindowByteCountForMemoryTarget(MemoryBudget())
 }
 
 type PlatformTransport struct {
@@ -863,7 +923,7 @@ func newPlatformQuicConfig(
 	}
 	maxStreamReceiveWindow := settings.H3MaxStreamReceiveWindowByteCount
 	if maxStreamReceiveWindow <= 0 {
-		maxStreamReceiveWindow = MemoryScaledByteCount(mib(3), kib(384))
+		maxStreamReceiveWindow = defaultH3MaxStreamReceiveWindowByteCount()
 	}
 	initialConnectionReceiveWindow := settings.H3InitialConnectionReceiveWindowByteCount
 	if initialConnectionReceiveWindow <= 0 {
@@ -871,7 +931,7 @@ func newPlatformQuicConfig(
 	}
 	maxConnectionReceiveWindow := settings.H3MaxConnectionReceiveWindowByteCount
 	if maxConnectionReceiveWindow <= 0 {
-		maxConnectionReceiveWindow = MemoryScaledByteCount(mib(4), kib(512))
+		maxConnectionReceiveWindow = defaultH3MaxConnectionReceiveWindowByteCount()
 	}
 	config := &quic.Config{
 		HandshakeIdleTimeout: time.Duration(slowMultiple) *
@@ -1722,7 +1782,7 @@ func (self *PlatformTransport) h3BudgetByteCount() ByteCount {
 	if 0 < self.settings.H3BudgetByteCount {
 		return self.settings.H3BudgetByteCount
 	}
-	return MemoryScaledByteCount(mib(8), mib(3))
+	return defaultH3BudgetByteCount()
 }
 
 func (self *PlatformTransport) h3SocketReadBufferByteCount() ByteCount {

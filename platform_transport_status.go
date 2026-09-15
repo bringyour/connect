@@ -38,7 +38,7 @@ func PlatformTransportAutoEligibility(
 	}
 	h3ByteCount := settings.H3BudgetByteCount
 	if h3ByteCount <= 0 {
-		h3ByteCount = MemoryScaledByteCount(mib(8), mib(3))
+		h3ByteCount = defaultH3BudgetByteCount()
 	}
 	h1Eligible := !h1Configured || h1ByteCount <= budget.TotalByteCount
 	if h1Configured && h1Eligible {
