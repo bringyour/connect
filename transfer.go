@@ -752,6 +752,24 @@ func defaultInitialWindowByteCount() ByteCount {
 // the memory budget already is, so that turning the rule on is one change.
 var defaultWindowSizing atomic.Int32
 
+func init() {
+	// The rule is the shipping default, because every ceiling this program
+	// raises sits above the transfer window. Under the constant policy that
+	// window stays at `MemoryScaledByteCount(mib(2), kib(256))`, which caps at
+	// 2 MiB for any budget at or above the reference, and the share a sequence
+	// draws is not consulted at all. The H3 and tun draws then have no effect a
+	// flow can reach: the sender never asks for more than the constant allows,
+	// whatever the layers beneath it would have permitted.
+	//
+	// The zero value remains the constant deliberately, so anything that stores
+	// a policy keeps today's meaning for zero, and
+	// `SetWindowSizing(WindowSizingConstant)` stays a one-call rollback that
+	// reproduces the constant window byte for byte. Turning the rule off is
+	// therefore exactly as cheap as turning it on, which is the property the
+	// switch was built to have.
+	defaultWindowSizing.Store(int32(WindowSizingFromDelivery))
+}
+
 // SetWindowSizing chooses how every send window in this process is sized.
 // Constant is today's behaviour exactly; from-delivery turns on the rule with
 // the scale, the ceiling, the shared budget and the target all derived.
