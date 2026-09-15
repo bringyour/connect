@@ -27,9 +27,11 @@ where it stands rather than deleted, because you may have read it:
   the protocol does not contain the 1.5 (§7).
 - The server-tree change of §3.19 is no longer proposed; it is built (§0.6).
 
-And five things are new rather than corrected: what is built and where (§0.6),
+And six things are new rather than corrected: what is built and where (§0.6),
 the landing order with the budget as step 0 and the per-platform ceilings
-(§3.20), the share table as the fourth and last ceiling (§3.22), the
+(§3.20), the share table as the fourth and last ceiling (§3.22), **the
+program's first measured result — the window rule multiplies one flow's
+throughput by 2.4 to 4.0 times at the design round trips (§3.23)**, the
 equilibrium at two thirds and the residence term behind it (§8), and what of
 this program's conclusions is actually pinned by a test (§9).
 
@@ -38,11 +40,25 @@ targets, which was true of the first form of that draw. The share table's
 six-eighths fraction doubles the binding row on today's hardware (§3.22
 fact 4), and §0 is annotated in place to say so.
 
-Nothing in this chain has been measured end to end on real hardware. Every
-cell has used an in-process fixture, this tree's gVisor tunnel, or the hosted
-shape. No cell has used a native operating-system stack. Where a figure below
-is derived rather than measured it says so, and the derivation names the
-constant and the line that produces it.
+**Narrowed, not deleted.** This paragraph used to begin "Nothing in this chain
+has been measured end to end on real hardware." That is now too broad by one
+layer: **the window rule is measured** (§3.23), as paired ratios on an
+instrument that measures its own ceiling first. What remains true, and is
+stated at every figure it applies to: the measurement covers the transfer send
+window and receive hold only, the one layer the rule changes, and **the whole
+chain still is not measured** — not the QUIC or H3 windows, not the gVisor
+tun, not NAT, contracts, sockets or any operating-system stack. Every cell has
+used an in-process fixture, this tree's gVisor tunnel, or the hosted shape. No
+cell has used a native operating-system stack. Where a figure below is derived
+rather than measured it says so, and the derivation names the constant and the
+line that produces it.
+
+One more status change that touches several sections: the window rule is no
+longer default-off. At `f8d564b` on branch `throughput-fix` it became the
+shipping default, with `SetWindowSizing(WindowSizingConstant)` as a one-call
+rollback that reproduces the constant window byte for byte. **That commit is
+on the branch and not on `main`**; on `main` the rule is still off. Every
+place below that said "ships off" is corrected in place to say which tree.
 
 ---
 
@@ -84,9 +100,10 @@ null but because **the step that binds is.**
 **And that is what the fourth ceiling changes** (§3.22): the share table moves
 the binding row itself, on the hardware that ships, without a budget raise.
 What it then runs into is the transfer window's own 2 MiB constant, which the
-delivery-sized rule would replace and which ships off (§3.22 fact 3). Read §0
-as the state of the tree and of the first three steps; read §3.22 for the
-fourth.
+delivery-sized rule replaces — and which is now the default on the branch as
+of `f8d564b`, still off on `main` (§3.22 fact 3, corrected). Read §0 as the
+state of the tree and of the first three steps; read §3.22 for the fourth and
+§3.23 for what the rule measures as.
 
 **Stated plainly: the ceiling raises are worth nothing on any client that
 ships today.** Not because the mechanism is wrong, but because no shipped host
@@ -242,6 +259,8 @@ landing order, not a detail.
 | Built, unmerged | Android idle-reclaim settle gate and trim relay (§3.21) | `sdk` branch `android-trim-reclaim` `67e4f58`; `android` branch `android-trim-reclaim` `2c984a31` |
 | Built, unmerged | Comment-only correction to the proxy's tun buffer maximum | server branch `memory-budget-proxy`, `b057258a` |
 | **Built, unmerged** | The share table (§3.22): eight rows as draws, the three constraints as assertions, and the H3 stream window taken from three eighths of the carrier draw to six — the one landing that reaches today's device targets | connect branch `throughput-shares`, `828d65a` |
+| **Built, unmerged** | The window rule on by default, with `SetWindowSizing(WindowSizingConstant)` as a one-call rollback | connect branch `throughput-fix`, `f8d564b` |
+| **Built, unmerged, and run** | The measurement instrument: the rule's paired ratio against a ceiling measured in the same run (§3.23) | connect branch `throughput-perf`, `5b600a6`, `transfer_throughput_chain_test.go` |
 
 **What step 0 does, and what it does not.** The desktop raise takes the H3
 stream window on macOS, Windows and Linux from 960 KiB to the full unscaled
@@ -613,6 +632,12 @@ further on a small-memory host.
 
 **This is why the send rule ships default-off.** Enabling it without the
 receive side would trade throughput for a loss-recovery regression.
+
+**CORRECTED.** Both halves of that are out of date. The receive side — the
+advertisement and committed-prefix — is built, so the reason no longer holds;
+and at `f8d564b` on branch `throughput-fix` the rule became the shipping
+default, with a one-call rollback to the constant window. On `main` it is
+still off. What it is worth when on is measured in §3.23.
 
 ### 3.8a The window is an admission limit, not an allocation
 
@@ -1297,7 +1322,9 @@ The sentence that makes the landing path legible.
   + share table          830              --
 
 **CORRECTED: this table has an unstated step 0, and without it every row after
-the first is unreachable.** The 71 is the transfer layer's, and it holds on H1
+the first is unreachable.** The 71 is the transfer layer's — now measured at
+71 Mb/s in §3.23's rule-off arm, the one row of this table with a reading
+behind it — and it holds on H1
 and on Auto but not on an H3-only carrier, where the lane is bound at 34 or 40
 before the transfer layer is reached (§0.3). The 160, 415 and 830 are computed
 at a 256 MiB budget with a carriers' draw of an eighth of it. At the values
@@ -1391,8 +1418,9 @@ does**, because it raises a ceiling already four times above the binding one
 (§0). And **step 4 is the only one that does not need step 0**, which also
 makes it the one whose ordering here is misleading: it moves the binder on
 today's hardware. What it then meets is the transfer window's own 2 MiB
-constant at about 71 Mb/s, which step 1's rule would replace and which ships
-off (§3.22 fact 3).
+constant at about 71 Mb/s — now measured at 71 in the rule-off arm of §3.23 —
+which step 1's rule replaces, and which is the branch default since `f8d564b`
+and still off on `main` (§3.22 fact 3).
 
 **What each platform can afford, with the source for each ceiling:**
 
@@ -1541,9 +1569,13 @@ Read from the branch's own functions, at the tree's goodput factor of 0.845
 | 128 MiB | 12 MiB | 425.3 |
 | **256 MiB** | **24 MiB** | **850.6** |
 
-**Derived, not measured**: arithmetic on constants read at their lines. No cell
-has run any row of this table. The design record rounds the last two rows to
-218 and 830; that is rounding, not disagreement.
+**Derived, not measured**: arithmetic on constants read at their lines. The
+design record rounds the last two rows to 218 and 830; that is rounding, not
+disagreement. (Corrected: this used to say no cell has run any row of this
+table. One row now has — the transfer send window and receive hold, §3.23.
+The H3 rows in this table, which are the ones the figures above belong to,
+are still unmeasured, and the instrument that measured the transfer row
+contains no quic-go at all and cannot see them.)
 
 The bottom row is the 830 Mb/s at 200 ms this program was aimed at, and the
 honest statement about it is that **it arrives at a 256 MiB device target
@@ -1573,20 +1605,28 @@ the unscaled 4 MiB constant, because that process sets no budget for the row
 to draw on.
 
 **3. CRITICAL — the transfer row is consulted only under the delivery-sized
-window rule, which ships off.** With the rule at its shipping default the
-transfer window is not a draw at all: it stays at
-`MemoryScaledByteCount(mib(2), kib(256))` (`transfer.go:916`), which caps at
-**2 MiB for any budget at or above the 64 MiB reference** — about 69 to
-71 Mb/s at 200 ms (derived). That is a hard ceiling **below every H3 value
+window rule.** With the rule off the transfer window is not a draw at all: it
+stays at `MemoryScaledByteCount(mib(2), kib(256))` (`transfer.go:916`), which
+caps at **2 MiB for any budget at or above the 64 MiB reference** — about 69
+to 71 Mb/s at 200 ms, derived, and **now measured at 71 Mb/s** in the rule-off
+arm of §3.23 at every payload. That is a hard ceiling **below every H3 value
 this table produces from a 24 MiB target upward.**
 
-Stated plainly, because without it the table promises a rate the shipping
-default cannot deliver: **with the rule off, raising a device target moves the
-H3 row and then stops at the transfer row at about 71 Mb/s.** At a 20 MiB
-target the H3 window's 66.5 is still the binder; from 24 MiB up the transfer
-constant is, and the 212, 425 and 850 figures are unreachable. The table's top
-rows require the window rule on — and the window rule is the switch this
-report has said throughout ships default-off.
+Stated plainly, because without it the table promises a rate the off position
+cannot deliver: **with the rule off, raising a device target moves the H3 row
+and then stops at the transfer row at about 71 Mb/s.** At a 20 MiB target the
+H3 window's 66.5 is still the binder; from 24 MiB up the transfer constant is,
+and the 212, 425 and 850 figures are unreachable.
+
+**CORRECTED: which tree this applies to.** This fact was first written as
+"the window rule, which ships off", and the paragraph above ended by saying
+the rule ships default-off. At `f8d564b` on branch `throughput-fix` the rule
+became the shipping default — precisely because every ceiling this program
+raises sits above the transfer window and none of them could be reached with
+it off — with `SetWindowSizing(WindowSizingConstant)` as a one-call rollback.
+So: **on the branch the transfer row is a draw and the table's top rows are
+reachable; on `main` the rule is off and the 71 Mb/s stop above is the state
+of the tree.** The rule's measured value when on is §3.23.
 
 **4. The stream window moved from three eighths of the draw to six eighths,
 and that is what makes the table reach the hardware.** At three eighths the
@@ -1602,6 +1642,119 @@ the connection window from 1.25 MiB to 2.5 by the same change. That is the one
 place in this program where a landing reaches today's hardware rather than a
 host that does not exist yet. It remains bounded by fact 3, and it is derived
 rather than measured.
+
+### 3.23 The first measured result: the window rule is worth 2.4x to 4.0x at the design round trips
+
+Every rate in this report before this section is one of two things: a
+constant read at a line over a round trip, or a single in-process reading of
+one arm taken on a fixture whose own ceiling had not been measured. This is
+the first reading of the thing the program exists to produce, taken under the
+instrument rule of §6.
+
+**Turning the delivery-sized window rule on multiplies one flow's throughput
+by 2.4 to 4.0 times at 200 and 400 ms round trips.** Measured on this host as
+ratios between interleaved arms; the instrument is
+`transfer_throughput_chain_test.go` on branch `throughput-perf`
+(`TestTheChainAtTheDesignPoint`, gated behind `CONNECT_THROUGHPUT_MEASURE`).
+
+| Payload | Round trip | Rule off | Rule on | Paired ratio | Per-repetition range | n |
+|---|---|---|---|---|---|---|
+| 1 KiB | 200 ms | 71 Mb/s | 284 | **4.01x** | 3.96–4.06 | 6 |
+| 4 KiB | 200 ms | 75 | 293 | **3.82x** | 2.07–4.04 | 7 |
+| 16 KiB | 200 ms | 71 | 190 | **2.92x** | 0.90–3.54 | 7 |
+| 1 KiB | 400 ms | 35 | 137 | **3.89x** | 2.21–3.91 | 7 |
+| 4 KiB | 400 ms | 38 | 129 | **3.83x** | 2.39–10.36 | 7 |
+| 16 KiB | 400 ms | 34 | 88 | **2.42x** | 1.86–4.37 | 7 |
+
+The ratio is paired: both arms of a row run adjacent inside one repetition, in
+an order that alternates with the repetition, so the ratio is taken within a
+repetition and the median over repetitions. **The multiple is the result. The
+absolute rates on this host mean nothing** and are not to be compared against
+other hardware — the rule of §5 throughout.
+
+Two of the report's earlier numbers are now placed by this one. The rule-off
+arm reads 71 Mb/s at 200 ms at 1 and 16 KiB, which is the 2 MiB constant
+window over the round trip that §3.1 derived and §3.17 quoted as "today"; it
+is now measured rather than derived. And the earlier multiples in this report
+— 1.7 to 2.3 in §3.3 and §3.6a against the overshooting rule, 1.23 in §3.15,
+2.46 to 2.73 with the advertisement — were readings on fixtures without a
+measured ceiling and against earlier forms of the rule. They are not
+contradicted, but this table supersedes them as the figure to quote.
+
+#### Why these numbers are not the harness
+
+The instrument measures its own ceiling **first, in every repetition, at every
+payload**, with the window seeded past any bound and the delay element at
+1 ms, and prints the headroom between every arm and that ceiling. A rate
+within 70% of the ceiling prints CENSORED rather than as a result. **No arm in
+this run came within 5x of its ceiling** — the smallest headroom was 5.2x, on
+the rule-on 1 KiB arm at 200 ms; every other arm sat 7x to 77x below. This is
+the rule this program adopted after its earlier "50 Mb/s ceiling" turned out
+to be the fixture's own frame pump (§5), and it is the reason the previous
+sentence can be written at all. Nothing here is compared against the 509 or
+1,313 Mb/s of §5, which are another configuration's numbers.
+
+#### The limits, which must be read as part of the number
+
+- **One layer.** The fixture contains exactly one row of the share table: the
+  transfer send window and the receive hold, joined by four Go channels with a
+  goroutine-per-frame pump imposing the delay on the acknowledgement half.
+  That is the layer the rule changes, and that is what is measured. **It does
+  not contain QUIC or H3 windows, the gVisor tun, NAT, contracts, sockets or
+  any operating-system stack.** So it is a measurement of the rule, not of the
+  end-to-end path, and the 190 Mb/s in the 16 KiB row is what the transfer
+  layer permits, not what a client would see. The whole chain is still
+  unmeasured.
+- **Resolution.** Seven repetitions resolve differences of about 15% and no
+  less; a ratio inside 1.0 ± 0.15 is not a finding, and neither is one whose
+  per-repetition range straddles 1.0. **By that criterion the 16 KiB/200 ms
+  row is the weakest of the six**: one of its seven repetitions read 0.90,
+  with the rule-on window collapsed to 1.4 MiB — the rule sizing itself from a
+  delivery rate the host had taken away — so its range straddles 1.0 and the
+  instrument's own footer counts that against it. The 2.92x median and the 71
+  → 190 figure stand on the other six repetitions and should be quoted with
+  that attached. The 2.4 to 4.0 band rests on the other five rows, whose
+  ranges do not touch 1.0.
+- **Host load.** Ten cores, load average 21.9 at the start of the run and 8.2
+  at the end. Three of seven repetitions had their instrument ceiling drift
+  more than 20% from the median and were **excluded from the absolute rates**;
+  the medians above are over the four clean ones. **The ratios keep all seven,
+  because each is computed inside one repetition and divides the instrument
+  out.** Cells that read above two runnable threads per core are discarded
+  outright; one such cell was dropped from the 1 KiB/200 ms row, which is why
+  it has n = 6.
+
+#### The budget sweep: throughput rises with the process budget until the target clamp
+
+With the rule on, 16 KiB, 200 ms, the process budget M swept:
+
+| M | Median | Window | Note |
+|---|---|---|---|
+| 20 MiB | 83 Mb/s | 2.2 MiB | |
+| 24 MiB | 89 | 2.8 MiB | |
+| 32 MiB | 122 | 3.8 MiB | |
+| 64 MiB | 190 | 6.1 MiB | the headline arm |
+| 128 MiB | 272 | 15.8 MiB | |
+| 256 MiB | 330 | 28.9 MiB | **TARGET** |
+
+**Throughput rises with the budget, and by 256 MiB the one-gigabit target
+clamp binds** (`targetGoodputByteRate`, `transfer.go:694` on the branch): the
+window at 256 MiB was set by the target, not by the M/8 share, so **budgets
+above about 200 MiB add nothing at this round trip.** The rise is measured;
+the 200 MiB knee is where the clamp's arithmetic and the 256 MiB TARGET flag
+place it, not a separately measured point. Absolute rates, this host only.
+
+Two things this sweep is not. It is **not the per-device target** — M here is
+`SetMemoryBudget`, from which each transfer direction draws M/8, and the H3
+rows that read the device target are not in this fixture at all. And it is
+**not the number a shipped phone reads**: on a shipped client the sdk attaches
+a target-derived budget to the device that bypasses M/8 for these two queues
+(§0.1), so the sweep is the shape of the surface, not a shipped value.
+
+The same run swept the transfer row's divisor, 1/4 and 1/16 against the
+production 1/8: 231 and 109 Mb/s against 190, in the expected direction, but
+both ranges straddle 1.0 at seven repetitions and **neither is a finding**.
+The divisor stays a campaign value.
 
 ## 4. What is still open
 
@@ -1628,16 +1781,21 @@ Open, and added since:
 | Is a window-limited stream's rate window/RTT or window/1.5 RTT? | Derived from the protocol as window/RTT (§7). A cell to settle it is specified with the value that would refute it |
 | Does the desktop target raise survive on a Mac? | Unbuilt in this checkout for an unrelated reason; nobody has run it (§0.6) |
 | Does the share table's doubled stream window measure as 66.5 Mb/s at a 20 MiB target? | **Predicted, untested.** Every row of §3.22 is derived from constants; no cell has run one. Refuted by a reading at or near 34, which would mean something below the stream window binds first |
-| Is the transfer window's 2 MiB constant the binder above a 24 MiB target, as §3.22 fact 3 derives? | **Predicted, untested.** Refuted by a rate above about 71 Mb/s at 200 ms with the window rule off |
+| Is the transfer window's 2 MiB constant the binder above a 24 MiB target, as §3.22 fact 3 derives? | **Half measured.** The constant's bound is measured at 71 Mb/s at 200 ms with the rule off (§3.23, the rule-off arm), matching the derivation. That it is the binder *against the H3 rows* is still untested, since the instrument has no H3 in it |
+| What is the rule worth end to end? | **Open.** §3.23 measures it at one layer, 2.4 to 4.0x. Nothing above that layer is in the fixture |
 
 RETIRED: an "unattributed ceiling near 190 Mb/s" appears in earlier notes and
 does not survive. The same cell runs 651-671 Mb/s at 5.4 ms. It came from older
 campaigns under different configuration and was never a property of the cell.
 
-The rule ships **default-off**. The reason given in §3.8 — that enabling it
-without the receive side would trade throughput for a loss-recovery regression
-— has been addressed: the advertisement and committed-prefix are built. The
-switch's disposition is now a campaign decision rather than a blocked one.
+The rule ships **default-off** — *CORRECTED: on `main`.* The reason given in
+§3.8 — that enabling it without the receive side would trade throughput for a
+loss-recovery regression — has been addressed: the advertisement and
+committed-prefix are built. On branch `throughput-fix` the rule became the
+shipping default at `f8d564b`, with `SetWindowSizing(WindowSizingConstant)`
+as a one-call rollback to the constant window; its measured value is §3.23.
+The earlier text here said the switch's disposition was a campaign decision.
+On the branch it has been made; on `main` it has not.
 
 ---
 
