@@ -267,8 +267,8 @@ func TestTheShareTableShape(t *testing.T) {
 			"transfer.go, tun.go and transport.go. Change a divisor there and this table\n" +
 			"changes; nothing in this file carries a copy of it.\n" +
 			"\n" +
-			"The transfer row is consulted only under WindowSizingFromDelivery, which is the\n" +
-			"shipping default as of f8d564b. With the rule off the transfer window is\n" +
+			"The transfer row is consulted only under WindowSizingFromDelivery, which shipped\n" +
+			"on at f8d564b and is now off by default (transfer.go init). With the rule off the transfer window is\n" +
 			"MemoryScaledByteCount(mib(2), kib(256)) and caps at 2 MiB for any M at or above\n" +
 			"the reference, which binds below every H3 value in the table at every T. So\n" +
 			"with the rule off, raising T moves the H3 rows and then stops at the transfer\n" +
@@ -515,9 +515,11 @@ type chainReading struct {
 //
 // The headline pair is the window rule off against on at the round trips the
 // product is designed for (§38). `WindowSizingConstant` is the tree before
-// f8d564b byte for byte and `WindowSizingFromDelivery` is the shipping default
-// after it, and the switch is the production surface rather than a test seam,
-// which is what makes the two arms the same binary with one call changed.
+// f8d564b byte for byte, and again the shipping default since the rule was
+// measured at a loss on short paths (the `init` in transfer.go);
+// `WindowSizingFromDelivery` is the rule, one call away. The switch is the
+// production surface rather than a test seam, which is what makes the two arms
+// the same binary with one call changed.
 //
 // The headline runs at a 64 MiB process budget, the reference, because that is
 // where `memoryTargetScale` returns one and the constant arm's window is its full

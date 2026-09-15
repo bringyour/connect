@@ -754,21 +754,34 @@ func defaultInitialWindowByteCount() ByteCount {
 var defaultWindowSizing atomic.Int32
 
 func init() {
-	// The rule is the shipping default, because every ceiling this program
-	// raises sits above the transfer window. Under the constant policy that
-	// window stays at `MemoryScaledByteCount(mib(2), kib(256))`, which caps at
-	// 2 MiB for any budget at or above the reference, and the share a sequence
-	// draws is not consulted at all. The H3 and tun draws then have no effect a
-	// flow can reach: the sender never asks for more than the constant allows,
-	// whatever the layers beneath it would have permitted.
+	// The rule ships OFF. Every ceiling this program raises sits above the
+	// transfer window, so under the constant policy that window stays at
+	// `MemoryScaledByteCount(mib(2), kib(256))`, 2 MiB for any budget at or
+	// above the reference, and the share a sequence draws is not consulted at
+	// all; the H3 and tun draws then have no effect a flow can reach. That is
+	// accepted for now because the rule, measured end to end, costs more than
+	// it buys on the paths that carry most traffic.
+	//
+	// Measured on a VPS rig (kernel-TUN client -> websocket relay -> provider
+	// in one datacenter, network RTT about 0.3 ms), same binaries, the only
+	// difference being this call: with the rule on, 8 flows ran 270 Mb/s
+	// against 656 under the constant and 1 flow 251 against 772 (with the
+	// receiver's gap-ack wake; upstream alone read 261 against 466 and 246
+	// against 593), a 44 to 67 per cent loss. That is the report's own §8.3
+	// short-path defect: the growth factor falls below one once the ack
+	// compression delay exceeds the measured minimum round trip. At about
+	// 100 ms the rule gained 57 per cent for one flow (126 -> 198 Mb/s) and
+	// lost 38 per cent for eight (129 -> 80) with a budgeted client. Until the
+	// rule is aware of the round trip and of loss, the constant is the default
+	// and `SetWindowSizing(WindowSizingFromDelivery)` turns the rule on.
 	//
 	// The zero value remains the constant deliberately, so anything that stores
 	// a policy keeps today's meaning for zero, and
 	// `SetWindowSizing(WindowSizingConstant)` stays a one-call rollback that
-	// reproduces the constant window byte for byte. Turning the rule off is
-	// therefore exactly as cheap as turning it on, which is the property the
+	// reproduces the constant window byte for byte. Turning the rule on is
+	// therefore exactly as cheap as turning it off, which is the property the
 	// switch was built to have.
-	defaultWindowSizing.Store(int32(WindowSizingFromDelivery))
+	defaultWindowSizing.Store(int32(WindowSizingConstant))
 }
 
 // SetWindowSizing chooses how every send window in this process is sized.
