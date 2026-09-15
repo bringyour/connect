@@ -23,10 +23,25 @@ import (
 // the ceiling, the target and the budget are all off; the window rule reports
 // the constant and says the rule is off whatever the path does; and an
 // acknowledgement carries neither of the fields this program added.
+//
+// The rule now ships on, so this row sets the policy rather than reading the
+// default: it is the rollback that is pinned here, and the rollback is one
+// SetWindowSizing call in the other direction. The row below owns the default.
 func TestTheWindowSizingSwitchOffIsTodaysBehaviour(t *testing.T) {
+	defer SetWindowSizing(DefaultWindowSizing())
+	SetWindowSizing(WindowSizingConstant)
 	settings := DefaultSendBufferSettings()
 	if settings.WindowSizing != WindowSizingConstant {
-		t.Fatalf("the shipping policy is %d rather than the constant window", settings.WindowSizing)
+		t.Fatalf("the rolled-back policy is %d rather than the constant window", settings.WindowSizing)
+	}
+	// the constant window itself, which is what a tree without this program
+	// sizes every sequence at
+	if want := MemoryScaledByteCount(mib(2), kib(256)); settings.ResendQueueMaxByteCount != want {
+		t.Errorf(
+			"the rolled-back window is %d rather than the %d a tree without this program uses",
+			settings.ResendQueueMaxByteCount,
+			want,
+		)
 	}
 	if settings.DeliverySizedWindowScale != 0 ||
 		settings.DeliverySizedWindowCeilingByteCount != 0 ||
@@ -41,11 +56,21 @@ func TestTheWindowSizingSwitchOffIsTodaysBehaviour(t *testing.T) {
 		)
 	}
 
-	// the wire: an acknowledgement under the shipping configuration carries
+	// the wire: an acknowledgement under the rolled-back configuration carries
 	// neither the advertised capacity nor an eviction notice
 	receiveSettings := DefaultReceiveBufferSettings()
 	if receiveSettings.AdvertiseReceiveWindow {
-		t.Error("the receiver advertises its capacity by default, which changes the wire")
+		t.Error("the rolled-back receiver advertises its capacity, which changes the wire")
+	}
+	if want := MemoryScaledByteCount(mib(2)+kib(512), kib(320)); receiveSettings.ReceiveQueueMaxByteCount != want {
+		t.Errorf(
+			"the rolled-back receive hold is %d rather than the %d a tree without this program holds",
+			receiveSettings.ReceiveQueueMaxByteCount,
+			want,
+		)
+	}
+	if receiveSettings.ReceiveQueueBudget != nil {
+		t.Error("the rolled-back receiver kept a shared budget, so the off path is not today's")
 	}
 	saf := sendAckFrame{
 		path:               DestinationId(NewId()).AddSource(NewId()),
@@ -63,6 +88,282 @@ func TestTheWindowSizingSwitchOffIsTodaysBehaviour(t *testing.T) {
 				field,
 			)
 		}
+	}
+}
+
+// The switch, thrown. Every ceiling this program raises sits above the
+// transfer window, so with the rule off the raises are unreachable: the
+// constant window is `MemoryScaledByteCount(mib(2), kib(256))`, which is 2 MiB
+// at or above the reference budget whatever the host has, and the share a
+// sequence may draw is not consulted at all under the constant policy.
+//
+// This row fails the day the default goes back to the constant without anyone
+// meaning it, which is how the switch came to be built, wired and never
+// thrown. It also pins the thing that makes the flip safe: zero still means
+// constant, so a stored policy keeps its meaning.
+func TestTheShippingWindowSizingDefaultIsTheRule(t *testing.T) {
+	if policy := DefaultWindowSizing(); policy != WindowSizingFromDelivery {
+		t.Fatalf(
+			"the process ships with window sizing policy %d rather than the delivery-sized rule; every ceiling above the transfer window is inert while this is the constant",
+			policy,
+		)
+	}
+	var stored WindowSizingPolicyKind
+	if stored != WindowSizingConstant {
+		t.Fatal("the zero policy is no longer the constant, so anything that stored a policy has silently changed meaning")
+	}
+
+	settings := DefaultSendBufferSettings()
+	if settings.WindowSizing != WindowSizingFromDelivery {
+		t.Fatalf("the shipping send settings carry policy %d", settings.WindowSizing)
+	}
+	if settings.DeliverySizedWindowScale != deliverySizedWindowScale {
+		t.Errorf(
+			"the shipping scale is %d rather than the derived %d",
+			settings.DeliverySizedWindowScale,
+			deliverySizedWindowScale,
+		)
+	}
+	if settings.TargetGoodputByteRate != targetGoodputByteRate {
+		t.Errorf(
+			"the shipping target is %d rather than the derived %d bytes per second",
+			settings.TargetGoodputByteRate,
+			targetGoodputByteRate,
+		)
+	}
+	// Left unset deliberately: the ceiling is the share, read from the queue's
+	// own budget at estimate time, and a total frozen here is what made a
+	// budget attached after apply read zero.
+	if settings.DeliverySizedWindowCeilingByteCount != 0 {
+		t.Errorf(
+			"the shipping settings froze a %d byte ceiling, which a budget attached after apply cannot correct",
+			settings.DeliverySizedWindowCeilingByteCount,
+		)
+	}
+	if !DefaultReceiveBufferSettings().AdvertiseReceiveWindow {
+		t.Error("the shipping receiver does not advertise its capacity, so every sender stays blind and holds the initial bet")
+	}
+}
+
+// The unbudgeted process, which is the one that has to be exactly today's
+// rather than nearly: the hosted proxy and every host that never calls
+// SetMemoryBudget take this path, and a default that changes them cannot be
+// rolled back by a host that does not know it is on it.
+//
+// Exactly, on the send side, and this row states where it stops. The window a
+// sequence admits against is the constant, by the same number, because the
+// share is zero, the queue has no pool, and the estimate returns before any
+// derived term is applied — so admission calls CanAdd with the same bytes it
+// called with under the constant policy. What is not identical, named here so
+// the difference is not discovered later: the sequence allocates the delivery
+// ring the rule samples into, and the receiver advertises its hold on every
+// acknowledgement, which is a wire change on an unbudgeted process too. The
+// advertisement is the rule working as designed — the hold it advertises is
+// the same constant hold — but it is a difference, and "exactly today's"
+// applies to the window and the admission, not to the bytes on the wire.
+func TestTheUnbudgetedProcessKeepsTodaysWindowUnderTheRule(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+	SetMemoryBudget(0)
+
+	ruled := DefaultSendBufferSettings()
+	if ruled.WindowSizing != WindowSizingFromDelivery {
+		t.Fatalf("the shipping policy is %d rather than the rule", ruled.WindowSizing)
+	}
+	if ruled.ResendQueueBudget != nil {
+		t.Fatal("the rule attached a pool to a process with no budget, so the share is being read as a small number rather than as the absence of the surface")
+	}
+	if ruled.WindowSizingActive() {
+		t.Fatal("the rule reports itself active with nothing to draw on")
+	}
+
+	constant := DefaultSendBufferSettings()
+	constant.WindowSizing = WindowSizingConstant
+	constant.ApplyWindowSizing()
+
+	ruledEstimate := windowEstimateForSettings(ruled)
+	constantEstimate := windowEstimateForSettings(constant)
+	t.Logf(
+		"unbudgeted: rule window %d reason %q against constant window %d reason %q",
+		ruledEstimate.Window, ruledEstimate.Reason,
+		constantEstimate.Window, constantEstimate.Reason,
+	)
+	if ruledEstimate.Window != constantEstimate.Window {
+		t.Errorf(
+			"the rule admits against a %d byte window where the constant admits against %d; an unbudgeted process must not change when the rule is turned on",
+			ruledEstimate.Window,
+			constantEstimate.Window,
+		)
+	}
+	if ruledEstimate.Window != ruled.ResendQueueMaxByteCount {
+		t.Errorf(
+			"the window is %d rather than the constant %d the settings carry",
+			ruledEstimate.Window,
+			ruled.ResendQueueMaxByteCount,
+		)
+	}
+	if ruledEstimate.Sized {
+		t.Error("the rule reported a sized window with no budget to size against")
+	}
+	// the reason is the difference a reader has: same number, and it says why
+	if ruledEstimate.Reason == constantEstimate.Reason {
+		t.Errorf(
+			"both policies report %q; an unbudgeted process under the rule should say it is holding the constant for want of a budget",
+			ruledEstimate.Reason,
+		)
+	}
+
+	// and the receive side, where it is not identical: the hold is the same
+	// constant and it is now advertised
+	receive := DefaultReceiveBufferSettings()
+	if !receive.AdvertiseReceiveWindow {
+		t.Error("the unbudgeted receiver does not advertise, so a peer cannot size to it at all")
+	}
+	if receive.ReceiveQueueBudget != nil {
+		t.Error("the unbudgeted receiver drew a pool from a budget that does not exist")
+	}
+	if want := MemoryScaledByteCount(mib(2)+kib(512), kib(320)); receive.ReceiveQueueMaxByteCount != want {
+		t.Errorf(
+			"the unbudgeted hold is %d rather than today's constant %d",
+			receive.ReceiveQueueMaxByteCount,
+			want,
+		)
+	}
+}
+
+// What the rule derives at the budgets that ship, so a later change to a
+// divisor cannot quietly produce a window smaller than the constant it
+// replaced. Every expected value here is computed from the budget by the same
+// arithmetic the code uses, not copied from a run.
+//
+// The comparison that matters is at one budget: the rule's ceiling against the
+// constant window the same host would otherwise have used. A raise has to hold
+// at every budget, including the ones where the memory scale has already cut
+// the constant down.
+//
+// The unbudgeted process is the case to read carefully, because the hosted
+// proxy and any host that never calls SetMemoryBudget take it. There the share
+// is zero — the absence of the surface, not a small share — so the rule stays
+// inert and the sequence keeps today's constant rather than falling to a
+// floor.
+func TestTheDerivedWindowQuantitiesAtTheShippedBudgets(t *testing.T) {
+	defer SetMemoryBudget(0)
+	budgets := []struct {
+		name            string
+		budgetByteCount ByteCount
+	}{
+		{"unbudgeted", 0},
+		{"the 8 MiB legacy host target", mib(8)},
+		{"a 20 MiB device target", mib(20)},
+		{"a 24 MiB device target", mib(24)},
+		{"the 32 MiB phone budget", mib(32)},
+		{"the 64 MiB reference", mib(64)},
+		{"a 256 MiB desktop budget", mib(256)},
+		{"an 8 GiB provider", gib(8)},
+	}
+	for _, budget := range budgets {
+		SetMemoryBudget(budget.budgetByteCount)
+		// today's window and hold at this same budget: what the host would
+		// have had with the rule off
+		constantWindow := MemoryScaledByteCount(mib(2), kib(256))
+		constantHold := MemoryScaledByteCount(mib(2)+kib(512), kib(320))
+		share := transferBudgetShareByteCount()
+		send := DefaultSendBufferSettings()
+		receive := DefaultReceiveBufferSettings()
+
+		if budget.budgetByteCount <= 0 {
+			if 0 != share {
+				t.Errorf("%s: the share is %d rather than nothing", budget.name, share)
+			}
+			if send.ResendQueueBudget != nil {
+				t.Errorf("%s: the rule attached a budget to a process that has none", budget.name)
+			}
+			if send.WindowSizingActive() {
+				t.Errorf("%s: the rule reports itself active with no budget to draw on", budget.name)
+			}
+			// the initial bet on this path, which is the whole window there
+			if send.ResendQueueMaxByteCount != constantWindow {
+				t.Errorf(
+					"%s: the window is %d rather than today's constant %d, so an unbudgeted host changed when the rule was turned on",
+					budget.name,
+					send.ResendQueueMaxByteCount,
+					constantWindow,
+				)
+			}
+			if receive.ReceiveQueueMaxByteCount != constantHold {
+				t.Errorf(
+					"%s: the hold is %d rather than today's constant %d",
+					budget.name,
+					receive.ReceiveQueueMaxByteCount,
+					constantHold,
+				)
+			}
+			t.Logf(
+				"%s: share none, window %d (today's constant), hold %d, rule inert",
+				budget.name, send.ResendQueueMaxByteCount, receive.ReceiveQueueMaxByteCount,
+			)
+			continue
+		}
+
+		if want := budget.budgetByteCount / transferBudgetShareDivisor; share != want {
+			t.Errorf("%s: the share is %d rather than the budget's eighth %d", budget.name, share, want)
+		}
+		if send.ResendQueueBudget == nil {
+			t.Fatalf("%s: the rule attached no budget to a budgeted process", budget.name)
+		}
+		if total := send.ResendQueueBudget.TotalByteCount(); total != share {
+			t.Errorf("%s: the send pool holds %d rather than the share %d", budget.name, total, share)
+		}
+		if !send.WindowSizingActive() {
+			t.Errorf("%s: the rule is inert at a budget that has a share", budget.name)
+		}
+		// The ceiling a lone sequence reads: the pool less the floors
+		// guaranteed to other attached queues, of which there are none here.
+		ceiling := send.ResendQueueBudget.LendableByteCount(send.ResendQueueMinByteCount)
+		if ceiling != share {
+			t.Errorf("%s: a lone queue's ceiling is %d rather than the share %d", budget.name, ceiling, share)
+		}
+		if ceiling < constantWindow {
+			t.Errorf(
+				"%s: the rule's ceiling %d is below the constant window %d it replaces, which is a regression rather than a raise",
+				budget.name,
+				ceiling,
+				constantWindow,
+			)
+		}
+		// the hold moves with the window, or it becomes the binder the moment
+		// windows can grow
+		if want := max(share, receive.ReceiveQueueMinByteCount); receive.ReceiveQueueMaxByteCount != want {
+			t.Errorf("%s: the hold is %d rather than %d", budget.name, receive.ReceiveQueueMaxByteCount, want)
+		}
+		if receive.ReceiveQueueMaxByteCount < constantHold {
+			t.Errorf(
+				"%s: the hold %d is below the constant hold %d it replaces",
+				budget.name,
+				receive.ReceiveQueueMaxByteCount,
+				constantHold,
+			)
+		}
+		if receive.ReceiveQueueBudget == nil {
+			t.Errorf("%s: the receiver drew no shared budget", budget.name)
+		}
+		// the blind bet, which is what a sender may hold before it has heard
+		// anything: the receive hold's floor, never more than its own constant
+		blind := min(defaultInitialWindowByteCount(), send.ResendQueueMaxByteCount)
+		if blind <= 0 || send.ResendQueueMaxByteCount < blind {
+			t.Errorf(
+				"%s: the blind bet is %d against a constant window of %d",
+				budget.name,
+				blind,
+				send.ResendQueueMaxByteCount,
+			)
+		}
+		t.Logf(
+			"%s: share %d, ceiling %d against today's window %d, hold %d against today's %d, initial %d, blind %d",
+			budget.name, share, ceiling, constantWindow,
+			receive.ReceiveQueueMaxByteCount, constantHold,
+			send.ResendQueueMaxByteCount, blind,
+		)
 	}
 }
 

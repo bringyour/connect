@@ -82,12 +82,26 @@ type sendWindowHarness struct {
 }
 
 // Sets the receiver's hold, which is what it advertises less what it holds,
-// and turns the advertisement on. The setting ships off (THROUGHPUTFIX §37.15
-// holds step two behind the multi-route failover cell), so a row that wants the
-// advertisement asks for it here and no row gets it by default.
+// and turns the advertisement on.
+//
+// The advertisement used to ship off, so a row that wanted it asked here and no
+// row got it by default. It now ships ON, with the window rule (`f8d564b`), so
+// the pair below is what a row chooses between: this makes the peer a modern
+// receiver with a stated hold, and `receiveNoAdvertisement` makes it a legacy
+// one. Neither is the default any more, and a row that says "no advertisement"
+// while taking the default is measuring a modern peer under a legacy name —
+// which is exactly what happened to TestALargerWindowIsFasterAtALongRoundTrip
+// the day the rule shipped on.
 func (self *sendWindowHarness) receiveHold(byteCount ByteCount) {
 	self.receiver.settings.ReceiveBufferSettings.ReceiveQueueMaxByteCount = byteCount
 	self.receiver.settings.ReceiveBufferSettings.AdvertiseReceiveWindow = true
+}
+
+// Makes the peer a legacy receiver: one that acknowledges and says nothing
+// about its hold, which is the peer the sender's own constant clamp exists for
+// (THROUGHPUTFIX §37.21, branch two).
+func (self *sendWindowHarness) receiveNoAdvertisement() {
+	self.receiver.settings.ReceiveBufferSettings.AdvertiseReceiveWindow = false
 }
 
 func newSendWindowHarness(
@@ -1026,6 +1040,15 @@ func TestALargerWindowIsFasterAtALongRoundTrip(t *testing.T) {
 		})
 		if advertise {
 			harness.receiveHold(ceiling)
+		} else {
+			// Asked for explicitly since the rule ships on: without this the
+			// "no advertisement" arm gets a receiver advertising the harness's
+			// own 64 MiB hold, the sender takes the peer-capacity branch, and
+			// the arm measures a modern peer while claiming to measure a
+			// legacy one. The ceiling it then reported, 16515072, is the
+			// sender's own budget less another queue's floor — the
+			// advertisement branch, not a hole in the legacy clamp.
+			harness.receiveNoAdvertisement()
 		}
 		start := time.Now()
 		harness.offer(t, 4*1024, offerWindow)
