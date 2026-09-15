@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"math"
 	mathrandv2 "math/rand/v2"
 	"testing"
 	"unsafe"
@@ -276,6 +277,19 @@ func buildEquivalentAckFrame(m *sendAckFrame) *protocol.TransferFrame {
 	if m.missingContractId != nil {
 		missingContractId = m.missingContractId.Bytes()
 	}
+	// `receive_window_byte_count` is optional, so the oracle carries presence
+	// separately from value. Reading the value alone would make an absent
+	// capacity and an explicit zero the same message, which is the collapse the
+	// keyword exists to prevent: absent is a peer that does not advertise and
+	// takes the sender's own constant, zero is a receiver stating it has no
+	// room and is clamped to the working floor. An oracle that merged them
+	// could not see a codec that merged them
+	// (`TestAnAbsentCapacityAndAZeroCapacityTakeDifferentBranches`).
+	var receiveWindowByteCount *uint64
+	if m.receiveWindowSet {
+		value := m.receiveWindowByteCount
+		receiveWindowByteCount = &value
+	}
 	ack := &protocol.Ack{
 		MessageId:               m.messageId.Bytes(),
 		SequenceId:              m.sequenceId.Bytes(),
@@ -285,6 +299,8 @@ func buildEquivalentAckFrame(m *sendAckFrame) *protocol.TransferFrame {
 		CompactContractRecovery: m.compactContractRecovery,
 		LogicalLaneVersion:      m.logicalLaneVersion,
 		ContractAhead:           m.contractAhead,
+		ReceiveWindowByteCount:  receiveWindowByteCount,
+		EvictedSequenceNumbers:  m.evictedSequenceNumbers,
 	}
 	tf := &protocol.TransferFrame{
 		TransferPath: m.path.ToProtobuf(),
@@ -363,6 +379,116 @@ func TestAckCodecEdgeCases(t *testing.T) {
 			logicalLaneVersion: transferLogicalLaneVersion,
 			contractAhead:      true,
 		},
+		// field 8, the advertised capacity. It is the OUTERMOST clamp on every
+		// send window, so a marshal that drops or corrupts it is silent in the
+		// worst way: the field simply reads absent, the sender takes the legacy
+		// branch, and a peer that offered thirty mebibytes is sent two. That
+		// looks exactly like correct legacy behaviour.
+		"advertised capacity zero": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			receiveWindowSet:       true,
+			receiveWindowByteCount: 0,
+		},
+		"advertised capacity one byte varint": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			receiveWindowSet:       true,
+			receiveWindowByteCount: 127,
+		},
+		"advertised capacity two byte varint": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			receiveWindowSet:       true,
+			receiveWindowByteCount: 128,
+		},
+		"advertised capacity shipping hold": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			receiveWindowSet:       true,
+			receiveWindowByteCount: 2 * 1024 * 1024,
+		},
+		"advertised capacity max": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			receiveWindowSet:       true,
+			receiveWindowByteCount: math.MaxUint64,
+		},
+		// field 9, the eviction notice. A marshal bug here means an eviction is
+		// never confessed, and the sender holds a lease on withdrawn bytes
+		// until its selective acknowledgement timeout - a minute - which again
+		// is indistinguishable from a peer that simply does not send the field.
+		"eviction notice empty": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			evictedSequenceNumbers: []uint64{},
+		},
+		"eviction notice one": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			evictedSequenceNumbers: []uint64{1},
+		},
+		"eviction notice zero sequence number": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			evictedSequenceNumbers: []uint64{0},
+		},
+		// Every varint length boundary in one packed body, which is where a
+		// hand-rolled marshal goes wrong: the body length is summed in one pass
+		// and written in another, so a size function and an append function
+		// that disagree about any one value produce a body whose declared
+		// length does not match its contents.
+		"eviction notice varint boundaries": {
+			path:       TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:  idC,
+			sequenceId: idA,
+			evictedSequenceNumbers: []uint64{
+				0,
+				127, 128,
+				16383, 16384,
+				2097151, 2097152,
+				268435455, 268435456,
+				34359738367, 34359738368,
+				4398046511103, 4398046511104,
+				562949953421311, 562949953421312,
+				72057594037927935, 72057594037927936,
+				math.MaxUint64,
+			},
+		},
+		// the largest generation one acknowledgement carries, which is what the
+		// field's own comment means by splitting a large generation across
+		// acknowledgements: this is the size of one of those pieces
+		"eviction notice full generation": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			evictedSequenceNumbers: ackCodecTestEvictionGeneration(evictionNoticeMaxCount),
+		},
+		// both new fields beside every older one, so field ordering across the
+		// whole message is exercised rather than each field in isolation
+		"every field together": {
+			path:                    TransferPath{DestinationId: idA, SourceId: idB, StreamId: idC},
+			messageId:               idC,
+			sequenceId:              idA,
+			selective:               true,
+			tagSendTime:             1_700_000_000_000,
+			tagSet:                  true,
+			missingContractId:       &idD,
+			compactContractRecovery: true,
+			logicalLaneVersion:      transferLogicalLaneVersion,
+			receiveWindowSet:        true,
+			receiveWindowByteCount:  30 * 1024 * 1024,
+			evictedSequenceNumbers:  []uint64{7, 8, 9, 1 << 20},
+			contractAhead:           true,
+		},
 	}
 	for _, m := range cases {
 		assertAckCodecMatches(t, m)
@@ -421,7 +547,209 @@ func TestAckCodecRandomized(t *testing.T) {
 		case 1:
 			m.tagSet = true
 		}
+		// field 8, three ways, because presence and value are independent: not
+		// advertised, advertised as zero, advertised at a random magnitude
+		switch mathrandv2.IntN(3) {
+		case 0:
+			m.receiveWindowSet = true
+		case 1:
+			m.receiveWindowSet = true
+			m.receiveWindowByteCount = mathrandv2.Uint64()
+		}
+		// field 9, with lengths that cross the packed body's own varint
+		// boundary as well as each element's
+		switch mathrandv2.IntN(4) {
+		case 0:
+			m.evictedSequenceNumbers = []uint64{}
+		case 1:
+			count := 1 + mathrandv2.IntN(8)
+			m.evictedSequenceNumbers = make([]uint64, 0, count)
+			for range count {
+				m.evictedSequenceNumbers = append(
+					m.evictedSequenceNumbers, mathrandv2.Uint64())
+			}
+		case 2:
+			// a body long enough that its own length prefix is multi-byte
+			count := 16 + mathrandv2.IntN(64)
+			m.evictedSequenceNumbers = make([]uint64, 0, count)
+			for range count {
+				m.evictedSequenceNumbers = append(
+					m.evictedSequenceNumbers,
+					uint64(mathrandv2.UintN(1<<uint(1+mathrandv2.IntN(63)))),
+				)
+			}
+		}
 		assertAckCodecMatches(t, m)
+	}
+}
+
+// an eviction generation of consecutive sequence numbers spanning every varint
+// length, which is what a real generation looks like: a run of adjacent numbers
+// from wherever the hold happened to be
+func ackCodecTestEvictionGeneration(count int) []uint64 {
+	generation := make([]uint64, 0, count)
+	for i := range count {
+		generation = append(generation, uint64(i)*0x0101_0101_0101)
+	}
+	return generation
+}
+
+// The distinction the optional keyword exists for, asserted at the wire rather
+// than at the decode.
+//
+// `TestAnAbsentCapacityAndAZeroCapacityTakeDifferentBranches` pins that a nil
+// pointer and a zero take different branches in the window consumer. That is
+// only true if the two survive the wire as different messages, and until the
+// oracle carried field 8 nothing checked that the hand-rolled marshal keeps
+// them apart. A codec that emitted nothing for a zero capacity would turn every
+// receiver stating "no room" into a peer that does not advertise, which is the
+// legacy branch and a two mebibyte window - silently, and looking exactly like
+// correct legacy behaviour.
+func TestTheAckCodecKeepsAnAbsentAndAZeroCapacityApart(t *testing.T) {
+	idA, idB, idC := NewId(), NewId(), NewId()
+	newFrame := func(set bool) *sendAckFrame {
+		return &sendAckFrame{
+			path:             TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:        idC,
+			sequenceId:       idA,
+			receiveWindowSet: set,
+		}
+	}
+
+	absentBytes := marshalSendAckTransferFrame(newFrame(false))
+	defer MessagePoolReturn(absentBytes)
+	zeroBytes := marshalSendAckTransferFrame(newFrame(true))
+	defer MessagePoolReturn(zeroBytes)
+
+	if bytes.Equal(absentBytes, zeroBytes) {
+		t.Fatalf(
+			"an absent capacity and an explicit zero marshal to the same %d bytes. The field is optional precisely so a receiver with no room can be told apart from a peer that does not advertise; merged, every full receiver is read as a legacy peer and given the sender's own constant",
+			len(absentBytes),
+		)
+	}
+
+	for _, entry := range []struct {
+		name  string
+		bytes []byte
+		want  bool
+	}{
+		{"absent", absentBytes, false},
+		{"explicit zero", zeroBytes, true},
+	} {
+		var frame protocol.TransferFrame
+		if !unmarshalTransferFrame(entry.bytes, &frame, true) {
+			t.Fatalf("%s: could not decode the acknowledgement frame", entry.name)
+		}
+		ack := frame.GetAck()
+		if ack == nil {
+			t.Fatalf("%s: the frame carried no acknowledgement", entry.name)
+		}
+		if (ack.ReceiveWindowByteCount != nil) != entry.want {
+			t.Errorf(
+				"%s: the decoded capacity pointer is present=%t, want %t",
+				entry.name, ack.ReceiveWindowByteCount != nil, entry.want,
+			)
+			continue
+		}
+		if entry.want && *ack.ReceiveWindowByteCount != 0 {
+			t.Errorf("%s: the decoded capacity is %d rather than zero", entry.name, *ack.ReceiveWindowByteCount)
+		}
+		// and through the consumer's own decode, which is what the window
+		// consumer reads
+		decoded, err := receiveAckMessageFromProtocol(ack)
+		if err != nil {
+			t.Fatalf("%s: %s", entry.name, err)
+		}
+		if decoded.receiveWindowSet != entry.want {
+			t.Errorf(
+				"%s: receiveWindowSet reads %t after the round trip, want %t",
+				entry.name, decoded.receiveWindowSet, entry.want,
+			)
+		}
+	}
+}
+
+// The eviction generation survives the round trip with its values and its order
+// intact, at the largest size one acknowledgement carries.
+//
+// The packed encoding is where a hand-rolled marshal is most likely to be
+// wrong, because the body length is summed in one pass and written in another:
+// a size function and an append function that disagree about any single value
+// produce a body whose declared length does not match its contents, and the
+// generation then decodes short, long, or not at all. The byte-for-byte
+// comparison above catches that against the library; this asserts what the
+// receiver actually needs, which is that every sequence number it named comes
+// back and comes back in order, because the sender resends exactly what the
+// notice names.
+func TestTheAckCodecRoundTripsAWholeEvictionGeneration(t *testing.T) {
+	idA, idB, idC := NewId(), NewId(), NewId()
+	generation := ackCodecTestEvictionGeneration(evictionNoticeMaxCount)
+
+	frameBytes := marshalSendAckTransferFrame(&sendAckFrame{
+		path:                   TransferPath{DestinationId: idA, SourceId: idB},
+		messageId:              idC,
+		sequenceId:             idA,
+		selective:              true,
+		evictedSequenceNumbers: generation,
+	})
+	defer MessagePoolReturn(frameBytes)
+
+	var frame protocol.TransferFrame
+	if !unmarshalTransferFrame(frameBytes, &frame, true) {
+		t.Fatal("could not decode an acknowledgement carrying a full eviction generation")
+	}
+	ack := frame.GetAck()
+	if ack == nil {
+		t.Fatal("the frame carried no acknowledgement")
+	}
+	if len(ack.EvictedSequenceNumbers) != len(generation) {
+		t.Fatalf(
+			"%d of %d evicted sequence numbers survived the round trip. A generation that decodes short is an eviction never confessed, and the sender holds a lease on those bytes until its selective acknowledgement timeout",
+			len(ack.EvictedSequenceNumbers), len(generation),
+		)
+	}
+	for i, sequenceNumber := range generation {
+		if ack.EvictedSequenceNumbers[i] != sequenceNumber {
+			t.Fatalf(
+				"evicted sequence number %d decoded as %d rather than %d; the sender resends exactly what the notice names, so a corrupted entry is a resend of something that was never withdrawn and a lease kept on something that was",
+				i, ack.EvictedSequenceNumbers[i], sequenceNumber,
+			)
+		}
+	}
+
+	decoded, err := receiveAckMessageFromProtocol(ack)
+	if err != nil {
+		t.Fatalf("decoding the acknowledgement: %s", err)
+	}
+	if decoded.evictions == nil {
+		t.Fatal("the consumer's decode produced no eviction notice from an acknowledgement carrying a full generation")
+	}
+	if len(decoded.evictions.sequenceNumbers) != len(generation) {
+		t.Errorf(
+			"the consumer's decode carried %d of %d evicted sequence numbers",
+			len(decoded.evictions.sequenceNumbers), len(generation),
+		)
+	}
+
+	// an acknowledgement carrying no generation must produce no notice at all,
+	// which is what keeps an ordinary acknowledgement from looking like an
+	// empty confession
+	emptyBytes := marshalSendAckTransferFrame(&sendAckFrame{
+		path:       TransferPath{DestinationId: idA, SourceId: idB},
+		messageId:  idC,
+		sequenceId: idA,
+	})
+	defer MessagePoolReturn(emptyBytes)
+	var emptyFrame protocol.TransferFrame
+	if !unmarshalTransferFrame(emptyBytes, &emptyFrame, true) {
+		t.Fatal("could not decode an acknowledgement with no eviction generation")
+	}
+	emptyDecoded, err := receiveAckMessageFromProtocol(emptyFrame.GetAck())
+	if err != nil {
+		t.Fatalf("decoding the empty acknowledgement: %s", err)
+	}
+	if emptyDecoded.evictions != nil {
+		t.Error("an acknowledgement carrying no evicted sequence numbers produced an eviction notice")
 	}
 }
 
