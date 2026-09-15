@@ -1,0 +1,1 @@
+cores=1.14 hot=14% threads>50%=0

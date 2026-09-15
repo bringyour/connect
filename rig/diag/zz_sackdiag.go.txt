@@ -1,0 +1,14 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): URNETWORK_DIAG_SACK_RELEASE_KIB lets selectively acknowledged bytes, up to that many
+// KiB, stop counting against ResendQueueMaxByteCount admission (TCP-style pipe accounting).
+
+import (
+	"os"
+	"strconv"
+)
+
+var diagSackReleaseBytes = func() ByteCount {
+	v, _ := strconv.Atoi(os.Getenv("URNETWORK_DIAG_SACK_RELEASE_KIB"))
+	return ByteCount(v) * 1024
+}()

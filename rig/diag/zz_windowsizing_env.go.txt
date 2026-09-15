@@ -1,0 +1,12 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): URNETWORK_WINDOW_SIZING=constant applies the documented one-call rollback
+// SetWindowSizing(WindowSizingConstant) at package init (this file's init runs after transfer.go's).
+
+import "os"
+
+func init() {
+	if os.Getenv("URNETWORK_WINDOW_SIZING") == "constant" {
+		SetWindowSizing(WindowSizingConstant)
+	}
+}

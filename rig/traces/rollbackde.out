@@ -1,0 +1,14 @@
+RBDE START 06:46:46
+rd1-MGr-r1 bin=833aa9a1c5d5 goodput=198 md5=fb0afec7e5c9  stall=0
+rd1-MGc-r1 bin=833aa9a1c5d5 goodput=125 md5=fb0afec7e5c9  stall=0
+rd8-MGr-r1 bin=833aa9a1c5d5 goodput=39 md5=fb0afec7e5c9  stall=0
+rd8-MGc-r1 bin=833aa9a1c5d5 goodput=129 md5=fb0afec7e5c9  stall=0
+rd1-MGc-r2 bin=833aa9a1c5d5 goodput=126 md5=fb0afec7e5c9  stall=0
+rd1-MGr-r2 bin=833aa9a1c5d5 goodput=196 md5=fb0afec7e5c9  stall=0
+rd8-MGc-r2 bin=833aa9a1c5d5 goodput=128 md5=fb0afec7e5c9  stall=0
+rd8-MGr-r2 bin=833aa9a1c5d5 goodput=117 md5=fb0afec7e5c9  stall=0
+rd1-MGr-r3 bin=833aa9a1c5d5 goodput=204 md5=fb0afec7e5c9  stall=0
+rd1-MGc-r3 bin=833aa9a1c5d5 goodput=128 md5=fb0afec7e5c9  stall=0
+rd8-MGr-r3 bin=833aa9a1c5d5 goodput=80 md5=fb0afec7e5c9  stall=0
+rd8-MGc-r3 bin=833aa9a1c5d5 goodput=131 md5=fb0afec7e5c9  stall=0
+RBDE DONE 07:03:45

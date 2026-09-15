@@ -218,9 +218,9 @@ func TestAtEquilibriumOccupancyIsHalfTheWindow(t *testing.T) {
 			// delivery term is what sets the window
 			settings.ResendQueueBudget = NewTransferMemoryBudget(mib(64))
 			settings.DeliverySizedWindowCeilingByteCount = mib(64)
-			// the target clamp is a separate mechanism with its own rows, and
-			// it ships on; this row measures the fixed point, so the clamp is
-			// held out
+			// the target clamp is a separate mechanism with its own rows,
+			// derived whenever the rule is switched on; this row measures the
+			// fixed point, so the clamp is held out
 			settings.TargetGoodputByteRate = 0
 		})
 	harness.receiveHold(mib(64))

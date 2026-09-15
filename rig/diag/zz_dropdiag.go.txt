@@ -1,0 +1,26 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): URNETWORK_DIAG_DROP_PPM discards that share (parts per million) of
+// large (>600 byte) H1 websocket messages after the route accepted them, emulating a relay drop.
+
+import (
+	"math/rand/v2"
+	"os"
+	"strconv"
+	"sync/atomic"
+)
+
+var dropDiagPpm = func() int {
+	v, _ := strconv.Atoi(os.Getenv("URNETWORK_DIAG_DROP_PPM"))
+	return v
+}()
+
+var DropDiagCount atomic.Uint64
+
+func dropDiag(n int) bool {
+	if dropDiagPpm <= 0 || n <= 600 || dropDiagPpm <= rand.IntN(1000000) {
+		return false
+	}
+	DropDiagCount.Add(1)
+	return true
+}

@@ -1,0 +1,24 @@
+H1CHECK START 13:33:33
+h1-R1-r1 bin=833aa9a1c5d5 goodput=240 md5=a45ca5fd9dcd  wdiag=      39
+h1-R8-r1 bin=833aa9a1c5d5 goodput=253 md5=a45ca5fd9dcd  wdiag=      39
+h1-K1-r1 bin=833aa9a1c5d5 goodput=706 md5=a45ca5fd9dcd  wdiag=      39
+h1-K8-r1 bin=833aa9a1c5d5 goodput=631 md5=a45ca5fd9dcd  wdiag=      39
+h1-R1-r2 bin=833aa9a1c5d5 goodput=245 md5=a45ca5fd9dcd  wdiag=      39
+h1-R8-r2 bin=833aa9a1c5d5 goodput=300 md5=a45ca5fd9dcd  wdiag=      40
+h1-K1-r2 bin=833aa9a1c5d5 goodput=342 md5=a45ca5fd9dcd  wdiag=      24
+h1-K8-r2 bin=833aa9a1c5d5 goodput=609 md5=a45ca5fd9dcd  wdiag=      38
+H1CHECK DONE 13:44:38
+WEDGE START 13:44:38
+wg1-r1 goodput=734 dumped=1 before[TcpRetransSegs=22185 TcpExtPruneCalled=3666 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4074 TcpExtTCPOFOQueue=6330488 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22195 TcpExtPruneCalled=3666 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4074 TcpExtTCPOFOQueue=6330491 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r2 goodput=221 dumped=1 before[TcpRetransSegs=22195 TcpExtPruneCalled=3666 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4074 TcpExtTCPOFOQueue=6330491 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22258 TcpExtPruneCalled=3667 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4158 TcpExtTCPOFOQueue=6333485 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r3 goodput=236 dumped=1 before[TcpRetransSegs=22258 TcpExtPruneCalled=3667 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4158 TcpExtTCPOFOQueue=6333485 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22295 TcpExtPruneCalled=3668 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4181 TcpExtTCPOFOQueue=6338403 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r4 goodput=506 dumped=1 before[TcpRetransSegs=22295 TcpExtPruneCalled=3668 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4181 TcpExtTCPOFOQueue=6338404 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22307 TcpExtPruneCalled=3673 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4363 TcpExtTCPOFOQueue=6343668 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r5 goodput=767 dumped=1 before[TcpRetransSegs=22307 TcpExtPruneCalled=3673 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4363 TcpExtTCPOFOQueue=6343669 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22317 TcpExtPruneCalled=3676 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4604 TcpExtTCPOFOQueue=6345064 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r6 goodput=82 dumped=1 before[TcpRetransSegs=22317 TcpExtPruneCalled=3676 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4604 TcpExtTCPOFOQueue=6345064 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22332 TcpExtPruneCalled=3677 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4678 TcpExtTCPOFOQueue=6347562 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r7 goodput=840 dumped=1 before[TcpRetransSegs=22332 TcpExtPruneCalled=3677 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4678 TcpExtTCPOFOQueue=6347562 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22346 TcpExtPruneCalled=3679 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4678 TcpExtTCPOFOQueue=6347625 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r8 goodput=390 dumped=1 before[TcpRetransSegs=22346 TcpExtPruneCalled=3679 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4678 TcpExtTCPOFOQueue=6347625 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22359 TcpExtPruneCalled=3680 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4710 TcpExtTCPOFOQueue=6350606 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r9 goodput=176 dumped=1 before[TcpRetransSegs=22360 TcpExtPruneCalled=3680 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4710 TcpExtTCPOFOQueue=6350606 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22368 TcpExtPruneCalled=3681 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4822 TcpExtTCPOFOQueue=6353508 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r10 goodput=778 dumped=1 before[TcpRetransSegs=22368 TcpExtPruneCalled=3681 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4822 TcpExtTCPOFOQueue=6353508 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22379 TcpExtPruneCalled=3681 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4822 TcpExtTCPOFOQueue=6353514 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r11 goodput=765 dumped=1 before[TcpRetransSegs=22379 TcpExtPruneCalled=3681 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4822 TcpExtTCPOFOQueue=6353514 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22392 TcpExtPruneCalled=3681 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4822 TcpExtTCPOFOQueue=6353640 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+wg1-r12 goodput=726 dumped=1 before[TcpRetransSegs=22392 TcpExtPruneCalled=3681 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4822 TcpExtTCPOFOQueue=6353640 TcpExtTCPRcvQDrop=0 ] after[TcpRetransSegs=22403 TcpExtPruneCalled=3681 TcpExtOfoPruned=0 TcpExtTCPBacklogDrop=4822 TcpExtTCPOFOQueue=6353789 TcpExtTCPRcvQDrop=0 ] no SACK acks captured 
+WEDGE DONE 14:02:29

@@ -8,13 +8,15 @@ import (
 // The reverse direction, which everything else in this program leaves out.
 //
 // Every window row built so far tests a modern SENDER against a legacy
-// receiver. The opposite case is live as of the delivery-sized window rule
-// shipping on by default: `DefaultReceiveBufferSettings().AdvertiseReceiveWindow`
-// is now true, so our receiver states a capacity on every acknowledgement - and
-// a legacy sender cannot read `receive_window_byte_count`, will not clamp to
-// it, and may put more in flight than the hold can take. That provokes the very
-// eviction the advertisement exists to prevent, from the one peer that cannot
-// participate in the fix.
+// receiver. The opposite case is live wherever the delivery-sized window rule
+// is turned on: under `SetWindowSizing(WindowSizingFromDelivery)`,
+// `DefaultReceiveBufferSettings().AdvertiseReceiveWindow` is true, so our
+// receiver states a capacity on every acknowledgement - and a legacy sender
+// cannot read `receive_window_byte_count`, will not clamp to it, and may put
+// more in flight than the hold can take. That provokes the very eviction the
+// advertisement exists to prevent, from the one peer that cannot participate
+// in the fix. The rule ships off (the `init` in transfer.go says why), so
+// these rows turn it on explicitly and restore the default.
 //
 // The honest answer, and what this row pins. The receiver is not protected by
 // the advertisement. It is protected by the committed-prefix boundary, and the
@@ -43,6 +45,10 @@ import (
 // `commitHeldPrefix` is called synchronously. No sender, no carrier, no timers,
 // no goroutines, and no dependence on scheduling.
 func TestTheHoldIsSafeAgainstASenderThatIgnoresTheAdvertisement(t *testing.T) {
+	restoreSizing := DefaultWindowSizing()
+	t.Cleanup(func() { SetWindowSizing(restoreSizing) })
+	SetWindowSizing(WindowSizingFromDelivery)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	settings := DefaultClientSettings()
@@ -54,7 +60,7 @@ func TestTheHoldIsSafeAgainstASenderThatIgnoresTheAdvertisement(t *testing.T) {
 	// The receiver states a capacity, which is the premise of the case: if it
 	// did not advertise, a legacy sender would be no different from any other.
 	if !DefaultReceiveBufferSettings().AdvertiseReceiveWindow {
-		t.Fatal("the shipping receiver does not advertise a capacity, so there is no advertisement for a legacy sender to ignore and this row has no case to test")
+		t.Fatal("the receiver does not advertise a capacity with the rule on, so there is no advertisement for a legacy sender to ignore and this row has no case to test")
 	}
 	if DefaultReceiveBufferSettings().ReceiveHoldPolicy != ReceiveHoldCommittedPrefix {
 		t.Fatal("the shipping hold policy is not committed-prefix, so the protection this row asserts is not the one that ships")
@@ -225,6 +231,9 @@ func TestTheHoldIsSafeAgainstASenderThatIgnoresTheAdvertisement(t *testing.T) {
 // an unset field, and either could be moved by a reorder with nothing to read
 // afterwards.
 func TestTheLegacySenderCostRestsOnTheHoldPolicyAndNotOnTheNotice(t *testing.T) {
+	restoreSizing := DefaultWindowSizing()
+	t.Cleanup(func() { SetWindowSizing(restoreSizing) })
+	SetWindowSizing(WindowSizingFromDelivery)
 	settings := DefaultReceiveBufferSettings()
 
 	if settings.ReceiveHoldPolicy != ReceiveHoldCommittedPrefix {
@@ -240,11 +249,12 @@ func TestTheLegacySenderCostRestsOnTheHoldPolicyAndNotOnTheNotice(t *testing.T) 
 		)
 	}
 	// The advertisement is the other half: it is what keeps a MODERN sender
-	// from overrunning at all. Turning it off would not be unsafe, but it would
-	// put every peer on the legacy path and make the bounded resend above the
-	// ordinary case rather than the compatibility case.
+	// from overrunning at all. It comes with the rule, and with the rule off
+	// (the shipping default) every peer is on the legacy path, which is not
+	// unsafe: the bounded resend above is then the ordinary case rather than
+	// the compatibility case, and the hold policy still owns the protection.
 	if !settings.AdvertiseReceiveWindow {
-		t.Error("the shipping receiver does not advertise its capacity, so every sender is on the legacy path and the tentative-resend cost is what every transfer pays rather than what an older peer costs")
+		t.Error("the receiver does not advertise its capacity with the rule on, so every sender is on the legacy path and the tentative-resend cost is what every transfer pays rather than what an older peer costs")
 	}
 	t.Logf(
 		"hold policy %v, advertise %t, capacity %d, eviction notice %t",

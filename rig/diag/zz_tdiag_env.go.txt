@@ -1,0 +1,29 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed)
+
+import (
+	"os"
+	"strconv"
+	"time"
+)
+
+var tdiagEnabled = os.Getenv("URNETWORK_TDIAG") == "1"
+
+func envAckCompressByteCount(def ByteCount) ByteCount {
+	if n, err := strconv.Atoi(os.Getenv("URNETWORK_ACK_COMPRESS_BYTES")); err == nil && 0 <= n {
+		return ByteCount(n)
+	}
+	return def
+}
+
+func envAckCompressTimeout(def time.Duration) time.Duration {
+	v := os.Getenv("URNETWORK_ACK_COMPRESS_US")
+	if v == "off" {
+		return 0
+	}
+	if n, err := strconv.Atoi(v); err == nil && 0 < n {
+		return time.Duration(n) * time.Microsecond
+	}
+	return def
+}

@@ -221,6 +221,11 @@ func TestAdvertisingContractAheadCostsNothingAgainstASenderThatIgnoresIt(t *test
 // how a constant gets back in.
 func TestTheContractAheadThresholdIsDerivedOrTheFloor(t *testing.T) {
 	settings := DefaultSendBufferSettings()
+	// The threshold reads the window estimate, which reaches its delivery
+	// term only under the rule; the rule ships off (the `init` in
+	// transfer.go), so this row turns it on for its own settings.
+	settings.WindowSizing = WindowSizingFromDelivery
+	settings.ApplyWindowSizing()
 	if settings.ContractAheadScale <= 0 {
 		t.Fatal("the shipping settings do not announce contracts ahead at all")
 	}

@@ -1,0 +1,10 @@
+DEG3 START 13:21:24
+dg3-R1-r1 bin=833aa9a1c5d5 goodput=203 client[cores=0.59 provider[cores=0.20 md5=a45ca5fd9dcd  wdiagLines=      36
+dg3-R8-r1 bin=833aa9a1c5d5 goodput=102 client[cores=0.44 provider[cores=0.17 md5=a45ca5fd9dcd  wdiagLines=      26
+dg3-C41-r1 bin=833aa9a1c5d5 goodput=217 client[cores=0.69 provider[cores=0.24 md5=a45ca5fd9dcd  wdiagLines=      37
+dg3-C48-r1 bin=833aa9a1c5d5 goodput=215 client[cores=0.67 provider[cores=0.31 md5=a45ca5fd9dcd  wdiagLines=      38
+dg3-R1-r2 bin=833aa9a1c5d5 goodput=197 client[cores=0.62 provider[cores=0.26 md5=a45ca5fd9dcd  wdiagLines=      38
+dg3-R8-r2 bin=833aa9a1c5d5 goodput=99 client[cores=0.46 provider[cores=0.19 md5=a45ca5fd9dcd  wdiagLines=      27
+dg3-C41-r2 bin=833aa9a1c5d5 goodput=217 client[cores=0.62 provider[cores=0.26 md5=a45ca5fd9dcd  wdiagLines=      38
+dg3-C48-r2 bin=833aa9a1c5d5 goodput=218 client[cores=0.67 provider[cores=0.31 md5=a45ca5fd9dcd  wdiagLines=      38
+DEG3 DONE 13:33:08
