@@ -9511,6 +9511,26 @@ which would mean the lag is longer than the window-plus-channel account.
 
 ### 48.4 What M denotes, and the rule that makes the table one table
 
+Superseded by §52, corrected in place the way §37.16 corrects §37.3.
+The derivation below — that M is the only number a host sets, that a
+device's target T must be a slice of it, M less the pools for a single
+device and M over n for a provider, and that "T a constant beside M" is
+the chain's remaining break and the one fix in front of the share table
+— is withdrawn. T is a constant set beside M, a host sets both, and the
+relationship between them is two constraints to check rather than a
+formula to apply: the backing bound T ≤ 20/34 × M and the collector
+bound 3T ≤ M, which dominates it. What that changes for the figures
+here: the closing question of this subsection, what fraction of M the
+single device's target is, is no longer a question, and neither of its
+two answers is the desktop's reading. A 256 MiB target in a 768 MiB
+process budget satisfies both constraints and gives a 24 MiB stream
+window and about 830 Mb/s at 200 ms; the 254 below — and the 500 the
+same slice gives once §43.2's fractions landed — describe the withdrawn
+derivation and no shipped or proposed pair. What survives below is the
+rest: the owner column on §44's rows, the levels its constraints apply
+at, and the carrier's form on the branch, which needed no further change
+and still needs none.
+
 The coordinator's question was which surface is right. The answer is
 that the table needs both, in one chain, and the defect is that the
 chain is broken in two places. M is the process budget and the only
@@ -10200,3 +10220,145 @@ budget — so that it cannot grow while no aggregate exists, including on
 the day the proxy is given a process budget without one. It logs the gap
 rather than asserting it: 8 MiB of unaccounted heap beside a 24 MiB
 device target whose twenty parts are already fully allocated.
+
+## 52. The device target beside the process budget: a chosen pair, with two constraints to check
+
+Decided, and it withdraws §48.4's derivation. The per-device memory
+target T is a constant set beside the process budget M, not derived from
+it and not a slice of it. In the words of the decision: "I think it
+should be a constant beside it. It's too hard to reason relatively
+otherwise." A host sets both numbers, independently, and the
+relationship between them is a constraint to check rather than a formula
+to apply.
+
+### 52.1 What is withdrawn, and what replaces it
+
+§48.4 argued one chain: M is the process budget and the only number a
+host sets, T must be a slice of it — M less the pools' draw for a
+single-device process, M divided among devices for a provider — and "T
+a constant beside M" was named there as the chain's remaining break, the
+one fix standing in front of the share table. That framing is withdrawn.
+The break is not a break, and the fix it asked for is not to be made.
+
+The reason is the one the decision gives, and it is about reasoning
+rather than arithmetic. A derived T is a number no host can reason about
+locally. A host knows what one device should be allowed to hold: it is
+what that device does, at the path it serves, through the windows of
+§51.3, and it is the number the whole share table is a set of fractions
+of. A host also knows what its process is allowed to cost, which is a
+container limit or a platform kill limit and is a fact about the
+enclosure rather than about any device in it. Deriving the first from
+the second forces every reader of either number to carry the other one
+and the pools' 14/34 split in their head to know what a window will be,
+and it makes a change to the process budget silently move every window
+in the carrier. Two numbers each of which can be read on its own is the
+cheaper record.
+
+So both are set, explicitly, by the host. What the derivation was
+protecting is still protected, by two checks on the pair rather than by
+construction.
+
+### 52.2 The two constraints, as checks on the pair
+
+Backing, which is §44.2's second constraint stated at the top level: the
+device targets plus the message pools must fit inside the process
+budget. The pools take 14 of M's 34 parts (`sdk/sdk.go:514–517`, 12 for
+the packet pool and 2 for the large-object pool), leaving 20 parts for
+the device targets, so on a single-device process
+
+    T ≤ 20/34 × M     (0.588 M)
+
+and on a provider or a hosted proxy the sum of the device targets
+carries the same bound.
+
+Collector: the process budget must be at least three times the device
+target,
+
+    3 × T ≤ M         (T ≤ 0.333 M)
+
+because `sdk.SetMemoryLimit` sets the Go runtime's soft limit to M
+(`sdk/sdk.go:553–569`) and the live heap a device holds amplifies
+roughly threefold at the runtime — what the target itself permits, the
+garbage the same path has produced and the collector has not yet swept,
+and the copies in flight between the two. A target close to its
+process's soft limit does not fail; it collects continuously, which
+spends on the collector exactly the CPU the path was going to use, and
+it presents as a plateau below every window in the table, which is the
+worst way for a memory decision to be wrong because no row in the table
+is visibly violated.
+
+This one dominates: 0.333 M is tighter than 0.588 M at every budget, so
+a pair that satisfies the collector satisfies the backing, and the
+backing constraint is the one that binds only if the collector rule is
+ever relaxed. Both are checked, because the two encode different facts
+and a pair should fail against the fact it actually violates.
+
+### 52.3 What the decision makes reachable: 830 again, at a chosen pair
+
+This moves the program's headline figure, so it is stated with the
+arithmetic.
+
+Under the withdrawn derivation T was forced to 20/34 of M. At a 256 MiB
+process budget the derived target is 150.6 MiB, the stream window at
+`3T/32` (§51.1, six sixty-fourths of the target) is 14.1 MiB, and the
+plateau at 200 ms is about 500 Mb/s — the figure the binder row logged
+beside its asserted ones and the number a reader of §51.5 or of the
+report would have taken as the landing's worth on a desktop. Reaching
+§43.2's 830 needed a 256 MiB target, which under the derivation needed a
+process budget of 256 × 34/20 ≈ 435 MiB: a number no host was going to
+set, and one the record never proposed.
+
+Under the decision the pair is chosen and both constraints are
+satisfied at a budget a host would set. T = 256 MiB with M = 768 MiB:
+768 is exactly three times 256, so the collector rule holds with no
+margin to spare, and 256 is well under 20/34 of 768, which is 452, so
+the backing rule holds with room. The stream window is
+`3 × 256 MiB / 32` = 24 MiB, and 24 MiB over the carrier's 200 ms loop
+at the goodput factor is 850.6 Mb/s, which is §43.2's 830 to the
+record's rounding of MiB to MB. The intermediate step has the same
+shape: T = 128 MiB in M = 384 MiB, a 12 MiB stream window, 425 Mb/s.
+
+So the decision makes the program's target figure reachable again, by a
+pair a host chooses rather than by a derivation. Wherever the record or
+the report says 500, it is describing the derivation this section
+withdraws; the figures that apply are §51.3's, read at the chosen
+target, and 500 now belongs to no pair.
+
+### 52.4 The pairs, and the two declared exceptions
+
+    host                T         M         backing   collector
+    iOS extension       20 MiB    32 MiB    no        no
+    Android             24 MiB    32 MiB    no        no
+    desktop, step one   128 MiB   384 MiB   yes       yes
+    desktop, step two   256 MiB   768 MiB   yes       yes
+
+iOS and Android violate both rules, deliberately, and keep them. The iOS
+pair is not a choice: the packet tunnel provider is killed above 50 MiB
+and the binary with the Go runtime takes about 16 of it (§48.1), so the
+process budget is 32 MiB and the 20 MiB target is 5/8 of it against a
+bound of 1/3. Android mirrors iOS by decision rather than by platform
+limit (§48.6, step 0b) and sits worse, 24 in 32. Both are kill-limit
+bound, both pay the continuous collection the collector constraint
+names, and §48.6's answer for the phones is unchanged: neither has
+memory to give, and what iOS gains from this program is the fractions
+and not the budget.
+
+They are declared exceptions, and declaring them is what gives the
+constraints their force: a pair that violates them without being
+declared is a defect rather than a trade-off someone made.
+
+### 52.5 The test
+
+`TestTheShareTableBinderIsTheH3StreamWindow` carries it. The row
+previously took the two surfaces as free numbers, asserted the binder at
+T = M, and logged what the two candidate derivations of §48.4 would
+produce, the 500 among them. It now takes the pairs above as the unit:
+for each pair it asserts both constraints where the pair is not a
+declared exception, asserts that each declared exception still violates
+at least one of them (a declaration that has gone stale is itself a
+defect, since it silently exempts a pair that no longer needs exempting),
+and computes the binding row and its plateau at the pair against §51.3's
+figures. That is the row's worth under this decision: a pair added with
+a target too large for its budget fails at test time rather than in a
+phone's memory graph, and the derived-target arithmetic is computed
+nowhere.
