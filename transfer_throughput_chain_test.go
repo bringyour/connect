@@ -125,6 +125,15 @@ import (
 // The last three are the sweeps. Each adds one arm per value, at the headline
 // budget and at 16 KiB, so a divisor sweep is one environment variable and not a
 // rebuild.
+//
+// What it costs, stated because the defaults are not cheap and a reader should
+// choose rather than discover: the default grid is 22 arms and 3 ceiling cells
+// per repetition, and a cell costs its offer window plus about two seconds of
+// construction, pool settling and teardown. At the defaults that is about fifty
+// minutes. Narrow `CONNECT_THROUGHPUT_ROUND_TRIPS` to one value, or
+// `CONNECT_THROUGHPUT_PAYLOADS` to `16`, when the question does not need the
+// whole grid: halving the grid halves the time and costs nothing in resolution,
+// which is set by the repetition count alone.
 func TestTheChainAtTheDesignPoint(t *testing.T) {
 	requireTheMeasureGate(t)
 
