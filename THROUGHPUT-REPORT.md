@@ -58,9 +58,12 @@ line that produces it.
 One more status change that touches several sections: the window rule is no
 longer default-off. At `f8d564b` on branch `throughput-fix` it became the
 shipping default, with `SetWindowSizing(WindowSizingConstant)` as a one-call
-rollback that reproduces the constant window byte for byte. **That commit is
-on the branch and not on `main`**; on `main` the rule is still off. Every
-place below that said "ships off" is corrected in place to say which tree.
+rollback that reproduces the constant window byte for byte. That commit was
+first on the branch only; **it has since been rebased onto `main`**, where
+`init()` stores `WindowSizingFromDelivery` at `transfer.go:770`. So the rule
+is on by default on `main` as well. Every place below that said "ships off"
+or "still off on `main`" is corrected in place; the "still off on `main`"
+qualifiers were true when written and are now out of date.
 
 ---
 
@@ -103,7 +106,7 @@ null but because **the step that binds is.**
 the binding row itself, on the hardware that ships, without a budget raise.
 What it then runs into is the transfer window's own 2 MiB constant, which the
 delivery-sized rule replaces — and which is now the default on the branch as
-of `f8d564b`, still off on `main` (§3.22 fact 3, corrected). Read §0 as the
+of `f8d564b` and on `main` since its rebase (§3.22 fact 3, corrected). Read §0 as the
 state of the tree and of the first three steps; read §3.22 for the fourth and
 §3.23 for what the rule measures as.
 
@@ -647,8 +650,9 @@ receive side would trade throughput for a loss-recovery regression.
 **CORRECTED.** Both halves of that are out of date. The receive side — the
 advertisement and committed-prefix — is built, so the reason no longer holds;
 and at `f8d564b` on branch `throughput-fix` the rule became the shipping
-default, with a one-call rollback to the constant window. On `main` it is
-still off. What it is worth when on is measured in §3.23.
+default, with a one-call rollback to the constant window; that commit has
+since been rebased onto `main` (`transfer.go:770`), so it is the default on
+both. What it is worth when on is measured in §3.23.
 
 ### 3.8a The window is an admission limit, not an allocation
 
@@ -1430,8 +1434,8 @@ does**, because it raises a ceiling already four times above the binding one
 makes it the one whose ordering here is misleading: it moves the binder on
 today's hardware. What it then meets is the transfer window's own 2 MiB
 constant at about 71 Mb/s — now measured at 71 in the rule-off arm of §3.23 —
-which step 1's rule replaces, and which is the branch default since `f8d564b`
-and still off on `main` (§3.22 fact 3).
+which step 1's rule replaces, and which is the default on the branch since
+`f8d564b` and on `main` since its rebase (§3.22 fact 3).
 
 **What each platform can afford, with the source for each ceiling:**
 
@@ -1897,14 +1901,16 @@ RETIRED: an "unattributed ceiling near 190 Mb/s" appears in earlier notes and
 does not survive. The same cell runs 651-671 Mb/s at 5.4 ms. It came from older
 campaigns under different configuration and was never a property of the cell.
 
-The rule ships **default-off** — *CORRECTED: on `main`.* The reason given in
-§3.8 — that enabling it without the receive side would trade throughput for a
+The rule ships **default-off** — *CORRECTED twice.* The reason given in §3.8
+— that enabling it without the receive side would trade throughput for a
 loss-recovery regression — has been addressed: the advertisement and
 committed-prefix are built. On branch `throughput-fix` the rule became the
 shipping default at `f8d564b`, with `SetWindowSizing(WindowSizingConstant)`
-as a one-call rollback to the constant window; its measured value is §3.23.
-The earlier text here said the switch's disposition was a campaign decision.
-On the branch it has been made; on `main` it has not.
+as a one-call rollback to the constant window, and that commit has since been
+rebased onto `main` (`transfer.go:770`), so **it is the shipping default on
+both trees**; its measured value is §3.23. The earlier text here said the
+switch's disposition was a campaign decision; then that it had been made on
+the branch and not on `main`. It has been made on both.
 
 ---
 
