@@ -8622,7 +8622,14 @@ the plateau at 218 with the inner round trip from `TcpInfo()` reading
 
 Amended by §48.4: M is the process budget, the rows acquire an owner
 column, three of the rows below read the per-device target today and
-not M, and the constraints apply per level.
+not M, and the constraints apply per level. Amended again by §52, which
+withdraws the other half of §48.4: the device target T is not derived
+from M, it is a constant a host sets beside M, and the two are related
+by two checks on the pair, the backing bound T ≤ 20/34 × M and the
+collector bound 3T ≤ M. The owner column and the per-level constraints
+stand; what changes is that the rows reading T are fractions of a number
+the host sets rather than of a number the table derives, so a reader
+following this sentence into §48.4 has to read §52 with it.
 
 The table is the set of draws each layer takes on the process budget
 M, each of the form `max(floor, M × f)` with `f` a fraction and the
@@ -8729,6 +8736,23 @@ M and the same fractions. A deployment that wants a different balance
 between layers, an upload-heavy provider or a hosted client with no
 tun, changes the fractions once, in the table, and the constraints
 tell it whether the result fits.
+
+Corrected by §52, and this paragraph is a design claim rather than an
+arithmetic slip, so what replaces it is stated rather than the old
+sentence merely struck. A deployment changes two numbers, not one: the
+process budget M and the per-device target T, each set explicitly,
+neither derived from the other. A role profile is therefore a different
+pair and the same fractions, not a different M and the same fractions.
+This matters because the fractions do not all draw on the same surface —
+the four carrier rows read T and the transfer and tun rows read M
+(§48.2, §51.2) — so a deployment that moves M alone moves some rows of
+this table and leaves the others where they were, which is exactly the
+confusion the two-surface finding kept producing. The rest of the
+paragraph stands: a deployment changes nothing in the table itself, and
+a deployment wanting a different balance between layers changes the
+fractions once, in the table, with the constraints saying whether the
+result fits. What the constraints now also say is whether the pair
+itself fits, by §52.2's two checks.
 
 ### 44.4 The test that makes a wrong table fail
 
@@ -9277,7 +9301,13 @@ all ratios, not absolutes to be compared with other hardware.
 Derived: every reach figure; the 109, 160, 415 and 830 for the
 download landings (restated in §48 against the shipped values: the H3
 lane's shipped window is 960 KiB to 1.125 MiB, and 415 and 830 hold at
-a device target equal to a 256 MiB process budget); the 129, 156 and 218 for upload; the 218 the
+a device target equal to a 256 MiB process budget — corrected by §52,
+which withdraws the derivation that made a target equal to, or a slice
+of, a budget: these figures hold at a device target of 256 MiB, and the
+process budget beside it is the pair's second number, at least 768 MiB
+by §52.2's collector bound; at the fractions §43.2 landed the pair reads
+850.6, and the intermediate pair, 128 MiB in 384, reads 425);
+the 129, 156 and 218 for upload; the 218 the
 platform's default imposes; the 51.2 MiB inversion point, which the
 cell then confirmed between 24 and 52. Each is arithmetic from a
 constant read at a line and a factor measured once, and each is stated
@@ -9636,6 +9666,21 @@ many devices one M covers:
     3/64 MiB of stream window; the transfer unit takes H1 from 36 (the
     1 MiB window M scales to at 32 MiB) to 109 where the OS's socket
     buffers allow it.
+    Corrected by §52: the clause about moving the target toward the
+    process budget's remainder now points the wrong way and is
+    withdrawn. The remainder is 20/34 of the 32 MiB budget, 18.8 MiB,
+    which is below the 20 MiB target Apple already sets, so moving
+    toward it is a decrease, and the derivation that made the remainder
+    a target at all is withdrawn. Under §52 the iOS pair, 20 MiB in 32,
+    is a declared exception: it violates both the backing and the
+    collector bounds, it is kill-limit bound rather than chosen — the
+    provider is killed above 50 MiB and the Go runtime takes about 16 of
+    it — and what it costs is the continuous collection §52.2 names.
+    It is not a target to adjust; it is a pair the record declares and
+    `TestTheShareTableBinderIsTheH3StreamWindow` holds. The rest of this
+    step stands: the fractions are what iOS gains, the carrier form
+    moves nothing at a 20 MiB target, and the transfer unit takes H1
+    from 36 to 109 where the OS's socket buffers allow it.
 0b. Android: 32 MiB by choice, mirroring iOS, and not a platform limit:
     the VPN service runs in the app process, whose native memory is
     bounded by the device and the low-memory killer rather than by
@@ -9660,6 +9705,21 @@ the old scaled form and the new draw are identical by construction, and
 the carriers never see the reference. That is the sentence a reader of
 §47.5 needed first, and §47.5 is amended in place to carry it.
 
+Corrected by §52, and this is the clearest case of a prerequisite that
+no longer exists. The default-target derivation named here as a gate on
+every step above is withdrawn: there is no derivation to land, so
+nothing in this list waits on one. What replaces it is the pair check —
+a host sets T and M explicitly, §52.2's two bounds say whether the pair
+is admissible, and `TestTheShareTableBinderIsTheH3StreamWindow` fails on
+a pair that violates them without being declared. The carriers'
+constructor form remains a real prerequisite and is unaffected: it
+landed on the branch, and below the reference it and the scaled form it
+replaced are the same number, which is why the ceiling builds are inert
+at today's targets. The way a step above becomes worth taking is
+therefore to raise the target as well as the budget, as one pair: step
+0c's desktop is 128 MiB in 384 and then 256 in 768 (§52.3, §52.4), not a
+budget raise that a derivation would have carried into the target.
+
 ### 48.7 The native desktop, answered
 
 The coordinator's question: does the 830 stand on a native desktop. No.
@@ -9672,7 +9732,18 @@ not name, by the rule that the user's machine is never an input, and
 the whole-chain figure is the smaller of the H3 layer's and that term.
 The record supports no native-desktop number above what the transfer
 unit gives on H1, 109 at 200 ms, and 415 for the H3 layer needs the
-device target at a 256 MiB process budget (§48.4). The reading that names the
+device target at a 256 MiB process budget (§48.4). Corrected by §52:
+the H3 layer's figures belong to the device target, and the process
+budget beside it is the second number of a chosen pair rather than the
+number the target is cut from. 830 is a 256 MiB target, which under
+§52.2's collector bound needs a process budget of at least 768 MiB;
+425 is a 128 MiB target in 384 (§52.3, §52.4). The 415 here is §42.1's
+figure at the fractions §43.2 replaced and is superseded by 425 at the
+landed ones. The answer to the question this subsection puts is
+unchanged, and is the part that matters: on a native desktop the inner
+TCP layer is the operating system's, the whole-chain figure is the
+smaller of the H3 layer's and that term, and no pair makes the record
+support a native-desktop number above 109. The reading that names the
 OS term on a given machine without making the machine an input: the
 advertised window in the inner acknowledgements crossing the client's
 tun, which `DeviceLocal.SendPacket` sees on every native device, times
@@ -9693,6 +9764,17 @@ defaults is a support document, not this record's.
 - The one chain: with `SetMemoryBudget(256 MiB)` and no explicit target,
   `NewDeviceLocal` reads a target above 20 MiB, and the sum of the device
   targets plus the pools' draw is at most M.
+  Withdrawn by §52 and replaced rather than deleted, since this bullet
+  asked for a test of a derivation that is not going to exist. A host
+  sets T explicitly beside M, so there is no derived target for
+  `NewDeviceLocal` to read and no assertion to make about one. What is
+  tested instead is the pair: for each pair a host sets — iOS 20 in 32,
+  Android 24 in 32, and the desktop's 128 in 384 and 256 in 768 —
+  §52.2's backing bound T ≤ 20/34 × M and collector bound 3T ≤ M both
+  hold, or the pair is a declared exception carrying its reason, and a
+  declaration that has gone stale fails too.
+  `TestTheShareTableBinderIsTheH3StreamWindow` carries it, and computes
+  the binding row and its plateau at each pair beside the check.
 - The provider: after the miner change, `connect.MemoryBudget()` reads
   `--max-memory`; today it reads zero.
 - The proxy: per-connection tun maxima times `MaxClients` at most the
@@ -10051,6 +10133,16 @@ separate explicit target, so they move together only if a host moves
 both. On a provider they are deliberately different, and §48.4's chain —
 T a slice of M — is the remaining fix, in the sdk rather than here.
 
+Corrected by §52: the last clause is withdrawn. T a slice of M is not a
+fix waiting in the sdk; the decision is that T is a constant beside M,
+set by the host, and the sdk has nothing to derive. The sentence before
+it is not merely still true but is now the design: the two surfaces move
+together only if a host moves both, and moving both is what a host does,
+as a pair. What replaces the fix is the check — §52.2's backing bound
+T ≤ 20/34 × M and collector bound 3T ≤ M, asserted per pair in the
+binder row of §51.5 — so a reader looking here for the chain's landing
+should read the pairs of §52.4 instead.
+
 Three consequences that the table is incoherent without:
 
 The tun row does not exist on a native desktop, phone or extension.
@@ -10136,6 +10228,19 @@ the arithmetic reason the chain matters. The pooled rows are backed by
 the device's transfer budgets rather than by the pools' free list, which
 bounds retention and is capped at 768 KiB on mobile.
 
+Corrected by §52 in the process-level clause, which is the only one the
+decision touches. There is no derived target: T is a constant beside M.
+What the row computes at 20/34 of M is not a derivation but the largest
+target §52.2's backing bound admits at that budget, so the level is
+checked at its tightest admissible pair — the worst case rather than the
+predicted one, which is the stronger reading of the same assertion. The
+two transfer permissions fitting the device's client share therefore
+holds for every pair that satisfies the bound, and fails for a pair that
+does not, which is what the binder row now checks directly per pair
+(§52.5). The rest of the paragraph is unaffected, including the point it
+turns on: the pooled rows are backed by the device's transfer budgets
+and not by the pools' free list.
+
 Floors, `TestTheShareTableFloorsFitEverySurfaceMinimum`, beside
 `TestTheBudgetFloorsFitTheSmallestSupportedHost` which holds the process
 surface at every supported minimum. The floors' sum per backing fits the
@@ -10176,6 +10281,20 @@ at 20/34 of M the carrier rows shrink by that factor and the gap widens
 to 2.55 — which is the prediction to hold the sdk's default-target
 change against.
 
+Corrected by §52 in that last sentence: there is no sdk default-target
+change to hold a prediction against, so the 2.55 is withdrawn as a
+prediction and kept only as what the shape would have been under the
+withdrawn derivation. The shape row's own comparison is unaffected,
+because it compares the rows at one surface value and the ratios among
+fractions do not depend on how a host picks the two surfaces. What the
+shape now depends on is the pair: at a pair where T is well below M the
+carrier rows are smaller relative to the process rows than this row's
+equal-surface comparison shows, and the desktop pairs of §52.4 — 128 in
+384 and 256 in 768 — put the carrier rows at a third of the surface the
+transfer and tun rows read. That is a consequence of the pair a host
+chose and not of a derivation, and the binder row is where it is
+checked, per pair, against the plateau it produces.
+
 Binder, `TestTheShareTableBinderIsTheH3StreamWindow`. For a given budget
 and path the plateau is the smallest row's product over its own loop,
 and the row asserts which row that is, its rate against the record's
@@ -10188,6 +10307,26 @@ give materially different plateaus. This is the acceptance arm made
 deterministic: a campaign that reads a plateau materially different from
 it has found either a layer the table does not list or a constant the
 table does not govern, and either is the finding.
+
+Corrected by §52, which changed what this row takes as its scenarios and
+removed the 500.4 from the tree. The paragraph above describes two
+scenarios with the device target at the whole of the process budget and
+a third figure logged for the slice §48.4 left open; none of those is
+what the row does now. It takes the pairs a host sets — iOS 20 in 32,
+Android 24 in 32, the desktop's 128 in 384 and 256 in 768 — asserts
+§52.2's two constraints on each pair that is not a declared exception,
+asserts that each declared exception still violates at least one of
+them, and then computes the binder and its plateau at the pair. The
+binder is the H3 stream window at every pair, reading 66.5 Mb/s at a
+20 MiB target, 79.7 at 24, 425.3 at 128 and 850.6 at 256, which are
+§51.3's figures. The landing's doubling claim is still asserted, guarded
+at the pairs whose eighth of the target sits below the reservation's
+3 MiB admission floor. No derived target is computed anywhere in the
+file, so the 500.4 is no longer produced: it was the plateau of the
+withdrawn derivation, and §52.3 records it as such. The last two
+sentences of the paragraph above are unchanged and are the point of the
+row: a campaign reading a materially different plateau has found a layer
+the table does not list or a constant it does not govern.
 
 The negative, `TestAShareTableRowWrittenAsAScaledConstantFailsTheScalingRow`.
 A suite that only ever runs correct rows through its predicate proves
