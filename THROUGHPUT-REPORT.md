@@ -32,8 +32,10 @@ And seven things are new rather than corrected: what is built and where
 ceilings (§3.20), the share table as the fourth and last ceiling (§3.22),
 **the program's first measured result — the window rule multiplies one flow's
 throughput by 2.4 to 4.0 times at the design round trips (§3.23)**, a derived
-per-platform table of what each should reach at 100 ms and which lever moves
-it (§3.24), the equilibrium at two thirds and the residence term behind it
+per-platform table of what each should reach at 100 ms on the default
+transport and which lever moves it — the phones bound at 53 and 62 Mb/s by a
+mobile receive cap, every desktop and the provider on the target clamp
+(§3.24), the equilibrium at two thirds and the residence term behind it
 (§8), and what of this program's conclusions is actually pinned by a test
 (§9).
 
@@ -1770,104 +1772,186 @@ The same run swept the transfer row's divisor, 1/4 and 1/16 against the
 production 1/8: 231 and 109 Mb/s against 190, in the expected direction, but
 both ranges straddle 1.0 at seven repetitions and **neither is a finding**.
 The divisor stays a campaign value.
+### 3.24 What each platform should reach at 100 ms on the default transport, derived, and which lever moves it
 
-### 3.24 What each platform should reach at 100 ms, derived, and which lever moves it
+**CORRECTED in place, and the correction inverts the table.** The first
+version of this section computed every client row on the H3 stream window.
+H1 — a websocket over TCP — is the dominant and default transport, and on H1
+that window is not in the path at all. The rows are recomputed on H1 below;
+the H3 figures are kept as a final column, marked as the H3 carrier's bound
+for when that transport is selected, so a reader sees both and knows which is
+default. Two of the earlier rows were wrong even for H3, for a reason given
+under the table.
 
-The table a reader of this report most wants and the one it is least entitled
-to give without a caveat on every cell. **Every row is derived, not
-measured**: computed from the shipping functions on the tree at each
-platform's merged device target T and process budget M, not from memory of
-what those functions do. For each row, the H3 stream window is
-`DefaultPlatformTransportSettingsWithMemoryTarget(T)` resolved through the
-quic config; the transfer share is `transferBudgetShareByteCount()` after
-`SetMemoryBudget(M)`, or the 2 MiB constant where M is unset; the binder is
-the smaller; the rate is `binder × 8 × goodputFactor / 0.1 s` with
-`goodputFactor = 0.845` (`transfer.go:698`); and the one-gigabit target clamp
-(`targetGoodputByteRate`, `transfer.go:694`) is applied where the binder
-exceeds the window the clamp permits at 100 ms, 14.1 MiB framed. Download,
-one flow, delay on the client's hop, window rule on.
+**What binds on H1.** The H1 carrier has no receive-window flow control of
+its own; its only carrier-side bound is the operating-system socket buffer,
+which this tree does not size. So on H1 the binder is the transfer layer —
+the send window and the receive hold, **the one layer this program has
+measured** (§3.23) — clamped by the one-gigabit target. For a client
+downloading from a provider the window belongs to the **provider's** send
+sequence, and its ceiling is the smaller of three things: the provider's own
+attached send pool, the **client's advertised receive hold**, and the window
+the target clamp permits at 100 ms, 14.1 MiB framed. The client's side of
+that is its hold, not its send pool; the send pool is the client's *upload*
+ceiling and is shown for completeness.
 
-| Platform | T | M | H3 stream window | Transfer share | Binder | **Rate at 100 ms** | **What binds** |
+**How each row was computed**, so it can be reproduced. Not from the formula:
+each platform's device settings were built through the sdk's own construction
+sequence at that platform's merged target T and process budget M —
+`connect.SetMemoryBudget(M)` first, because the transfer settings sample it
+at construction; `DefaultDeviceLocalSettings()` with `MemoryTargetByteCount`
+set; the construction step at `sdk/device_local.go:1296-1316`, which attaches
+the transfer pools from the device's client share and then applies the mobile
+low-memory policy for a mobile runtime; and then
+`applyProvideMemorySharesWithLock`, which runs once at construction
+(`:1629`) with providing off for a client and on for a provider, folding the
+idle provider share into the client pair and resizing the pools. The values
+read back are the attached `ResendQueueBudget` and `ReceiveQueueBudget`
+totals and the `ResendQueueMaxByteCount` and `ReceiveQueueMaxByteCount`
+settings. The advertised hold is what `receiveWindowAdvertisement`
+(`transfer.go:10350`) sends: `min(ReceiveQueueMaxByteCount, receive pool)`.
+
+**What the constructors returned:**
+
+| Platform | T | M | Send pool | Send initial (`ResendQueueMax`) | Receive pool | `ReceiveQueueMax` | **Advertised hold** |
 |---|---|---|---|---|---|---|---|
-| iOS | 20 MiB | 32 MiB | 1.875 MiB | 4 MiB | 1.875 MiB | **133 Mb/s** | H3 stream window |
-| Android | 28 MiB | 40 MiB | 2.625 MiB | 5 MiB | 2.625 MiB | **186 Mb/s** | H3 stream window |
-| Desktop, under 7 GiB or probe failed | 128 MiB | 384 MiB | 12 MiB | 48 MiB | 12 MiB | **851 Mb/s** | H3 stream window |
-| Desktop, over 7 GiB | 256 MiB | 768 MiB | 24 MiB | 96 MiB | 14.1 MiB (clamp) | **1,000 Mb/s** | target clamp |
-| Provider, 8 GiB host, one provider | 2,185 MiB | 6,554 MiB | 205 MiB | 819 MiB | 14.1 MiB (clamp) | **1,000 Mb/s** | target clamp |
-| Hosted proxy, per device | 24 MiB | none | 2.25 MiB | 2 MiB constant | 2 MiB | **142 Mb/s** | transfer constant |
+| iOS | 20 MiB | 32 MiB | 5.571 MiB | 512 KiB | 1.5 MiB | **768 KiB** | **768 KiB** |
+| Android | 28 | 40 | 7.800 | 597 KiB | 1.82 | **896 KiB** | **896 KiB** |
+| Desktop, under 7 GiB or probe failed | 128 | 384 | 35.66 | 2 MiB | 47.54 | 48 | 47.54 |
+| Desktop, over 7 GiB | 256 | 768 | 71.31 | 2 | 95.09 | 96 | 95.09 |
+| Provider, 8 GiB host, one provider — its *provider* pair | 2,185 | 6,554 | 93.64 | 2 | 124.86 | 819.25 | 124.86 |
+| Hosted proxy, per device | 24 | none | 6.686 | 2 | 8.914 | 2.5 | 2.5 |
 
-**What binds is the column that matters**, because it names the lever for
-each platform. Where the H3 stream window binds, the lever is the device
-target — three thirty-seconds of it is the window (§3.22). Where the transfer
-constant binds, the lever is a process budget, because with none set the
-share is absent and the window stays at 2 MiB whatever the target. Where the
-clamp binds, no memory lever moves the row; only the target does.
+The phone pools are the folded client pair, 13/20 of the target, since
+providing is off by default there: send `max(3/7 × 13T/20, 1 MiB)`, which is
+39T/140 and not the 27T/140 a reader would get from the unfolded 9/20 share.
+The provider's row is its provider pair — half the provider share, 4/20 of T
+— because that is the pool the sequences that send to clients draw on.
+
+**The H1 table**, download, one flow, delay on the client's hop, window rule
+on, rate = `binder × 8 × goodputFactor / 0.1 s` with `goodputFactor = 0.845`
+(`transfer.go:698`), clamped at 1,000 Mb/s where the binder exceeds
+14.1 MiB:
+
+| Platform | H1 binder | **Rate at 100 ms, H1** | **What binds** | H3 stream window | Rate if H3 selected |
+|---|---|---|---|---|---|
+| iOS | 768 KiB — its own advertised hold | **53 Mb/s** | the mobile receive cap, `mobileReceiveQueueMaxByteCount` = 768 KiB (`sdk/mobile_memory_policy.go:177`, applied at `:372-374`) | 1.875 MiB | 53 — the hold still binds |
+| Android | 896 KiB — its own advertised hold | **62 Mb/s** | the same cap, scaled 28/24 | 2.625 MiB | 62 — the hold still binds |
+| Desktop, under 7 GiB | 14.1 MiB (clamp); hold 47.5, provider pool 93.6 | **1,000 Mb/s** | target clamp | 12 MiB | 851 — the H3 window binds |
+| Desktop, over 7 GiB | 14.1 MiB (clamp); hold 95.1 | **1,000 Mb/s** | target clamp | 24 MiB | 1,000 |
+| Provider, 8 GiB host | 14.1 MiB (clamp); send pool 93.6 | **1,000 Mb/s** | target clamp | 205 MiB | 1,000 |
+| Hosted proxy, per device | 2.5 MiB — its advertised hold | **177 Mb/s** | `ReceiveQueueMaxByteCount` at its 2.5 MiB constant, because with no process budget `ApplyWindowSizing` never raises it | 2.25 MiB | 159 — the H3 window binds |
+
+**Every cell is derived, not measured.** What would refute it, in one
+sentence: the only measured layer is the transfer window and hold (§3.23),
+every row above is bound by that layer, by a layer above it, or by the clamp,
+so a reading on any platform materially below its row names a binder this
+table does not list — the operating-system socket buffers at either end of
+the H1 connection, the server's H3 window on the provider hop, or the tun on
+hosted clients. The phone rows have one further exposure: they rest on the
+advertisement being honoured by the provider's sender, which is built and
+unit-tested but has not been run against a phone.
 
 **To scale the table to another path**: halving the round trip doubles the
-rate wherever a window binds and does nothing where the clamp binds. At 50 ms
-the small-desktop row would compute to 1,701 and land on the clamp too; at
-200 ms every window row halves and the large-desktop row falls off the clamp
-to 851.
+rate wherever a window binds and does nothing where the clamp binds. At
+50 ms iOS reads 106 and the proxy 354; at 200 ms every window row halves —
+iOS 27, Android 31 — and the desktop and provider rows stay on the clamp
+down to about 14 MiB of window, which at 200 ms is 28.2 MiB and still under
+every desktop hold, so they stay at 1,000 there too.
 
-**What would refute it, in one sentence**: the only measured layer in this
-program is the transfer window (§3.23), and every row above is bound by a
-layer above it or by the clamp, so a reading on any platform materially below
-its row means a layer this table does not list — an operating-system socket
-ceiling, the H3 connection window, the server's H3 window on the provider
-hop, or the tun on hosted clients — binds first there, and that layer is the
-next thing to name.
+#### The phone rows, and the cap that sets them
 
-Two rows deserve a sentence each.
+**The phones are bound by a receive-side constant of the 24 MiB mobile
+profile, on both transports, and neither their target nor their pool is the
+lever.** `mobileReceiveQueueMaxByteCount` is 768 KiB
+(`sdk/mobile_memory_policy.go:177`). The mobile policy applies it as
+`ReceiveQueueMaxByteCount = min(current, 768 KiB × max(1, T/24 MiB))`
+(`:372-374`), after the rule's own `ApplyWindowSizing` has set that field to
+the process share — 4 MiB on iOS — so the cap wins. The advertisement then
+sends the smaller of that cap and the 1.5 MiB pool, which is the cap. At
+T = 20 the cap is the unscaled 768 KiB; at 28 it is 896 KiB. That is why the
+Android row is 17% above iOS and not 40%: the cap scales with the target only
+above 24 MiB, so the first four of Android's eight extra mebibytes buy the
+hold nothing.
 
-**iOS is the slowest client, and it is the only row that did not move.** Its
-20 MiB target is held by the 50 MiB packet-tunnel jetsam limit and by the
-absence of any measured iOS footprint (§3.20). Every other client target
-rose; iOS's did not, and it now sits a third below Android and six times
-below the small desktop tier at the same path. **The gate on that row is a
-measurement, not a decision**: a real footprint reading on a device is what
-would say whether the 12 MiB between the 32 MiB budget and the 50 MiB limit
-holds any of it.
+This also settles, from source rather than by reading, what the 512 KiB
+mobile send cap does. `ResendQueueMaxByteCount` is **the
+window's initial**, not its ceiling: the estimate starts there, its floor is
+`ResendQueueMinByteCount` (64 KiB on mobile), and its ceiling is the attached
+pool, then clamped to the peer's advertised hold. Against a peer that does
+not advertise, the ceiling is `min(pool, initial)`, which on a phone is the
+512 KiB. So the 512 KiB **does not bound a phone's download at all** — the
+phone is the receiver there — and it bounds a phone's *upload* only against a
+provider without the advertisement, where it gives about 35 Mb/s at 100 ms.
+Against an advertising provider the phone's upload window ceiling is its
+send pool, 5.6 MiB on iOS and 7.8 on Android, about 395 and 553 Mb/s of
+window at 100 ms before upload's own binders (§3.17). The reading that the
+512 KiB is the floor with the pool as the ceiling was close: it is the
+initial, with the pool as the ceiling.
 
-**The large desktop tier and the provider both land on the clamp rather than
-on memory, and that is the intended shape.** Memory sizes the windows, the
-target sets the rate, and a flow reaches whichever binds first. A row that
-binds on the clamp has enough memory for the path; a row that binds on a
-window does not, and the table says by how much.
+**The first version of this section had the phone rows at 133 and 186 Mb/s,
+on the H3 stream window.** Those were wrong on H3 as well as on H1, because
+the transfer hold sits above the carrier whatever the carrier is: a phone's
+advertised hold at 768 or 896 KiB is below its H3 stream window at 1.875 or
+2.625 MiB, so the hold binds on H3 too and the H3 column above reads 53 and
+62. The H3 window is the binder only where it is below the hold — the small
+desktop tier and the hosted proxy.
 
-**The provider row is computed from a change that is committed and not yet
-merged**, and it is the row that moved furthest. On the tree as it ships the
-provider sets no process budget at all (§0.2), so its transfer window stays
-at the 2 MiB constant and it is bound at about 142 Mb/s at 100 ms — on a
-dedicated host with gigabytes free, the same figure as the hosted proxy's and
-for the same reason. **That 142 is the state of the tree and not the
-provider's number.** Branch `provider-uncapped` in both trees changes it in
-two steps: connect `f12c4dc9` decouples the NAT flow caps from the process
-budget, so that the trap of §0.5 — a provider budget's only effect being to
-switch the phone's flow caps on — is gone (verified: with an 8 GiB budget set
-the provider profile resolves every UDP, TCP and ICMP cap to zero and keeps
-its 5-minute UDP idle); and `sn` `3662003` derives the provider's memory from
-the host with no upper cap and sets the budget for the first time. Absent
-`--max-memory`, the per-provider target is `(4/5 × host) / (3 × count)`, never below
-20 MiB, the Go soft limit is `3 × count × target`, and the process budget
-equals the soft limit. For an 8 GiB host with one provider that is a
-**2,185 MiB target and a 6,554 MiB budget**, four fifths of the host by
-design so a fifth stays with the operating system; on a box whose `MemTotal`
-reads the usual 7.67 GiB it is 2,094 and 6,283, and the row is identical. The
-H3 stream window from that target is 205 MiB and the transfer share 819 MiB,
-both about fourteen times the 14.1 MiB the clamp permits at 100 ms, so the
-provider lands on the clamp with more headroom than any other row. That is
-the intended shape, and it means the provider's rate at this path is set by
-the target and by nothing about its memory.
+**iOS is still the slowest client, but the sentence about why has changed.**
+Its 20 MiB target is held by the 50 MiB packet-tunnel jetsam limit and by the
+absence of any measured iOS footprint (§3.20), and that gate is still a
+measurement rather than a decision. But raising the target to 24 would move
+the iOS row by nothing, because the cap is flat up to 24; the row moves only
+with `mobileReceiveQueueMaxByteCount` itself, or with a target above 24. iOS
+sits 17% below Android and nineteen times below the desktop tier at the same
+path.
 
-**One caveat on the transfer-share column.** On an sdk-created device the
-queues read a target-derived budget the sdk attaches (three sevenths of the
-device's client share, §0.1 and §3.23), not the process share `M/8` shown
-here; at every row above that budget is 3.9 to 71 MiB and sits above the H3
-window or the clamp window, so the binder and the rate are unchanged. The
-column is shown as the process share so the arithmetic can be reproduced from
-the two named functions, and the caveat is here so nobody reads it as a
-shipped value.
+#### The desktop tier and the provider
 
+**Every desktop tier and the provider land on the clamp rather than on
+memory, and that is the intended shape.** On H1 this now covers the whole
+desktop tier and not only the large one: the small tier's hold is 47.5 MiB
+against a clamp window of 14.1, so **every desktop at 8 GiB or better reaches
+the target on the default transport**, and the small tier's 851 is an H3-only
+figure. Memory sizes the windows, the target sets the rate, and a flow
+reaches whichever binds first; a row that binds on the clamp has enough
+memory for the path.
+
+**The provider row is computed from the landed change**, merged to `main` in
+both trees (connect `c5f058bf`; `sn` `3662003` with the four-fifths
+composition in `cca9b43`). On the tree before it the provider set no process
+budget at all (§0.2), so its transfer window stayed at the 2 MiB constant and
+it was bound at about 142 Mb/s at 100 ms on a dedicated host with gigabytes
+free; that 142 was the state of the tree and not the provider's number. The
+change decouples the NAT flow caps from the process budget, so that the trap
+of §0.5 is gone (verified: with the budget set the provider profile resolves
+every UDP, TCP and ICMP cap to zero and keeps its 5-minute UDP idle), and
+derives the provider's memory from the host: absent `--max-memory`, the
+per-provider target is `(4/5 × host) / (3 × count)`, never below 20 MiB, the
+Go soft limit is `3 × count × target`, and the process budget equals the soft
+limit. For an 8 GiB host with one provider that is a **2,185 MiB target and a
+6,554 MiB budget**, four fifths of the host by design so a fifth stays with
+the operating system. The provider's send pool from that target is 93.6 MiB,
+six times the clamp window, so the provider lands on the clamp with more
+headroom than any client row, and its rate at this path is set by the target
+and by nothing about its memory.
+
+**The hosted proxy row was also wrong in the first version**, which had it at
+142 on a 2 MiB transfer constant with no pool. The proxy is an sdk device
+with a 24 MiB target, so the sdk attaches the target-derived pools to it —
+6.7 MiB send, 8.9 MiB receive — and the rule is active there
+(`WindowSizingActive` reads true) despite the process budget being unset.
+What it has no budget to raise is `ReceiveQueueMaxByteCount`, which stays at
+its 2.5 MiB constant and is what it advertises; that, not the send window,
+is its binder at 177.
+
+**A caveat retired.** The first version carried a "transfer share" column of
+`M/8` from `transferBudgetShareByteCount()` with a caveat that sdk devices
+read an attached pool instead. That column is gone: on every row here the
+device is an sdk device and the attached pool is what is read, so the table
+now shows the shipped value and needs no caveat. The process share `M/8` is
+read only by a sequence with no attached pool, which no shipped device
+creates.
 ## 4. What is still open
 
 This table is updated in place; the questions keep their wording so that a
@@ -1895,7 +1979,7 @@ Open, and added since:
 | Does the share table's doubled stream window measure as 66.5 Mb/s at a 20 MiB target? | **Predicted, untested.** Every row of §3.22 is derived from constants; no cell has run one. Refuted by a reading at or near 34, which would mean something below the stream window binds first |
 | Is the transfer window's 2 MiB constant the binder above a 24 MiB target, as §3.22 fact 3 derives? | **Half measured.** The constant's bound is measured at 71 Mb/s at 200 ms with the rule off (§3.23, the rule-off arm), matching the derivation. That it is the binder *against the H3 rows* is still untested, since the instrument has no H3 in it |
 | What is the rule worth end to end? | **Open.** §3.23 measures it at one layer, 2.4 to 4.0x. Nothing above that layer is in the fixture |
-| Does any platform reach its §3.24 row? | **Predicted, untested, every row.** Refuted per platform by a reading materially below the row, which names an unlisted binder. The iOS row is additionally gated on a footprint measurement that has never been taken |
+| Does any platform reach its §3.24 row? | **Predicted, untested, every row.** Refuted per platform by a reading materially below the row, which names an unlisted binder. The phone rows carry a sharper prediction: a phone downloading on H1 at 100 ms reads about 53 (iOS) or 62 (Android) Mb/s, bound by its own 768 or 896 KiB advertised hold, and a reading well above that would mean the hold's cap is not what the provider's window is clamped to. The iOS row is additionally gated on a footprint measurement that has never been taken |
 
 RETIRED: an "unattributed ceiling near 190 Mb/s" appears in earlier notes and
 does not survive. The same cell runs 651-671 Mb/s at 5.4 ms. It came from older
