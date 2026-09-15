@@ -67,6 +67,153 @@ func TestTheContractAheadCapabilityIsReadFromDeliveryAcknowledgements(t *testing
 	}
 }
 
+// The capability's four shapes, driven through the production marshaller and
+// decoder rather than by assigning the flag, so what is pinned is the wiring
+// and not the field.
+//
+// Never-present. A modern sender against a peer that never sets the bit stays
+// on the conservative path for the life of the sequence: it never announces,
+// and it never takes a contract out of the destination queue to announce with.
+func TestASenderStaysConservativeAgainstAPeerThatNeverAdvertisesContractAhead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, sequence, _, contract := newSendNoContractHarness(t, ctx)
+	contract.ackedByteCount = contract.effectiveTransferByteCount
+
+	// ten deliveries from a legacy receiver, each through the real wire
+	for range 10 {
+		sequence.observeContractAheadCapability(decodeContractAheadTestAck(t, false, false))
+		sequence.maybeAnnounceContractAhead()
+	}
+	if sequence.contractAheadSupported.Load() {
+		t.Fatal("a peer that never set the bit was read as advertising it")
+	}
+	if sequence.aheadSendContract != nil {
+		t.Fatal("a sender announced a contract ahead to a peer that never advertised")
+	}
+	if sequence.aheadSendContractAttempted {
+		t.Error("a sender polled the contract queue to announce to a legacy peer")
+	}
+}
+
+// Withdrawable, which is the model this bit chose and states in the proto, and
+// it has the same two triggers as logical_lane_version. Both are pinned here,
+// because the second is the one that goes unpinned for as long as it goes
+// unwritten.
+//
+// Trigger one: a later delivery acknowledgement omits the capability. Trigger
+// two: the capability is scoped to the SendSequence that learned it, so a
+// second sequence to the same destination starts conservative and must learn it
+// again from its own delivery acknowledgement.
+func TestTheContractAheadCapabilityIsWithdrawnByBothTriggers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client, sequence, destinationId, contract := newSendNoContractHarness(t, ctx)
+	contract.ackedByteCount = contract.effectiveTransferByteCount
+
+	sequence.observeContractAheadCapability(decodeContractAheadTestAck(t, true, false))
+	if !sequence.contractAheadSupported.Load() {
+		t.Fatal("a delivery acknowledgement carrying the capability did not turn it on")
+	}
+
+	// trigger one, mid-session: the peer stops saying it
+	sequence.observeContractAheadCapability(decodeContractAheadTestAck(t, false, false))
+	if sequence.contractAheadSupported.Load() {
+		t.Error("a delivery acknowledgement that dropped the capability left it on")
+	}
+	sequence.maybeAnnounceContractAhead()
+	if sequence.aheadSendContract != nil || sequence.aheadSendContractAttempted {
+		t.Error("a sender announced after the capability was withdrawn")
+	}
+
+	// trigger two: the scope. A second sequence to the same destination is a
+	// new sequence, and the evidence belonged to the first.
+	second := NewSendSequence(
+		ctx,
+		client,
+		nil,
+		destinationId,
+		MultiHopId{},
+		false,
+		false,
+		false,
+		sequenceTlsRoleClient,
+		false,
+		DefaultSendBufferSettings(),
+	)
+	t.Cleanup(second.Close)
+	if second.contractAheadSupported.Load() {
+		t.Error("a new sequence inherited the capability from a sequence that had learned it; the evidence is per sequence, and a peer that changed underneath is exactly what a new sequence cannot know")
+	}
+}
+
+// The wire shape. This bit is a plain scalar, so absent and false are one fact:
+// a receiver that will not register an announcement. The row asserts that a
+// legacy acknowledgement — one marshalled with no field 10 at all — decodes to
+// the zero that drives the fallback, through the production marshaller and the
+// production decoder.
+func TestALegacyAcknowledgementDecodesToTheContractAheadFallback(t *testing.T) {
+	legacy := decodeContractAheadTestAck(t, false, false)
+	if legacy.contractAheadSupported {
+		t.Fatal("an acknowledgement with no contract_ahead field decoded as advertising it")
+	}
+	modern := decodeContractAheadTestAck(t, true, false)
+	if !modern.contractAheadSupported {
+		t.Fatal("an acknowledgement carrying contract_ahead decoded without it")
+	}
+	// and the field really is absent rather than present-and-false, which is
+	// what keeps a legacy peer's wire byte for byte what it was
+	saf := sendAckFrame{
+		path:       DestinationId(NewId()).AddSource(NewId()),
+		messageId:  NewId(),
+		sequenceId: NewId(),
+	}
+	frameBytes := marshalSendAckTransferFrame(&saf)
+	defer MessagePoolReturn(frameBytes)
+	if ackFrameHasField(t, frameBytes, 10) {
+		t.Error("an acknowledgement that does not advertise still writes field 10")
+	}
+}
+
+// The reverse direction: we advertise and the peer ignores it. The cost is
+// bounded and it is zero — a receiver that advertises and never receives an
+// announcement behaves exactly as it does today, because the only thing the
+// advertisement buys is a sender's permission to send one more kind of Pack.
+// Stated as an assertion rather than as an assumption that the peer cooperates.
+func TestAdvertisingContractAheadCostsNothingAgainstASenderThatIgnoresIt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	receiver, sequence, sourceId := newContractAheadTestReceiveSequence(t, ctx)
+	if !receiver.settings.ReceiveBufferSettings.AcceptContractAhead {
+		t.Fatal("the shipping receiver does not advertise that it registers announcements")
+	}
+
+	// a sender that ignores the advertisement: ordinary opening contracts, one
+	// after another, exactly as today
+	first := contractAheadTestContractFrame(t, receiver, sourceId, receiver.ClientId())
+	if err := sequence.registerContracts(&receiveItem{contractFrame: first}); err != nil {
+		t.Fatalf("register the first contract: %v", err)
+	}
+	firstContract := sequence.receiveContract
+	second := contractAheadTestContractFrame(t, receiver, sourceId, receiver.ClientId())
+	if err := sequence.registerContracts(&receiveItem{contractFrame: second}); err != nil {
+		t.Fatalf("register the second contract: %v", err)
+	}
+	if sequence.receiveContract == firstContract {
+		t.Fatal("an opening contract did not become current, so advertising changed what an ignoring sender gets")
+	}
+	if len(sequence.openReceiveContracts) != 2 {
+		t.Errorf(
+			"the receiver holds %d contracts after two opens, want the two it would hold today",
+			len(sequence.openReceiveContracts),
+		)
+	}
+	// nothing is reserved for an announcement that never comes
+	if sequence.receiveBufferSettings.MaxOpenReceiveContract != DefaultReceiveBufferSettings().MaxOpenReceiveContract {
+		t.Error("advertising changed how many contracts the receiver will hold")
+	}
+}
+
 // The threshold, derived from the sequence's own rate ring and minimum round
 // trip — the same two quantities the window rule reads — and the floor where
 // there is no evidence to derive from. Both are asserted, because a caller
@@ -457,6 +604,59 @@ func TestAnAnnouncedContractIsStoredWithoutBecomingCurrent(t *testing.T) {
 			len(sequence.openReceiveContracts),
 		)
 	}
+}
+
+// One acknowledgement through the production marshaller and decoder, so a row
+// reads the capability the way the receive path reads it rather than by
+// assigning a field.
+func decodeContractAheadTestAck(t *testing.T, contractAhead bool, selective bool) receiveAckMessage {
+	t.Helper()
+	saf := sendAckFrame{
+		path:          DestinationId(NewId()).AddSource(NewId()),
+		messageId:     NewId(),
+		sequenceId:    NewId(),
+		selective:     selective,
+		contractAhead: contractAhead,
+	}
+	frameBytes := marshalSendAckTransferFrame(&saf)
+	defer MessagePoolReturn(frameBytes)
+	frame := &protocol.TransferFrame{}
+	if !unmarshalTransferFrame(frameBytes, frame, true) {
+		t.Fatal("the acknowledgement frame did not decode")
+	}
+	ack, err := receiveAckMessageFromProtocol(frame.GetAck())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ack
+}
+
+// a receive sequence driven directly, with the audit Run would have created
+func newContractAheadTestReceiveSequence(
+	t *testing.T,
+	ctx context.Context,
+) (*Client, *ReceiveSequence, Id) {
+	t.Helper()
+	receiver := NewClient(ctx, NewId(), NewNoContractClientOob(), DefaultClientSettings())
+	t.Cleanup(receiver.Cancel)
+	receiver.ContractManager().SetProvideModesWithReturnTraffic(
+		map[protocol.ProvideMode]bool{
+			protocol.ProvideMode_Network: true,
+		},
+	)
+	sourceId := NewId()
+	sequence := NewReceiveSequence(
+		ctx,
+		receiver,
+		SourceId(sourceId),
+		NewId(),
+		sequenceTlsRoleClient,
+		false,
+		DefaultReceiveBufferSettings(),
+	)
+	t.Cleanup(sequence.Close)
+	sequence.peerAudit = NewSequencePeerAudit(receiver, SourceId(sourceId), 0)
+	return receiver, sequence, sourceId
 }
 
 // a send sequence with the rule's instruments attached, for the pure threshold
