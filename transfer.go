@@ -980,6 +980,10 @@ func DefaultSendBufferSettingsWithBufferSize(bufferSize int) *SendBufferSettings
 		ContractAheadFloorByteCount: kib(256),
 		PrewarmOpeningContract:      true,
 		CompactContractHead:         true,
+		// On by default: measured on a relay rig at eight flows, upstream
+		// websocket messages fell by about 70 per cent and throughput rose 13
+		// per cent (4/4 paired); the single-flow effect is not yet established.
+		MergeReadyLogicalGroups: true,
 		// Disabled until the 1/4/8-lane low-bar campaign selects a measured
 		// default. Receivers always understand and advertise bounded lanes, so a
 		// rollout can enable senders independently without breaking legacy peers.
@@ -1665,6 +1669,11 @@ type ClientReceiveStatsSnapshot struct {
 	// admission and outside the sequence goroutine (THROUGHPUTFIX §38.12).
 	// Written above counts these too; this is the subset that never queued.
 	SendNoAckFastPathWriteCount uint64
+	// wire items that carried more than one already-queued logical group on
+	// H1, and the groups those items carried (transfer_send_group_merge.go).
+	// Groups above items is the fold; each group still completes on its own.
+	MergedLogicalGroupWriteCount uint64
+	MergedLogicalGroupCount      uint64
 	// packs dropped because the caller's budget expired while they waited in
 	// the pre-write queue
 	SendPackDeadlineDropCount uint64
@@ -1919,6 +1928,8 @@ type Client struct {
 	sendNoAckRefusedCount               atomic.Uint64
 	sendNoAckDiscardCount               atomic.Uint64
 	sendNoAckFastPathWriteCount         atomic.Uint64
+	mergedLogicalGroupWriteCount        atomic.Uint64
+	mergedLogicalGroupCount             atomic.Uint64
 	sendPackDeadlineDropCount           atomic.Uint64
 	resendQueueUnackedItemCount         atomic.Uint64
 	receiveQueueEvictionNoticeOverflow  atomic.Uint64
@@ -2292,6 +2303,8 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		SendNoAckRefusedCount:                  self.sendNoAckRefusedCount.Load(),
 		SendNoAckDiscardCount:                  self.sendNoAckDiscardCount.Load(),
 		SendNoAckFastPathWriteCount:            self.sendNoAckFastPathWriteCount.Load(),
+		MergedLogicalGroupWriteCount:           self.mergedLogicalGroupWriteCount.Load(),
+		MergedLogicalGroupCount:                self.mergedLogicalGroupCount.Load(),
 		SendPackDeadlineDropCount:              self.sendPackDeadlineDropCount.Load(),
 		ResendQueueUnackedItemCount:            self.resendQueueUnackedItemCount.Load(),
 		ReceiveQueueEvictionByteCount:          self.receiveQueueEvictionByteCount.Load(),
@@ -5129,6 +5142,15 @@ type SendBufferSettings struct {
 	// It activates only after the receiver advertises explicit missing-contract
 	// recovery, so legacy peers continue to receive complete contracts.
 	CompactContractHead bool
+
+	// Folds already-queued single-chunk logical groups into one H1 wire Pack
+	// (transfer_send_group_merge.go). Every forwarded IP
+	// packet is one logical group, so without it a download's kernel TCP ACKs
+	// reach the relay as one websocket message each, and relay work scales
+	// with message count. Only Packs already queued are taken; nothing waits,
+	// so a sparse ACK keeps its latency. Off writes one wire Pack per group,
+	// the pre-fold behaviour, so a cell can measure the difference.
+	MergeReadyLogicalGroups bool
 
 	// LogicalDataLaneCount enables a bounded number of five-tuple-hashed data
 	// ordering lanes after the peer advertises transferLogicalLaneVersion on a
@@ -8571,6 +8593,22 @@ sendSequenceLoop:
 			}
 			processPack := func() bool {
 				if sendPack.logicalGroup {
+					// Fold already-queued whole groups into this one's wire
+					// Pack on H1. A Pack that bypassed recovery admission is
+					// written alone, as it is on the ready-drain path.
+					if self.sendBufferSettings.MergeReadyLogicalGroups &&
+						!bypassedRecoveryAdmission {
+						handled, success := self.processMergedLogicalGroups(
+							sendPack,
+							scheduler,
+							flightPolicy,
+							&packsClosed,
+							processingPacks[:],
+						)
+						if handled {
+							return success && !packsClosed
+						}
+					}
 					complete, success, deferForRecoveryAdmission :=
 						self.processLogicalGroupChunk(
 							sendPack,
