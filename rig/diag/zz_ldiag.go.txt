@@ -1,0 +1,98 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): latency decomposition. Client: hold = item arrival at ReceiveSequence.receive ->
+// its cumulative ack queued (flushDeliver); compress = first ack update -> snapshot written. Provider: ack = item first
+// send -> cumulative ack processed. Histogram per second.
+
+import (
+	"fmt"
+	"sync/atomic"
+	"time"
+)
+
+type ldiagHist struct {
+	n, sumUs atomic.Uint64
+	b        [9]atomic.Uint64 // <0.5 <1 <2 <5 <10 <20 <50 <100 >=100 ms
+}
+
+var ldiagHold, ldiagCompress, ldiagAck ldiagHist
+
+// hole episodes: count and total blocked ms by duration class <10, <50, <100, <300, <1000, >=1000 ms
+var ldiagHoleN, ldiagHoleMs [6]atomic.Uint64
+
+func ldiagHoleObserve(d time.Duration) {
+	ms := float64(d) / float64(time.Millisecond)
+	i := 5
+	for j, lim := range []float64{10, 50, 100, 300, 1000} {
+		if ms < lim {
+			i = j
+			break
+		}
+	}
+	ldiagHoleN[i].Add(1)
+	ldiagHoleMs[i].Add(uint64(ms))
+}
+
+func ldiagHoleDrain() string {
+	var n, m [6]uint64
+	for i := range n {
+		n[i] = ldiagHoleN[i].Swap(0)
+		m[i] = ldiagHoleMs[i].Swap(0)
+	}
+	return fmt.Sprintf("n<10=%d n<50=%d n<100=%d n<300=%d n<1000=%d n>=1000=%d ms<10=%d ms<50=%d ms<100=%d ms<300=%d ms<1000=%d ms>=1000=%d", n[0], n[1], n[2], n[3], n[4], n[5], m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
+func ldiagObserve(h *ldiagHist, d time.Duration) {
+	h.n.Add(1)
+	h.sumUs.Add(uint64(d.Microseconds()))
+	ms := float64(d) / float64(time.Millisecond)
+	i := 8
+	for j, lim := range []float64{0.5, 1, 2, 5, 10, 20, 50, 100} {
+		if ms < lim {
+			i = j
+			break
+		}
+	}
+	h.b[i].Add(1)
+}
+
+func (h *ldiagHist) drain() string {
+	n := h.n.Swap(0)
+	sum := h.sumUs.Swap(0)
+	var c [9]uint64
+	for i := range c {
+		c[i] = h.b[i].Swap(0)
+	}
+	if n == 0 {
+		return "n=0"
+	}
+	pct := func(q float64) string {
+		t := uint64(float64(n) * q)
+		var acc uint64
+		lims := []string{"<0.5", "<1", "<2", "<5", "<10", "<20", "<50", "<100", ">=100"}
+		for i := range c {
+			acc += c[i]
+			if t < acc {
+				return lims[i]
+			}
+		}
+		return ">=100"
+	}
+	return fmt.Sprintf("n=%d meanMs=%.2f p50=%s p90=%s p99=%s", n, float64(sum)/float64(n)/1000, pct(0.5), pct(0.9), pct(0.99))
+}
+
+func init() {
+	if !tdiagEnabled {
+		return
+	}
+	go func() {
+		log := DefaultLogger()
+		for {
+			time.Sleep(time.Second)
+			if ldiagHold.n.Load() == 0 && ldiagAck.n.Load() == 0 && ldiagCompress.n.Load() == 0 {
+				continue
+			}
+			log.Infof("LDIAG hold[%s] compress[%s] ack[%s] holes[%s] gapWrites=%d lingerHit=%d lingerMiss=%d polH1=%d polIso=%d polOther=%d groups=%d groupPacks=%d mergeItems=%d mergePacks=%d unix=%d\n", ldiagHold.drain(), ldiagCompress.drain(), ldiagAck.drain(), ldiagHoleDrain(), ldiagGapWrites.Swap(0), diagH1LingerHits.Swap(0), diagH1LingerMiss.Swap(0), diagPolH1.Swap(0), diagPolIso.Swap(0), diagPolOther.Swap(0), diagGroups.Swap(0), diagGroupPacks.Swap(0), diagMergeItems.Swap(0), diagMergePacks.Swap(0), time.Now().Unix())
+		}
+	}()
+}

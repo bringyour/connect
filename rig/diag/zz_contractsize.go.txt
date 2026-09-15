@@ -1,0 +1,15 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): URNETWORK_DIAG_CONTRACT_MIB overrides the standard contract size (default 128 MiB).
+
+import (
+	"os"
+	"strconv"
+)
+
+func diagStandardContractByteCount() ByteCount {
+	if v, err := strconv.Atoi(os.Getenv("URNETWORK_DIAG_CONTRACT_MIB")); err == nil && 0 < v {
+		return mib(ByteCount(v))
+	}
+	return mib(128)
+}

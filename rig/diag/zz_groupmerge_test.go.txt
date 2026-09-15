@@ -1,0 +1,203 @@
+package connect
+
+// DIAGNOSTIC ONLY (never committed): tests for zz_groupmerge.go.
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/urnetwork/connect/protocol"
+)
+
+const diagGroupMergeTestPackCount = 64
+
+// runDiagGroupMergeBurst queues diagGroupMergeTestPackCount single-frame
+// logical groups on an H1-only route while the SendSequence is held before
+// Run, releases it, and returns the number of wire items that carried them.
+// It asserts in-order delivery of every frame and exactly-once callbacks.
+func runDiagGroupMergeBurst(t *testing.T, gate bool, ack bool) int {
+	t.Helper()
+	previousGate := diagGroupMerge
+	diagGroupMerge = gate
+	defer func() { diagGroupMerge = previousGate }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	destinationId := NewId()
+	sequenceEntered := make(chan struct{})
+	releaseSequence := make(chan struct{})
+	var sequenceEnteredOnce sync.Once
+	var releaseSequenceOnce sync.Once
+	release := func() { releaseSequenceOnce.Do(func() { close(releaseSequence) }) }
+
+	settings := DefaultClientSettings()
+	settings.EncryptionSettings.Mode = EncryptionModeOff
+	settings.SendBufferSettings.SequenceBufferSize = 4 * diagGroupMergeTestPackCount
+	settings.SendBufferSettings.AckBufferSize = 4 * diagGroupMergeTestPackCount
+	settings.SendBufferSettings.beforeRunSendSequenceForTest = func(id sendSequenceId) {
+		if id.Destination != destinationId {
+			return
+		}
+		sequenceEnteredOnce.Do(func() { close(sequenceEntered) })
+		<-releaseSequence
+	}
+	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
+	defer func() {
+		release()
+		closeTransferGroupTestClient(t, client)
+	}()
+	client.ContractManager().AddNoContractPeer(destinationId)
+	route := make(chan []byte, 4*diagGroupMergeTestPackCount)
+	client.RouteManager().UpdateTransport(
+		&h1SendClientTransportForGroupTest{
+			sendClientTransport: NewSendClientTransport(DestinationId(destinationId)),
+		},
+		[]Route{route},
+	)
+
+	frames, witnesses := transferGroupTestFrames(t, diagGroupMergeTestPackCount, 64)
+	callbackCounts := make([]atomic.Int32, len(frames))
+	results := make(chan int, 4*len(frames))
+	for index, frame := range frames {
+		index := index
+		opts := []any{}
+		if !ack {
+			opts = append(opts, NoAck())
+		}
+		success, err := client.sendGroupWithTimeoutDetailed(
+			[]*protocol.Frame{frame},
+			destinationId,
+			func(err error) {
+				callbackCounts[index].Add(1)
+				if err != nil {
+					results <- -index - 1
+					return
+				}
+				results <- index
+			},
+			time.Second,
+			opts...,
+		)
+		if !success || err != nil {
+			for frameIndex := index; frameIndex < len(frames); frameIndex++ {
+				MessagePoolReturn(frames[frameIndex].MessageBytes)
+			}
+			for _, witness := range witnesses {
+				MessagePoolReturn(witness)
+			}
+			t.Fatalf("logical group %d admission success=%t err=%v", index, success, err)
+		}
+		if index == 0 {
+			select {
+			case <-sequenceEntered:
+			case <-ctx.Done():
+				t.Fatalf("wait for sequence startup: %v", ctx.Err())
+			}
+		}
+	}
+	release()
+
+	// (a) every frame arrives on the wire, in FIFO order.
+	wireItems := 0
+	seenFrames := 0
+	for seenFrames < len(frames) {
+		var transferFrameBytes []byte
+		select {
+		case transferFrameBytes = <-route:
+		case <-ctx.Done():
+			t.Fatalf(
+				"wait for wire item (gate=%t ack=%t seen=%d items=%d): %v",
+				gate, ack, seenFrames, wireItems, ctx.Err(),
+			)
+		}
+		pack := decodeSendPackLifecycleWirePack(t, transferFrameBytes)
+		wireItems += 1
+		if len(pack.Frames) == 0 {
+			MessagePoolReturn(transferFrameBytes)
+			t.Fatalf("wire item %d carried no frames", wireItems)
+		}
+		if sendPackH1GroupMaxFrames < len(pack.Frames) {
+			MessagePoolReturn(transferFrameBytes)
+			t.Fatalf("wire item %d carried %d frames > H1 limit", wireItems, len(pack.Frames))
+		}
+		for _, wireFrame := range pack.Frames {
+			if len(frames) <= seenFrames {
+				MessagePoolReturn(transferFrameBytes)
+				t.Fatalf("wire carried more than %d frames", len(frames))
+			}
+			want := byte(seenFrames + 1)
+			if len(wireFrame.MessageBytes) != 64 || wireFrame.MessageBytes[0] != want ||
+				wireFrame.MessageBytes[63] != want {
+				MessagePoolReturn(transferFrameBytes)
+				t.Fatalf(
+					"wire frame %d out of order: len=%d first=%d want=%d",
+					seenFrames, len(wireFrame.MessageBytes), wireFrame.MessageBytes[0], want,
+				)
+			}
+			seenFrames += 1
+		}
+		if ack {
+			acknowledgeSendPackLifecycleWirePack(t, client, destinationId, pack)
+		}
+		MessagePoolReturn(transferFrameBytes)
+	}
+
+	// (b) every callback fires exactly once, in order.
+	for want := range len(frames) {
+		select {
+		case got := <-results:
+			if got != want {
+				t.Fatalf("callback order: got %d want %d", got, want)
+			}
+		case <-ctx.Done():
+			t.Fatalf("wait for callback %d: %v", want, ctx.Err())
+		}
+	}
+	for index := range callbackCounts {
+		if count := callbackCounts[index].Load(); count != 1 {
+			t.Fatalf("callback %d fired %d times", index, count)
+		}
+	}
+	if 0 < len(route) {
+		t.Fatalf("%d unexpected extra wire items", len(route))
+	}
+	releaseTransferGroupTestWitnesses(t, frames, witnesses)
+	return wireItems
+}
+
+func TestDiagGroupMergeCoalescesQueuedNoAckGroups(t *testing.T) {
+	itemsBefore := diagMergeItems.Load()
+	packsBefore := diagMergePacks.Load()
+	wireItems := runDiagGroupMergeBurst(t, true, false)
+	// (c) fewer wire items than packs when the packs are already queued.
+	if diagGroupMergeTestPackCount <= wireItems {
+		t.Fatalf("merge gate on: %d wire items for %d packs", wireItems, diagGroupMergeTestPackCount)
+	}
+	if wireItems > diagGroupMergeTestPackCount/sendPackH1GroupMaxFrames+1 {
+		t.Fatalf("merge gate on: %d wire items, expected about %d", wireItems, diagGroupMergeTestPackCount/sendPackH1GroupMaxFrames)
+	}
+	if diagMergeItems.Load()-itemsBefore == 0 || diagMergePacks.Load()-packsBefore == 0 {
+		t.Fatalf("merge counters did not advance")
+	}
+	t.Logf("gate on, noack: %d packs -> %d wire items", diagGroupMergeTestPackCount, wireItems)
+}
+
+func TestDiagGroupMergeCoalescesQueuedAckedGroups(t *testing.T) {
+	wireItems := runDiagGroupMergeBurst(t, true, true)
+	if diagGroupMergeTestPackCount <= wireItems {
+		t.Fatalf("merge gate on: %d wire items for %d packs", wireItems, diagGroupMergeTestPackCount)
+	}
+	t.Logf("gate on, acked: %d packs -> %d wire items", diagGroupMergeTestPackCount, wireItems)
+}
+
+// Gate off: the unchanged path emits one wire item per logical group, which
+// is what makes the assertions above discriminating.
+func TestDiagGroupMergeGateOffOneItemPerGroup(t *testing.T) {
+	wireItems := runDiagGroupMergeBurst(t, false, false)
+	if wireItems != diagGroupMergeTestPackCount {
+		t.Fatalf("merge gate off: %d wire items for %d packs", wireItems, diagGroupMergeTestPackCount)
+	}
+}
