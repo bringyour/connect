@@ -809,6 +809,9 @@ func TestSizedWindowIsComputedFromTheMeasuredRoundTrip(t *testing.T) {
 		settings.DeliverySizedWindowScale = 2
 		settings.DeliverySizedWindowCeilingByteCount = ceiling
 		settings.ResendQueueBudget = NewTransferMemoryBudget(ceiling)
+		// the target clamp is a separate mechanism with its own rows, and it
+		// ships on; this row measures the rule, so the clamp is held out
+		settings.TargetGoodputByteRate = 0
 	})
 	harness.receiveHold(ceiling)
 	harness.offer(t, 4*1024, 2*time.Second)
