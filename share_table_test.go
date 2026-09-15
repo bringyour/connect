@@ -47,6 +47,21 @@ import (
 // an owner column and the constraints below are applied per surface, which is
 // the honest form until the chain is closed:
 //
+// Corrected by §52, in place because someone has read the paragraph above: its
+// second half is withdrawn. T being a constant beside M is the decision rather
+// than the break — a host sets both numbers, neither is derived from the other,
+// and there is no sdk default-target fix waiting to close a chain. The reason
+// the record gives is that a derived target is a number no host can reason
+// about locally. What replaces the chain is two checks on the pair (T, M): the
+// backing bound T ≤ 20/34 × M, since the pools take 14 of M's 34 parts, and the
+// collector bound 3T ≤ M, since the live heap amplifies about threefold at the
+// runtime and a target near its process's soft limit collects continuously.
+// The collector bound dominates. `TestTheShareTableBinderIsTheH3StreamWindow`
+// asserts both, per pair, with iOS (20 in 32) and Android (24 in 32) as
+// declared kill-limit-bound exceptions. Everything else above stands: the owner
+// column is how this table reads, and the constraints below are applied per
+// surface, which is the permanent form rather than an interim one.
+//
 //	row                      surface   set by
 //	transfer send window      M        connect.SetMemoryBudget, from sdk.SetMemoryLimit
 //	transfer receive hold     M        the same
@@ -66,6 +81,9 @@ import (
 // rows are permissions over a per-device pool whose ceiling is read from M
 // while the budget behind it is a fraction of T (§48.2); the chain of §48.4 is
 // what makes those two agree, and the backing row below asserts that it does.
+// Corrected by §52: what makes those two agree is not a chain but the pair
+// satisfying the backing bound, which the backing row below asserts at the
+// bound's tightest point and the binder row asserts per pair.
 //
 // The rows are read through the shipping constructors, never recomputed here. A
 // table that copied the fractions would agree with itself forever; this one
@@ -452,6 +470,17 @@ func TestEveryShareTableRowIsADrawOnItsOwnSurface(t *testing.T) {
 // here at the derived target, and it is the arithmetic reason the chain matters
 // rather than being a tidiness argument.
 //
+// Corrected by §52, which withdraws the chain: the device target is a constant
+// set beside the process budget, so nothing here is a derived target. What the
+// process-level assertion below computes at 20/34 of M is the largest target
+// §52.2's backing bound admits at that budget, so the level is checked at its
+// tightest admissible pair — the worst case rather than a predicted one, which
+// is a stronger reading of the same assertion. The two permissions therefore fit
+// the client share for every pair that satisfies the bound and fail for a pair
+// that does not, and the pairs a host actually sets are checked one by one in
+// `TestTheShareTableBinderIsTheH3StreamWindow`. The arithmetic below is
+// unchanged; only what it is a statement about is.
+//
 // The tun rows have no row here, and that is the known gap rather than an
 // oversight: there is no aggregate for gVisor's buffers to be backed by. See
 // `TestTheHostedTunPermissionHasNoAggregateBehindIt`.
@@ -517,35 +546,39 @@ func TestTheShareTableIsBackedAtEveryLevel(t *testing.T) {
 			}
 		}
 
-		// within the process: the device target the chain derives plus the
-		// pools' draw are at most M
-		deviceTarget := surface * sdkProcessRatioDeviceTarget / sdkProcessRatioParts
+		// within the process: the largest device target §52.2's backing bound
+		// admits at this budget, plus the pools' draw, are at most M. This was
+		// written as the target the chain of §48.4 derives; §52 withdrew the
+		// derivation, and the same 20/34 is now the bound at equality, so the
+		// level is checked at the tightest pair a host may set rather than at a
+		// predicted one.
+		largestAdmissibleTarget := surface * sdkProcessRatioDeviceTarget / sdkProcessRatioParts
 		pools := surface *
 			(sdkProcessRatioPacketPool + sdkProcessRatioLargeObjectPool) /
 			sdkProcessRatioParts
-		if surface < deviceTarget+pools {
+		if surface < largestAdmissibleTarget+pools {
 			t.Errorf(
-				"at a %d byte process budget the derived device target %d plus the pools' %d is %d, more than the process has; the device target has to be a slice of M for the levels to compose (§48.4)",
-				surface, deviceTarget, pools, deviceTarget+pools,
+				"at a %d byte process budget the largest admissible device target %d plus the pools' %d is %d, more than the process has; the backing bound of §52.2 is what keeps the levels composing, and a host setting a target above it promises the same memory twice",
+				surface, largestAdmissibleTarget, pools, largestAdmissibleTarget+pools,
 			)
 		}
 
 		// the pooled rows against the backing that actually bounds them: the
-		// device's client share, at the target the chain derives
-		clientShare := deviceTarget * sdkDeviceRatioClient / sdkDeviceRatioParts
+		// device's client share, at the largest target the backing bound admits
+		clientShare := largestAdmissibleTarget * sdkDeviceRatioClient / sdkDeviceRatioParts
 		send := rows["transfer send window"].resolve(surface)
 		hold := rows["transfer receive hold"].resolve(surface)
 		if clientShare < send+hold {
 			t.Errorf(
-				"at a %d byte process budget the transfer send permission %d and receive hold %d sum to %d against a client share of %d at the derived device target %d; the two permissions are pool bytes bounded by the device's transfer budgets, and a ceiling read from M against a budget read from T is the incoherence the chain removes",
-				surface, send, hold, send+hold, clientShare, deviceTarget,
+				"at a %d byte process budget the transfer send permission %d and receive hold %d sum to %d against a client share of %d at the largest admissible device target %d; the two permissions are pool bytes bounded by the device's transfer budgets, and a ceiling read from M against a budget read from T only composes for a pair that satisfies the backing bound (§52.2)",
+				surface, send, hold, send+hold, clientShare, largestAdmissibleTarget,
 			)
 		}
 
 		t.Logf(
-			"%d: aggregate %d, reservation %d, connection %d, stream %d, H1 %d | derived target %d, pools %d, client share %d against transfer %d+%d",
+			"%d: aggregate %d, reservation %d, connection %d, stream %d, H1 %d | largest admissible target %d, pools %d, client share %d against transfer %d+%d",
 			surface, aggregate, reservation, connection, stream, h1,
-			deviceTarget, pools, clientShare, send, hold,
+			largestAdmissibleTarget, pools, clientShare, send, hold,
 		)
 	}
 }
