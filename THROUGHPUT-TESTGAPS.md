@@ -250,6 +250,14 @@ path length; it produced a wrong thirty-per-cent inference. Section 38.15.
 `transfer.go:871`.
 *Contract:* the estimate reports that it is a ring, or exposes truncation.
 *Refuted by:* `SampleCount == RttWindowSize` while writes differ fivefold.
+*Status: PARTLY PINNED.*
+`TestTheRoundTripEstimateIsARingOccupancyAndNotAPopulation`
+(`transfer_rtt_ring_test.go`) writes five times the ring and asserts that
+`SampleCount` saturates at the shipped `RttWindowSize`, and that `Mean` and
+`Min` are defined over what the ring holds rather than over what was written.
+The literal contract - that the estimate expose its own truncation - needs a
+production field and is not asserted; the row says so and says it should be
+extended rather than retired when one lands.
 
 **U-11 · `SendShardCount` defaults to 1 and has no counter.** The single
 goroutine hashing every packet from the device to its flow is the one truly
@@ -266,12 +274,39 @@ and sets no floor. Section 28.3 states the rule; nothing enforces it.
 *Refuted by:* the shipped mobile H1 settings.
 *On main:* cannot fail - `LaneFloorByteCount` does not exist there. Branch-only,
 which is why it needs a row.
+*Status: PINNED for this module, and one finding on top.*
+`TestALaneCountWithoutALaneFloorIsNotAConfigurationWeShip`
+(`transfer_lane_floor_pairing_test.go`) holds the pairing over every settings
+value `connect` ships and over the second half nobody wrote down, that the
+floors must fit the pool they are exempted from. It cannot read
+`sdk/mobile_memory_policy.go` - the sdk is a separate module that imports this
+one - so the shipped violation still needs the mirror of this row in the sdk's
+own package, and the row says so.
+The finding: `TestTheCandidateLaneFloorDoesNotFitTheMobilePool` records that
+the candidate scale the field's own doc names, `ResendQueueMinByteCount`, is
+flat at 256 KiB while the pool it would be carved from,
+`ResendQueueMaxByteCount`, is memory-scaled. Eight lanes commit exactly the
+pool at the 64 MiB reference and more than the pool at every budget below it -
+2 MiB against 768 KiB at the 24 MiB mobile target, which is the target where
+`LogicalDataLaneCount = 8` is actually set. The floor must become a draw on the
+same quantity the pool is a draw on, or the lane count must fall, before §28.3
+can be followed on a phone.
 
 **U-13 · A batch return's `true` reads as ownership transfer and means
 delivered.** Section 29.3, `CODESTYLE.md`.
 *Contract:* every entry point is declared borrows, takes, or takes-on-success,
 and the batch entries' declaration matches their behaviour.
 *Refuted by:* an entry with no heading.
+*Status: PINNED for the declaration half.*
+`TestEveryPoolBufferEntryPointDeclaresItsOwnership`
+(`pool_ownership_heading_test.go`) reads CODESTYLE's list against the package
+source with `go/parser` and fails on an entry with no word, on a rename out
+from under the list, and on a "takes" confused with a "takes on success". It
+failed on the tree as it stood: CODESTYLE's list had landed but eight of the
+fourteen declarations it names carried no word, including both batch entries.
+Those headings were written in the same commit, so the row is green.
+The second half of the contract - that the declaration matches the behaviour -
+is not decidable from source and stays with the pool boundary reconciliation.
 
 **U-14 · An opaque host-supplied dial leaves the receive buffer unpinned.**
 Where `DialContextSettings` is set the pre-connect hook cannot run, so only the
@@ -281,6 +316,16 @@ pin is the generation-dependent freeze.
 *Contract:* with an opaque dial and a policy that pins both, the send buffer
 reads the pin and the receive buffer its default.
 *Refuted by:* a pinned receive buffer after connect.
+*Status: PINNED.* `TestAnOpaqueDialCannotReachTheReceivePin` and
+`TestAHostSuppliedDialNeverRunsTheBufferControlHook`
+(`upstream_socket_buffer_opaque_dial_test.go`) assert that the pre-connect hook
+is built exactly when the policy pins anything - so a receive pin has one
+application point and only one - that the shipped `TcpBufferSettings` wire it,
+and that a `ConnectSettings` carrying a host-supplied dial never runs
+`DialControl`. Written over the policy arithmetic rather than over syscalls, so
+it runs on every platform; the kernel-level rows in
+`ip_upstream_tcp_buffer_linux_test.go` are linux-only and only cover the
+unknown-policy case.
 
 **U-15 · `recovering` reads true through a quiet period.** The third exit is not
 present as an exit; its effect is supplied by a fresh entry on the next arrival.
@@ -297,6 +342,45 @@ rules out a whole class of simpler fix. Sections 10.2 and 14.1.
 *Contract:* the verdict's input is reachability, or the caller does not treat it
 as liveness.
 *Refuted by:* a granted probe for a client with no transport.
+
+## 2.1 The invariant rows that were declined, and why
+
+Recorded so they are not re-attempted as written. Section 0.2's lesson governs:
+a row that fails with no fix behind it is worse than no row, because
+`.github/workflows/test.yml` runs the package on every push and one permanently
+red row masks every genuine failure.
+
+**U-05, U-06, U-08 · defect rows with no landing.** Each states a contract the
+tree contradicts and that no branch is fixing. U-05's shape test wants the H3,
+transfer and tun draws at 1 : 2 : 2 (§44.3's derived table puts H3 at M/16 and
+the other two at M/8); the tree ships three equal M/8 divisors
+(`transfer.go:711`, `tun.go:64`, `transport.go:762`), so the row is red on
+arrival. U-06's `UnreliableMaximumFlightByteCount` is still the 256 KiB
+constant (`transfer.go:890`). U-08's carrier dialer still attaches no buffer
+request - `ConnectSettings.DialControl` is set only for the provider's upstream
+socket (`DefaultTcpBufferSettings`), not for a carrier. All three land with
+their fix, in the same commit, not before it.
+
+**U-07, U-16 · other repository.** Both are server-side and cannot be written
+in this module.
+
+**U-11 · red as written.** The contract is that the dispatch expose a queue or
+wait counter and no counter exists, so the row cannot pass until one does. The
+adjacent invariant that IS available - `SendShardCount` defaults to 1 while the
+udp/tcp user limits apply per shard, so raising it multiplies the effective
+aggregate cap - is a different row from the one U-11 states and is left
+unwritten rather than filed under this number.
+
+**U-15 · not an invariant, and there is nothing exported to assert.**
+`recovering` is a local variable in the acknowledgement loop
+(`ip.go:5052`), not an exported phase state, so the row U-15 describes needs a
+production exporter and a clock seam before it can be written at all.
+
+**The provider budget cliff is already covered.** A positive process budget
+switching a provider from unlimited flow counts and the 300 s
+`providerUdpIdleTimeout` to scaled caps and the general 60 s reap is asserted
+by `TestLocalUserNatSettingsMemoryScaled` (`ip_flow_limit_test.go:19`), in both
+directions and including the ordering of the two idles. No new row.
 
 ---
 
