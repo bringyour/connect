@@ -135,6 +135,15 @@ message Pack {
     // Legacy peers ignore this field and never advertise the capability, so
     // they continue to receive exactly one ordered sequence.
     uint32 logical_lane = 12;
+
+    // This Pack announces the successor contract in `contract_frame` rather
+    // than opening it: the receiver verifies and stores it, and does not make
+    // it current (THROUGHPUTFIX §39.1). The switch happens later, where it
+    // happens today, when the first Pack under the new contract arrives. The
+    // Pack carries no data frames. Legacy peers never see this field, because
+    // a sender announces ahead only to a receiver that advertised
+    // `Ack.contract_ahead`.
+    bool contract_ahead = 13;
 }
 
 
@@ -203,6 +212,29 @@ message Ack {
     // once. Packed varints, and a generation larger than one acknowledgement
     // can carry is split across acknowledgements.
     repeated uint64 evicted_sequence_numbers = 9;
+
+    // Advertises that this receiver can register a successor contract that
+    // arrives ahead of the data it will carry, on a Pack with
+    // `contract_ahead` set, without switching to it (THROUGHPUTFIX §39.1).
+    //
+    // WITHDRAWABLE, stated because the two capabilities above disagree and
+    // neither says so: compact_contract_recovery is monotone — set at five
+    // sites and cleared nowhere — while logical_lane_version is withdrawable.
+    // This one is withdrawable, and it has the same two triggers as
+    // logical_lane_version: a later delivery Ack that omits it retires it, and
+    // the capability is scoped to the SendSequence that learned it, so a new
+    // sequence to the same peer starts conservative until its own first
+    // delivery Ack. Selective acknowledgements are not evidence either way.
+    //
+    // A sender must not announce a contract ahead until a delivery Ack carries
+    // this capability; false is the legacy peer, which gets today's promotion
+    // instead. Plain scalar rather than optional: absent and false are the same
+    // fact here, a receiver that will not register an announcement, so there is
+    // no third branch to leave unexercised.
+    //
+    // Field 10 rather than the design's 8: 8 and 9 were taken by the receive
+    // window advertisement and the eviction notice while §39.1 was written.
+    bool contract_ahead = 10;
 }
 
 

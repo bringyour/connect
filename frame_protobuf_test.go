@@ -35,6 +35,7 @@ func buildEquivalentTransferFrame(m *sendPackFrame) *protocol.TransferFrame {
 		ForceStream:       m.forceStream,
 		CompanionContract: m.companionContract,
 		LogicalLane:       m.logicalLane,
+		ContractAhead:     m.contractAhead,
 	}
 	if m.contractId != nil {
 		pack.ContractId = m.contractId.Bytes()
@@ -258,6 +259,9 @@ func TestFrameCodecRandomized(t *testing.T) {
 			m.sessionRole = protocol.SequenceRole_SequenceRoleClient
 		}
 		m.companion = mathrandv2.IntN(2) == 0
+		// THROUGHPUTFIX §39.1: the announcement flag, randomized with the
+		// other Pack discriminators
+		m.contractAhead = mathrandv2.IntN(2) == 0
 
 		assertCodecMatches(t, m)
 	}
@@ -280,6 +284,7 @@ func buildEquivalentAckFrame(m *sendAckFrame) *protocol.TransferFrame {
 		MissingContractId:       missingContractId,
 		CompactContractRecovery: m.compactContractRecovery,
 		LogicalLaneVersion:      m.logicalLaneVersion,
+		ContractAhead:           m.contractAhead,
 	}
 	tf := &protocol.TransferFrame{
 		TransferPath: m.path.ToProtobuf(),
@@ -351,6 +356,13 @@ func TestAckCodecEdgeCases(t *testing.T) {
 			sequenceId:         idA,
 			logicalLaneVersion: transferLogicalLaneVersion,
 		},
+		"contract ahead capability": {
+			path:               TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:          idC,
+			sequenceId:         idA,
+			logicalLaneVersion: transferLogicalLaneVersion,
+			contractAhead:      true,
+		},
 	}
 	for _, m := range cases {
 		assertAckCodecMatches(t, m)
@@ -399,6 +411,9 @@ func TestAckCodecRandomized(t *testing.T) {
 		if mathrandv2.IntN(3) == 0 {
 			m.logicalLaneVersion = transferLogicalLaneVersion
 		}
+		// THROUGHPUTFIX §39.1's capability bit, randomized with the others so
+		// the hand-rolled codec is held to the library's bytes for it too
+		m.contractAhead = mathrandv2.IntN(2) == 0
 		switch mathrandv2.IntN(3) {
 		case 0:
 			m.tagSendTime = mathrandv2.Uint64()
@@ -1228,8 +1243,13 @@ func TestOwnedAckDecodeSteadyStateDoesNotAllocate(t *testing.T) {
 
 func TestDecodedTransferFramePoolRetainedSizeStaysSmall(t *testing.T) {
 	size := unsafe.Sizeof(decodedTransferFrame{})
-	if size > 640 {
-		t.Fatalf("decoded TransferFrame owner size = %d, want <= 640 bytes", size)
+	// 648 rather than 640 since THROUGHPUTFIX §39.1: `Pack.contract_ahead` and
+	// `Ack.contract_ahead` are two generated bools that landed in one new word
+	// of the pooled owner. The ceiling moves with a deliberate wire change and
+	// not otherwise, which is what this row is for — it caught exactly this
+	// change and cost one word for the whole unit.
+	if size > 648 {
+		t.Fatalf("decoded TransferFrame owner size = %d, want <= 648 bytes", size)
 	}
 	t.Logf(
 		"decoded TransferFrame owner=%d bytes; exact pool ceiling=%d bytes",

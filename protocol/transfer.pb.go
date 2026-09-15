@@ -627,7 +627,15 @@ type Pack struct {
 	// the live lane-zero sequence advertises logical_lane_version >= 1.
 	// Legacy peers ignore this field and never advertise the capability, so
 	// they continue to receive exactly one ordered sequence.
-	LogicalLane   uint32 `protobuf:"varint,12,opt,name=logical_lane,json=logicalLane,proto3" json:"logical_lane,omitempty"`
+	LogicalLane uint32 `protobuf:"varint,12,opt,name=logical_lane,json=logicalLane,proto3" json:"logical_lane,omitempty"`
+	// This Pack announces the successor contract in `contract_frame` rather
+	// than opening it: the receiver verifies and stores it, and does not make
+	// it current (THROUGHPUTFIX §39.1). The switch happens later, where it
+	// happens today, when the first Pack under the new contract arrives. The
+	// Pack carries no data frames. Legacy peers never see this field, because
+	// a sender announces ahead only to a receiver that advertised
+	// `Ack.contract_ahead`.
+	ContractAhead bool `protobuf:"varint,13,opt,name=contract_ahead,json=contractAhead,proto3" json:"contract_ahead,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -746,6 +754,13 @@ func (x *Pack) GetLogicalLane() uint32 {
 	return 0
 }
 
+func (x *Pack) GetContractAhead() bool {
+	if x != nil {
+		return x.ContractAhead
+	}
+	return false
+}
+
 // used for deep message inspection
 type FilteredPack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -845,8 +860,30 @@ type Ack struct {
 	// once. Packed varints, and a generation larger than one acknowledgement
 	// can carry is split across acknowledgements.
 	EvictedSequenceNumbers []uint64 `protobuf:"varint,9,rep,packed,name=evicted_sequence_numbers,json=evictedSequenceNumbers,proto3" json:"evicted_sequence_numbers,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Advertises that this receiver can register a successor contract that
+	// arrives ahead of the data it will carry, on a Pack with
+	// `contract_ahead` set, without switching to it (THROUGHPUTFIX §39.1).
+	//
+	// WITHDRAWABLE, stated because the two capabilities above disagree and
+	// neither says so: compact_contract_recovery is monotone — set at five
+	// sites and cleared nowhere — while logical_lane_version is withdrawable.
+	// This one is withdrawable, and it has the same two triggers as
+	// logical_lane_version: a later delivery Ack that omits it retires it, and
+	// the capability is scoped to the SendSequence that learned it, so a new
+	// sequence to the same peer starts conservative until its own first
+	// delivery Ack. Selective acknowledgements are not evidence either way.
+	//
+	// A sender must not announce a contract ahead until a delivery Ack carries
+	// this capability; false is the legacy peer, which gets today's promotion
+	// instead. Plain scalar rather than optional: absent and false are the same
+	// fact here, a receiver that will not register an announcement, so there is
+	// no third branch to leave unexercised.
+	//
+	// Field 10 rather than the design's 8: 8 and 9 were taken by the receive
+	// window advertisement and the eviction notice while §39.1 was written.
+	ContractAhead bool `protobuf:"varint,10,opt,name=contract_ahead,json=contractAhead,proto3" json:"contract_ahead,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Ack) Reset() {
@@ -940,6 +977,13 @@ func (x *Ack) GetEvictedSequenceNumbers() []uint64 {
 		return x.EvictedSequenceNumbers
 	}
 	return nil
+}
+
+func (x *Ack) GetContractAhead() bool {
+	if x != nil {
+		return x.ContractAhead
+	}
+	return false
 }
 
 type Tag struct {
@@ -2707,7 +2751,7 @@ const file_transfer_proto_rawDesc = "" +
 	"\r_session_roleB\x14\n" +
 	"\x12_session_companion\"U\n" +
 	"\x15FilteredTransferFrame\x12<\n" +
-	"\rtransfer_path\x18\x01 \x01(\v2\x17.bringyour.TransferPathR\ftransferPath\"\xec\x03\n" +
+	"\rtransfer_path\x18\x01 \x01(\v2\x17.bringyour.TransferPathR\ftransferPath\"\x93\x04\n" +
 	"\x04Pack\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\fR\tmessageId\x12\x1f\n" +
@@ -2724,13 +2768,14 @@ const file_transfer_proto_rawDesc = "" +
 	"\fforce_stream\x18\n" +
 	" \x01(\bR\vforceStream\x12-\n" +
 	"\x12companion_contract\x18\v \x01(\bR\x11companionContract\x12!\n" +
-	"\flogical_lane\x18\f \x01(\rR\vlogicalLaneB\x11\n" +
+	"\flogical_lane\x18\f \x01(\rR\vlogicalLane\x12%\n" +
+	"\x0econtract_ahead\x18\r \x01(\bR\rcontractAheadB\x11\n" +
 	"\x0f_contract_frameB\x06\n" +
 	"\x04_tagB\x0e\n" +
 	"\f_contract_id\"_\n" +
 	"\fFilteredPack\x12<\n" +
 	"\x0econtract_frame\x18\a \x01(\v2\x10.bringyour.FrameH\x00R\rcontractFrame\x88\x01\x01B\x11\n" +
-	"\x0f_contract_frame\"\xe5\x03\n" +
+	"\x0f_contract_frame\"\x8c\x04\n" +
 	"\x03Ack\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\fR\tmessageId\x12\x1f\n" +
@@ -2742,7 +2787,9 @@ const file_transfer_proto_rawDesc = "" +
 	"\x19compact_contract_recovery\x18\x06 \x01(\bR\x17compactContractRecovery\x120\n" +
 	"\x14logical_lane_version\x18\a \x01(\rR\x12logicalLaneVersion\x12>\n" +
 	"\x19receive_window_byte_count\x18\b \x01(\x04H\x02R\x16receiveWindowByteCount\x88\x01\x01\x128\n" +
-	"\x18evicted_sequence_numbers\x18\t \x03(\x04R\x16evictedSequenceNumbersB\x06\n" +
+	"\x18evicted_sequence_numbers\x18\t \x03(\x04R\x16evictedSequenceNumbers\x12%\n" +
+	"\x0econtract_ahead\x18\n" +
+	" \x01(\bR\rcontractAheadB\x06\n" +
 	"\x04_tagB\x16\n" +
 	"\x14_missing_contract_idB\x1c\n" +
 	"\x1a_receive_window_byte_count\"\"\n" +

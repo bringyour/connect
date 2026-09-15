@@ -164,6 +164,11 @@ type sendPackFrame struct {
 	// logicalLane is Pack field 12. Zero is the legacy/control lane and is
 	// omitted; nonzero values are capability-negotiated and bounded to 1..8.
 	logicalLane uint32
+	// contractAhead is Pack field 13: the contract frame announces the
+	// successor rather than opening it (THROUGHPUTFIX §39.1). Emitted only
+	// when true, and only to a receiver that advertised the capability, so a
+	// legacy peer's wire is unchanged.
+	contractAhead bool
 }
 
 // sizePack returns the encoded size of the Pack submessage body.
@@ -206,6 +211,9 @@ func (m *sendPackFrame) sizePack() int {
 	}
 	if m.logicalLane != 0 {
 		n += protoSizeTag(12) + protoSizeVarint(uint64(m.logicalLane))
+	}
+	if m.contractAhead {
+		n += protoSizeTag(13) + 1
 	}
 	return n
 }
@@ -260,6 +268,10 @@ func (m *sendPackFrame) appendPack(b []byte) []byte {
 	if m.logicalLane != 0 {
 		b = protoAppendTag(b, 12, protoWireVarint)
 		b = protoAppendVarint(b, uint64(m.logicalLane))
+	}
+	if m.contractAhead {
+		b = protoAppendTag(b, 13, protoWireVarint)
+		b = append(b, 1)
 	}
 	return b
 }
@@ -345,6 +357,10 @@ type sendAckFrame struct {
 	receiveWindowSet        bool
 	// sequence numbers the receiver evicted after acknowledging them
 	evictedSequenceNumbers []uint64
+	// contractAhead is Ack field 10: this receiver registers a successor
+	// contract announced ahead of its data (THROUGHPUTFIX §39.1). Emitted only
+	// when true; absent is the legacy peer.
+	contractAhead bool
 }
 
 func (m *sendAckFrame) sizeAck() int {
@@ -377,6 +393,9 @@ func (m *sendAckFrame) sizeAck() int {
 			body += protoSizeVarint(sequenceNumber)
 		}
 		n += protoSizeTag(9) + protoSizeVarint(uint64(body)) + body
+	}
+	if m.contractAhead {
+		n += protoSizeTag(10) + 1
 	}
 	return n
 }
@@ -421,6 +440,10 @@ func (m *sendAckFrame) appendAck(b []byte) []byte {
 		for _, sequenceNumber := range m.evictedSequenceNumbers {
 			b = protoAppendVarint(b, sequenceNumber)
 		}
+	}
+	if m.contractAhead {
+		b = protoAppendTag(b, 10, protoWireVarint)
+		b = append(b, 1)
 	}
 	return b
 }
@@ -1114,7 +1137,7 @@ func decodePack(b []byte) (pack *protocol.Pack, success bool) {
 			}
 			b = b[vn:]
 			pack.Nack = protowire.DecodeBool(v)
-		case 10, 11, 12: // force_stream, companion_contract, logical_lane
+		case 10, 11, 12, 13: // force_stream, companion_contract, logical_lane, contract_ahead
 			if typ != protowire.VarintType {
 				return nil, false
 			}
@@ -1123,12 +1146,15 @@ func decodePack(b []byte) (pack *protocol.Pack, success bool) {
 				return nil, false
 			}
 			b = b[vn:]
-			if num == 10 {
+			switch num {
+			case 10:
 				pack.ForceStream = protowire.DecodeBool(v)
-			} else if num == 11 {
+			case 11:
 				pack.CompanionContract = protowire.DecodeBool(v)
-			} else {
+			case 12:
 				pack.LogicalLane = uint32(v)
+			default:
+				pack.ContractAhead = protowire.DecodeBool(v)
 			}
 		case 5, 7: // frames (repeated), contract_frame (Frame)
 			if typ != protowire.BytesType {
@@ -1246,7 +1272,7 @@ func decodePackOwned(b []byte) (owner *decodedPackOwner, success bool) {
 			}
 			b = b[vn:]
 			pack.Nack = protowire.DecodeBool(v)
-		case 10, 11, 12: // force_stream, companion_contract, logical_lane
+		case 10, 11, 12, 13: // force_stream, companion_contract, logical_lane, contract_ahead
 			if typ != protowire.VarintType {
 				return nil, false
 			}
@@ -1255,12 +1281,15 @@ func decodePackOwned(b []byte) (owner *decodedPackOwner, success bool) {
 				return nil, false
 			}
 			b = b[vn:]
-			if num == 10 {
+			switch num {
+			case 10:
 				pack.ForceStream = protowire.DecodeBool(v)
-			} else if num == 11 {
+			case 11:
 				pack.CompanionContract = protowire.DecodeBool(v)
-			} else {
+			case 12:
 				pack.LogicalLane = uint32(v)
+			default:
+				pack.ContractAhead = protowire.DecodeBool(v)
 			}
 		case 5: // frames (repeated)
 			if typ != protowire.BytesType {
@@ -1419,6 +1448,16 @@ func decodeAck(b []byte) (*protocol.Ack, bool) {
 				body = body[vn:]
 				ack.EvictedSequenceNumbers = append(ack.EvictedSequenceNumbers, v)
 			}
+		case 10: // contract_ahead
+			if typ != protowire.VarintType {
+				return nil, false
+			}
+			v, vn := protowire.ConsumeVarint(b)
+			if vn < 0 {
+				return nil, false
+			}
+			b = b[vn:]
+			ack.ContractAhead = protowire.DecodeBool(v)
 		default:
 			fn := protowire.ConsumeFieldValue(num, typ, b)
 			if fn < 0 {
@@ -1540,6 +1579,16 @@ func decodeAckOwned(b []byte, decoded *decodedTransferFrame) bool {
 				body = body[vn:]
 				ack.EvictedSequenceNumbers = append(ack.EvictedSequenceNumbers, v)
 			}
+		case 10: // contract_ahead
+			if typ != protowire.VarintType {
+				return false
+			}
+			v, vn := protowire.ConsumeVarint(b)
+			if vn < 0 {
+				return false
+			}
+			b = b[vn:]
+			ack.ContractAhead = protowire.DecodeBool(v)
 		default:
 			fn := protowire.ConsumeFieldValue(num, typ, b)
 			if fn < 0 {
