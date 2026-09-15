@@ -97,11 +97,13 @@ func TestLocalUserNatSettingsMemoryScaled(t *testing.T) {
 			providerSettings.UdpBufferSettings.IdleTimeout, udpSettings.IdleTimeout)
 	}
 
-	// a budgeted provider keeps the scaled defaults, including the short idle
+	// the process budget is not the provider's flow policy: the targetless
+	// provider profile is the same with a budget set (the full row is
+	// TestProviderProfileIsIndependentOfTheProcessBudget)
 	SetMemoryBudget(24 * 1024 * 1024)
 	budgetedProviderSettings := DefaultProviderLocalUserNatSettings()
-	AssertEqual(t, budgetedProviderSettings.UdpBufferSettings.IdleTimeout, 60*time.Second)
-	AssertEqual(t, budgetedProviderSettings.UdpBufferSettings.GlobalLimit, 768)
+	AssertEqual(t, budgetedProviderSettings.UdpBufferSettings.IdleTimeout, providerUdpIdleTimeout)
+	AssertEqual(t, budgetedProviderSettings.UdpBufferSettings.GlobalLimit, 0)
 	SetMemoryBudget(0)
 
 	// Invariants at every budget tier:
@@ -134,6 +136,73 @@ func TestLocalUserNatSettingsMemoryScaled(t *testing.T) {
 					budget, tcpSettings.MaxWindowSize, tcpSettings.MinWindowSize)
 				break
 			}
+		}
+	}
+}
+
+// TestProviderProfileIsIndependentOfTheProcessBudget pins the decoupling of
+// the provider's flow tables from the process budget.
+//
+// The flow caps used to be a side effect of `SetMemoryBudget`: a targetless
+// provider that set a process budget to size its transfer share was handed the
+// phone's scaled caps and the general 60s udp reap, so the provider was left
+// unbudgeted, and an unbudgeted process has no transfer share and stays at the
+// 2 MiB constant window. Flow caps come from a memory target and from nothing
+// else. The row: at every process budget, from none through far above the
+// reference, the targetless provider profile is unlimited with the provider
+// udp idle, and the targeted profile's caps are the target's alone.
+func TestProviderProfileIsIndependentOfTheProcessBudget(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+
+	type flowLimits struct {
+		udpUserLimit    int
+		udpGlobalLimit  int
+		udpIdleTimeout  time.Duration
+		tcpUserLimit    int
+		tcpGlobalLimit  int
+		tcpIdleTimeout  time.Duration
+		icmpUserLimit   int
+		icmpGlobalLimit int
+	}
+	limitsOf := func(settings *LocalUserNatSettings) flowLimits {
+		return flowLimits{
+			udpUserLimit:    settings.UdpBufferSettings.UserLimit,
+			udpGlobalLimit:  settings.UdpBufferSettings.GlobalLimit,
+			udpIdleTimeout:  settings.UdpBufferSettings.IdleTimeout,
+			tcpUserLimit:    settings.TcpBufferSettings.UserLimit,
+			tcpGlobalLimit:  settings.TcpBufferSettings.GlobalLimit,
+			tcpIdleTimeout:  settings.TcpBufferSettings.IdleTimeout,
+			icmpUserLimit:   settings.IcmpBufferSettings.UserLimit,
+			icmpGlobalLimit: settings.IcmpBufferSettings.GlobalLimit,
+		}
+	}
+
+	SetMemoryBudget(0)
+	unbudgeted := limitsOf(DefaultProviderLocalUserNatSettings())
+	// today's targetless provider, stated rather than sampled
+	AssertEqual(t, unbudgeted, flowLimits{
+		udpIdleTimeout: providerUdpIdleTimeout,
+		tcpIdleTimeout: 300 * time.Second,
+	})
+	unbudgetedTargeted := limitsOf(DefaultProviderLocalUserNatSettingsWithMemoryTarget(mib(64)))
+	if unbudgetedTargeted.udpGlobalLimit <= 0 || unbudgetedTargeted.tcpGlobalLimit <= 0 {
+		t.Fatalf("a targeted provider has no flow caps: %+v", unbudgetedTargeted)
+	}
+
+	for _, budget := range []ByteCount{mib(8), mib(24), mib(64), mib(256), gib(8)} {
+		SetMemoryBudget(budget)
+		if budgeted := limitsOf(DefaultProviderLocalUserNatSettings()); budgeted != unbudgeted {
+			t.Errorf(
+				"budget %d: the targetless provider profile is %+v, unbudgeted it is %+v; a process budget must not change the provider's flow limits or idle",
+				budget, budgeted, unbudgeted,
+			)
+		}
+		if budgeted := limitsOf(DefaultProviderLocalUserNatSettingsWithMemoryTarget(mib(64))); budgeted != unbudgetedTargeted {
+			t.Errorf(
+				"budget %d: the 64 MiB target profile is %+v, unbudgeted it is %+v; the caps are the target's alone",
+				budget, budgeted, unbudgetedTargeted,
+			)
 		}
 	}
 }

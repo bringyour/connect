@@ -792,7 +792,8 @@ const (
 // Zero means there is no budget. That is the absence of the surface rather than
 // a small share, and every caller below keeps today's constant in that case:
 // falling to a floor would make every unbudgeted process -- which is what a
-// provider is (§37.22) -- slower the moment this lands.
+// provider was until its flow caps were decoupled from the budget (§37.22,
+// `DefaultProviderLocalUserNatSettings`) -- slower the moment this lands.
 func h3BudgetShareByteCount(memoryTargetByteCount ByteCount) ByteCount {
 	if memoryTargetByteCount <= 0 {
 		return 0

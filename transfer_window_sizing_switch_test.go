@@ -825,3 +825,60 @@ func TestTheReliableAdmissionBoundReadsThePathNotTheResendFloor(t *testing.T) {
 		)
 	}
 }
+
+// The provider's half of the finding above, as a row.
+//
+// A provider was left unbudgeted because installing a process budget cost it
+// its flow tables (the caps were a side effect of the budget, see
+// `TestProviderProfileIsIndependentOfTheProcessBudget`), and an unbudgeted
+// process has no share, so the provider sat at the 2 MiB constant with
+// gigabytes free. With the caps decoupled a provider sets its budget, and this
+// pins what it gets for that: a transfer share of M/8 attached to its send
+// settings, the rule active, at every budget from the reference to a server's,
+// and never the constant.
+//
+// Prediction, recorded before the run: at 64 MiB, 256 MiB, 1 GiB and 8 GiB
+// the attached budget is exactly M/8 and the rule reports active; the 2 MiB
+// constant is what the same settings hold at a zero budget, and only there.
+func TestABudgetedProviderDrawsItsShareRatherThanTheConstant(t *testing.T) {
+	restore := MemoryBudget()
+	t.Cleanup(func() { SetMemoryBudget(restore) })
+
+	constant := MemoryScaledByteCount(mib(2), kib(256))
+	for _, budget := range []ByteCount{mib(64), mib(256), gib(1), gib(8)} {
+		SetMemoryBudget(budget)
+		settings := DefaultSendBufferSettings()
+		if !settings.WindowSizingActive() {
+			t.Errorf("budget %d: the rule is not active on a budgeted provider", budget)
+			continue
+		}
+		share := settings.ResendQueueBudget.TotalByteCount()
+		if want := budget / transferBudgetShareDivisor; share != want {
+			t.Errorf("budget %d: the attached share is %d, want M/8 = %d", budget, share, want)
+		}
+		if share <= constant {
+			t.Errorf(
+				"budget %d: the share %d is no larger than the %d constant the unbudgeted provider held; the budget bought nothing",
+				budget, share, constant,
+			)
+		}
+		// the provider's egress tables, built in the same process under the
+		// same budget, are the unlimited profile the unbudgeted provider had
+		nat := DefaultProviderLocalUserNatSettings()
+		if nat.TcpBufferSettings.GlobalLimit != 0 || nat.UdpBufferSettings.GlobalLimit != 0 {
+			t.Errorf(
+				"budget %d: the provider's share came with flow caps tcp %d udp %d; the caps were the reason the provider ran unbudgeted",
+				budget, nat.TcpBufferSettings.GlobalLimit, nat.UdpBufferSettings.GlobalLimit,
+			)
+		}
+	}
+
+	SetMemoryBudget(0)
+	settings := DefaultSendBufferSettings()
+	if settings.WindowSizingActive() || settings.ResendQueueMaxByteCount != constant {
+		t.Errorf(
+			"an unbudgeted process holds active=%v max=%d; the constant is what a zero budget means and only that",
+			settings.WindowSizingActive(), settings.ResendQueueMaxByteCount,
+		)
+	}
+}

@@ -614,8 +614,8 @@ func TestMultiClientAffinityIcmp(t *testing.T) {
 
 // the icmp budget item of the provider byte-cost model: floors dominate a
 // small target, the item scales with a large target, and it is additive —
-// the udp/tcp shares are untouched by it. Scaled caps under a process
-// budget, unlimited flows unbudgeted.
+// the udp/tcp shares are untouched by it. Unlimited flows without a target,
+// whatever the process budget.
 func TestProviderIcmpSettings(t *testing.T) {
 	defer SetMemoryBudget(0)
 
@@ -645,9 +645,10 @@ func TestProviderIcmpSettings(t *testing.T) {
 	AssertEqual(t, unbudgeted.IcmpBufferSettings.UserLimit, 0)
 	AssertEqual(t, unbudgeted.IcmpBufferSettings.GlobalLimit, 0)
 
-	// the ios packet tunnel budget (scale 24/64)
+	// a process budget (the ios packet tunnel's 24 MiB here) is not a flow
+	// policy: the targetless provider keeps its unlimited table
 	SetMemoryBudget(24 * 1024 * 1024)
 	budgeted := DefaultProviderLocalUserNatSettings()
-	AssertEqual(t, budgeted.IcmpBufferSettings.UserLimit, 48)
-	AssertEqual(t, budgeted.IcmpBufferSettings.GlobalLimit, 96)
+	AssertEqual(t, budgeted.IcmpBufferSettings.UserLimit, 0)
+	AssertEqual(t, budgeted.IcmpBufferSettings.GlobalLimit, 0)
 }
