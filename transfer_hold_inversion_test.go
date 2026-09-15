@@ -31,6 +31,17 @@ func TestTheReceiveHoldAndThePeerWindowCrossAtFourFifthsOfTheSendersBudget(t *te
 	restore := MemoryBudget()
 	t.Cleanup(func() { SetMemoryBudget(restore) })
 
+	// The relationship above is the one between two scaled CONSTANTS, which is
+	// what shipped when §37.17 measured it. The window rule now ships on
+	// (`f8d564b`), and under it the hold is not a constant at all: it is the
+	// budget's eighth, and so is the send ceiling, which is why the crossing
+	// moves. The constant regime is still reachable by one SetWindowSizing
+	// call and is still what a rollback produces, so it is pinned here as
+	// itself rather than as the default; the rule's own relationship is
+	// asserted at the end, where it belongs.
+	t.Cleanup(func() { SetWindowSizing(DefaultWindowSizing()) })
+	SetWindowSizing(WindowSizingConstant)
+
 	// a provider runs unbudgeted, so the sender's window is the unscaled
 	// constant. This is the peer a shipped client actually faces.
 	SetMemoryBudget(0)
@@ -91,6 +102,41 @@ func TestTheReceiveHoldAndThePeerWindowCrossAtFourFifthsOfTheSendersBudget(t *te
 			"%s: hold %d against peer window %d, %.2f times inverted",
 			shipped.name, hold, peerWindow, float64(peerWindow)/float64(hold),
 		)
+	}
+
+	// And the regime that ships. Under the rule the hold and the send ceiling
+	// are the same draw on the same budget — the eighth — so a host holds
+	// exactly what it may have outstanding, at every budget, and the 1.25
+	// ratio above is replaced by 1. The crossing against an unbudgeted peer
+	// does not disappear; it moves, and it moves by arithmetic this row can
+	// state: an unbudgeted peer keeps the 2 MiB constant, so a budgeted client
+	// is under it exactly while its eighth is under 2 MiB, which is below
+	// 16 MiB rather than below 51.2. Every shipped mobile budget is above it.
+	SetWindowSizing(WindowSizingFromDelivery)
+	for _, budget := range []ByteCount{mib(8), mib(16), mib(24), mib(32), mib(64), mib(256)} {
+		SetMemoryBudget(budget)
+		share := transferBudgetShareByteCount()
+		hold := DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount
+		sendSettings := DefaultSendBufferSettings()
+		if sendSettings.ResendQueueBudget == nil {
+			t.Fatalf("at a %d byte budget the rule attached no send pool", budget)
+		}
+		ceiling := sendSettings.ResendQueueBudget.LendableByteCount(
+			sendSettings.ResendQueueMinByteCount,
+		)
+		if hold != share || ceiling != share {
+			t.Errorf(
+				"at a %d byte budget the rule gives a %d byte hold against a %d byte send ceiling, both meant to be the %d byte share; a host that draws unequal shares inverts against itself",
+				budget, hold, ceiling, share,
+			)
+		}
+		inverted := hold < peerWindow
+		if wantInverted := budget < mib(16); inverted != wantInverted {
+			t.Errorf(
+				"at a %d byte budget the hold is %d against an unbudgeted peer's %d byte window, inverted = %t, want %t; the crossing under the rule is where the budget's eighth meets the peer's constant, which is 16 MiB",
+				budget, hold, peerWindow, inverted, wantInverted,
+			)
+		}
 	}
 }
 

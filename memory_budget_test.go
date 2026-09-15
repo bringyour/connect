@@ -47,7 +47,21 @@ func TestMemoryBudgetScaledSettings(t *testing.T) {
 	defer SetMemoryBudget(0)
 
 	AssertEqual(t, DefaultSendBufferSettings().ResendQueueMaxByteCount, mib(1))
-	AssertEqual(t, DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount, (mib(2)+kib(512))/2)
+	// The receive hold is no longer a scaled constant. With the window rule
+	// shipping on (`f8d564b`) it is a draw on the budget — the same eighth the
+	// send side draws — so at 32 MiB it is 4 MiB rather than half of 2.5.
+	// `ResendQueueMaxByteCount` above is still the scaled constant because
+	// under the rule it is the window's FLOOR; the ceiling is read from the
+	// queue's budget at estimate time and is the same 4 MiB. Both facts are
+	// kept here: what the rule derives, and what the rollback still produces.
+	AssertEqual(t, DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount, transferBudgetShareByteCount())
+	AssertEqual(t, DefaultSendBufferSettings().ResendQueueBudget.TotalByteCount(), transferBudgetShareByteCount())
+	func() {
+		defer SetWindowSizing(DefaultWindowSizing())
+		SetWindowSizing(WindowSizingConstant)
+		AssertEqual(t, DefaultReceiveBufferSettings().ReceiveQueueMaxByteCount, (mib(2)+kib(512))/2)
+		AssertEqual(t, DefaultSendBufferSettings().ResendQueueMaxByteCount, mib(1))
+	}()
 	AssertEqual(t, DefaultWebRtcSettings().ReceiveBufferSize, kib(256))
 	AssertEqual(t, DefaultDohSettings().CacheMaxEntries, 2048)
 	clientStrategySettings := DefaultClientStrategySettings()
