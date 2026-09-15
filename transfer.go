@@ -1636,6 +1636,10 @@ type ClientReceiveStatsSnapshot struct {
 	// no-acknowledgement packs discarded after admission, on a failed route
 	// write or a contract that could not be created
 	SendNoAckDiscardCount uint64
+	// no-acknowledgement Packs written by the caller-side fast path, before
+	// admission and outside the sequence goroutine (THROUGHPUTFIX §38.12).
+	// Written above counts these too; this is the subset that never queued.
+	SendNoAckFastPathWriteCount uint64
 	// packs dropped because the caller's budget expired while they waited in
 	// the pre-write queue
 	SendPackDeadlineDropCount uint64
@@ -1889,6 +1893,7 @@ type Client struct {
 	sendNoAckWriteCount                 atomic.Uint64
 	sendNoAckRefusedCount               atomic.Uint64
 	sendNoAckDiscardCount               atomic.Uint64
+	sendNoAckFastPathWriteCount         atomic.Uint64
 	sendPackDeadlineDropCount           atomic.Uint64
 	resendQueueUnackedItemCount         atomic.Uint64
 	receiveQueueEvictionNoticeOverflow  atomic.Uint64
@@ -2261,6 +2266,7 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		SendNoAckWriteCount:                    self.sendNoAckWriteCount.Load(),
 		SendNoAckRefusedCount:                  self.sendNoAckRefusedCount.Load(),
 		SendNoAckDiscardCount:                  self.sendNoAckDiscardCount.Load(),
+		SendNoAckFastPathWriteCount:            self.sendNoAckFastPathWriteCount.Load(),
 		SendPackDeadlineDropCount:              self.sendPackDeadlineDropCount.Load(),
 		ResendQueueUnackedItemCount:            self.resendQueueUnackedItemCount.Load(),
 		ReceiveQueueEvictionByteCount:          self.receiveQueueEvictionByteCount.Load(),
@@ -5042,9 +5048,13 @@ type SendBufferSettings struct {
 	beforeEncryptedControlPackForTest    func([]byte)
 	beforeContractFailureClassifyForTest func(sendSequenceId)
 	beforeTakeContractForTest            func(sendSequenceId)
-	forceAckTimeoutForTest               func(sendSequenceId) bool
-	forceContractFailureForTest          func(sendSequenceId) bool
-	forceResendForTest                   func(sendSequenceId) bool
+	// Runs after the caller-side no-acknowledgement stage decided, with
+	// whether an immediate write was attempted, whether it succeeded, and the
+	// timeout the pack then carries into admission (THROUGHPUTFIX §38.12).
+	afterNoAckFastPathForTest   func(sendSequenceId, bool, bool, time.Duration)
+	forceAckTimeoutForTest      func(sendSequenceId) bool
+	forceContractFailureForTest func(sendSequenceId) bool
+	forceResendForTest          func(sendSequenceId) bool
 
 	// as this ->1, there is more risk that noack messages will get dropped due to out of sync contracts
 	ContractFillFraction float32
@@ -5281,6 +5291,7 @@ type SendBuffer struct {
 	beforeEncryptedControlPackForTest     func([]byte)
 	beforeContractFailureClassifyForTest  func(sendSequenceId)
 	beforeTakeContractForTest             func(sendSequenceId)
+	afterNoAckFastPathForTest             func(sendSequenceId, bool, bool, time.Duration)
 	forceAckTimeoutForTest                func(sendSequenceId) bool
 	forceContractFailureForTest           func(sendSequenceId) bool
 	forceResendForTest                    func(sendSequenceId) bool
@@ -5314,6 +5325,7 @@ func NewSendBuffer(ctx context.Context,
 		beforeEncryptedControlPackForTest:     sendBufferSettings.beforeEncryptedControlPackForTest,
 		beforeContractFailureClassifyForTest:  sendBufferSettings.beforeContractFailureClassifyForTest,
 		beforeTakeContractForTest:             sendBufferSettings.beforeTakeContractForTest,
+		afterNoAckFastPathForTest:             sendBufferSettings.afterNoAckFastPathForTest,
 		forceAckTimeoutForTest:                sendBufferSettings.forceAckTimeoutForTest,
 		forceContractFailureForTest:           sendBufferSettings.forceContractFailureForTest,
 		forceResendForTest:                    sendBufferSettings.forceResendForTest,
@@ -6151,6 +6163,22 @@ type SendSequence struct {
 	// spends what the caller has left rather than a fresh write timeout.
 	// Owned by the sequence goroutine, which is the only writer and reader.
 	currentPackDeadline time.Time
+	// THROUGHPUTFIX §38.12's first stage. The loop publishes an immutable
+	// snapshot of what an immediate no-acknowledgement write needs — the
+	// writer handle and the contract it may charge — and a caller reads the
+	// pointer once per write and uses that snapshot for the whole write, so a
+	// contract switch mid-write cannot tear it. Nil while there is nothing a
+	// caller may write against, which sends every no-acknowledgement pack to
+	// the queue exactly as before.
+	noAckFastPath atomic.Pointer[noAckFastPathSnapshot]
+	// the loop's own view of what it last published, for the reservation
+	// carried over when it publishes the next one
+	noAckFastPathPublished *noAckFastPathSnapshot
+	// What callers wrote against a snapshot's contract, handed to the loop to
+	// apply on its own goroutine: the caller's goroutine owns none of the
+	// sequence's accounting. A leaf lock, like the eviction handoff.
+	noAckFastPathAccountingMutex   sync.Mutex
+	pendingNoAckFastPathAccounting []noAckFastPathAccounting
 	// Whether a pack entering now could NOT also enter the resend queue,
 	// published by the send loop each pass. A reliable pack takes its
 	// admission slot only when this is clear (THROUGHPUTFIX §38.11):
@@ -6749,6 +6777,33 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	// when it could also enter the resend queue, which moves the capacity wait
 	// out in front of admission, to the caller and its timeout, where refusals
 	// are already counted and where socket items already wait today.
+	// THROUGHPUTFIX §38.12's first stage, for a no-acknowledgement pack: one
+	// immediate, non-blocking try at the writer against the loop's published
+	// snapshot, before admission. Written, it never queues. Not written, it
+	// goes to the queue with the caller's whole timeout: the try consumed
+	// none of it, which is the point of the three cases —
+	//
+	//   - a timeout above zero admits with what remains, and if nothing
+	//     remains (the deadline recorded at entry has passed) still tries
+	//     admission at zero rather than not at all;
+	//   - a timeout of zero writes at zero and admits at zero;
+	//   - a negative timeout writes at zero and admits with the negative
+	//     timeout, waiting on the queue rather than on a write.
+	if !sendPack.Ack {
+		snapshot := self.readNoAckFastPath(sendPack)
+		attempted := snapshot != nil
+		written := attempted && self.writeNoAckFastPath(snapshot, sendPack)
+		if !written && 0 < timeout && !sendPack.deadline.IsZero() &&
+			!time.Now().Before(sendPack.deadline) {
+			timeout = 0
+		}
+		if self.sendBuffer != nil && self.sendBuffer.afterNoAckFastPathForTest != nil {
+			self.sendBuffer.afterNoAckFastPathForTest(self.id(), attempted, written, timeout)
+		}
+		if written {
+			return true, nil
+		}
+	}
 	if sendPack.Ack {
 		admitted, err, capacityTimeout := self.awaitResendCapacity(sendPack, timeout)
 		if err != nil || !admitted {
@@ -7480,6 +7535,349 @@ func (self *SendSequence) resendIntervalForItem(
 	return self.resendIntervalForPolicy(transferFlightPolicySnapshot{}, sendCount)
 }
 
+// THROUGHPUTFIX §38.12's first stage: write first, queue second, drop third,
+// one deadline.
+//
+// A no-acknowledgement Pack exists so a forwarder can hand a datagram off
+// without waiting on the reliability machinery, and the boundary is the write
+// (§38.11). So the first thing that happens to one is an immediate,
+// non-blocking try at the writer, on the caller's goroutine, before admission.
+// If a route takes it, it never queues. If none does, the whole of the caller's
+// timeout is still there for the queue, whose wait is on the sequence
+// goroutine rather than in the device or shard goroutine every flow shares.
+//
+// What the write needs is the sequence goroutine's — the writer handle and the
+// contract snapshot — so the loop publishes it as an immutable value and the
+// caller reads the pointer once. The design's other shape, taking the
+// sequence's lock on the caller's goroutine, would put every fast-path write
+// behind whatever the loop holds that lock for, which is a queue by another
+// name. This shape has no such path: the caller never contends with the loop,
+// and the loop pays one atomic store when the state changes.
+//
+// The one thing that cannot be a snapshot is the byte accounting, which is a
+// mutation of the contract. The caller reserves room on the snapshot with a
+// compare-and-swap — the only field of a published snapshot that moves, and it
+// only moves down, so concurrent callers cannot together overdraw the contract
+// the loop published — and records what it wrote for the loop to apply on its
+// own goroutine. One owner per piece of state: the caller's goroutine owns none
+// of the sequence's.
+type noAckFastPathSnapshot struct {
+	writer MultiRouteWriter
+	// nil for a destination that requires no contract
+	contract           *sequenceContract
+	contractId         *Id
+	minUpdateByteCount ByteCount
+	metadataGeneration uint64
+	// room left on the contract as of publication less what callers have
+	// reserved since; reserved is what callers took, applied is what the loop
+	// has since charged, and their difference is carried into the next
+	// snapshot so a write in flight across a republish is not counted twice
+	remainingByteCount atomic.Int64
+	reservedByteCount  atomic.Int64
+	// loop-owned
+	appliedByteCount int64
+}
+
+// What a caller wrote against a snapshot's contract, for the loop to apply.
+type noAckFastPathAccounting struct {
+	snapshot  *noAckFastPathSnapshot
+	byteCount ByteCount
+}
+
+func (self *noAckFastPathSnapshot) effectiveByteCount(byteCount ByteCount) int64 {
+	return int64(max(self.minUpdateByteCount, byteCount))
+}
+
+// Reserves room for one write, or reports that the contract published here
+// cannot take it. Lock-free: a compare-and-swap on the remaining room.
+func (self *noAckFastPathSnapshot) reserve(byteCount ByteCount) bool {
+	if self.contract == nil {
+		return true
+	}
+	effective := self.effectiveByteCount(byteCount)
+	for {
+		remaining := self.remainingByteCount.Load()
+		if remaining < effective {
+			return false
+		}
+		if self.remainingByteCount.CompareAndSwap(remaining, remaining-effective) {
+			self.reservedByteCount.Add(effective)
+			return true
+		}
+	}
+}
+
+// Returns a reservation whose write did not happen.
+func (self *noAckFastPathSnapshot) release(byteCount ByteCount) {
+	if self.contract == nil {
+		return
+	}
+	effective := self.effectiveByteCount(byteCount)
+	self.remainingByteCount.Add(effective)
+	self.reservedByteCount.Add(-effective)
+}
+
+// Publishes what a caller may write against right now, or nil. Called by the
+// sequence goroutine wherever the writer or the contract state changes, and
+// once per pass. Allocates only when something changed.
+func (self *SendSequence) publishNoAckFastPath() {
+	if self.client == nil {
+		return
+	}
+	writer := self.contractMultiRouteWriter
+	var contract *sequenceContract
+	if !self.client.ContractManager().SendNoContract(self.destination) {
+		// the same predicate the loop's own bypass reads: only an
+		// acknowledged current contract on the current path may be charged
+		// without the sequence goroutine in the loop
+		metadata := self.contractMetadata()
+		if self.sendContract == nil || !self.sendContractAcked ||
+			self.sendContractMetadataGeneration != metadata.generation {
+			self.retireNoAckFastPath()
+			return
+		}
+		contract = self.sendContract
+	}
+	if writer == nil {
+		self.retireNoAckFastPath()
+		return
+	}
+	previous := self.noAckFastPathPublished
+	if previous != nil && previous.writer == writer && previous.contract == contract {
+		// nothing a caller reads has changed; the room it reserves against
+		// is refreshed by the accounting the loop applies, below
+		return
+	}
+	snapshot := &noAckFastPathSnapshot{
+		writer:   writer,
+		contract: contract,
+	}
+	if contract != nil {
+		contractId := contract.contractId
+		snapshot.contractId = &contractId
+		snapshot.minUpdateByteCount = contract.minUpdateByteCount
+		snapshot.metadataGeneration = self.sendContractMetadataGeneration
+		remaining := int64(contract.effectiveTransferByteCount -
+			(contract.ackedByteCount + contract.unackedByteCount))
+		if previous != nil && previous.contract == contract {
+			// writes in flight against the previous snapshot have reserved
+			// room the loop has not charged yet; it is not room here
+			remaining -= previous.reservedByteCount.Load() - previous.appliedByteCount
+		}
+		snapshot.remainingByteCount.Store(max(0, remaining))
+	}
+	self.noAckFastPathPublished = snapshot
+	self.noAckFastPath.Store(snapshot)
+}
+
+func (self *SendSequence) retireNoAckFastPath() {
+	if self.noAckFastPathPublished == nil {
+		return
+	}
+	self.noAckFastPathPublished = nil
+	self.noAckFastPath.Store(nil)
+}
+
+// The caller's half of the accounting: what it wrote, against which snapshot.
+func (self *SendSequence) recordNoAckFastPathWrite(
+	snapshot *noAckFastPathSnapshot,
+	byteCount ByteCount,
+) {
+	if snapshot.contract == nil {
+		return
+	}
+	self.noAckFastPathAccountingMutex.Lock()
+	defer self.noAckFastPathAccountingMutex.Unlock()
+	self.pendingNoAckFastPathAccounting = append(
+		self.pendingNoAckFastPathAccounting,
+		noAckFastPathAccounting{snapshot: snapshot, byteCount: byteCount},
+	)
+}
+
+// The loop's half: charges each fast-path write to the contract the caller
+// read, on the sequence goroutine. A write is charged to the contract it was
+// attributed to even if the sequence has since switched, which is what keeps
+// the accounting and the wire in agreement across a republish.
+func (self *SendSequence) applyNoAckFastPathAccounting() {
+	self.noAckFastPathAccountingMutex.Lock()
+	pending := self.pendingNoAckFastPathAccounting
+	self.pendingNoAckFastPathAccounting = nil
+	self.noAckFastPathAccountingMutex.Unlock()
+	for _, accounting := range pending {
+		snapshot := accounting.snapshot
+		contract := snapshot.contract
+		effective := snapshot.effectiveByteCount(accounting.byteCount)
+		snapshot.appliedByteCount += effective
+		// the bytes are on the wire and will never be acknowledged, which is
+		// exactly the loop's own no-acknowledgement item: debited and then
+		// acknowledged in one step
+		contract.accountWritten(ByteCount(effective))
+		if _, open := self.openSendContracts[contract.contractId]; open &&
+			self.sendContract != contract && contract.unackedByteCount == 0 {
+			// not current and drained, as ackItem closes it
+			self.client.ContractManager().CloseContract(
+				contract.contractId,
+				contract.ackedByteCount,
+				contract.unackedByteCount,
+			)
+			delete(self.openSendContracts, contract.contractId)
+		}
+	}
+}
+
+// Reads the snapshot once. Split from the write so the tear this shape has to
+// rule out — a contract switch published between the read and the write — can
+// be driven deterministically.
+func (self *SendSequence) readNoAckFastPath(sendPack *SendPack) *noAckFastPathSnapshot {
+	if sendPack.Ack || sendPack.Frame == nil || sendPack.ForceUnwrapped || sendPack.logicalGroup {
+		return nil
+	}
+	return self.noAckFastPath.Load()
+}
+
+// The immediate write: one non-blocking try at the writer with the snapshot's
+// contract, and nothing else. Reports whether a route took the frame. On
+// failure the pack is untouched and goes to the queue with its whole deadline.
+func (self *SendSequence) writeNoAckFastPath(
+	snapshot *noAckFastPathSnapshot,
+	sendPack *SendPack,
+) bool {
+	frame := sendPack.Frame
+	messageByteCount := ByteCount(len(frame.MessageBytes))
+	if !snapshot.reserve(messageByteCount) {
+		return false
+	}
+	var cipher *sequenceCipher
+	if self.session != nil {
+		cipher = self.session.Cipher()
+		if cipher == nil && self.session.RequireEncryption() {
+			snapshot.release(messageByteCount)
+			return false
+		}
+		if cipher != nil && !self.companionContract {
+			// the loop verifies the peer's certificate against the contract
+			// before it seals; here that has to be already settled
+			verified, noCommitment := self.session.CertVerificationState()
+			if !verified && !noCommitment {
+				snapshot.release(messageByteCount)
+				return false
+			}
+		}
+	}
+
+	path := sendTransferPath(self.client.ClientId(), DestinationId(self.destination))
+	sendTime := time.Now()
+	messageId := NewId()
+	var transferFrameBytes []byte
+	if 2 <= self.sendBufferSettings.ProtocolVersion {
+		spf := sendPackFrame{
+			path:              path,
+			messageId:         messageId,
+			sequenceId:        self.sequenceId,
+			nack:              true,
+			frames:            []*protocol.Frame{frame},
+			tagSendTime:       uint64(sendTime.UnixMilli()),
+			contractId:        snapshot.contractId,
+			forceStream:       self.forceStream,
+			companionContract: self.companionContract,
+			logicalLane:       self.logicalLane,
+		}
+		if self.encryptionRole == sequenceTlsRoleServer {
+			spf.sessionRole = self.encryptionRole.toProtobuf()
+			spf.sessionRoleSet = true
+		}
+		if self.encryptionCompanion {
+			spf.companion = true
+		}
+		transferFrameBytes = marshalSendPackTransferFrame(&spf)
+	} else {
+		pack := &protocol.Pack{
+			MessageId:         messageId.Bytes(),
+			SequenceId:        self.sequenceId.Bytes(),
+			Frames:            []*protocol.Frame{frame},
+			Nack:              true,
+			Tag:               &protocol.Tag{SendTime: uint64(sendTime.UnixMilli())},
+			ForceStream:       self.forceStream,
+			CompanionContract: self.companionContract,
+			LogicalLane:       self.logicalLane,
+		}
+		if snapshot.contractId != nil {
+			pack.ContractId = snapshot.contractId.Bytes()
+		}
+		packBytes, _ := ProtoMarshal(pack)
+		transferFrame := &protocol.TransferFrame{
+			TransferPath: path.ToProtobuf(),
+			Frame: &protocol.Frame{
+				MessageType:  protocol.MessageType_TransferPack,
+				MessageBytes: packBytes,
+			},
+		}
+		if self.encryptionRole == sequenceTlsRoleServer {
+			sessionRole := self.encryptionRole.toProtobuf()
+			transferFrame.SessionRole = &sessionRole
+		}
+		if self.encryptionCompanion {
+			sessionCompanion := true
+			transferFrame.SessionCompanion = &sessionCompanion
+		}
+		transferFrameBytes, _ = ProtoMarshal(transferFrame)
+		MessagePoolReturn(packBytes)
+	}
+
+	// the non-blocking try each route already makes: timeout zero
+	wireBytes := transferFrameBytes
+	var wrapped []byte
+	if cipher != nil {
+		sealed, err := cipher.SealOuterFrame(
+			path,
+			transferFrameBytes,
+			self.session.role.toProtobuf(),
+			self.session.companion,
+		)
+		if err != nil {
+			MessagePoolReturn(transferFrameBytes)
+			snapshot.release(messageByteCount)
+			return false
+		}
+		wrapped = sealed
+		wireBytes = wrapped
+	}
+	shared := MessagePoolShareReadOnly(wireBytes)
+	disposition, err := writeMultiRouteWithCarrier(snapshot.writer, self.ctx, shared, 0, false)
+	if err != nil {
+		// no route consumer took the message, so ownership stays here
+		MessagePoolReturn(shared)
+	}
+	if wrapped != nil {
+		MessagePoolReturn(wrapped)
+	}
+	MessagePoolReturn(transferFrameBytes)
+	if err != nil {
+		snapshot.release(messageByteCount)
+		return false
+	}
+
+	// written: the frame is consumed, and the pack completes exactly as the
+	// loop completes a no-acknowledgement item after its write
+	MessagePoolReturn(frame.MessageBytes)
+	self.writeCount.Add(1)
+	self.writeByteCount.Add(uint64(len(wireBytes)))
+	self.client.initialSendWriteCount.Add(1)
+	self.client.initialSendFrameCount.Add(1)
+	self.client.initialSendMessageByteCount.Add(uint64(messageByteCount))
+	self.client.sendNoAckWriteCount.Add(1)
+	self.client.sendNoAckFastPathWriteCount.Add(1)
+	self.recordNoAckFastPathWrite(snapshot, messageByteCount)
+	var acks sendAckSet
+	acks.add(sendPack.ackRecord())
+	acks.firstRouteWrite(nil)
+	acks.observeTransportWrite(disposition.transportType)
+	acks.invoke(nil)
+	sendPack.completeNoAck(nil)
+	sendPack.releaseRaw()
+	return true
+}
+
 // noAckPackCanBypassRecoveryAdmission reports whether this exact queued Pack
 // is guaranteed to remain outside the resend queue and unreliable Transfer
 // flight. A requested NoAck Pack is temporarily promoted to Ack while opening
@@ -7516,6 +7914,12 @@ func (self *SendSequence) Run() {
 		if ackWorkerStarted {
 			<-ackWorkerDone
 		}
+
+		// what callers wrote on the fast path is charged before the contracts
+		// report their final counts, and nothing may be written against a
+		// sequence that is closing
+		self.retireNoAckFastPath()
+		self.applyNoAckFastPathAccounting()
 
 		// close contract
 		for _, sendContract := range self.openSendContracts {
@@ -7678,6 +8082,12 @@ sendSequenceLoop:
 		for messageId, ack := range ackSnapshot.contractMissingAcks {
 			self.receiveContractMissing(messageId, ack.missingContractId)
 		}
+
+		// what callers wrote on the fast path since the last pass is charged
+		// here, before anything reads the contracts, and what they may write
+		// against next is published after (THROUGHPUTFIX §38.12)
+		self.applyNoAckFastPathAccounting()
+		self.publishNoAckFastPath()
 
 		sendTime := time.Now()
 		// before the recovery scans, so an evicted item is due on this pass
@@ -8964,6 +9374,8 @@ func (self *SendSequence) setContract(
 	// a new contract announces its own successor (THROUGHPUTFIX §39.1)
 	self.aheadSendContractAttempted = false
 	self.sendContractMetadataGeneration = metadataGeneration
+	// an unacknowledged contract is nothing a caller may write against
+	self.publishNoAckFastPath()
 	if self.client.streamManager != nil &&
 		nextSendContract.path.StreamId != (Id{}) &&
 		nextSendContract.path.SourceId == self.client.ClientId() &&
@@ -9009,6 +9421,9 @@ func (self *SendSequence) setContract(
 func (self *SendSequence) setContractAcked(nextSendContract *sequenceContract, ack bool) {
 	if self.sendContract == nextSendContract {
 		self.sendContractAcked = ack
+		// the moment the contract is acknowledged is the moment a caller may
+		// charge it (THROUGHPUTFIX §38.12)
+		self.publishNoAckFastPath()
 	}
 }
 
@@ -10971,6 +11386,8 @@ func (self *SendSequence) openContractMultiRouteWriter() MultiRouteWriter {
 
 		// associate the destination with this sequence to receive acks
 		self.sendBuffer.AssociateDestination(self, self.destination)
+		// a new writer handle is a new thing for a caller to write through
+		self.publishNoAckFastPath()
 	}
 	return self.contractMultiRouteWriter
 }
@@ -11006,6 +11423,7 @@ func (self *SendSequence) closeContractMultiRouteWriter() {
 		self.contractMultiRouteWriterAlias = TransferPath{}
 	}
 	if self.contractMultiRouteWriter != nil {
+		self.retireNoAckFastPath()
 		self.client.RouteManager().CloseMultiRouteWriter(self.contractMultiRouteWriter)
 		self.contractMultiRouteWriter = nil
 		self.contractMultiRouteWriterDestination = TransferPath{}
@@ -14687,6 +15105,20 @@ func (self *sequenceContract) update(byteCount ByteCount) bool {
 func (self *sequenceContract) canUpdate(byteCount ByteCount) bool {
 	effectiveByteCount := max(self.minUpdateByteCount, byteCount)
 	return self.ackedByteCount+self.unackedByteCount+effectiveByteCount <= self.effectiveTransferByteCount
+}
+
+// Charges bytes that are on the wire and will never be acknowledged: a
+// no-acknowledgement write's debit and acknowledgement in one step, applied by
+// the sequence goroutine for a write the caller's goroutine made
+// (THROUGHPUTFIX §38.12). Never refuses, because the bytes have already been
+// sent; the caller's reservation against the published snapshot is what keeps
+// this within the contract.
+func (self *sequenceContract) accountWritten(byteCount ByteCount) {
+	effectiveByteCount := max(self.minUpdateByteCount, byteCount)
+	self.ackedByteCount += effectiveByteCount
+	if self.statsEntry != nil {
+		self.statsEntry.updateUsedByteCount(self.ackedByteCount + self.unackedByteCount)
+	}
 }
 
 func (self *sequenceContract) ack(byteCount ByteCount) {
