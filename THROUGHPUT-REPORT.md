@@ -27,10 +27,16 @@ where it stands rather than deleted, because you may have read it:
   the protocol does not contain the 1.5 (§7).
 - The server-tree change of §3.19 is no longer proposed; it is built (§0.6).
 
-And four things are new rather than corrected: what is built and where (§0.6),
+And five things are new rather than corrected: what is built and where (§0.6),
 the landing order with the budget as step 0 and the per-platform ceilings
-(§3.20), the equilibrium at two thirds and the residence term behind it (§8),
-and what of this program's conclusions is actually pinned by a test (§9).
+(§3.20), the share table as the fourth and last ceiling (§3.22), the
+equilibrium at two thirds and the residence term behind it (§8), and what of
+this program's conclusions is actually pinned by a test (§9).
+
+One of those corrects §0 itself: §0 says the H3 windows cannot move at shipped
+targets, which was true of the first form of that draw. The share table's
+six-eighths fraction doubles the binding row on today's hardware (§3.22
+fact 4), and §0 is annotated in place to say so.
 
 Nothing in this chain has been measured end to end on real hardware. Every
 cell has used an in-process fixture, this tree's gVisor tunnel, or the hosted
@@ -54,10 +60,15 @@ shipped configuration reaches the reference.
 Be precise about what that does to the raises, because the two built layers
 behave differently and the slogan is not true of both:
 
-- **The H3 windows do not move.** The branch's draw is `3/8` of a `max(3 MiB,
-  T/8)` reservation, which is `3 MiB × T/64` below the reference — **bit-
-  identical to the scaled constant it replaces**, by construction. At the
-  shipped device targets the raise is a null.
+- **The H3 windows do not move** — *as the draw was first written.* Three
+  eighths of the `T/8` draw is `3 MiB × T/64`, **bit-identical to the scaled
+  constant it replaces**, by construction, so at the shipped device targets
+  that raise was a null. **CORRECTED, see §3.22 fact 4: the share table takes
+  the stream window to six eighths of the draw, which doubles it at every
+  target above its floor — 0.94 MiB to 1.875 at the 20 MiB target that ships,
+  about 34 Mb/s to 66.5.** The "does not move" finding below is therefore true
+  of the tree as it ships and of the first two ceiling branches, and is
+  answered by the fourth.
 - **The tun maxima do move**, and this report should not claim otherwise:
   the draw is `max(512 KiB, M/8)` (`tun.go:106`) against an old scaled
   constant of `4 MiB × M/64`, which is `M/16`. That is a doubling at every
@@ -69,6 +80,13 @@ maximum sits above the H3 stream window, and the H3 stream window on a shipped
 client is 960 KiB (§0.3). Raising a ceiling that already sits four times above
 the binding one moves no bytes. The chain is inert not because every step is a
 null but because **the step that binds is.**
+
+**And that is what the fourth ceiling changes** (§3.22): the share table moves
+the binding row itself, on the hardware that ships, without a budget raise.
+What it then runs into is the transfer window's own 2 MiB constant, which the
+delivery-sized rule would replace and which ships off (§3.22 fact 3). Read §0
+as the state of the tree and of the first three steps; read §3.22 for the
+fourth.
 
 **Stated plainly: the ceiling raises are worth nothing on any client that
 ships today.** Not because the mechanism is wrong, but because no shipped host
@@ -223,7 +241,7 @@ landing order, not a detail.
 | Built, unmerged | Provider default device target 64 MiB, bounded by host memory as `host/(3 × count)`, floored at 20 MiB, Go soft limit at `3 × count × target` | `sn` branch `provider-memory-budget`, `12d97bf` |
 | Built, unmerged | Android idle-reclaim settle gate and trim relay (§3.21) | `sdk` branch `android-trim-reclaim` `67e4f58`; `android` branch `android-trim-reclaim` `2c984a31` |
 | Built, unmerged | Comment-only correction to the proxy's tun buffer maximum | server branch `memory-budget-proxy`, `b057258a` |
-| **Specified, unbuilt** | The share table — the only remaining step on the download path, and the only thing that can buy anything above a 64 MiB target, since the scale caps there | — |
+| **Built, unmerged** | The share table (§3.22): eight rows as draws, the three constraints as assertions, and the H3 stream window taken from three eighths of the carrier draw to six — the one landing that reaches today's device targets | connect branch `throughput-shares`, `828d65a` |
 
 **What step 0 does, and what it does not.** The desktop raise takes the H3
 stream window on macOS, Windows and Linux from 960 KiB to the full unscaled
@@ -1288,7 +1306,9 @@ constant it replaces, so the 160 row does not happen; the tun draw does double
 its maximum, but it doubles a ceiling that already sits four times above the
 binding one, so the 415 row does not happen either (§0). The table describes a
 host that does not exist until the device target moves. §3.20 restates the
-order with that step first.
+order with that step first, and §3.22 gives the share-table row its own
+treatment — it is the one step that moves the binder at today's targets, and
+the 830 in this table is its value at a 256 MiB device target.
 
 Each ceiling lifts the rate by its ratio to the next; the reach extends only
 when the layers behind it move too. Landing the first alone buys 2 ms of reach,
@@ -1355,18 +1375,24 @@ it moves** (§0). The order, download path, delay on the client's hop:
      inner stack is this tree's gVisor -- the hosted, simulated and probe
      modes. On a native desktop that layer is the operating system's TCP
      ceiling and is not ours. 160 -> 415.
-  4. The share table. 415 -> about 830.
+  4. The share table (§3.22). 415 -> about 830 at a 256 MiB device target,
+     and — the part that distinguishes it from the three above — **a doubling
+     of the binding row at the 20 and 24 MiB targets that ship today**, since
+     it takes the H3 stream window to six eighths of the carrier draw.
 
 Every figure from 109 upward is derived from a constant at a line times a
-factor measured once, not measured end to end. Steps 2 and 3 are built on a
-branch; step 0 is built on branches for desktop; step 4 is unbuilt and is the
-only step that can buy anything above a 64 MiB target, since the scale caps
-there.
+factor measured once, not measured end to end. Steps 2, 3 and 4 are each built
+on a branch; step 0 is built on branches for desktop.
 
-Two honest qualifications on this order. **Step 2 is exactly a null until step
-0 lands** — the H3 draw is bit-identical to the constant below the reference —
-and **step 3 is a doubling that buys nothing until step 2 does**, because it
-raises a ceiling already four times above the binding one (§0).
+Three honest qualifications on this order. **Step 2 is exactly a null until
+step 0 lands** — as first written its draw is bit-identical to the constant
+below the reference. **Step 3 is a doubling that buys nothing until step 2
+does**, because it raises a ceiling already four times above the binding one
+(§0). And **step 4 is the only one that does not need step 0**, which also
+makes it the one whose ordering here is misleading: it moves the binder on
+today's hardware. What it then meets is the transfer window's own 2 MiB
+constant at about 71 Mb/s, which step 1's rule would replace and which ships
+off (§3.22 fact 3).
 
 **What each platform can afford, with the source for each ceiling:**
 
@@ -1434,6 +1460,149 @@ already 38.8 to 39.3 MiB — above the soft limit, where the idle path has no
 effect. Gate any raise on a re-run showing `idle_reclaim_count` above zero and
 a quiet p95 under the new ceiling.
 
+### 3.22 The share table: the fourth and last ceiling
+
+Steps 1 to 3 each replace one constant. The share table replaces the **form**:
+every ceiling this program raised becomes one row of one table, and each row is
+a draw
+
+    max(floor, surface × fraction)
+
+rather than a byte count chosen once. The budget supplies the scale; the
+fraction supplies the proportion.
+
+**Why that is not a constant with extra steps**, which is the objection worth
+answering directly. The fractions are not free parameters. Each encodes the
+**ratio between layers**, set by the round trip that layer's control loop
+closes — the carrier hop, the transfer sequence, the inner TCP. The layers sit
+in series on one download, so a layer drawn out of proportion to its loop is
+either memory bought that its loop can never use, or the binder for every
+other layer's raise. That gives the table two properties a set of constants
+does not have: **a change of budget moves every row together and preserves
+their relationship**, and **a fraction changes only when the architecture
+changes, never when a deployment does.** A deployment sets the budget and
+nothing else.
+
+The loops at the design point of 200 ms, delay on the client's hop: the
+carrier hop closes in 200 ms, the transfer sequence in about 205, the inner
+TCP in about 210.
+
+#### The rows as they stand
+
+Eight rows, read through the shipping constructors rather than recomputed:
+
+| Row | Surface | Fraction of surface | Floor | Backing |
+|---|---|---|---|---|
+| transfer send window | process M | 1/8 | — | pooled frames |
+| transfer receive hold | process M | 1/8 | — | pooled frames |
+| tun receive maximum | process M | 1/8 | 512 KiB | gVisor heap |
+| tun send maximum | process M | 1/8 | 512 KiB | gVisor heap |
+| carrier aggregate | device T | 1/4, capped at T | 3 MiB | quic-go heap |
+| H3 reservation | device T | 1/8 | 3 MiB | quic-go heap |
+| **H3 stream window** | device T | **6/8 of the 1/8 draw = 3/32** | 384 KiB | quic-go heap |
+| H3 connection window | device T | 8/8 of the draw = 1/8 | 512 KiB | quic-go heap |
+
+**The backing distinction matters and is not bookkeeping.** The transfer rows
+are **permissions over the pools' memory** — the queues hold pooled frames, so
+the row bounds what may be admitted rather than being memory of its own, and
+these rows may legitimately sum past the budget. The tun and H3 rows are
+**heap**: real memory outside the pools, held by gVisor and by quic-go, and
+they may not.
+
+#### The three constraints, each an assertion rather than prose
+
+1. **Every draw doubles when its surface doubles** — above its floor, and
+   above the reference as well as below. This is the one the old form fails by
+   construction, and a row rewritten in the local idiom
+   (`MemoryScaledByteCount` of a constant) fails it at the 64-to-256 MiB step.
+   Every adjacent line in these files scales a constant, so copying one is the
+   natural way to write a share and is the trap.
+2. **The sums fit their backing** — per surface and per backing kind, since a
+   pooled permission and a heap commitment are not the same promise.
+3. **The floors fit the smallest supported host.** The floors are the one
+   place the table can lie: a fraction honest at 256 MiB can still advertise
+   more than a small host's entire budget once a floor binds. Each window
+   therefore keeps its own floor rather than inheriting the reservation's
+   3 MiB admission minimum, which would advertise 2.25 MiB of stream credit on
+   a host whose whole budget is 8.
+
+#### What the table produces, resolved through the shipping constructors
+
+Read from the branch's own functions, at the tree's goodput factor of 0.845
+(`transfer.go:698`), at 200 ms:
+
+| Device target T | H3 stream window | Rate at 200 ms |
+|---|---|---|
+| 8 MiB | 0.75 MiB | 26.6 Mb/s |
+| **20 MiB — what ships today** | **1.875 MiB** | **66.5 Mb/s** |
+| 24 MiB | 2.25 MiB | 79.7 |
+| 32 MiB | 3 MiB | 106.3 |
+| 64 MiB | 6 MiB | 212.7 |
+| 128 MiB | 12 MiB | 425.3 |
+| **256 MiB** | **24 MiB** | **850.6** |
+
+**Derived, not measured**: arithmetic on constants read at their lines. No cell
+has run any row of this table. The design record rounds the last two rows to
+218 and 830; that is rounding, not disagreement.
+
+The bottom row is the 830 Mb/s at 200 ms this program was aimed at, and the
+honest statement about it is that **it arrives at a 256 MiB device target
+rather than at any value in use today.** Today's targets are 20 and 24.
+
+#### Four facts a reader of this table needs
+
+**1. The four download ceilings read two different surfaces**, so the table
+cannot be read as though there were one budget. The H3 stream and connection
+windows are sized from the **per-device target**; the transfer shares and the
+tun maxima are sized from the **process budget**, through functions that call
+`MemoryBudget()`. Where a host passes no explicit device target the H3
+constructors fall back to reading the process budget as well, so the two
+coincide and look like one number. Where a host passes one — Apple, Android,
+and the desktop branch — they are two numbers set by two calls. On a provider
+they are deliberately different: the process budget is unset while the device
+target comes from `--max-memory` divided by the device count. §0.1 separates
+the surfaces. The chain is still broken in one place, and the report should
+not pretend otherwise: T is a constant beside M rather than a slice of it.
+
+**2. The tun row does not exist on most hosts.** A native desktop, a phone and
+an extension create **no gVisor tun at all**, so both tun rows are absent
+there; the native equivalent is the operating system's own autotuning maximum,
+which is not ours to set. The row binds only the hosted, simulated and probe
+modes. And on the one production gVisor tun, the hosted proxy, it resolves to
+the unscaled 4 MiB constant, because that process sets no budget for the row
+to draw on.
+
+**3. CRITICAL — the transfer row is consulted only under the delivery-sized
+window rule, which ships off.** With the rule at its shipping default the
+transfer window is not a draw at all: it stays at
+`MemoryScaledByteCount(mib(2), kib(256))` (`transfer.go:916`), which caps at
+**2 MiB for any budget at or above the 64 MiB reference** — about 69 to
+71 Mb/s at 200 ms (derived). That is a hard ceiling **below every H3 value
+this table produces from a 24 MiB target upward.**
+
+Stated plainly, because without it the table promises a rate the shipping
+default cannot deliver: **with the rule off, raising a device target moves the
+H3 row and then stops at the transfer row at about 71 Mb/s.** At a 20 MiB
+target the H3 window's 66.5 is still the binder; from 24 MiB up the transfer
+constant is, and the 212, 425 and 850 figures are unreachable. The table's top
+rows require the window rule on — and the window rule is the switch this
+report has said throughout ships default-off.
+
+**4. The stream window moved from three eighths of the draw to six eighths,
+and that is what makes the table reach the hardware.** At three eighths the
+draw was `3T/64` — bit-identical to the scaled constant it replaced at and
+below the reference, so the change was a null on every shipped device. At six
+eighths it is twice that constant at every target above its floor.
+
+**This corrects §0 of this report in place.** §0 says "the H3 windows do not
+move", which was true of the earlier fraction and is no longer true. At the
+20 MiB target that ships today the H3 stream window goes from 0.94 MiB to
+1.875 — a doubling, about 34 Mb/s to 66.5 — with no budget raise at all, and
+the connection window from 1.25 MiB to 2.5 by the same change. That is the one
+place in this program where a landing reaches today's hardware rather than a
+host that does not exist yet. It remains bounded by fact 3, and it is derived
+rather than measured.
+
 ## 4. What is still open
 
 This table is updated in place; the questions keep their wording so that a
@@ -1458,6 +1627,8 @@ Open, and added since:
 | Is the equilibrium 0.68-0.74 or 0.51-0.60? | The paired statistic reads 0.68-0.74; the identity with its residence term predicts 0.60 on a short path. The reading that separates them is named in §8.2 |
 | Is a window-limited stream's rate window/RTT or window/1.5 RTT? | Derived from the protocol as window/RTT (§7). A cell to settle it is specified with the value that would refute it |
 | Does the desktop target raise survive on a Mac? | Unbuilt in this checkout for an unrelated reason; nobody has run it (§0.6) |
+| Does the share table's doubled stream window measure as 66.5 Mb/s at a 20 MiB target? | **Predicted, untested.** Every row of §3.22 is derived from constants; no cell has run one. Refuted by a reading at or near 34, which would mean something below the stream window binds first |
+| Is the transfer window's 2 MiB constant the binder above a 24 MiB target, as §3.22 fact 3 derives? | **Predicted, untested.** Refuted by a rate above about 71 Mb/s at 200 ms with the window rule off |
 
 RETIRED: an "unattributed ceiling near 190 Mb/s" appears in earlier notes and
 does not survive. The same cell runs 651-671 Mb/s at 5.4 ms. It came from older
