@@ -240,19 +240,30 @@ func TestTheContractAheadThresholdIsDerivedOrTheFloor(t *testing.T) {
 	const deliveredByteCount = ByteCount(4 * 1024 * 1024)
 	const span = 2 * time.Second
 	sampled := newContractAheadTestSequence(t, settings)
+	// The product is read through the window estimate, which is the one owner
+	// of the rate ring (TestTheWindowHasOneOwner), and the estimate reaches
+	// its delivery term only with a budget to size against and a peer it can
+	// see; a sequence with neither holds the constant and reports no rate,
+	// and this row would be measuring the floor twice.
+	sampled.resendQueue = newResendQueue(
+		NewTransferMemoryBudget(mib(64)),
+		settings.ResendQueueMinByteCount,
+	)
+	sampled.ackSeen.Store(true)
+	sampled.receiveWindowByteCount.Store(uint64(mib(64)))
+	sampled.receiveWindowSet.Store(true)
 	addContractAheadRoundTripSample(sampled, roundTrip)
 	addContractAheadDeliverySamples(sampled, deliveredByteCount, span)
-	// The expectation is the rule applied to the sequence's own readings, not
+	// The expectation is the rule applied to the estimate's own readings, not
 	// to the numbers this row handed it: the round trip window stamps in
 	// milliseconds, so its minimum is the sample rounded, and asserting
 	// against the unrounded input would be asserting the fixture rather than
 	// the rule.
-	roundTripMin := sampled.rttWindow.Estimate().Min
-	minSpan := max(2*roundTripMin, 4*sampled.deliveredBytesSampleInterval())
-	measured, measuredSpan, _, ok := sampled.deliveredRate(minSpan)
-	if !ok {
-		t.Fatal("the sampled arm has no delivery rate, so it is measuring the floor")
+	estimate := sampled.sendWindowEstimate(time.Now())
+	if estimate.Interval <= 0 || estimate.RoundTrip <= 0 {
+		t.Fatalf("the sampled arm's estimate carries no delivery rate (%q), so it is measuring the floor", estimate.Reason)
 	}
+	measured, measuredSpan, roundTripMin := estimate.DeliveredByteCount, estimate.Interval, estimate.RoundTrip
 	perRoundTrip := ByteCount(int64(measured) * roundTripMin.Nanoseconds() / measuredSpan.Nanoseconds())
 	want := max(
 		ByteCount(settings.ContractAheadScale)*perRoundTrip,
@@ -666,6 +677,7 @@ func newContractAheadTestSequence(t *testing.T, settings *SendBufferSettings) *S
 	return &SendSequence{
 		sendBufferSettings: settings,
 		deliveredBytes:     make([]deliveredBytesSample, deliveredBytesRingSize),
+		resendQueue:        newResendQueue(nil, settings.ResendQueueMinByteCount),
 		rttWindow: NewRttWindow(
 			NewNoopLogger(),
 			settings.RttWindowSize,

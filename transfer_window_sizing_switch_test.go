@@ -28,6 +28,21 @@ import (
 // default: it is the rollback that is pinned here, and the rollback is one
 // SetWindowSizing call in the other direction. The row below owns the default.
 func TestTheWindowSizingSwitchOffIsTodaysBehaviour(t *testing.T) {
+	// Both facts in one place: what the tree ships today, and that the
+	// rollback still reaches exactly what it shipped before. Reading the
+	// default and asserting it was off is what made this row red the moment
+	// the rule landed, which §0.2 of THROUGHPUT-TESTGAPS is about — the
+	// workflow runs the whole package on every push, so one row red by
+	// construction masks every genuine failure in a full run.
+	if shipped := DefaultSendBufferSettings().WindowSizing; shipped != WindowSizingFromDelivery {
+		t.Errorf(
+			"the shipping window sizing policy is %d rather than from-delivery. If the rule was rolled back deliberately, this row's framing is what needs updating; if it changed by accident, the whole program's landing is off",
+			shipped,
+		)
+	}
+
+	// The rollback as a host performs it: one process-wide call, after which
+	// every settings constructor builds the constant regime.
 	defer SetWindowSizing(DefaultWindowSizing())
 	SetWindowSizing(WindowSizingConstant)
 	settings := DefaultSendBufferSettings()
@@ -56,11 +71,12 @@ func TestTheWindowSizingSwitchOffIsTodaysBehaviour(t *testing.T) {
 		)
 	}
 
-	// the wire: an acknowledgement under the rolled-back configuration carries
-	// neither the advertised capacity nor an eviction notice
+	// the wire: an acknowledgement under the ROLLED-BACK configuration carries
+	// neither the advertised capacity nor an eviction notice, which is what
+	// makes the rollback byte for byte what a tree without this program writes
 	receiveSettings := DefaultReceiveBufferSettings()
 	if receiveSettings.AdvertiseReceiveWindow {
-		t.Error("the rolled-back receiver advertises its capacity, which changes the wire")
+		t.Error("the receiver still advertises its capacity under the constant policy, which changes the wire and makes the rollback untrustworthy")
 	}
 	if want := MemoryScaledByteCount(mib(2)+kib(512), kib(320)); receiveSettings.ReceiveQueueMaxByteCount != want {
 		t.Errorf(

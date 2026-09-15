@@ -9163,6 +9163,14 @@ func nextCreateContractRetryInterval(current time.Duration, maximum time.Duratio
 // and minimum round trip — the same two quantities the window rule uses —
 // rather than chosen: `max(scale x deliveredRate x rtt_min, floor)`.
 //
+// Read through the window estimate rather than from the ring directly, because
+// the estimate is the one owner of those ingredients
+// (TestTheWindowHasOneOwner): a consumer that reaches for an ingredient rather
+// than for what the estimator returns is the shape of three defects this
+// program has already paid for. The estimate reports the delivered bytes, the
+// span they were measured over and the minimum round trip it used, and the
+// product here is the same one it takes before applying its scale.
+//
 // Derived where the evidence exists and the floor where it does not, and the
 // caller cannot tell the two apart, which is why both are named here. A
 // sequence with no round trip samples, or none spanning long enough to read a
@@ -9173,24 +9181,14 @@ func (self *SendSequence) announceAheadByteCount() ByteCount {
 		return 0
 	}
 	floor := self.sendBufferSettings.ContractAheadFloorByteCount
-	if self.deliveredBytes == nil {
-		return floor
-	}
-	roundTrip := self.rttWindow.Estimate()
-	if !roundTrip.Sampled() {
-		return floor
-	}
-	minSpan := max(
-		2*roundTrip.Min,
-		4*self.deliveredBytesSampleInterval(),
-	)
-	delivered, span, _, ok := self.deliveredRate(minSpan)
-	if !ok || span <= 0 {
+	estimate := self.sendWindowEstimate(time.Now())
+	if estimate.Interval <= 0 || estimate.RoundTrip <= 0 {
 		return floor
 	}
 	// delivered bytes per minimum round trip: the product the window rule
 	// reads, at the same scale
-	perRoundTrip := ByteCount(int64(delivered) * roundTrip.Min.Nanoseconds() / span.Nanoseconds())
+	perRoundTrip := ByteCount(int64(estimate.DeliveredByteCount) *
+		estimate.RoundTrip.Nanoseconds() / estimate.Interval.Nanoseconds())
 	return max(ByteCount(scale)*perRoundTrip, floor)
 }
 
