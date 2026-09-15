@@ -1,4 +1,4 @@
-# LEDGER excerpt: DO-NOT-RETRY table and rounds P16 through P47
+# LEDGER excerpt: DO-NOT-RETRY table and rounds P16 through P56
 
 Verbatim from the live investigation ledger (`LEDGER.md`, 2026-09-13 .. 2026-09-15), sanitized: host addresses, platform
 hostnames, identities and local paths are replaced by the placeholders listed in `env.example`. Run-level detail for the
@@ -602,4 +602,152 @@ single-flow throughput.** The cycles it frees are already idle. Do not re-derive
     Actions: (a) h1-* WDIAG runs + wedge runs with per-run kernel counters (after-deg3.sh, chained); (b) Fable agent: H5 fixes/tests
       on #213; (c) Fable agent: sanitized harness + reports into the PR branch; (d) sims agent already running (their §4 families
       overlap S1-S8).
+
+
+## Rounds P48 through P56 (2026-09-15, added with the per-run traces in rig/traces/)
+
+  P48. GERMANY: THE RULE'S 8-FLOW COLLAPSE IS RTT-INFLATION FEEDBACK; A 4 MiB CONSTANT BEATS BOTH (deg3.sh; provider mg4
+    a45ca5fd9dcd = merge tree + winpatch + zz_wdiag (per-second SendWindowEstimate per destination); client urtun-mg2 budget 384;
+    TUN synth 30 s; Germany ~101 ms path):
+      rule on   f1 203, 197  | f8 102, 99      (deg2 was 196/201 and 67/102)
+      const 4 MiB (rule off, RWIN 32) f1 217, 217 | f8 215 (r2 pending)   vs const 2 MiB ~130 (P46)
+    WDIAG time series, rule on f1: the estimate's RoundTrip (= RttWindow min) is a WINDOWED minimum that inflates with the
+      window's own queue: 101 -> 153 -> 116 -> 168 -> 196 ms within one run while the path is 101 ms; window swings 4-12 MiB,
+      ceiling = target cap (TargetBound in 35/36 s), resends ~200/s, rttMean 160-245 ms -> ~100 ms of queue.
+    rule on f8 (r2): normal for ~11 s (window 5-7 MiB, rttMin 105-126), then RUNAWAY: rttMin 394 ms -> window 21.7 MiB ->
+      "peer's advertised capacity" 48 MiB -> rttMin 875 ms, rttMean 5.0 s, resends 7,000-10,000/s, writes collapse.
+    => Positive feedback: window grows -> in-flight queues in the relay/websocket buffers (Germany rb 15 MB) -> the min-RTT sample
+       (short ring, queue never drains with 8 flows) inflates -> window grows more -> relay loss (P31) -> collapse. Exactly the dev
+       team's own H1 caveat ("queueing created by a larger window can inflate that mean") but for the MIN as implemented.
+    => For the ~100 ms goal a constant 4 MiB (+67% on f1 AND f8, no collapse) is a floor for any lever; P31 says 4 MiB costs on the
+       0.3 ms path, so the lever must be RTT-aware. Candidates to prototype (env-gated on the mg tree): (a) R_min = lifetime
+       minimum (or long-horizon min with the queue allowed to drain), (b) inflation guard: do not grow while rttMean > 1.5 x R_min
+       and shrink toward rate x R_min when inflated, (c) cap window at k x BDP(R_min) with k ~2. Constant sweep 2/3/4/6/8 MiB x f1/f8
+       queued (sweepde.sh) to set the target for the candidates.
+
+  P49. DEV H1 DECIDED ON THE SAME-DC PATH: THE DELIVERY FEEDBACK, NOT THE TARGET CAP, PINS THE WINDOW AT THE FLOOR (h1-* runs,
+    provider mg4 WDIAG, client urtun-mg2 budget 384, TUN synth 30 s, 0.3 ms network path):
+      rule on   f1 240, 245 | f8 253, 300     window 256 K (= floor) in 38/39 s, reason "delivery" (34-36 s) / "the target" (3-4 s)
+                  Transfer rttMin 4 ms, rttMean 9-10 ms, delivered ~1032 K per 41-42 ms interval (~25 MB/s), TargetBound=true
+                  target cap (ceiling) 620-684 K > floor; delivery candidate 2 x 25 MB/s x 4 ms ~ 200 K < floor 256 K
+      const 2 MiB (rule off) f1 706, 342* | f8 631, 609     rttMin 2-4 ms, rttMean 10-12 ms, ~44k writes/s
+    => The Transfer R_min on this path is ~4 ms (not the 0.3 ms network RTT), so the 1 Gb/s target cap is ~630 K and does NOT
+       force the floor (the dev team's H1 arithmetic used 0.3 ms). What pins it is the delivery fixed point: residence ~10 ms vs
+       R_min 4 ms -> growth factor 2 x 4/10 = 0.8 < 1, the window walks to 256 K and delivers 25 MB/s = 256 K / 10 ms. Their §8.3
+       mechanism, measured. A window sized from the min RTT cannot escape once residence (ack compression + processing +
+       queue) exceeds 2 x R_min.
+    => Together with P48 (long path: min RTT inflates with the window's own queue -> runaway): the rule is unstable at both ends
+       of the RTT range on this relay path. It needs a residence-aware rule (size from the RTT the acks actually take, with an
+       anti-inflation guard), not a bigger memory budget. Prototype (agent): lifetime-min RTT + inflation guard, env-gated, mg5.
+
+  P50. WEDGE LOSS SITE NARROWED TO THE CLIENT KERNEL'S INNER TCP SOCKET (wg1-* runs, A build, f1, per-run nstat deltas + ss at
+    the rate collapse; TUN pcap failed — tcpdump started before ur0 existed, fixed in wedge2.sh via innersample.sh):
+      stalled runs: wg1-r2 221 Mb/s inner socket at the stall skmem r3,698,176 rb6,291,456 d84 (sk_drops) ; wg1-r6 82 Mb/s r5,500,928
+        rb6,291,456 d74 ; wg1-r3 236 (dump missed the socket). Per-run host counters: TCPBacklogDrop +84 / +23 / +74, PruneCalled +1.
+      healthy runs also show TCPBacklogDrop (+182, +241) and a d186-d242 socket — but that socket is the WEBSOCKET to the relay
+        (tb417792-1488384), whose drops the relay's kernel TCP retransmits; the inner socket's own sk_drops is what matters.
+    => In every caught stall the inner socket (to the synthetic origin through the tunnel) has sk_drops > 0 and megabytes queued
+       out of order: the client kernel dropped inner segments under rcvbuf/backlog pressure (single flow ~800 Mb/s, 1048-byte
+       segments = ~95k pkt/s, rcvbuf at the 6 MB tcp_rmem max), and the provider's userspace TCP never retransmits them
+       (TcpSequence packetizes and relies on Transfer; confirmed by the dev review H6). A kernel drop that any real TCP sender
+       would repair becomes a permanent hole.
+    => Fix direction (their H6 "retain a bounded provider replay history until inner TCP acknowledgement"): the provider's
+       TcpSequence keeps sent segments until the client's inner cumulative ACK covers them, retransmits on duplicate ACKs /
+       SACK holes, RTO as fallback, bounded by bytes and time. Prototype delegated (worktree off beta). Confirmation of the
+       drop timeline (pcap on ur0 + per-second sk_drops) queued as wedge2 after the Germany window work.
+    wg1 all 12 runs (A build f1): 734 221* 236* 506 767 82* 840 390* 176* 778 765 726 -> 5/12 stalled (< 400).
+      per-run client-host deltas: every stalled run has TCPBacklogDrop > 0 (+84 +23 +74 +32 +112) and PruneCalled +1; the five clean
+      runs (734 840 778 765 726) have TCPBacklogDrop +0 and PruneCalled <= 2; r4/r5 (506/767) had drops (+182/+241) but the
+      websocket socket carried them (recoverable). => stall <=> kernel receive drops on the client host, 12/12 consistent.
+
+  P51. DETERMINISTIC PATH SIMULATION SUITE LANDED ON BETA (cf8952fd, pathsim_test.go + PATHSIM.md; synctest, seeded PRNG, two real
+    Clients through chained hops with delay/jitter/loss/bounded drop-on-full queues; fast tier ~5 s, full tier CONNECT_PATHSIM_FULL=1
+    ~21 s; 3 runs byte-identical digests). Scenario verdicts vs rig: S1 loss ordering yes (0.5% costs 2.3% in sim vs 33% on rig — no
+    kernel TCP/relay there); S2 gap wake +11% at 1 lane, HOL 49 -> 0 ms; S3 rule beats constant at long RTT (3.96x/4.12x), short
+    path only as a ramp effect (the steady-state short-path collapse does NOT reproduce: no ack-residence term in the fixture);
+    S4 window 2/4/8 MiB into a 200-message queue: drops 0/457/1092, goodput 993 -> 183 -> 130 (rig P31 reproduced, harder);
+    S5 hold < window: old evicting receiver withdraws 101 acked items, current 0; the 60 s stall does not reproduce (probes
+    re-fetch); S6 provider TCP emits a dropped segment exactly once (never retransmits) — whole-path wedge needs a gVisor tun
+    under synctest; S7/S8 grids are instruments (monotone in delay/hops, no stalls lossless).
+    Agent-flagged leads: (1) the caller-side 2 ms capacity poll in awaitResendCapacity delays window refill on short paths;
+    (2) a legacy (non-advertising) receiver with hold < sender window collapses to ~1 Mb/s under reordering on both hold policies.
+
+  P52. GERMANY CONSTANT-WINDOW SWEEP (sweepde.sh 14:03-14:46 UTC; provider mg4 rule off + URNETWORK_WIN_MIB; client urtun-mg2 RWIN 32,
+    budget 384; TUN synth 30 s; n=3 rotated; ~101 ms path):
+      f1: 2 MiB 125 127 128 (127) | 3 MiB 168 186 178 (178) | 4 MiB 208 215 219 (215) | 6 MiB 198 182 199 (198, rttMean ~210) |
+          8 MiB 196 186 194 (194, rttMean ~232)      -> 4 MiB is the single-flow optimum at 100 ms: +69% over today's 2 MiB.
+      f8: 2 MiB 128 126 126 | 3 MiB 181 180 39* | 4 MiB 216 8* 3* | 6 MiB 8* 200 162 | 8 MiB 200 205 204 (rttMean ~275)
+          -> +60% when healthy, but 4 of 9 runs at 3-6 MiB COLLAPSED (8 MiB 3/3 healthy; n too small to rank sizes).
+    Collapse anatomy (WDIAG sd8-w4-r2): from the FIRST second writes ~2.9k/s (healthy ~13.5k), resends 0 the whole run, and the
+      Transfer RTT rises monotonically 106 -> 431 -> 827 -> 1,448 -> 2,564 -> 4,594 -> 6,821 ms (the windowed MIN too), client CPU
+      0.13 cores. No Transfer loss, no stall signature: the acks (and inner ACKs) from the client are being DELAYED by a queue that
+      grows without bound ~200 ms/s -> the client's upstream path (client -> relay websocket TCP, or the client's upstream send
+      pipeline) is throttled far below the ACK rate 8 flows generate at 100 ms. Same shape as the rule's 8-flow runaway (P48)
+      minus the window growth. Hunt queued (collapse.sh, after wedge2): per-second websocket TCP send-side state on the Germany
+      host (unacked/retrans/backoff/rto/notsent/sndbuf_limited) + inner socket counts, constant 4 MiB f8, n=8.
+
+  P53. GERMANY WINDOW-RULE VARIANTS (guardde.sh 14:46 UTC-; provider mg5 = merge tree + WDIAG + zz_windowguard.go variants by env;
+    client urtun-mg2 budget 384; f1/f8 n=2 rotated). Arms: R = rule as shipped; RL = lifetime-min RTT instead of the windowed min
+    (URNETWORK_DIAG_RTT_LIFETIME_MIN=1); RG = RL + inflation guard 1.5 (window held when rttMean > 1.5 x rttLife);
+    RB = RL + BDP cap 2 (window <= 2 x delivered x rttLife); K4 = constant 4 MiB rule off (the P52 optimum, control).
+      INTERIM f1 r1: RL 204 (win 5.8 MiB, rttMean 191) | RG 139 (win 2.5 MiB, guarded 15 s of 30, rttMean 144, resends 115/s) |
+        RB 185 (win 5.7 MiB, rttMean 213) | R, K4 pending.
+      Reading so far: the lifetime-min alone (RL) gets the single flow to the constant-4 MiB level (204 vs 215) but still sizes
+        ~6 MiB and bloats the path to ~190 ms; the inflation guard as tuned (1.5) is too eager (holds the window at 2.5 MiB and
+        pays resends) -> 139, worse than the shipped rule's 198; the BDP cap lands between. None beats constant 4 MiB at f1.
+        The f8 arms decide (constant 4 MiB collapsed 2/3 at f8 in P52; the question is whether any variant avoids the
+        ack-path collapse or the P48 runaway). Final table appended when the run ends.
+
+  P54. GAP-ACK v2 (d07810dc, dev H5 gaps fixed: wake cadence bound per reason per AckCompressTimeout, opening-hole fill,
+    head-absorbed evidence not counted) CHANGES PATHSIM S4 — the stacked PR-A branch (d07810dc + rig 414b00dc + pathsim 8ef60447)
+    FAILS S4 while every other scenario passes; -run 'Ack|Receive' passes (262 s).
+      S4 lanes=1: 4 MiB v1 169 Mb/s (457 drops, 180 probes, hol 1.81 s) -> v2 929 Mb/s (1,664 drops = 1,664 resends, 0 probes,
+        hol 826 ms); 8 MiB v1 97 -> v2 150 (52 rto, 654 probes, hol 2.62 s).
+      S4 lanes=8 8 MiB: v1 989 Mb/s, hol 276 ms, drain 330 ms -> v2 989 Mb/s but maxgap 5.25 s, hol 9.13 s, drain 9.22 s, STALLED.
+      => v2 recovers the single-lane 4 MiB relay-overflow case far more efficiently (one resend per drop, no probes) so the S4
+         "one lane at 4 MiB keeps < 0.5 of its rate" assertion (calibrated on the v1 rig ratio 322/745) no longer holds in sim,
+         and the 4 vs 8 MiB drop-count separation saturates (1,664 vs 1,623). BUT the 8-lane 8 MiB tail now waits 9 s on one
+         hole: a candidate wake-latch bug (a declined reason with no timer write behind it -> sender left to RTO backoff).
+         Handed to the gap-ack agent with the exact tables (deterministic digests). PR A push held until S4 is explained.
+      Method note: the sim caught a behaviour change of a receiver fix that the unit tests and the rig's mean throughput would
+        not have shown (mean 989 Mb/s with a 9 s tail). This is exactly what the suite is for.
+
+  P55. PROVIDER INNER-TCP RETRANSMISSION PROTOTYPE COMMITTED (d522ead6 on fix/inner-tcp-retransmit, off beta 1e34c6fc; agent):
+    every packetized return segment retained (pool share) until the client's cumulative inner ACK covers it; retransmit on
+    3 dup acks (head), SACK holes, partial ack (NewReno), timer max(200 ms, 2 srtt, srtt+4 rttvar) x2 to 8 s (head only);
+    one retransmission per hole per max(srtt, 200 ms); retained bytes <= min(client window, 4 MiB); 60 s without ack progress
+    -> RST + close (never idle). Setting TcpBufferSettings.EnableReturnRetransmit default ON; off = old behaviour byte for byte.
+    Behaviour changes: sequence stays open after upstream EOF until the FIN is acked or the bound; SYN-ACK still does not
+    advertise SACK-permitted (kernel clients recover via dup acks / partial acks / timer; upload-side SACK generation is the
+    follow-up seam). Tests (synctest): one drop + 3 dup acks -> exactly one retransmission byte-exact; two holes via SACK;
+    silent source -> head retransmits at 1,3,7,...,55 s then RST at 60 s; cap blocks packetizing; setting off -> silent idle;
+    FIN dropped once -> retransmitted, no RST; reneging; pool ownership reconciled. Fail-before (default forced off): 3 rows;
+    mutations never-retransmit (6 rows), retransmit-all-on-dupack (3), forget-SACKed (1) caught. Full suite 1,424 s: only the
+    known TestSizedWindowIsComputedFromTheMeasuredRoundTrip failure.
+    Rig build: urprovider.rx md5 2be8ce367709 (plain sn build of d522ead6, Mac cross-compile), installed on the provider host.
+    A/B queued as wedge3.sh (after collapse): A = pa 99de16bbe8d5 (b54f9f72; 1e34c6fc differs from it only in two deleted test
+    files, so pa is the exact parent arm) vs B = rx, f1 TUN synth 30 s, 12 interleaved pairs with alternating order, per-run
+    inner-socket sampling + pcap, provider "[rx]return retransmit summary" packets summed per run. Decision: stall rate
+    (goodput < 600) A vs B; A prior 5/12 (wg1) -> 0/12 on B would be p ~ 0.15% under no effect.
+    guardde round 1 (f1 | f8): R 201 | 97 ; RL 204 | 197 ; RG 139 | 107 ; RB 185 | 195 ; K4 220 | 214. -> the lifetime-min alone
+      (RL) removes the shipped rule's 8-flow collapse (97 -> 197, n=1) but still sizes ~5.5-6 MiB and bloats to ~200 ms mean RTT,
+      ~8% under constant 4 MiB (K4 rttMean 128-133); the 1.5 guard is too eager (2 MiB windows, 82-139); BDP cap 2 ~ RL.
+
+  P56. THE GERMANY COLLAPSE IS NOT 8-FLOW SPECIFIC: gd1-K4-r2 (constant 4 MiB, ONE flow) = 5 Mb/s. WDIAG: from the FIRST second
+    writes 553-1,325/s (healthy second 2 onward 12-14k), resends 0 until second 34 (then a 1,784/s resend burst = a resend timeout
+    finally firing), rttMean 203 -> 439 -> 779 -> 1,086 -> 1,359 -> ... -> 5.0-6.8 s, rttMin following it to 6.3 s; client 0.22
+    cores (idle). Goodput = window / RTT: 4 MiB / 6 s = 5.6 Mb/s -> the whole window is queued on the path and drains at ~5 Mb/s.
+    Reading: this is a PATH THROUGHPUT collapse to ~5 Mb/s decided at startup, not an ack-path delay per se: something in the
+      first second puts the relay -> Germany delivery into a ~5 Mb/s state that does not recover in 30 s. 5 Mb/s at 100 ms RTT is
+      ~64 KB per RTT: the signature of a TCP window collapsed to ~64 KB (the Germany websocket socket's receive window after a
+      receive-memory prune/collapse under the 4 MiB startup burst on a 1 vCPU host, or the relay's cwnd after an RTO burst).
+      Never seen at 2 MiB (6/6 healthy in P46/P52), 1/2 at f1 4 MiB today (0/3 in P52), 2/3 at f8 4 MiB (P52): the trigger is
+      random per start and its odds rise with the startup burst size.
+    Hunt re-scoped: collapse2.sh (kills the queued collapse.sh) — 12 runs alternating f1/f8 at constant 4 MiB, per-second on the
+      Germany host from before the download starts: websocket TCP_INFO (rcv_space, rcv_ssthresh, rb, unread, d, bytes_received,
+      snd_wnd, cwnd, retrans, rto/backoff, rcv_ooopack) + nstat receive-pressure counters (PruneCalled, RcvPruned, TCPRcvCollapsed,
+      BacklogDrop, RcvQDrop, OFOQueue, AbortOnMemory, TCPTimeouts, RetransSegs). Discriminator: collapsed run with rcv_ssthresh/
+      rcv_space ~64 KB and prunes -> receive-window collapse on the client (fix: start-up pacing / smaller initial window / rmem);
+      rcv_space normal, bytes_received ~5 Mb/s, unread 0 -> relay-side throttle (cwnd/RTO or forward queue); unread MBs -> client
+      app not draining. Then wedge3 (retx A/B) runs after it.
 

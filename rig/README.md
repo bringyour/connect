@@ -216,7 +216,7 @@ Provider builds on the VPS: `/opt/urNN` is a copy of a sibling tree with `connec
 
 ## 6. Documents
 
-- `LEDGER-EXCERPT.md`: the DO-NOT-RETRY table and rounds P16 through P47 of the live ledger, verbatim
+- `LEDGER-EXCERPT.md`: the DO-NOT-RETRY table and rounds P16 through P56 of the live ledger, verbatim; `traces/`: the per-run captures behind rounds P46-P53 (see `traces/README.md`)
   except for sanitization. Run windows, binaries and per-run values for every number in the report.
 - `REPORT-2026-09-15-UPSTREAM-WINDOW-RULE-AND-PRS.md`: the agent report that accompanies PR #213/#214.
 - `TASKLIST.md`: the investigation spec (hypothesis, instrument, decision rule fixed before measuring,
