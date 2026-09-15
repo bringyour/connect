@@ -10,7 +10,6 @@ import (
 	"os"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // The provider terminates TCP and reads the origin through an upstream socket
@@ -45,86 +44,6 @@ func TestUpstreamTcpConnLeavesReceiveBufferToAutotuning(t *testing.T) {
 			"upstream socket receive buffer changed from %d to %d after connect; an explicit SO_RCVBUF locks autotuning and freezes the window clamp at its SYN-time size",
 			before,
 			after,
-		)
-	}
-}
-
-// The behavior the fix exists for, observed where it happens: an upstream socket
-// dialed and configured exactly as TcpSequence.Run does must let the kernel grow
-// its receive buffer while it reads. The configure-only test above cannot catch
-// a fix that moves the explicit SO_RCVBUF instead of removing it, for example
-// into the dialer's Control before connect: that also locks autotuning and also
-// pins the window, and this test fails on it, as it does on the original code.
-//
-// Autotuning growth is visible through SO_RCVBUF because tcp_rcv_space_adjust
-// raises sk_rcvbuf; with an explicit SO_RCVBUF the kernel sets
-// SOCK_RCVBUF_LOCK and never changes it again.
-func TestUpstreamTcpConnReceiveBufferGrowsThroughDialPath(t *testing.T) {
-	if moderate, err := os.ReadFile("/proc/sys/net/ipv4/tcp_moderate_rcvbuf"); err != nil ||
-		!bytes.HasPrefix(bytes.TrimSpace(moderate), []byte("1")) {
-		t.Skip("receive autotuning (net.ipv4.tcp_moderate_rcvbuf) is disabled on this host")
-	}
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	const transferByteCount = 256 * 1024 * 1024
-	served := make(chan error, 1)
-	go func() {
-		peer, err := listener.Accept()
-		if err != nil {
-			served <- err
-			return
-		}
-		defer peer.Close()
-		chunk := make([]byte, 64*1024)
-		for sent := 0; sent < transferByteCount; sent += len(chunk) {
-			if _, err := peer.Write(chunk); err != nil {
-				served <- err
-				return
-			}
-		}
-		served <- nil
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	tcpBufferSettings := DefaultTcpBufferSettings()
-	socket, err := tcpBufferSettings.DialContext(ctx, "tcp", listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer socket.Close()
-	tcpConn, ok := socket.(*net.TCPConn)
-	if !ok {
-		t.Fatalf("upstream dial returned %T, not a TCP connection", socket)
-	}
-	configureUpstreamTcpConn(tcpConn)
-
-	before := tcpSocketReceiveBufferSize(t, tcpConn)
-	if err := tcpConn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	received, err := io.Copy(io.Discard, tcpConn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := <-served; err != nil {
-		t.Fatal(err)
-	}
-	if received != transferByteCount {
-		t.Fatalf("received %d of %d bytes", received, transferByteCount)
-	}
-	after := tcpSocketReceiveBufferSize(t, tcpConn)
-
-	if after <= before {
-		t.Fatalf(
-			"upstream socket receive buffer stayed at %d (was %d) across a %d MiB transfer; receive autotuning is locked, so the window advertised to the origin cannot grow",
-			after,
-			before,
-			transferByteCount/(1024*1024),
 		)
 	}
 }
@@ -191,6 +110,218 @@ func dialUpstreamTestTcpConnWithPeer(t *testing.T) (*net.TCPConn, net.Conn) {
 	}
 	t.Cleanup(func() { peer.Close() })
 	return conn.(*net.TCPConn), peer
+}
+
+// a socket dialed the way the provider dials its upstream, through
+// ConnectSettings and whatever control hook the settings carry; both ends live
+// for the test
+func dialUpstreamTestTcpConnWithSettings(
+	t *testing.T,
+	connectSettings *ConnectSettings,
+) (*net.TCPConn, net.Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- conn
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	conn, err := connectSettings.DialContext(ctx, "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	peer, ok := <-accepted
+	if !ok {
+		t.Fatal("the upstream test peer did not accept")
+	}
+	t.Cleanup(func() { peer.Close() })
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("the upstream dial returned %T, not a TCP connection", conn)
+	}
+	return tcpConn, peer
+}
+
+// THROUGHPUTFIX §15's decision has a second half that nothing else reads. The
+// rows above and the policy rows in ip_upstream_buffer_sizing_linux_test.go
+// decide *whether* to pin; the pin itself is carried by a dialer control hook,
+// and a hook that is built but never reaches the socket pins nothing while
+// every arithmetic row still passes. Nothing in this tree dialled through
+// ConnectSettings.DialControl at all before this row.
+//
+// Recorded because it is the reason this row exists: main carried a row of its
+// own here (TestUpstreamTcpConnReceiveBufferGrowsThroughDialPath, dropped in
+// the merge) which dialled the real path and required the receive buffer to
+// grow unconditionally. That cannot be this tree's assertion — here a pin above
+// the autotuning ceiling is deliberate and locks the buffer on purpose — so
+// what that row pinned is stated as the decision reaching the socket, plus the
+// growth half in the row below on the hosts where nothing is pinned.
+//
+// Every expected value is the kernel's own arithmetic, read from /proc: an
+// explicit request obtains min(request, core max), doubled on Linux.
+func TestTheUpstreamDialControlAppliesThePolicyToTheSocket(t *testing.T) {
+	host := readSocketBufferPolicy()
+	if !host.known {
+		t.Skip("the kernel's buffer maxima are unreadable, so no pin can be predicted")
+	}
+	settings := DefaultTcpBufferSettings()
+	requestByteCount := int(settings.MaxWindowSize)
+
+	// the wiring: the shipped settings carry a hook exactly when the host's
+	// policy calls for a pin at the shipped window
+	pins := host.explicitSend(requestByteCount) || host.explicitReceive(requestByteCount)
+	if hooked := settings.ConnectSettings.DialControl != nil; hooked != pins {
+		t.Fatalf(
+			"the shipped upstream settings carry a dial control hook = %t against a policy that pins send = %t and receive = %t for a %d byte window; the decision and what applies it have come apart",
+			hooked,
+			host.explicitSend(requestByteCount),
+			host.explicitReceive(requestByteCount),
+			requestByteCount,
+		)
+	}
+	// an undecided policy never builds a hook, so the default dialer keeps
+	// none it does not need
+	if hook := upstreamSocketBufferControl(requestByteCount, socketBufferPolicy{}); hook != nil {
+		t.Fatal("an unknown policy built a dial control hook, so a host whose kernel cannot be read would be pinned blind")
+	}
+
+	// What the hook does, through the dial the provider actually uses. The
+	// policy is synthetic so this does not depend on the host's ceilings: zero
+	// ceilings make the pin worth making by the same rule the shipped policy
+	// applies, while the clamp and the doubling stay the host's own.
+	pinning := host
+	pinning.sendCeilingByteCount = 0
+	pinning.receiveCeilingByteCount = 0
+	if !pinning.explicitSend(requestByteCount) || !pinning.explicitReceive(requestByteCount) {
+		t.Fatalf(
+			"a policy with no ceiling at all declined to pin a %d byte request against core maxima %d and %d, so the rule no longer reads the ceiling",
+			requestByteCount,
+			pinning.sendCoreMaxByteCount,
+			pinning.receiveCoreMaxByteCount,
+		)
+	}
+	connectSettings := *DefaultConnectSettings()
+	connectSettings.DialControl = upstreamSocketBufferControl(requestByteCount, pinning)
+	if connectSettings.DialControl == nil {
+		t.Fatal("a policy that pins both directions built no dial control hook")
+	}
+	pinned, _ := dialUpstreamTestTcpConnWithSettings(t, &connectSettings)
+
+	wantSend := pinning.obtained(requestByteCount, pinning.sendCoreMaxByteCount)
+	wantReceive := pinning.obtained(requestByteCount, pinning.receiveCoreMaxByteCount)
+	if sendByteCount := tcpSocketSendBufferSize(t, pinned); sendByteCount != wantSend {
+		t.Errorf(
+			"the dialled upstream socket has a %d byte send buffer, want %d for a %d byte request against a %d byte net.core.wmem_max; the pre-connect pin did not reach the socket",
+			sendByteCount,
+			wantSend,
+			requestByteCount,
+			pinning.sendCoreMaxByteCount,
+		)
+	}
+	if receiveByteCount := tcpSocketReceiveBufferSize(t, pinned); receiveByteCount != wantReceive {
+		t.Errorf(
+			"the dialled upstream socket has a %d byte receive buffer, want %d for a %d byte request against a %d byte net.core.rmem_max; the pre-connect pin did not reach the socket, so the SYN-time window clamp was not set either",
+			receiveByteCount,
+			wantReceive,
+			requestByteCount,
+			pinning.receiveCoreMaxByteCount,
+		)
+	}
+
+	// and the other direction of the same wire: a dial with no hook leaves the
+	// socket at the kernel's establishment values, which are the ones the
+	// growth rows watch move
+	unpinnedSettings := *DefaultConnectSettings()
+	unpinnedSettings.DialControl = nil
+	unpinned, _ := dialUpstreamTestTcpConnWithSettings(t, &unpinnedSettings)
+	if sendByteCount := tcpSocketSendBufferSize(t, unpinned); sendByteCount == wantSend {
+		t.Errorf(
+			"a dial with no control hook still produced the pinned %d byte send buffer, so this row cannot tell a pin from an establishment value on this host",
+			sendByteCount,
+		)
+	}
+}
+
+// The growth half of the row above, and the part of main's discarded row that
+// this tree can keep: on a host where the policy pins nothing, the provider's
+// own dial path must leave receive autotuning alone. The configure-only rows
+// above cannot catch a pin that moves rather than disappears — into the
+// dialer's control hook, or into the dialer itself — because they never dial
+// through it. This one does, and it fails on any tree that locks the buffer
+// before connect on a host the rule says to leave alone.
+func TestUpstreamTcpReceiveBufferGrowsThroughTheDialPath(t *testing.T) {
+	if moderate, err := os.ReadFile("/proc/sys/net/ipv4/tcp_moderate_rcvbuf"); err != nil ||
+		!bytes.HasPrefix(bytes.TrimSpace(moderate), []byte("1")) {
+		t.Skip("receive autotuning (net.ipv4.tcp_moderate_rcvbuf) is disabled on this host")
+	}
+
+	receiveAutotuneMax := upstreamSysctlValues(t, "net/ipv4/tcp_rmem")[2]
+	settings := DefaultTcpBufferSettings()
+	requestByteCount := int(settings.MaxWindowSize)
+	host := readSocketBufferPolicy()
+	if host.known && host.explicitReceive(requestByteCount) {
+		t.Skipf(
+			"this host's policy pins the receive buffer at %d, above the %d byte autotuning ceiling, so the lock is the decision rather than a defect",
+			host.obtained(requestByteCount, host.receiveCoreMaxByteCount),
+			host.receiveCeilingByteCount,
+		)
+	}
+	tcpConn, peer := dialUpstreamTestTcpConnWithSettings(t, &settings.ConnectSettings)
+	// the dial ran whatever hook the settings carry, which is what
+	// configureUpstreamTcpConn is told so it adds nothing after connect
+	configureUpstreamTcpConn(tcpConn, requestByteCount, host, true)
+	establishment := tcpSocketReceiveBufferSize(t, tcpConn)
+	if receiveAutotuneMax <= establishment {
+		t.Skipf(
+			"the socket is established with a %d byte receive buffer against a net.ipv4.tcp_rmem maximum of %d, so there is nothing to grow into",
+			establishment,
+			receiveAutotuneMax,
+		)
+	}
+
+	go func() {
+		block := make([]byte, 1024*1024)
+		for {
+			if _, err := peer.Write(block); err != nil {
+				return
+			}
+		}
+	}()
+
+	// autotuning sizes the buffer from what the reader drains per round trip,
+	// so the loop drains and stops at the first growth rather than reading a
+	// fixed volume
+	const maxReadByteCount = 512 * 1024 * 1024
+	block := make([]byte, 1024*1024)
+	receiveBufferSize := establishment
+	for readByteCount := 0; readByteCount < maxReadByteCount; readByteCount += len(block) {
+		if _, err := io.ReadFull(tcpConn, block); err != nil {
+			t.Fatal(err)
+		}
+		if receiveBufferSize = tcpSocketReceiveBufferSize(t, tcpConn); establishment < receiveBufferSize {
+			return
+		}
+	}
+
+	t.Fatalf(
+		"the receive buffer of a socket dialled through the provider's own dial path stayed at %d over %d bytes read, from a %d byte establishment value and against the net.ipv4.tcp_rmem maximum %d; something on the dial path set SO_RCVBUF, which locks autotuning and freezes the window clamp at its SYN-time size",
+		receiveBufferSize,
+		maxReadByteCount,
+		establishment,
+		receiveAutotuneMax,
+	)
 }
 
 func tcpSocketReceiveBufferSize(t *testing.T, tcpConn *net.TCPConn) int {
